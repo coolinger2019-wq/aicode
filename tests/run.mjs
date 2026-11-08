@@ -1121,6 +1121,89 @@ fn main() with io, fs {
   }
 }
 
+// ===================== 32. v0.32:发布期门禁(配额/熔断)+ wasm 层存活断言 =====================
+{
+  // wasm 层存活断言(v0.32 制度化:模块必须真的实例化,且导出算对——此前整层静默回落 16 版)
+  {
+    const { VMInterp } = await import('../src/vm.js');
+    const { Checker } = await import('../src/checker.js');
+    const src = [
+      'fn fib(n: i64) -> i64 {',
+      '    if n < 2 { return n; }',
+      '    return fib(n - 1) + fib(n - 2);',
+      '}',
+      '',
+      'fn main() with io { print(str(fib(25))); }',
+    ].join('\n');
+    const p = path.join(TMP, 'w32-live.ming');
+    fs.writeFileSync(p, src);
+    const c = new Checker(p, () => src);
+    const result = c.run(); // 单次编译:vm 与模块查找必须同源
+    const vm = new VMInterp(result, { capture: true });
+    check('v32:wasm 层存活(实例化非空 + eligible 非空)', !!vm.wasmExports && (vm.wasmEligible?.size ?? 0) > 0, 'wasmExports=' + !!vm.wasmExports);
+    let fe = null, mod = null;
+    for (const m of result.modules) {
+      const e = m.items.get('fib');
+      if (e?.kind === 'fn') { fe = e; mod = m; break; }
+    }
+    const v = vm.callUser(mod, fe, null, [{ t: 'int', v: 25n, bits: 64, signed: true }], null);
+    check('v32:wasm 导出金标准(fib(25)=75025,经 wasm 导出)', v?.t === 'int' && (v?.v === 75025n || v?.v === 75025), 'got=' + String(v?.v) + ' type=' + (v?.t ?? '?'));
+  }
+
+  // M4011 内存配额(--max-alloc;双引擎)
+  const qa = mingFile('v32-quota.ming', 'fn main() with io { let mut v: Vec[i64] = []; let mut i = 0; while i < 100000 { v.push(i); i += 1; } print(str(v.len())); }');
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', qa, ...eng, '--max-alloc', '1000']);
+    check('v32:M4011 内存配额' + (eng.length ? '(tree)' : '(vm)'), r.code === 101 && r.stderr.includes('M4011') && r.stderr.includes('alloc-quota-exceeded'), 'code=' + r.code + ' stderr=' + r.stderr.slice(0, 150));
+  }
+
+  // M4012 时间熔断(--max-ms;双引擎)
+  const qt = mingFile('v32-time.ming', 'fn main() with io { let mut i = 0; while 1 < 2 { i += 1; } }');
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', qt, ...eng, '--max-ms', '300']);
+    check('v32:M4012 时间熔断' + (eng.length ? '(tree)' : '(vm)'), r.code === 101 && r.stderr.includes('M4012') && r.stderr.includes('time-quota-exceeded'), 'code=' + r.code + ' stderr=' + r.stderr.slice(0, 150));
+  }
+
+  // 配额穿透子任务:子 panic 经错误链带回 M4011(v0.30 × v0.32 协同)
+  const qc = mingFile('v32-child-quota.ming', [
+    'use std.sync;',
+    '',
+    'fn big(n: i64) -> i64 {',
+    '    let mut v: Vec[i64] = [];',
+    '    let mut i = 0;',
+    '    while i < n {',
+    '        v.push(i);',
+    '        i += 1;',
+    '    }',
+    '    return v.len();',
+    '}',
+    '',
+    'fn main() with io, sync {',
+    '    match std.sync.join_detailed(std.sync.spawn(big, 100000), 30000) {',
+    '        Ok(_) => print("bug"),',
+    '        Err(info) => print("code=" + info.get("code").unwrap().as_str().unwrap()),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const rq = runMing(['run', qc, '--max-alloc', '5000']);
+  check('v32:配额穿透子任务(M4011 经错误链)', rq.code === 0 && rq.stdout === 'code=M4011\n', 'stdout=' + JSON.stringify(rq.stdout) + ' stderr=' + rq.stderr.slice(0, 150));
+
+  // for-in 安全回落:已知错值路径整体回落 JS VM(正确结果优先于分层)
+  const rf = mingFile('v32-forin-fallback.ming', [
+    'fn sumv(v: Vec[i64]) -> i64 {',
+    '    let mut t = 0;',
+    '    for x in v {',
+    '        t = t + x;',
+    '    }',
+    '    return t;',
+    '}',
+    '',
+    'fn main() with io { print(str(sumv([1, 2, 3, 4]))); }',
+  ].join('\n'));
+  const rfor = runMing(['run', rf]);
+  check('v32:for-in 回落结果正确', rfor.code === 0 && rfor.stdout === '10\n', 'stdout=' + JSON.stringify(rfor.stdout));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

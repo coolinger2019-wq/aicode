@@ -468,6 +468,11 @@ export class Interp {
     this.out = opts.out ?? process.stdout;
     this.errOut = opts.errOut ?? process.stderr;
     this.logLevel = 1;                         // std.log 阈值(v0.28):0=debug 1=info 2=warn 3=error
+    // v0.32 发布期门禁:内存配额(累计分配口径)+ 时间熔断
+    this.maxAlloc = opts.maxAlloc ?? 268_435_456;   // 累计分配单位上限(Vec/Map 元素 + str 字符)
+    this.allocBytes = 0;
+    this.maxMs = opts.maxMs ?? 600_000;             // 墙钟上限(默认 10 分钟)
+    this.runStart = Date.now();
     this.capture = opts.capture ?? false;      // 测试模式:捕获 print
     this.captured = [];
     this.stdin = opts.stdin ?? null;           // 预读的 stdin 文本
@@ -608,6 +613,8 @@ export class Interp {
     if (++this.steps > this.maxSteps) {
       throw new Panic('M4001', `执行步数超过上限 ${this.maxSteps}(可能是死循环;用 --max-steps 调整)`);
     }
+    // v0.32:墙钟熔断(每 16384 步轮询一次,摊薄 Date.now 开销)
+    if ((this.steps & 16383) === 0) this.checkTimeQuota(null);
   }
 
   // ---------- 语句 ----------
@@ -977,8 +984,12 @@ export class Interp {
         }
         throw new Panic('M4001', '内部错误:match 无分支命中(检查器应已拦截)', e.span);
       }
-      case 'VecLit': return V.vec(e.elems.map(x => deepCopy(this.evalExpr(x, env))));
+      case 'VecLit': {
+        this.chargeAllocBytes(e.elems.length, e.span);
+        return V.vec(e.elems.map(x => deepCopy(this.evalExpr(x, env))));
+      }
       case 'MapLit': {
+        this.chargeAllocBytes(e.entries.length, e.span);
         const m = new Map();
         for (const en of e.entries) {
           const k = this.evalExpr(en.k, env);
@@ -1619,6 +1630,23 @@ export class Interp {
     ])]);
   }
 
+  // v0.32 发布期门禁:动态熔断
+  // 内存配额:累计分配口径(估算,非 RSS)——Vec/Map 按元素、str 按字符计费;超限 M4011
+  chargeAllocBytes(n, span) {
+    if (n <= 0) return;
+    this.allocBytes += n;
+    if (this.allocBytes > this.maxAlloc) {
+      throw new Panic('M4011', `内存配额超限:累计分配 ${this.allocBytes} 超过上限 ${this.maxAlloc}(用 --max-alloc 调整)`, span);
+    }
+  }
+
+  // 时间熔断:墙钟超限 M4012(调用方按步数取模轮询,避免每步 Date.now 开销)
+  checkTimeQuota(span) {
+    if (this.maxMs !== Infinity && Date.now() - this.runStart > this.maxMs) {
+      throw new Panic('M4012', `执行时间超过上限 ${this.maxMs}ms(用 --max-ms 调整)`, span);
+    }
+  }
+
   // std.log 输出(v0.28):达到阈值才写 stderr;日志只影响诊断流,不影响程序值
   logEmit(level, name, msg) {
     if (level >= this.logLevel) this.errOut.write('[' + name + '] ' + msg + '\n');
@@ -1693,6 +1721,8 @@ export class Interp {
           vmUrl: SRC_URL('vm.js'),
           interpUrl: SRC_URL('interp.js'),
           maxSteps: this.maxSteps === Infinity ? 500_000_000 : this.maxSteps,
+          maxAlloc: this.maxAlloc,
+          maxMs: this.maxMs === Infinity ? 3_600_000 : this.maxMs,
         },
       });
     } catch (e) {
@@ -1738,6 +1768,8 @@ export class Interp {
             vmUrl: SRC_URL('vm.js'),
             interpUrl: SRC_URL('interp.js'),
             maxSteps: this.maxSteps === Infinity ? 500_000_000 : this.maxSteps,
+            maxAlloc: this.maxAlloc,
+            maxMs: this.maxMs === Infinity ? 3_600_000 : this.maxMs,
           },
         });
       } catch (e) {
@@ -1797,7 +1829,7 @@ export class Interp {
       '    }',
       '  }',
       "  if (!target) throw new Error('子任务找不到函数 ' + workerData.fnName);",
-      '  const interp = new VMInterp(result, { capture: true, maxSteps: workerData.maxSteps });',
+      '  const interp = new VMInterp(result, { capture: true, maxSteps: workerData.maxSteps, maxAlloc: workerData.maxAlloc, maxMs: workerData.maxMs });',
       '  const argv = JSON.parse(workerData.argWire).map(wireToV);',
       '  const ret = interp.callUser(target.m, target.e, null, argv, target.e.decl?.span ?? null);',
       "  const out = JSON.stringify({ ok: true, value: vToWire(ret) });",
@@ -2153,7 +2185,10 @@ export class Interp {
     switch (name) {
       case 'len': return V.int(BigInt(a.length));
       case 'is_empty': return V.bool(a.length === 0);
-      case 'push': a.push(args[0]); return UNIT;
+      case 'push':
+        this.chargeAllocBytes(1, span);
+        a.push(args[0]);
+        return UNIT;
       case 'pop': return a.length ? V.enumv('builtin-opt', 'Some', [a.pop()]) : V.enumv('builtin-opt', 'None', []);
       case 'get': {
         const i = Number(args[0].v);
@@ -2195,11 +2230,15 @@ export class Interp {
       }
       case 'map': {
         const f = args[0];
-        return V.vec(a.map(x => this.callClosure(f, [x], span)));
+        const out = a.map(x => this.callClosure(f, [x], span));
+        this.chargeAllocBytes(out.length, span);
+        return V.vec(out);
       }
       case 'filter': {
         const f = args[0];
-        return V.vec(a.filter(x => this.callClosure(f, [x], span).v));
+        const out = a.filter(x => this.callClosure(f, [x], span).v);
+        this.chargeAllocBytes(out.length, span);
+        return V.vec(out);
       }
       case 'fold': {
         let acc = args[0];
@@ -2208,19 +2247,23 @@ export class Interp {
         return acc;
       }
       case 'join': {
-        return V.str(a.map(x => displayStr(x)).join(args[0].v));
+        const out = V.str(a.map(x => displayStr(x)).join(args[0].v));
+        this.chargeAllocBytes(out.v.length, span);
+        return out;
       }
       case 'slice': {
         const s = Number(args[0].v), e2 = Number(args[1].v);
         if (!Number.isInteger(s) || !Number.isInteger(e2) || s < 0 || e2 < s || e2 > a.length) {
           throw new Panic('M4003', `slice 越界:请求 [${s}, ${e2}),长度 ${a.length}`, span);
         }
+        this.chargeAllocBytes(e2 - s, span);
         return V.vec(a.slice(s, e2));
       }
       case 'insert': {
         const i = Number(args[0].v);
         if (!Number.isInteger(i) || i < 0 || i > a.length) throw new Panic('M4003', `insert 索引越界:长度 ${a.length},插入点 ${i}`, span);
         a.splice(i, 0, args[1]);
+        this.chargeAllocBytes(1, span);
         return UNIT;
       }
       case 'remove': {
@@ -2228,8 +2271,13 @@ export class Interp {
         if (!Number.isInteger(i) || i < 0 || i >= a.length) throw new Panic('M4003', `remove 索引越界:长度 ${a.length},删除点 ${i}`, span);
         return a.splice(i, 1)[0];
       }
-      case 'extend': for (const x of args[0].a) a.push(x); return UNIT;
-      case 'clone': return deepCopy(recv);
+      case 'extend':
+        this.chargeAllocBytes(args[0].a.length, span);
+        for (const x of args[0].a) a.push(x);
+        return UNIT;
+      case 'clone':
+        this.chargeAllocBytes(a.length, span);
+        return deepCopy(recv);
       case 'min': case 'max': {
         if (a.length === 0) return V.enumv('builtin-opt', 'None', []);
         let best = a[0];
@@ -2252,7 +2300,12 @@ export class Interp {
         const k = normKey(args[0]);
         return m.has(k) ? V.enumv('builtin-opt', 'Some', [m.get(k)]) : V.enumv('builtin-opt', 'None', []);
       }
-      case 'set': m.set(normKey(args[0]), args[1]); return UNIT;
+      case 'set': {
+        const k = normKey(args[0]);
+        if (!m.has(k)) this.chargeAllocBytes(1, span);
+        m.set(k, args[1]);
+        return UNIT;
+      }
       case 'has': return V.bool(m.has(normKey(args[0])));
       case 'delete': return V.bool(m.delete(normKey(args[0])));
       case 'keys': return V.vec([...m.keys()].map(keyValue));
@@ -2283,10 +2336,15 @@ export class Interp {
       case 'starts_with': return V.bool(s.startsWith(args[0].v));
       case 'ends_with': return V.bool(s.endsWith(args[0].v));
       case 'contains': return V.bool(s.includes(args[0].v));
-      case 'replace': return V.str(s.split(args[0].v).join(args[1].v));
+      case 'replace': {
+        const out = V.str(s.split(args[0].v).join(args[1].v));
+        this.chargeAllocBytes(out.v.length, span);
+        return out;
+      }
       case 'repeat': {
         const n = Number(args[0].v);
         if (n < 0 || s.length * n > 10_000_000) throw new Panic('M4001', 'repeat:次数非法或结果过大', span);
+        this.chargeAllocBytes(s.length * n, span);
         return V.str(s.repeat(n));
       }
       case 'get': {
@@ -2328,6 +2386,7 @@ export class Interp {
       // v0.31 二进制雏形:UTF-8 编码(纯函数;解码见 Vec[u8].to_str)
       case 'to_bytes': {
         const buf = Buffer.from(s, 'utf8');
+        this.chargeAllocBytes(buf.length, span);
         return V.vec([...buf].map(b => V.int(BigInt(b), 8, false)));
       }
       default: throw new Panic('M4001', `内部错误:str.${name}`, span);
@@ -2436,7 +2495,10 @@ export class Interp {
             case '/': return V.float(l.v / r.v, l.bits);
           }
         }
-        if (op === '+' && l.t === 'str' && r.t === 'str') return V.str(l.v + r.v);
+        if (op === '+' && l.t === 'str' && r.t === 'str') {
+          this.chargeAllocBytes(l.v.length + r.v.length, span);
+          return V.str(l.v + r.v);
+        }
         throw new Panic('M3008', `运算符 "${op}" 不支持 ${l.t} 与 ${r.t}`, span);
       }
       case '==': return V.bool(valueEquals(l, r));

@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.31.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.32.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -834,6 +834,7 @@ fn main() with io {
 | 命令 | 作用 |
 |------|------|
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
+| 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -934,12 +935,32 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.29(已完成) | std.math 补全(11 函数,wasm 桥接)+ 路径验证制度化 |
 | v0.30(已完成) | 错误链(cause):wire v2、join_detailed、scoped 码透传、panic 调用栈修复、诊断协议 cause 字段 |
 | v0.31(已完成) | 二进制 I/O 雏形(Vec[u8] + 8MB 上限)、任务超时/取消(join_detailed 超时参数、cancel、M4010) |
-| v0.32 方向 | 发布期门禁:内存配额/动态熔断;流式二进制读写评估 |
-| 更远 | 合并期门禁:模糊测试;原生后端(C);自举 |
+| v0.32(已完成) | 发布期门禁(max-alloc/max-ms/M4011/M4012)+ **wasm 层复活**(11 层静默回落根因修复;for-in 加载已知问题回落待修) |
+| v0.33 方向 | wasm for-in 元素加载错值根因;流式二进制再评估;合并期门禁:模糊测试 |
+| 更远 | 原生后端(C);自举;动态权限收回 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.32.0(2026-11-09)
+
+- **重大考古发现:wasm 分层从未真正运行过**——自 v0.23(仓库首个提交)起,任何包含 eligible 函数的程序,wasm 模块实例化即失败并**静默回落 JS VM**;341 项测试全绿掩盖了这一点(回退产出相同结果)。逐层修复(每层都被下一层暴露):
+  1. 导入节对 VECMAP 表 results 标量的 `results.map` TypeError(整模块 emit 即抛);
+  2. `N_IMPORTS` 引用未定义变量(ReferenceError);
+  3. 26 处 `sleb(0x40)` 把 void 块类型编码成多字节(类型索引 64 非法);
+  4. `pushScope/popScope/emitStore` 三个被调用却从未定义的方法;
+  5. ming_alloc/ming_copy_vec 被生成代码调用却未在导入节声明;`map_key_at` 同;
+  6. `growImportIdx/strFromIdx` 按旧表布局写死偏移(指向错误函数);
+  7. memory 节 `ulebBytes(4)` 声明 4 个 memory(上限 1)且未导出——JS 侧 `wasmMemory` 从未赋值;
+  8. math 导入 JS 侧从未提供(v0.12 起);
+  9. scratch 槽基址 = f.nLocals 与用户 let 槽**完全重叠**(局部变量被冲掉)→ 两遍发射修复;
+  10. `fib(n)=f(n-1)+f(n-2)` 的 lhs 结果存 scratch0 后被 RHS 子表达式复用冲掉 → lhs 留在值栈横跨 RHS 求值;
+  11. for-in 元素加载地址算式多压一个 i 且少一次加法(绝对地址 + 操作数栈失衡)——**此路径修复后仍有残余错值(多元素非零基址),按"安全是默认"整体回落 JS VM,列入 v0.33**。
+- **制度化教训(并入 §2.16 门禁模型)**:"输出正确"不等于"该层在跑"。存活断言(wasmExports 非空 + eligible 非空 + **经 wasm 导出**的金标准)进入回归,`MING_WASM_DEBUG` 路径证实制度化为常规测试。
+- **发布期门禁落地**:`--max-alloc N`(累计分配口径:Vec/Map 元素 + str 字符;计费点:VecLit/MapLit、push/extend/insert/clone/map/filter/slice、map set 新键、字符串拼接/repeat/replace/to_bytes、wasm ming_alloc)超限 **M4011**;`--max-ms N` 墙钟熔断(每 16384 步轮询)超限 **M4012**;两者 + maxSteps 均穿透到子任务 worker。CLI 修復:`--max-* N` 空格分隔形式此前落进位置参数。
+- **流式二进制读写评估(结论:不做)**:8MB 上限 + 整文件 Vec[u8] 已覆盖 AI 胶水场景;流式需要 FileHandle 类型、句柄关闭语义、以及"句柄不可拷贝"的禁存规则(与 Join 同类),与原生后端阶段一并设计收益更大。
+- 测试:349 项(新增 v0.32 8 项:wasm 存活断言/导出金标准/M4011 双引擎/M4012 双引擎/配额穿透子任务(错误链协同)/for-in 回落正确性)。
 
 ### v0.31.0(2026-11-09)
 

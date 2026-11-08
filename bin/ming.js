@@ -17,13 +17,13 @@ import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.31.0';
+export const VERSION = '0.32.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
-  ming run   [file.ming] [--json] [--tree] [--no-wasm] [--max-steps N] [-- args...]
+  ming run   [file.ming] [--json] [--tree] [--no-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
   ming check [file.ming...] [--json]
   ming test  [file.ming...] [--json] [--filter 名称]
   ming build [--json]
@@ -46,13 +46,16 @@ function parseArgs(argv) {
   const opts = {};
   const rest = [];
   let afterDoubleDash = false;
-  for (const a of argv) {
+  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms']); // 空格分隔取值的参数(v0.32)
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
     if (afterDoubleDash) { rest.push(a); continue; }
     if (a === '--') { afterDoubleDash = true; continue; }
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       flags.add(k);
       if (v !== undefined) opts[k] = v;
+      else if (VALUE_FLAGS.has(k)) { i += 1; opts[k] = argv[i]; } // --max-alloc N 形式
     } else if (a.startsWith('-') && a.length > 1 && !/^-\d/.test(a)) {
       flags.add(a.slice(1));
     } else {
@@ -124,6 +127,8 @@ function cmdRun(file, flags, opts, programArgs) {
   const interp = new (flags.has('no-wasm') ? Interp : Engine)(result, {
     capture: json,
     maxSteps: opts['max-steps'] ? Number(opts['max-steps']) : Infinity,
+    maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
+    maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
   });
   const t0 = Date.now();
   try {

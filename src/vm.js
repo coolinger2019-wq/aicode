@@ -9,6 +9,7 @@
 import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits } from './interp.js';
 import { compile, OP, BIN } from './compiler.js';
 import { tint, tfloat, T_STR, T_BOOL, INT_TYPES, typeStr, resolveT } from './checker.js';
+import { MATH_IMPORTS } from './wasm.js';
 
 export function resolveConst(c) {
   if (c && c.__tag === 'str') {
@@ -56,14 +57,18 @@ export class VMInterp extends Interp {
         // 容器句柄表(v0.18):wasm 内 Vec/Map = i32 句柄;JS 侧持 V 对象
         this.wasmObjTable = [];
         const objTable = this.wasmObjTable;
+        // v0.32:线性内存引用与 bump 堆顶(ming_alloc/grow/copy_vec/参数写入共用)
+        this.wasmParamTop = 0;
+        this.wasmParamTopStack = [];
         const keyStr = (kh) => strTable[kh] ?? '';
         const imports = {
           ming: {
             tick: () => {
-              this.steps += 500;
+              this.steps += 50; // v0.32:每次 wasm 调用/循环头计 50 步(原 500 会把 fib(30) 这类合法深递归误判超限)
               if (this.steps > this.maxSteps) {
                 throw new Panic('M4001', `执行步数超过上限 ${this.maxSteps}(可能是死循环;用 --max-steps 调整)`, callStack[callStack.length - 1]?.span ?? null);
               }
+              if ((this.steps & 16383) < 50) this.checkTimeQuota(null); // v0.32 墙钟熔断
             },
             panic_m4002: (spanIdx) => {
               throw new Panic('M4002', '整数运算溢出/移位越界', spans[spanIdx] ?? null);
@@ -154,12 +159,69 @@ export class VMInterp extends Interp {
             str_contains: (h, a) => ((strTable[h] ?? '').includes(strTable[a] ?? '') ? 1 : 0),
             str_starts: (h, a) => ((strTable[h] ?? '').startsWith(strTable[a] ?? '') ? 1 : 0),
             str_ends: (h, a) => ((strTable[h] ?? '').endsWith(strTable[a] ?? '') ? 1 : 0),
+            // v0.32 补齐:map for-in 键枚举(插入序;此前未实现,map 迭代 eligible 必失败)
+            map_key_at: (h, i) => {
+              const m = objTable[h]?.m ?? new Map();
+              const keys = [...m.keys()];
+              const idx = Number(i);
+              if (!Number.isInteger(idx) || idx < 0 || idx >= keys.length) throw new Panic('M4003', `map 迭代越界:长度 ${keys.length},访问 ${idx}`);
+              strTable.push(keys[idx]);
+              return strTable.length - 1;
+            },
+            // v0.32 补齐:线性内存 bump 分配(发布期门禁:计入 maxAlloc 配额,超限 M4011)
+            ming_alloc: (nBytes) => {
+              const n = Number(nBytes);
+              this.chargeAllocBytes(n, null);
+              const top = (this.wasmParamTop + 7) & ~7;
+              this.ensureWasmMem(top + n);
+              this.wasmParamTop = top + n;
+              return top;
+            },
+            // v0.32 补齐:[len][cap][elems] 搬迁;newBytes 为新块字节数
+            ming_grow: (ptr, newBytes) => {
+              const p = Number(ptr);
+              const dv0 = new DataView(this.wasmMemory.buffer);
+              const len = Number(dv0.getBigInt64(p, true));
+              const block = Number(newBytes);
+              const newTop = this.mingAllocRaw(block);
+              this.ensureWasmMem(newTop + block);
+              const dv = new DataView(this.wasmMemory.buffer);
+              const capElems = Math.floor((block - 16) / 8);
+              dv.setBigInt64(newTop, BigInt(len), true);
+              dv.setBigInt64(newTop + 8, BigInt(capElems), true);
+              if (len > 0) {
+                new Uint8Array(this.wasmMemory.buffer)
+                  .set(new Uint8Array(this.wasmMemory.buffer).slice(p + 16, p + 16 + len * 8), newTop + 16);
+              }
+              return newTop;
+            },
+            // v0.32 补齐:值语义快照——按 len 紧凑拷贝(新块 cap=len)
+            ming_copy_vec: (ptr) => {
+              const p = Number(ptr);
+              const dv0 = new DataView(this.wasmMemory.buffer);
+              const len = Number(dv0.getBigInt64(p, true));
+              const block = 16 + len * 8;
+              const newTop = this.mingAllocRaw(block);
+              this.ensureWasmMem(newTop + block);
+              const dv = new DataView(this.wasmMemory.buffer);
+              dv.setBigInt64(newTop, BigInt(len), true);
+              dv.setBigInt64(newTop + 8, BigInt(len), true);
+              if (len > 0) {
+                new Uint8Array(this.wasmMemory.buffer)
+                  .set(new Uint8Array(this.wasmMemory.buffer).slice(p + 16, p + 16 + len * 8), newTop + 16);
+              }
+              return newTop;
+            },
           },
         };
+        // v0.32 修复:math 导入此前从未提供(v0.12 起 wasm 实例化必败的根源之一);导入名带 math_ 前缀
+        for (const [mn, impl] of MATH_IMPORTS) imports.ming['math_' + mn] = impl;
         const inst = new WebAssembly.Instance(module_, imports);
         this.wasmExports = inst.exports;
+        this.wasmMemory = inst.exports.mem;
         this.wasmEligible = this.compiled.wasm.eligible;
-      } catch {
+      } catch (e) {
+        if (process.env.MING_WASM_DEBUG) console.error('[wasm 实例化失败]', e?.message ?? e);
         this.wasmExports = null;
       }
     }
@@ -221,6 +283,37 @@ export class VMInterp extends Interp {
   // ---------- 字节码执行 ----------
 
   // 调用编译函数:返回返回值;参数按值语义深拷贝(noCopySelf 时首参除外)
+  // ---------- v0.32 wasm 线性内存助手 ----------
+  ensureWasmMem(need) {
+    const cur = this.wasmMemory.buffer.byteLength;
+    if (need > cur) this.wasmMemory.grow(Math.ceil((need - cur) / 65536));
+  }
+
+  // bump 分配(8 字节对齐);配额计入 maxAlloc
+  mingAllocRaw(n) {
+    const top = (this.wasmParamTop + 7) & ~7;
+    this.chargeAllocBytes(n, null);
+    this.ensureWasmMem(top + n);
+    this.wasmParamTop = top + n;
+    return top;
+  }
+
+  // Vec[i64]/Vec[f64] 实参 → 线性内存 [len][cap][elems](值语义:总是拷贝)
+  wasmWriteVecNum(v, kind) {
+    const a = v.a ?? [];
+    const bytes = 16 + a.length * 8;
+    const ptr = this.mingAllocRaw(bytes);
+    this.ensureWasmMem(ptr + bytes);
+    const dv = new DataView(this.wasmMemory.buffer);
+    dv.setBigInt64(ptr, BigInt(a.length), true);
+    dv.setBigInt64(ptr + 8, BigInt(a.length), true);
+    for (let i = 0; i < a.length; i++) {
+      if (kind === 'f64') dv.setFloat64(ptr + 16 + 8 * i, Number(a[i].v), true);
+      else dv.setBigInt64(ptr + 16 + 8 * i, BigInt(a[i].v), true);
+    }
+    return ptr;
+  }
+
   callCompiled(fnIdx, args, span, noCopySelf = false, captures = null) {
     const bc = this.compiled;
     const fn = bc.functions[fnIdx];
@@ -239,6 +332,7 @@ export class VMInterp extends Interp {
       for (let i = 0; i < info.nParams; i++) {
         const a = args[i];
         const pt = sig.params[i]?.type;
+        if (process.env.MING_WASM_DEBUG) console.error('[wasm 参数]', i, 'pt=', pt ? pt.k + '/b' + (pt.bits ?? '-') : 'undefined', 'a=', a?.t);
         if (!a) { ok = false; break; }
         if (pt?.k === 'float') {
           if (a.t !== 'float' || a.bits !== 64) { ok = false; break; }
@@ -253,7 +347,10 @@ export class VMInterp extends Interp {
         }
         if (pt?.k === 'vec' && (pt.el?.k === 'int' || pt.el?.k === 'float') && pt.el?.bits === 64) {
           // 线性内存 ptr 路径(v0.19):批量拷贝,零句柄;mut 参数预留容量(v0.20 push)
-          if (a.t !== 'vec') { ok = false; break; }
+          if (a.t !== 'vec') {
+            if (process.env.MING_WASM_DEBUG) console.error('[wasm 参数回落] vec 形参收到', a?.t);
+            ok = false; break;
+          }
           const ptr = this.wasmWriteVecNum(a, pt.el.k, !!sig.params[i]?.mut);
           this.wasmParamTopStack.push(this.wasmParamTop);
           wasmArgs.push(ptr);
@@ -347,6 +444,8 @@ export class VMInterp extends Interp {
       if (++this.steps > this.maxSteps) {
         throw new Panic('M4001', `执行步数超过上限 ${this.maxSteps}(可能是死循环;用 --max-steps 调整)`);
       }
+      // v0.32:墙钟熔断(每 16384 步轮询一次)
+      if ((this.steps & 16383) === 0) this.checkTimeQuota(null);
       const ins = code[frame.ip++];
       const op = ins[0];
       if (TRACE) {
@@ -496,12 +595,14 @@ export class VMInterp extends Interp {
         case OP.MAKEVEC: {
           const n = ins[1];
           const items = stack.splice(stack.length - n, n).map(deepCopy);
+          this.chargeAllocBytes(n, this.spanOf(frame, ins));
           stack.push(V.vec(items));
           break;
         }
         case OP.MAKEMAP: {
           const n = ins[1];
           const flat = stack.splice(stack.length - 2 * n, 2 * n);
+          this.chargeAllocBytes(n, this.spanOf(frame, ins));
           const m = new Map();
           for (let i = 0; i < n; i++) {
             const k = flat[i * 2], v = deepCopy(flat[i * 2 + 1]);

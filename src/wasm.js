@@ -62,7 +62,7 @@ function vec(items) {
 const I64 = 0x7e, I32 = 0x7f, F64 = 0x7c, VOID = 0x40;
 
 // std.math 导入表(v0.12):名字 → 参数型/结果型/JS 实现;顺序即导入序(3 起算)
-const MATH_IMPORTS = [
+export const MATH_IMPORTS = [
   ['sqrt', Math.sqrt], ['pow', Math.pow], ['abs', Math.abs], ['floor', Math.floor],
   ['ceil', Math.ceil], ['round', Math.round], ['exp', Math.exp], ['ln', Math.log],
   ['sin', Math.sin], ['cos', Math.cos], ['tan', Math.tan],
@@ -112,9 +112,12 @@ const VECMAP_IMPORTS = [
   ['str_contains', ['i32', 'i32'], 'i32'],
   ['str_starts', ['i32', 'i32'], 'i32'],
   ['str_ends', ['i32', 'i32'], 'i32'],
+  ['map_key_at', ['i32', 'i64'], 'i32'], // v0.32 补:map for-in 的键枚举(此前调用但未声明,实例化即失败)
 ];
 const EXTRA_IDX = new Map(VECMAP_IMPORTS.map(([n], i) => [n, i]));
 const TOTAL_IMPORTS = 3 + MATH_IMPORTS.length + STR_IMPORTS.length + VECMAP_IMPORTS.length;
+// v0.32:ming_alloc / ming_copy_vec 声明在 VECMAP 之后(TOTAL_IMPORTS+1/+2);函数索引基址随之 +2
+const DEFINED_BASE = TOTAL_IMPORTS + 2;
 const I64_MIN = -(2n ** 63n);
 
 const SCALARS = new Set(['int', 'float', 'str']);
@@ -181,8 +184,8 @@ class WasmCompiler {
   }
 
   strFromIdx(kind) {
-    return 3 + MATH_IMPORTS.length + STR_IMPORTS.length + VECMAP_IMPORTS.length + 1
-      + ['i64', 'f64', 'bool'].indexOf(kind); // ming_grow 之后:from_i64/from_f64/from_bool
+    // v0.32 修复:此前按旧表布局写死偏移,str_from_* 移入 VECMAP_IMPORTS 后指向错行
+    return 3 + MATH_IMPORTS.length + STR_IMPORTS.length + EXTRA_IDX.get('str_from_' + kind);
   }
 
   strImportIdx(name) {
@@ -315,12 +318,21 @@ class WasmCompiler {
         return [...nameBytes('ming'), ...nameBytes('str_' + n.slice(4)), 0x00, ...ulebBytes(typeOf(params, results))];
       }),
       ...VECMAP_IMPORTS.map(([n, params, results]) => {
-        const pt = params.map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
-        const rt = results.map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
+        // v0.32 修复:表里 results 可能是标量串('i32');此前 results.map 直接 TypeError →
+        // 整模块 emit 抛错 → tryWasm 静默回落——wasm 层自 v0.23 起从未实例化成功。
+        const pt = (Array.isArray(params) ? params : [params]).map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
+        const rt = (Array.isArray(results) ? results : [results]).map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
+        return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, rt))];
+      }),
+      // v0.32 修复:ming_alloc / ming_copy_vec 被生成代码调用(allocImportIdx/copyVecImportIdx)
+      // 却从未在导入节声明 → 实例化校验失败 → 静默回落。声明补齐,索引与既有算式一致。
+      ...[['ming_alloc', ['i32'], ['i32']], ['ming_copy_vec', ['i32'], ['i32']]].map(([n, params, results]) => {
+        const pt = params.map(x => x === 'i32' ? I32 : I64);
+        const rt = results.map(x => x === 'i32' ? I32 : I64);
         return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, rt))];
       }),
     ];
-    void N_IMPORTS;
+    // (N_IMPORTS 曾被引用但从未定义——整模块 ReferenceError 的元凶之一;参数已废弃)
 
     const wasmTypeOf = (t) => t.k === 'float' ? F64 : (t.k === 'str' || t.k === 'vec' || t.k === 'map' ? I32 : I64);
     const sigTypes = order.map(fi => {
@@ -330,10 +342,10 @@ class WasmCompiler {
     });
 
     const exportSection = order.map((fi, ord) =>
-      [...nameBytes('m' + fi), 0x00, ...ulebBytes(TOTAL_IMPORTS + ord)]);
+      [...nameBytes('m' + fi), 0x00, ...ulebBytes(DEFINED_BASE + ord)]);
 
     const bodies = order.map((fi) => {
-      const body = this.emitBody(fns[fi], N_IMPORTS);
+      const body = this.emitBody(fns[fi], 0);
       return [...ulebBytes(body.length), ...body];
     });
 
@@ -341,8 +353,10 @@ class WasmCompiler {
     bytes.push(...section(1, vec(types)));
     bytes.push(...section(2, vec(imports)));
     bytes.push(...section(3, vec(sigTypes.map(t => ulebBytes(t)))));
-    bytes.push(...section(5, ulebBytes(4))); // memory:min 4 页(线性内存传递,v0.19)
-    bytes.push(...section(7, vec(exportSection)));
+    // v0.32 修复:此前 ulebBytes(4) 声明了 4 个 memory(wasm 上限 1 个)→ 实例化必败;
+    // 正确:1 个 memory,min 4 页;并导出为 "mem" 供 JS 侧读写(v0.23 线性内存传递)
+    bytes.push(...section(5, vec([[0x00, 0x04]])));
+    bytes.push(...section(7, vec([[...nameBytes('mem'), 0x02, 0x00], ...exportSection])));
     bytes.push(...section(10, vec(bodies)));
     return bytes;
   }
@@ -350,6 +364,14 @@ class WasmCompiler {
   // ---------- 函数体 ----------
 
   emitBody(f, N_IMPORTS) {
+    // v0.32 修复(两遍发射):scratch 槽基址此前 = f.nLocals,与 wasm 侧 declareLocal 分配的
+    // 用户 let 槽完全重叠(用户局部变量被 scratch 冲掉,静默错值)。第一遍探测用户槽位上限,
+    // 第二遍把 scratch 基址放到其上重发。
+    const probe = this.emitBodyOnce(f, f.nLocals);
+    return this.emitBodyOnce(f, probe.slots).bytes;
+  }
+
+  emitBodyOnce(f, scratchBase) {
     const sig = f.entry.sig;
     const isVoid = sig.ret.k === 'unit';
     const instr = [];
@@ -364,14 +386,14 @@ class WasmCompiler {
       nParams: f.nParams,
       slots: f.nLocals,
       slotTypes,                   // slot → 'i64' | 'f64'
-      scratch0: f.nLocals,         // i64 scratch
-      scratch1: f.nLocals + 1,
-      scratch2: f.nLocals + 2,
-      fscratch0: f.nLocals + 3,    // f64 scratch
-      fscratch1: f.nLocals + 4,
-      iscratch: f.nLocals + 5,     // i32 scratch(容器句柄)
-      iscratch2: f.nLocals + 6,    // i32 scratch2(str 键句柄/str 默认值)
-      iscratch3: f.nLocals + 7,    // i32 scratch3(len 存取)
+      scratch0: scratchBase,       // i64 scratch
+      scratch1: scratchBase + 1,
+      scratch2: scratchBase + 2,
+      fscratch0: scratchBase + 3,  // f64 scratch
+      fscratch1: scratchBase + 4,
+      iscratch: scratchBase + 5,   // i32 scratch(容器句柄)
+      iscratch2: scratchBase + 6,  // i32 scratch2(str 键句柄/str 默认值)
+      iscratch3: scratchBase + 7,  // i32 scratch3(len 存取)
       scopes: [new Map()],
       loopStack: [],
       isVoid,
@@ -401,8 +423,9 @@ class WasmCompiler {
     instr.push(0x0b); // 函数 end
 
     // scratch 追加到槽类型表尾部,再按连续同型分组(表内是 'i64'/'f64' 字符串 → 转操作码)
+    while (slotTypes.length < scratchBase) slotTypes.push('i64');
     const opcodeOf = (t) => (t === 'f64' ? F64 : (t === 'str' || t === 'i32' || t === 'vi64ptr' || t === 'vf64ptr' || t.startsWith('v') || t.startsWith('m') ? I32 : I64));
-    const all = [...slotTypes, 'i64', 'i64', 'i64', 'f64', 'f64', 'i32', 'i32', 'i32'].map(opcodeOf);
+    const all = [...slotTypes.slice(0, scratchBase), 'i64', 'i64', 'i64', 'f64', 'f64', 'i32', 'i32', 'i32'].map(opcodeOf);
     const groups = [];
     let groupCount = 0;
     let run = null;
@@ -413,7 +436,7 @@ class WasmCompiler {
     if (run) { groups.push(...ulebBytes(run[0]), ...ulebBytes(run[1])); groupCount++; }
     // locals 声明 = 组数前缀 + 各组(count,type)——不是字节数前缀
     const body = [...ulebBytes(groupCount), ...groups, ...instr];
-    return body;
+    return { bytes: body, slots: ctx.slots };
   }
 
   callImport(ctx, importIdx, args) {
@@ -456,7 +479,7 @@ class WasmCompiler {
         this.localGet(ctx, s1); this.localGet(ctx, s2); b.push(0x85);
         b.push(0x83);
         this.pushI64(ctx, 0n); b.push(0x53);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         return;
@@ -470,7 +493,7 @@ class WasmCompiler {
         this.localGet(ctx, s0); this.localGet(ctx, s2); b.push(0x85);
         b.push(0x83);
         this.pushI64(ctx, 0n); b.push(0x53);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         return;
@@ -480,18 +503,18 @@ class WasmCompiler {
         b.push(0x7e);
         this.localSet(ctx, s2);
         // b==0 → 无溢出;b==-1 → a==min;否则 r/b != a
-        b.push(0x02); sleb(b, VOID);     // block
+        b.push(0x02); b.push(0x40);     // block
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51); b.push(0x0d); uleb(b, 0);
         this.localGet(ctx, s1); this.pushI64(ctx, -1n); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.localGet(ctx, s0); this.pushI64(ctx, I64_MIN); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);                    // end if
         b.push(0x05);                    // else(b != -1)
         this.localGet(ctx, s2); this.localGet(ctx, s1); b.push(0x7f); // div_s(r, b)
         this.localGet(ctx, s0); b.push(0x52);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);                    // end else
         b.push(0x0b);                    // end block
@@ -499,14 +522,14 @@ class WasmCompiler {
       }
       case '/': {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4004', span);
         b.push(0x0b);
         this.localGet(ctx, s1); this.pushI64(ctx, -1n); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.localGet(ctx, s0); this.pushI64(ctx, I64_MIN); b.push(0x51);
         b.push(0x83);                    // i64.and
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x7f); // div_s
@@ -515,7 +538,7 @@ class WasmCompiler {
       }
       case '%': {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4004', span);
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x81); // rem_s
@@ -526,7 +549,7 @@ class WasmCompiler {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x53);
         this.localGet(ctx, s1); this.pushI64(ctx, 64n); b.push(0x56);
         b.push(0x72);                    // i32.or
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1);
@@ -554,6 +577,12 @@ class WasmCompiler {
     ctx.scopes[ctx.scopes.length - 1].set(name, slot);
     return slot;
   }
+
+  // v0.32 修复:三个"被调用但从未定义"的方法——自 v0.23 起任何走到它们的 eligible 函数
+  // 都让整模块 emit 抛错 → tryWasm 静默回落,wasm 层从未真正实例化。
+  pushScope(ctx) { ctx.scopes.push(new Map()); }
+  popScope(ctx) { ctx.scopes.pop(); }
+  emitStore(ctx, op, align, off) { ctx.bytes.push(op); sleb(ctx.bytes, align); sleb(ctx.bytes, off); }
 
   // ---------- 语句 ----------
 
@@ -608,7 +637,7 @@ class WasmCompiler {
             this.localGet(ctx, ctx.scratch1);
             this.localGet(ctx, ctx.fscratch1);
             b.push(0x59); // idx >= len
-            b.push(0x04); sleb(b, VOID);
+            b.push(0x04); b.push(0x40);
             this.emitPanic(ctx, 'M4003', s.span);
             b.push(0x0b);
             // store
@@ -664,7 +693,7 @@ class WasmCompiler {
       case 'If': {
         // 语句形式(分支为 unit)
         this.compileCond(s.cond, ctx);
-        ctx.bytes.push(0x04); sleb(ctx.bytes, VOID);
+        ctx.bytes.push(0x04); ctx.bytes.push(0x40);
         this.compileBlockW(s.then, ctx, false);
         if (s.els) {
           ctx.bytes.push(0x05);
@@ -717,7 +746,9 @@ class WasmCompiler {
         const isMapTy = hTy === 'mi64' || hTy === 'mf64' || hTy === 'mstr';
         if (!isVecPtr && !isMapTy) throw new Unsupported('for 容器 ' + hTy);
         const elem = isVecPtr ? hTy.slice(1).replace('ptr', '') : hTy.slice(1);
-        const b = ctx.bytes;
+        // v0.32 已知问题:for-in 元素加载在多元素时静默错值(单元素/计数正确;地址算式与
+        // 反汇编均已核对仍矛盾,根因未定位)。按"安全是默认"原则整体回落 JS VM,待 v0.33 修复。
+        throw new Unsupported('for-in 容器迭代(元素加载错值待修,wasm 回落)');
         this.pushScope(ctx);
         const iSlot = this.declareLocal(ctx, '__i');
         const lenSlot = this.declareLocal(ctx, '__len');
@@ -738,21 +769,23 @@ class WasmCompiler {
         b.push(0x0d); uleb(b, 1);        // br_if 1 → 退出 block
         // 元素/键值绑定
         this.localGet(ctx, hSlot);
-        this.localGet(ctx, iSlot);
         if (isVecPtr) {
-          // x = load(ptr + 16 + 8*i)
-          b.push(0x41); sleb(b, 16);
+          // x = load(ptr + 16 + 8*i)——地址 = ptr + 16 + 8i(v0.32 修复:此前多压一个 i 且少一次
+          // 加法,load 地址变成绝对 16+8i 且操作数栈失衡,元素值全错)
           this.localGet(ctx, iSlot);
-          b.push(0xa7);
+          b.push(0xa7);                    // i32.wrap_i64
           b.push(0x41); sleb(b, 3);
-          b.push(0x6c);
-          b.push(0x6a);
+          b.push(0x6c);                    // i32.mul(×8)
+          b.push(0x41); sleb(b, 16);
+          b.push(0x6a);                    // 16 + 8i
+          b.push(0x6a);                    // ptr + (16 + 8i)
           const xSlot = this.declareLocal(ctx, s.pat.nt === 'PIdent' ? s.pat.name : '__x');
           if (elem === 'i64') { b.push(0x29); sleb(b, 0); sleb(b, 0); }
           else { b.push(0x2b); sleb(b, 3); sleb(b, 0); }
           this.localSet(ctx, xSlot);
         } else {
           // (k, v):__kh = map_key_at(h, i);k = __kh(str);v = map_get(h, __kh)
+          this.localGet(ctx, iSlot);       // map_key_at(h, i) 的第二参
           b.push(0x10); uleb(b, this.extraImportIdx('map_key_at'));
           const khSlot = this.declareLocal(ctx, '__kh');
           this.localSet(ctx, khSlot);
@@ -937,7 +970,7 @@ class WasmCompiler {
         this.localGet(ctx, ctx.scratch0);
         this.pushI64(ctx, I64_MIN);
         b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', e.span);
         b.push(0x0b);
         this.localGet(ctx, ctx.scratch0);
@@ -983,7 +1016,7 @@ class WasmCompiler {
           this.localGet(ctx, ctx.scratch2);
           b.push(0x59);
           b.push(0x72);
-          b.push(0x04); sleb(b, VOID);
+          b.push(0x04); b.push(0x40);
           this.emitPanic(ctx, 'M4003', e.span);
           b.push(0x0b);
           // addr = ptr + 8 + idx*8(i32 运算)
@@ -1022,7 +1055,7 @@ class WasmCompiler {
         this.localGet(ctx, ctx.scratch2);
         b.push(0x59);                     // idx >= len(ge_s)
         b.push(0x72);                     // or
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4003', e.span);
         b.push(0x0b);
         this.localGet(ctx, ctx.iscratch);
@@ -1145,10 +1178,12 @@ class WasmCompiler {
     }
     if (['==', '!=', '<', '<=', '>', '>='].includes(op)) throw new Unsupported('i64 比较作为值');
     const signedOps = ty === 'u64' ? false : true;
+    // v0.32 修复:lhs 结果保留在 wasm 值栈上横跨 RHS 求值——此前 lhs 先入 scratch0,
+    // RHS 子表达式复用 scratch0/1/2 会把它冲掉(fib(n)=n+fib(n-2) 一类静默错值)。
     this.compileNum(e.l, ctx, ty);
-    this.localSet(ctx, ctx.scratch0);
     this.compileNum(e.r, ctx, ty);
     this.localSet(ctx, ctx.scratch1);
+    this.localSet(ctx, ctx.scratch0);
     if (signedOps) this.emitCheckedOp(ctx, op, e.span);
     else this.emitCheckedOpU(ctx, op, e.span);
     this.localGet(ctx, ctx.scratch2);
@@ -1166,7 +1201,7 @@ class WasmCompiler {
         this.localSet(ctx, s2);
         // u64 add 溢出 iff r < a(无符号)
         this.localGet(ctx, s2); this.localGet(ctx, s0); b.push(0x54); // lt_u
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         return;
@@ -1177,7 +1212,7 @@ class WasmCompiler {
         this.localSet(ctx, s2);
         // u64 sub 溢出 iff r > a(无符号)
         this.localGet(ctx, s2); this.localGet(ctx, s0); b.push(0x56); // gt_u
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         return;
@@ -1187,11 +1222,11 @@ class WasmCompiler {
         b.push(0x7e);
         this.localSet(ctx, s2);
         // u64 mul 溢出:b != 0 && r / b != a(div_u 无 trap)
-        b.push(0x02); sleb(b, VOID);
+        b.push(0x02); b.push(0x40);
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51); b.push(0x0d); uleb(b, 0);
         this.localGet(ctx, s2); this.localGet(ctx, s1); b.push(0x80); // div_u
         this.localGet(ctx, s0); b.push(0x52); // ne
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);                    // end if
         b.push(0x0b);                    // end block
@@ -1200,7 +1235,7 @@ class WasmCompiler {
       case '/': {
         // u64 除法:仅除零(div_u 无溢出 trap)
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4004', span);
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x80); // div_u
@@ -1209,7 +1244,7 @@ class WasmCompiler {
       }
       case '%': {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4004', span);
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x82); // rem_u
@@ -1221,7 +1256,7 @@ class WasmCompiler {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x53);
         this.localGet(ctx, s1); this.pushI64(ctx, 64n); b.push(0x56);
         b.push(0x72);
-        b.push(0x04); sleb(b, VOID);
+        b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1);
@@ -1295,7 +1330,7 @@ class WasmCompiler {
 
     if (consumer === 'unwrap') {
       // 无界 → M4006(与树引擎 unwrap 消息一致)
-      b.push(0x04); sleb(b, VOID);
+      b.push(0x04); b.push(0x40);
       this.emitPanic(ctx, 'M4006', e.span);
       b.push(0x0b);
       // 有界 → get
@@ -1402,15 +1437,18 @@ class WasmCompiler {
     this.localGet(ctx, ctx.iscratch);
     b.push(0x29); sleb(b, 3); sleb(b, 8);
     this.localSet(ctx, ctx.fscratch1);
-    // if len >= cap → iscratch = ming_grow(iscratch, wrap(cap)+16);cap 重读
+    // if len >= cap → iscratch = ming_grow(iscratch, 新块字节数 = cap*8+24);cap 重读
+    // (v0.32 修复:此前传 cap+16 字节,容量换算成 cap/8+1,反而缩容)
     this.localGet(ctx, ctx.scratch2);
     this.localGet(ctx, ctx.fscratch1);
     b.push(0x60);                            // i64.ge_s
-    b.push(0x04); sleb(b, VOID);
+    b.push(0x04); b.push(0x40);
     this.localGet(ctx, ctx.iscratch);
     this.localGet(ctx, ctx.fscratch1);
     b.push(0xa7);                            // i32.wrap_i64
-    b.push(0x41); sleb(b, 16);
+    b.push(0x41); sleb(b, 3);
+    b.push(0x6c);                            // i32.mul(×8)
+    b.push(0x41); sleb(b, 24);
     b.push(0x6a);                            // i32.add
     b.push(0x10); uleb(b, this.growImportIdx());
     this.localSet(ctx, ctx.iscratch);
@@ -1443,7 +1481,8 @@ class WasmCompiler {
   }
 
   growImportIdx() {
-    return 3 + MATH_IMPORTS.length + STR_IMPORTS.length + VECMAP_IMPORTS.length - 1;
+    // v0.32 修复:此前 -1 指向表尾(str_ends),并非 ming_grow
+    return 3 + MATH_IMPORTS.length + STR_IMPORTS.length + EXTRA_IDX.get('ming_grow');
   }
 
   extraImportIdx(name) {
@@ -1567,7 +1606,7 @@ class WasmCompiler {
     if (entry?.kind !== 'fn') return null;
     const mingIdx = this.compiled.entryFnIdx?.get(entry);
     if (mingIdx === undefined || !this.eligible.has(mingIdx)) return null;
-    return TOTAL_IMPORTS + (this.wasmOrder ? this.wasmOrder.indexOf(mingIdx) : -1);
+    return DEFINED_BASE + (this.wasmOrder ? this.wasmOrder.indexOf(mingIdx) : -1);
   }
 }
 

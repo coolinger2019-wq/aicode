@@ -66,6 +66,9 @@ export const CODES = {
   M4006: 'unwrap-failed',
   M4007: 'missing-key',
   M4008: 'assertion-failed',
+  M4010: 'task-timeout',
+  M4011: 'alloc-quota-exceeded',
+  M4012: 'time-quota-exceeded',
 };
 
 export const CODE_HINTS = {
