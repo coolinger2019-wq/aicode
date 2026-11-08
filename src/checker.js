@@ -338,12 +338,13 @@ export const STD_MODULES = {
       mF('remove', [T_STR], T_BOOL, { effect: 'env' }),
     ],
   },
-  // 结构化并发(能力:sync;spawn/join 走特例签名)
+  // 结构化并发(能力:sync;spawn/join/join_detailed 走特例签名)
   sync: {
     fns: [
       mF('spawn', [], mkJoin(tvar()), { effect: 'sync' }),
       mF('spawn_all', [], mkVec(mkRes(tvar(), T_STR)), { effect: 'sync' }),
       mF('join', [], mkRes(tvar(), T_STR), { effect: 'sync' }),
+      mF('join_detailed', [], mkRes(tvar(), { k: 'json' }), { effect: 'sync' }),
     ],
   },
   // JSON(纯函数)
@@ -1939,6 +1940,20 @@ export class Checker {
         return null;
       }
       return mkRes(hr.el, T_STR);
+    }
+    if (f.mod === 'sync' && f.fn.name === 'join_detailed') {
+      if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
+      if (e.args.length !== 1) {
+        this.diags.push(err('M3005', 'join_detailed 需要 1 个参数:join_detailed(句柄)', e.span));
+        return null;
+      }
+      const ht = this.checkExpr(e.args[0], ctx);
+      const hr = resolveT(ht, new Map());
+      if (!hr || hr.k !== 'join') {
+        this.diags.push(err('M3002', `join_detailed 的参数必须是 Join[T] 句柄(实际 ${typeStr(hr, new Map())})`, e.args[0].span));
+        return null;
+      }
+      return mkRes(hr.el, { k: 'json' });
     }
     if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
     const min = f.fn.min ?? f.fn.params.length;

@@ -17,7 +17,7 @@ import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.29.0';
+export const VERSION = '0.30.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -139,10 +139,17 @@ function cmdRun(file, flags, opts, programArgs) {
     if (e instanceof Panic) {
       const d = panicDiag(e, result);
       if (json) {
+        const dj = d.toJson();
+        if (e.cause) {
+          dj.cause = {
+            code: e.cause.code, message: e.cause.message,
+            stack: (e.cause.stack ?? []).map(f => `at ${f.name} (${f.file}:${f.line}:${f.col})`),
+          };
+        }
         process.stdout.write(JSON.stringify({
           ok: false, exit_code: 101, ms: Date.now() - t0,
           stdout: interp.flushCaptured(), stderr: '',
-          diagnostics: [d.toJson()],
+          diagnostics: [dj],
         }, null, 2) + '\n');
       } else {
         process.stderr.write(formatDiag(d, process.stderr.isTTY) + '\n');
@@ -150,6 +157,13 @@ function cmdRun(file, flags, opts, programArgs) {
           process.stderr.write('调用栈(Ming 层,最新在前):\n');
           for (const f of e.stack.slice().reverse()) {
             process.stderr.write(`  at ${f.name} (${f.span?.file ?? '?'}:${f.span?.line ?? 0}:${f.span?.col ?? 0})\n`);
+          }
+        }
+        // v0.30 错误链:panic 携带的下级错误(scoped 子任务的真实码与栈)
+        if (e.cause) {
+          process.stderr.write(`Caused by ${e.cause.code}[${e.cause.message}]\n`);
+          for (const f of e.cause.stack ?? []) {
+            process.stderr.write(`  at ${f.name} (${f.file}:${f.line}:${f.col})\n`);
           }
         }
       }

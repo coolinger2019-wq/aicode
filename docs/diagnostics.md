@@ -1,7 +1,22 @@
-# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.29.0)
+# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.30.0)
 
-诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27 无新增码(std.fmt/http_request_opts 复用既有 M2xxx/M3xxx/M4xxx 面)。
+诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27-v0.30 无新增码(错误链复用既有码面,新增可选字段)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。
+
+**运行时 panic 的错误链(v0.30)**:当 panic 由下级错误引起(scoped 块子任务 panic 传播到主任务),panic 诊断额外携带可选 `cause` 字段:
+
+```json
+{
+  "code": "M4002", "message": "scoped 子任务失败: 整数+溢出: ...",
+  "cause": {
+    "code": "M4002",
+    "message": "整数+溢出: ...",
+    "stack": ["at victim (main.ming:4:1)"]
+  }
+}
+```
+
+文本格式对应 `Caused by <code>[<message>]` + 每帧 `  at 名 (file:line:col)`。`std.sync.join_detailed` 把同样的链以 Json 形态交给程序(`Err` 分支:`{code, message, stack}`)。cause 只增不改:无下级错误的 panic 不带该字段。
 
 ## M1xxx — 词法
 

@@ -177,7 +177,7 @@ export class VMInterp extends Interp {
     if (mainFn.nParams > 1) {
       throw new Panic('M3023', 'main 最多接受一个参数:args: Vec[str]');
     }
-    const retV = this.callCompiled(bc.mainFnIdx, args, null, false);
+    const retV = this.callCompiled(bc.mainFnIdx, args, mainFn.entry?.decl?.span ?? null, false);
     let code = 0;
     const sig = this.check.entry.items.get('main')?.sig;
     if (sig?.ret?.k === 'int' && retV?.t === 'int') {
@@ -318,6 +318,10 @@ export class VMInterp extends Interp {
       this.callStack.pop();
       return ret;
     } catch (e) {
+      // v0.30 修复:与树引擎一致,Panic 携带 Ming 层调用链(最老在前,展示层反转)
+      if (e instanceof Panic && !e.stack.length) {
+        e.stack = this.callStack.slice();
+      }
       this.depth--;
       this.callStack.pop();
       this.frames.length = beforeLen; // 恢复调用方帧

@@ -445,6 +445,7 @@ export class Panic {
   constructor(code, message, span = null) {
     this.code = code; this.message = message; this.span = span;
     this.stack = [];
+    this.cause = null;   // v0.30 错误链:{code, message, stack:[{name,file,line,col}]} | null
   }
 }
 
@@ -506,7 +507,7 @@ export class Interp {
     if (sig.params.length > 1) {
       throw new Panic('M3023', 'main 最多接受一个参数:args: Vec[str]');
     }
-    const retV = this.callUser(entry, mainEntry, null, args, null);
+    const retV = this.callUser(entry, mainEntry, null, args, mainEntry.decl?.span ?? null);
     let code = 0;
     if (sig.ret && sig.ret.k === 'int' && retV.t === 'int') {
       code = Number((BigInt(retV.v) % 256n + 256n) % 256n);
@@ -559,6 +560,11 @@ export class Interp {
       this.callStack.pop();
       return v ?? UNIT;
     } catch (e) {
+      // v0.30 修复:callStack 一直存在但从未接到 Panic.stack——"panic 输出 Ming 层调用栈"的
+      // 承诺实际从未生效。最深一帧收到 Panic 时填全链(最老在前,展示层负责反转),外层不覆盖。
+      if (e instanceof Panic && !e.stack.length) {
+        e.stack = this.callStack.slice();
+      }
       this.depth--;
       this.callStack.pop();
       if (e instanceof RetSig) return e.value;
@@ -1334,6 +1340,7 @@ export class Interp {
       case 'sync.spawn': return this.syncSpawn(args, span);
       case 'sync.spawn_all': return this.syncSpawnAll(args, span);
       case 'sync.join': return this.syncJoin(args, span);
+      case 'sync.join_detailed': return this.syncJoinDetailed(args, span);
       case 'path.join': return V.str(nodePath.join(args[0].v, args[1].v));
       case 'path.base_name': return V.str(nodePath.basename(args[0].v));
       case 'path.dir_name': return V.str(nodePath.dirname(args[0].v));
@@ -1650,51 +1657,7 @@ export class Interp {
     }
     const CAP = 32 * 1024 * 1024;
     const sab = new SharedArrayBuffer(8 + CAP);
-    const workerCode = [
-      "import { workerData, parentPort } from 'node:worker_threads';",
-      "import * as nodeFs from 'node:fs';",
-      'try {',
-      "  const { Checker } = await import(workerData.checkerUrl);",
-      "  const { VMInterp } = await import(workerData.vmUrl);",
-      "  const { wireToV, vToWire } = await import(workerData.interpUrl);",
-      "  const src = nodeFs.readFileSync(workerData.entryPath, 'utf8');",
-      "  const checker = new Checker(workerData.entryPath, () => src);",
-      '  const result = checker.run();',
-      "  const errs = result.diags.filter(d => d.severity === 'error');",
-      "  if (errs.length) throw new Error('子任务编译失败: ' + errs[0].message);",
-      '  let target = null;',
-      '  for (const m of result.modules) {',
-      "    if (workerData.modFile && m.file !== workerData.modFile) continue;",
-      "    const e = m.items.get(workerData.fnName);",
-      "    if (e?.kind === 'fn') { target = { m, e }; break; }",
-      '  }',
-      '  if (!target) {',
-      '    for (const m of result.modules) {',
-      "      const e = m.items.get(workerData.fnName);",
-      "      if (e?.kind === 'fn') { target = { m, e }; break; }",
-      '    }',
-      '  }',
-      "  if (!target) throw new Error('子任务找不到函数 ' + workerData.fnName);",
-      '  const interp = new VMInterp(result, { capture: true, maxSteps: workerData.maxSteps });',
-      '  const argv = JSON.parse(workerData.argWire).map(wireToV);',
-      '  const ret = interp.callUser(target.m, target.e, null, argv, null);',
-      "  const out = JSON.stringify({ ok: true, value: vToWire(ret) });",
-      '  flush(workerData, out);',
-      '} catch (e) {',
-      "  const out = JSON.stringify({ ok: false, error: String(e?.message ?? e) });",
-      '  try { flush(workerData, out); } catch { }',
-      '}',
-      'function flush(wd, text) {',
-      '  const bytes = Buffer.from(text, "utf8");',
-      '  const capped = bytes.slice(0, wd.cap);',
-      '  Buffer.from(wd.sab).set(capped, 8);',
-      '  const i32 = new Int32Array(wd.sab);',
-      '  Atomics.store(i32, 1, capped.length);',
-      '  Atomics.store(i32, 0, 1);',
-      '  Atomics.notify(i32, 0);',
-      "  parentPort.postMessage('done');",
-      '}',
-    ].join('\n');
+    const workerCode = this.syncWorkerCode();
     let worker;
     try {
       worker = new Worker(workerCode, {
@@ -1812,11 +1775,17 @@ export class Interp {
       "  if (!target) throw new Error('子任务找不到函数 ' + workerData.fnName);",
       '  const interp = new VMInterp(result, { capture: true, maxSteps: workerData.maxSteps });',
       '  const argv = JSON.parse(workerData.argWire).map(wireToV);',
-      '  const ret = interp.callUser(target.m, target.e, null, argv, null);',
+      '  const ret = interp.callUser(target.m, target.e, null, argv, target.e.decl?.span ?? null);',
       "  const out = JSON.stringify({ ok: true, value: vToWire(ret) });",
       '  flush(workerData, out);',
       '} catch (e) {',
-      "  const out = JSON.stringify({ ok: false, error: String(e?.message ?? e) });",
+      "  const isPanic = e && typeof e.code === 'string' && Array.isArray(e.stack);",
+      '  const out = JSON.stringify({',
+      '    ok: false,',
+      '    error: String(e?.message ?? e),',
+      "    code: isPanic ? e.code : 'M4001',",
+      '    stack: isPanic ? e.stack.map(f => ({ name: f.name, file: f.span?.file ?? "?", line: f.span?.line ?? 0, col: f.span?.col ?? 0 })) : [],',
+      '  });',
       '  try { flush(workerData, out); } catch { }',
       '}',
       'function flush(wd, text) {',
@@ -1858,6 +1827,49 @@ export class Interp {
     }
   }
 
+  // join_detailed(v0.30 错误链):Ok 与 join 相同;Err → Json {code, message, stack}——
+  // 子任务 panic 的错误码与 Ming 层调用栈经 wire v2 保留,不再退化为纯消息字符串。
+  syncJoinDetailed(args, span) {
+    const h = args[0];
+    if (!h || h.t !== 'handle') throw new Panic('M4001', '内部错误:join_detailed 目标必须是句柄', span);
+    const task = this.syncTasks.get(h.id);
+    if (!task) {
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed:句柄 #' + h.id + ' 不存在或已 join 过', [])]);
+    }
+    this.syncTasks.delete(h.id);
+    const int32 = new Int32Array(task.sab);
+    const wr = Atomics.wait(int32, 0, 0, 120000);
+    if (wr === 'timed-out') {
+      task.worker.terminate();
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed 超时(120s):任务 #' + h.id, [])]);
+    }
+    const len = Atomics.load(int32, 1);
+    const text = len > 0 ? Buffer.from(task.sab, 8, len).toString('utf8') : '';
+    let parsed;
+    try { parsed = JSON.parse(text); } catch {
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed:子任务结果损坏: ' + text.slice(0, 200), [])]);
+    }
+    if (!parsed.ok) {
+      const frames = Array.isArray(parsed.stack) ? parsed.stack : [];
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson(String(parsed.code ?? 'M4001'), String(parsed.error), frames)]);
+    }
+    try {
+      return V.enumv('builtin-res', 'Ok', [wireToV(parsed.value)]);
+    } catch (e) {
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed:结果反序列化失败 ' + e.message, [])]);
+    }
+  }
+
+  // 错误链 Json 形态:{code: str, message: str, stack: Vec[str]("at 名 (file:line:col)")}
+  panicInfoJson(code, message, frames) {
+    const m = new Map([
+      ['code', V.json('str', code)],
+      ['message', V.json('str', message)],
+      ['stack', V.json('arr', frames.map(f => V.json('str', `at ${f.name} (${f.file}:${f.line}:${f.col})`)))],
+    ]);
+    return V.json('obj', m);
+  }
+
   // ---------- scoped 并发块(v0.17)----------
   enterSyncScope() {
     const frame = { tasks: [] };
@@ -1885,7 +1897,14 @@ export class Interp {
       let parsed;
       try { parsed = JSON.parse(text); } catch { continue; }
       if (!parsed.ok && !swallow) {
-        throw new Panic('M4001', 'scoped 子任务失败: ' + String(parsed.error), span);
+        // v0.30 错误链:子任务真实 panic 码透传(不再硬编码 M4001),原始栈作 cause
+        const p = new Panic(String(parsed.code ?? 'M4001'), 'scoped 子任务失败: ' + String(parsed.error), span);
+        p.cause = {
+          code: String(parsed.code ?? 'M4001'),
+          message: String(parsed.error),
+          stack: Array.isArray(parsed.stack) ? parsed.stack : [],
+        };
+        throw p;
       }
     }
   }

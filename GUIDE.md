@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.29.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.30.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -304,7 +304,7 @@ fn parse_pair(s: str) -> Result[(i64, i64), str] {
 
 - `?` 作用于 `Option[T]` / `Result[T, E]`:成功取值,失败**提前 return** 同类型的 None/Err;所在函数必须返回兼容的 Option/Result(M3002)。
 - 处理方式:`match`、`?`、`unwrap_or(默认)`;`unwrap()` / `expect(msg)` 在 None/Err 时 panic(M4006)——只用于"不可能失败"。
-- `panic("消息")` 主动中止(退出码 101),输出含 Ming 调用栈。
+- `panic("消息")` 主动中止(退出码 101),输出含 Ming 调用栈(最新在前,每帧为调用点位置;v0.30 起真正生效);scoped 子任务 panic 传播时带 `Caused by` 错误链。
 
 ```ming
 match parse_pair("3,4") {
@@ -682,6 +682,7 @@ fn main(args: Vec[str]) with io, net {
 | `spawn` | `(fn: (T1..Tn) -> R, args...) -> Join[R]` | 启动子任务;参数按函数签名逐个传递(v0.16 起支持多参数);函数必须是**模块级命名函数** |
 | `spawn_all` | `(fn: (T) -> R, Vec[T]) -> Vec[Result[R, str]]` | 批量并行:同函数对 Vec 中每个参数各启动一个子任务,返回全部结果(v0.16)——**接口不暴露句柄**,与线性纪律自洽 |
 | `join` | `(Join[R]) -> Result[R, str]` | 阻塞等待;子任务 panic → Err(带消息);每个句柄只能 join 一次 |
+| `join_detailed` | `(Join[R]) -> Result[R, Json]` | 错误链版 join(v0.30):Err 为 Json `{code, message, stack}`——子任务 panic 的**错误码与 Ming 层调用栈**不再丢失;Ok 与 join 相同 |
 
 ```ming
 use std.sync;
@@ -925,12 +926,23 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 |------|------|
 | v0.28(已完成) | std.log 级别日志、std.fmt.align 宽度对齐 |
 | v0.29(已完成) | std.math 补全(11 函数,wasm 桥接)+ 路径验证制度化 |
-| v0.30 方向 | 错误链(cause)、二进制 I/O 雏形、任务超时/取消 |
+| v0.30(已完成) | 错误链(cause):wire v2、join_detailed、scoped 码透传、panic 调用栈修复、诊断协议 cause 字段 |
+| v0.31 方向 | 二进制 I/O 雏形、任务超时/取消 |
 | 更远 | 发布期门禁:内存配额/动态熔断;合并期门禁:模糊测试;原生后端(C);自举 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.30.0(2026-11-09)
+
+- **错误链(cause)落地**:
+  - **子任务 wire v2**:sync 子任务失败时传 `{error, code, stack}`(此前只有 message 字符串——panic 码与调用栈在任务边界全丢)。
+  - **`std.sync.join_detailed(Join[R]) -> Result[R, Json]`**(新,效果 sync):Err 为 Json `{code, message, stack}`;`join` 保持 `Err[str]` 完全兼容。
+  - **scoped 块真实码透传**:子任务 panic 传播时抛**子任务的真实码**(如 M4002;此前一律硬编码 M4001),原始码/消息/栈挂到 `Panic.cause`。
+  - **诊断协议**:panic 诊断新增可选 `cause` 字段(`--json`:`diagnostics[0].cause = {code, message, stack}`;文本:`Caused by <code>[<message>]` + 各帧)。见 docs/diagnostics.md。
+- **顺带修复重大缺口:panic 调用栈从未生效**——`Panic.stack` 字段存在、展示代码存在,但从未被填充(`callStack` 一直维护却没接到 Panic 上),"panic 输出 Ming 层调用栈"的承诺自 v0.14 起名存实亡。修复:两引擎最深调用帧接住 Panic 时填全链(最老在前,展示层反转;main 帧用声明位置)。本缺口由 join_detailed 的栈断言测试暴露(has_stack=false 而非 true)。
+- 测试:334 项(新增 v0.30 8 项:调用栈双引擎含帧序断言、join_detailed Ok/Err 双引擎、join 兼容、scoped cause 文本/json/tree、类型门槛 M3002)。
 
 ### v0.29.0(2026-11-09)
 

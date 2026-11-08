@@ -931,6 +931,106 @@ fn main() with io, fs {
   check('v29:math 类型门槛 M3002', rr.code === 1 && rr.stderr.includes('M3002'), 'code=' + rr.code + ' stderr=' + rr.stderr.slice(0, 150));
 }
 
+// ===================== 30. v0.30:错误链(cause)=====================
+{
+  // panic 携带 Ming 层调用栈(修复长期承诺不生效的缺口)
+  const ps = mingFile('v30-stack.ming', [
+    'fn inner(n: i64) -> i64 {',
+    '    let m = i64.max_value();',
+    '    return m + n;',
+    '}',
+    '',
+    'fn outer(n: i64) -> i64 {',
+    '    return inner(n);',
+    '}',
+    '',
+    'fn main() with io {',
+    '    print(str(outer(1)));',
+    '}',
+  ].join('\n'));
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', ps, ...eng]);
+    const ok = r.code === 101 && r.stderr.includes('M4002')
+      && r.stderr.indexOf('at inner') !== -1 && r.stderr.indexOf('at outer') !== -1 && r.stderr.indexOf('at main') !== -1
+      && r.stderr.indexOf('at inner') < r.stderr.indexOf('at outer') && r.stderr.indexOf('at outer') < r.stderr.indexOf('at main');
+    check('v30:panic 调用栈' + (eng.length ? '(tree)' : '(vm)'), ok, 'code=' + r.code + ' stderr=' + r.stderr.slice(0, 300));
+  }
+
+  // join_detailed:Ok 与 join 同值;Err 带真实 code 与栈(Json)
+  const jd = mingFile('v30-join-detailed.ming', [
+    'use std.sync;',
+    'use std.io;',
+    '',
+    'fn good(n: i64) -> i64 { return n * 2; }',
+    'fn boom(n: i64) -> i64 { let m = i64.max_value(); return m + n; }',
+    '',
+    'fn main() with io, sync {',
+    '    let h1 = std.sync.spawn(good, 21);',
+    '    match std.sync.join_detailed(h1) {',
+    '        Ok(v) => print("Ok: " + str(v)),',
+    '        Err(info) => print("Err? " + debug(info)),',
+    '    }',
+    '    let h2 = std.sync.spawn(boom, 1);',
+    '    match std.sync.join_detailed(h2) {',
+    '        Ok(_)  => print("bug"),',
+    '        Err(info) => {',
+    '            print("code=" + info.get("code").unwrap().as_str().unwrap());',
+    '            print("has_stack=" + str(info.get("stack").unwrap().as_arr().unwrap().len() > 0));',
+    '        }',
+    '    }',
+    '    let h3 = std.sync.spawn(boom, 1);',
+    '    match std.sync.join(h3) {',
+    '        Ok(_)  => print("bug2"),',
+    '        Err(e) => print("join 兼容: " + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', jd, ...eng]);
+    const out = r.stdout;
+    const ok = r.code === 0 && out.startsWith('Ok: 42\n') && out.includes('code=M4002') && out.includes('has_stack=true')
+      && out.includes('join 兼容: 整数+溢出');
+    check('v30:join_detailed 错误链' + (eng.length ? '(tree)' : '(vm)'), ok, 'code=' + r.code + ' stdout=' + JSON.stringify(out) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+
+  // scoped 子 panic:真实码透传 + cause 链(文本 + --json)
+  const sc = mingFile('v30-scoped-cause.ming', [
+    'use std.io;',
+    'use std.sync;',
+    '',
+    'fn victim(n: i64) -> i64 {',
+    '    let m = i64.max_value();',
+    '    return m + n;',
+    '}',
+    '',
+    'fn main() with io, sync {',
+    '    sync scope {',
+    '        std.sync.spawn(victim, 1);',
+    '    }',
+    '    print("不该到这");',
+    '}',
+  ].join('\n'));
+  const rs = runMing(['run', sc]);
+  const okTxt = rs.code === 101 && rs.stderr.includes('M4002') && rs.stderr.includes('scoped 子任务失败') && rs.stderr.includes('Caused by M4002') && rs.stderr.includes('at victim');
+  check('v30:scoped cause 文本(vm)', okTxt, 'code=' + rs.code + ' stderr=' + rs.stderr.slice(0, 300));
+  const rsj = runMing(['run', sc, '--json']);
+  let okJson = false;
+  try {
+    const j = JSON.parse(rsj.stdout);
+    const dj = j.diagnostics?.[0];
+    okJson = rsj.code === 101 && dj?.code === 'M4002' && dj?.cause?.code === 'M4002'
+      && Array.isArray(dj.cause.stack) && dj.cause.stack.length > 0 && dj.cause.stack[0].includes('victim');
+  } catch { }
+  check('v30:scoped cause json(vm)', okJson, rsj.stdout.slice(0, 300));
+  const rst = runMing(['run', sc, '--tree']);
+  check('v30:scoped cause(tree)', rst.code === 101 && rst.stderr.includes('Caused by M4002'), rst.stderr.slice(0, 200));
+
+  // 类型门槛:join_detailed 实参非句柄 → M3002
+  const pt30 = mingFile('v30-join-type.ming', 'use std.sync;\nfn main() with sync { let _ = std.sync.join_detailed(3); }');
+  const rr30 = runMing(['check', pt30]);
+  check('v30:join_detailed 类型门槛 M3002', rr30.code === 1 && rr30.stderr.includes('M3002'), 'code=' + rr30.code + ' stderr=' + rr30.stderr.slice(0, 150));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
