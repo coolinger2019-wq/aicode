@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.26)
+## 核心特性(v0.27)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,9 +74,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.26(当前)** — 正则(std.re + r-string)、字符分类、pad
-- **v0.27** — HTTP 成熟化(响应头/超时/重定向)、格式化语言
-- **更远** — 日志/错误链、原生后端探索、自举
+- **v0.27(当前)** — HTTP 成熟化(http_request_opts:响应头/超时)、std.fmt 格式(fixed/hex/bin/exp)、三期门禁模型立项
+- **v0.28** — 日志库、错误链(cause)、宽度/对齐格式化、二进制 I/O 雏形
+- **更远** — 数学补全、模糊测试、原生后端探索、自举
 
 ## 设计原则(全文见 design.md)
 
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.26.0:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + JSON + capability fs/net/sync/proc/env/rand + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md。
+v0.27.0:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + JSON + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时可配)+ std.fmt + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md。

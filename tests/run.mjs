@@ -1,7 +1,7 @@
 // tests/run.mjs — Ming 工具链回归测试(零依赖)。
 // 覆盖:示例黄金输出、诊断码回归、运行时 panic 行为、fmt 幂等性、JSON 协议、值语义。
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -697,6 +697,68 @@ fn main() with io, fs {
   const pP = mingFile('v26-re-panic.ming', 'use std.re; fn main() with io { print(str(std.re.is_match("[", "x"))); }');
   const rP = runMing(['run', pP]);
   check('v26:re 非法 pattern panic', rP.code === 101 && rP.stderr.includes('M4001'), 'code=' + rP.code + ' stderr=' + rP.stderr.slice(0, 150));
+}
+
+// ===================== 26. v0.27:fmt + HTTP opts =====================
+{
+  const srcs = [
+    ['v27:fmt.fixed', 'use std.fmt; fn main() with io { print(std.fmt.fixed(3.14159, 2)); print(std.fmt.fixed(2.0, 0)); }', '3.14\n2\n'],
+    ['v27:fmt.hex/bin', 'use std.fmt; fn main() with io { print(std.fmt.hex(255)); print(std.fmt.bin(10)); print(std.fmt.hex(-1)); }', '0xff\n0b1010\n0xffffffffffffffff\n'],
+    ['v27:fmt.exp', 'use std.fmt; fn main() with io { print(std.fmt.exp(12345.678, 2)); }', '1.23e+4\n'],
+  ];
+  for (const [desc, src, expectOut] of srcs) {
+    const p = mingFile(desc.replace(/[^a-zA-Z0-9]+/g, '-') + '.ming', src);
+    const r = runMing(['run', p]);
+    check(desc, r.code === 0 && r.stdout === expectOut, 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 150));
+  }
+  // HTTP opts:独立 echo 服务器子进程(回显方法/头/体)
+  const echoServer = spawn(process.execPath, ['-e', [
+    'import * as http from "node:http";',
+    'const server = http.createServer((req, res) => {',
+    '  let b = "";',
+    '  req.on("data", c => b += c);',
+    '  req.on("end", () => {',
+    '    res.writeHead(200, { "content-type": "text/plain", "x-ming-echo": "yes" });',
+    '    res.end(req.method + "|" + (req.headers["x-ming"] ?? "-") + "|" + b);',
+    '  });',
+    '});',
+    'server.listen(0, "127.0.0.1", () => console.log("PORT:" + server.address().port));',
+    'process.stdin.resume();',
+    'process.stdin.on("end", () => process.exit(0));',
+  ].join("\n"),
+  ], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
+
+  const echoPort = await new Promise((resolve, reject) => {
+    let buf = "";
+    const onData = (c) => { buf += c; const m = buf.match(/PORT:(\d+)/); if (m) { echoServer.stdout.off("data", onData); resolve(Number(m[1])); } };
+    echoServer.stdout.on("data", onData);
+    echoServer.on("exit", () => reject(new Error("echo exited")));
+    setTimeout(() => reject(new Error("echo timeout")), 10000);
+  });
+
+  const srcLines = [
+    'use std.net;',
+    'fn main() with io, net {',
+    '    let h = { "x-ming": "v27" };',
+    '    match std.net.http_request_opts("POST", "http://127.0.0.1:" + str(' + echoPort + ') + "/echo", h, "body-27", 15000) {',
+    '        Ok((status, headers, body)) => {',
+    '            print(str(status));',
+    '            print(body);',
+    '            print(str(headers.get("content-type").is_some()));',
+    '        }',
+    '        Err(e) => print("ERR: " + e),',
+    '    }',
+    '    match std.net.http_request_opts("GET", "http://10.255.255.1/", [:], "", 500) {',
+    '        Ok(_)   => print("bug"),',
+    '        Err(_)  => print("timeout-ok"),',
+    '    }',
+    '}',
+  ];
+  const p = mingFile("v27-http-opts.ming", srcLines.join("\n"));
+  const r1 = runMing(["run", p]);
+  const want = "200\nPOST|v27|body-27\ntrue\ntimeout-ok\n";
+  check("v27:http_request_opts POST+响应头+超时", r1.code === 0 && r1.stdout === want, "code=" + r1.code + " stdout=" + JSON.stringify(r1.stdout) + " stderr=" + r1.stderr.slice(0, 200));
+  echoServer.kill();
 }
 
 // ===================== 汇总 =====================

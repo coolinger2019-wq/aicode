@@ -1,4 +1,4 @@
-# Ming 能力矩阵(v0.26.0)
+# Ming 能力矩阵(v0.27.0)
 
 对照"标准库金字塔"的诚实审计。✅ 生产语义 / 🟡 雏形(有硬限制)/ ❌ 缺失。
 
@@ -9,7 +9,7 @@
 | stdout/stderr | ✅ | print/eprint |
 | stdin 整行 | ✅ | read_line |
 | stdin 全量 | ✅ | read_to_end |
-| 格式化输出(宽度/精度) | ❌ | 插值仅原样转换 |
+| 格式化输出(宽度/精度) | 🟡 | std.fmt(v0.27):精度 fixed/exp、进制 hex/bin;宽度/对齐仍缺 |
 | 文本文件读写 | ✅ | read/write/append(Result 化) |
 | 二进制文件 I/O | ❌ | 仅 UTF-8 文本 |
 | 目录:列名/创建/递归删除 | ✅ | list_dir/make_dir/remove_dir_recursive |
@@ -17,7 +17,7 @@
 | copy/rename | ✅ | v0.24 |
 | 外部进程 exec | ✅ | proc.exec → {exit, stdout, stderr}(worker 同步,60s 超时,v0.24) |
 | 环境变量 读/写/删 | ✅ | std.env(v0.24,效果 env) |
-| HTTP 客户端 GET/POST | 🟡 | 有;响应头读不到、超时固定 35s |
+| HTTP 客户端 GET/POST | ✅ | http_get/http_request/http_request_opts(v0.27):响应头 Map 可读、超时可配;重定向固定 follow;体上限 8MB;无流式/取消 |
 | TCP/UDP/服务端 | ❌ | — |
 
 ## 文本与信息处理
@@ -31,7 +31,7 @@
 | 字符分类 is_alpha/is_digit/is_space/is_upper/is_lower | ✅ | str 方法(Unicode 感知;v0.26) |
 | pad_left/pad_right | ✅ | str 方法(v0.26) |
 | 流式拼接 Builder | ❌ | + 每次全量拷贝 |
-| 格式化语言(对齐/进制) | ❌ | v0.27 计划 |
+| 格式化语言(对齐/进制) | 🟡 | 进制(hex/bin)与精度(fixed/exp)✅(v0.27 std.fmt);宽度/对齐/千分位 ❌ |
 | 本地化/国际化 | ❌ | 策略:宿主委托(借 JS Unicode 感知),非语言承诺 |
 
 ## 计算与时间
@@ -59,4 +59,4 @@
 | 错误链(cause) | ❌ | v0.28 计划 |
 | 任务超时/取消 | ❌ | join 固定 120s |
 
-**覆盖率:v0.26.0 ≈ 62%**(v0.23 时 1/3)。目标 v0.29 ≈ 80%(i18n 宿主委托除外)。
+**覆盖率:v0.27.0 ≈ 76%**(口径:37 行,✅=1、🟡=0.5、❌=0 → 27✅ 2🟡 8❌;v0.26 同口径 ≈72%,更早的"62%"口径偏严,自本版起统一为行计数)。目标 v0.29 ≈ 80%(i18n 宿主委托除外)。

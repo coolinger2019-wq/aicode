@@ -1294,8 +1294,17 @@ export class Interp {
         }
       }
       // ---- std.path(纯函数)----
-      case 'net.http_get': return this.httpRequest('GET', args[0].v, null, '', span);
-      case 'net.http_request': return this.httpRequest(args[0].v, args[1].v, args[2], args.length > 3 ? args[3].v : '', span);
+      case 'net.http_get': return this.httpOpts({ method: 'GET', url: args[0].v, headers: {}, body: '', timeoutMs: 35000, redirect: 'follow', withHeaders: false }, span);
+      case 'net.http_request': {
+        const hs = {};
+        if (args[2].t === 'map') for (const [k, v] of args[2].m) hs[String(k)] = String(v.v);
+        return this.httpOpts({ method: args[0].v, url: args[1].v, headers: hs, body: args.length > 3 ? args[3].v : '', timeoutMs: 35000, redirect: 'follow', withHeaders: false }, span);
+      }
+      case 'net.http_request_opts': {
+        const hs = {};
+        if (args[2].t === 'map') for (const [k, v] of args[2].m) hs[String(k)] = String(v.v);
+        return this.httpOpts({ method: args[0].v, url: args[1].v, headers: hs, body: args.length > 4 ? args[3].v : '', timeoutMs: Number(args[4].v), redirect: 'follow', withHeaders: true }, span);
+      }
       // ---- std.sync(结构化并发)----
       case 'sync.spawn': return this.syncSpawn(args, span);
       case 'sync.spawn_all': return this.syncSpawnAll(args, span);
@@ -1317,6 +1326,10 @@ export class Interp {
         }
       }
       // ---- std.time.sleep(效果 time;Atomics 同步睡眠)----
+      case 'fmt.fixed': return V.str(args[0].v.toFixed(Math.max(0, Math.min(100, Number(args[1].v)))));
+      case 'fmt.hex': return V.str('0x' + BigInt.asUintN(64, BigInt(args[0].v)).toString(16));
+      case 'fmt.bin': return V.str('0b' + BigInt.asUintN(64, BigInt(args[0].v)).toString(2));
+      case 'fmt.exp': return V.str(args[0].v.toExponential(Math.max(0, Math.min(100, Number(args[1].v)))));
       case 're.is_match': return V.bool(this.reCompile(args[0].v, 'u').test(args[1].v));
       case 're.find': {
         const m = this.reCompile(args[0].v, 'u').exec(args[1].v);
@@ -1839,6 +1852,76 @@ export class Interp {
   // 同步 HTTP GET:worker 线程内 fetch,主线程 Atomics.wait 阻塞,响应经 SharedArrayBuffer 传回。
   // 限制:响应体上限 8MB(超出截断,utf8 断字以替换符容错);固定 35s 总超时。
   // http_get = httpRequest('GET', url, null, '')
+  // 统一 HTTP 执行(v0.27):超时/重定向可配;响应头经 JS 对象直传(JS VM 路径)
+  httpOpts(o, span) {
+    const CAP = 8 * 1024 * 1024;
+    const HCAP = 64 * 1024;
+    const sab = new SharedArrayBuffer(8 + CAP + HCAP);
+    const workerCode = [
+      "import { workerData, parentPort } from 'node:worker_threads';",
+      '(async () => {',
+      '  try {',
+      '    const ctrl = new AbortController();',
+      '    const timer = setTimeout(() => ctrl.abort(), workerData.timeoutMs);',
+      "    const init = { method: workerData.method, redirect: workerData.redirect, signal: ctrl.signal };",
+      '    if (Object.keys(workerData.headers).length) init.headers = workerData.headers;',
+      "    if (workerData.body !== '' && workerData.method !== 'GET' && workerData.method !== 'HEAD') init.body = workerData.body;",
+      '    const resp = await fetch(workerData.url, init);',
+      '    const status = resp.status;',
+      '    const respHeaders = {};',
+      "    resp.headers.forEach((v, k) => { respHeaders[k] = v; });",
+      "    const bytes = Buffer.from(await resp.text(), 'utf8');",
+      '    const capped = bytes.slice(0, workerData.cap);',
+      '    const hb = Buffer.from(JSON.stringify(respHeaders), "utf8");',
+      '    Buffer.from(workerData.sab).set(capped, 12);',
+      '    Buffer.from(workerData.sab).set(hb.slice(0, workerData.hcap), 8 + workerData.cap);',
+      '    const i32 = new Int32Array(workerData.sab);',
+      '    Atomics.store(i32, 0, status);',
+      '    Atomics.store(i32, 1, capped.length);',
+      '    Atomics.store(i32, 2, Math.min(hb.length, workerData.hcap));',
+      '    clearTimeout(timer);',
+      '  } catch (e) {',
+      '    const msg = Buffer.from("E:" + e.message, "utf8").slice(0, 500);',
+      '    Buffer.from(workerData.sab).set(msg, 8);',
+      '    const i32e = new Int32Array(workerData.sab);',
+      '    Atomics.store(i32e, 0, -1);',
+      '    Atomics.store(i32e, 1, msg.length);',
+      '  }',
+      '  Atomics.notify(new Int32Array(workerData.sab), 0);',
+      "  parentPort.postMessage('done');",
+      '})();',
+    ].join('\n');
+    let worker;
+    try {
+      worker = new Worker(workerCode, { eval: true, workerData: { sab, cap: CAP, hcap: HCAP, url: o.url, method: o.method, headers: o.headers, body: o.body, timeoutMs: o.timeoutMs, redirect: o.redirect } });
+    } catch (e) {
+      return V.enumv('builtin-res', 'Err', [V.str('无法启动 HTTP worker: ' + e.message)]);
+    }
+    const int32 = new Int32Array(sab);
+    const waitMs = Math.max(1000, o.timeoutMs + 5000);
+    const waitResult = Atomics.wait(int32, 0, 0, waitMs);
+    if (waitResult === 'timed-out') {
+      worker.terminate();
+      return V.enumv('builtin-res', 'Err', [V.str('请求超时(' + Math.round(o.timeoutMs / 1000) + 's): ' + o.url)]);
+    }
+    const status = Atomics.load(int32, 0);
+    if (status < 0) {
+      const elen = Atomics.load(int32, 1);
+      const emsg = elen > 0 ? Buffer.from(sab, 8, elen).toString('utf8').replace(/^E:/, '') : o.url;
+      return V.enumv('builtin-res', 'Err', [V.str(emsg)]);
+    }
+    const len = Atomics.load(int32, 1);
+    const hlen = Atomics.load(int32, 2);
+    const body = Buffer.from(sab, 12, len).toString('utf8');
+    const hdrJson = hlen > 0 ? Buffer.from(sab, 8 + CAP, hlen).toString('utf8') : '{}';
+    const headersMap = new Map();
+    for (const [k, v] of Object.entries(JSON.parse(hdrJson))) headersMap.set(k, V.str(v));
+    if (o.withHeaders) {
+      return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), V.map(headersMap), V.str(body)])]);
+    }
+    return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), V.str(body)])]);
+  }
+
   httpRequest(method, url, headersVal, body, span) {
     const CAP = 8 * 1024 * 1024;
     const sab = new SharedArrayBuffer(8 + CAP);

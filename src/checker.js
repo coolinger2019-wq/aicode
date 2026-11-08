@@ -294,6 +294,16 @@ export const STD_MODULES = {
     fns: [
       mF('http_get', [T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net' }),
       mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net', min: 3, max: 4 }),
+      mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR, INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkMap(T_STR, T_STR), T_STR]), T_STR), { effect: 'net' }),
+    ],
+  },
+  // 格式化(纯函数;v0.27)
+  fmt: {
+    fns: [
+      mF('fixed', [tfloat(64), INT_TYPES.i64], T_STR),
+      mF('hex', [INT_TYPES.i64], T_STR),
+      mF('bin', [INT_TYPES.i64], T_STR),
+      mF('exp', [tfloat(64), INT_TYPES.i64], T_STR),
     ],
   },
   // 操作系统进程(能力:proc;worker 同步化)

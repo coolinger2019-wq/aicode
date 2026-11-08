@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.26.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.27.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -656,9 +656,11 @@ fn main() with io, fs {
 |------|------|------|
 | `http_get` | `(str) -> Result[(i64, str), str]` | HTTP GET:Ok 为 (状态码, 响应体) |
 | `http_request` | `(method, url, headers: Map[str, str], body: str) -> Result[(i64, str), str]`(body 可省略) | 完整 HTTP:自定义方法/头/体 |
+| `http_request_opts` | `(method, url, headers: Map[str, str], body: str, timeout_ms: i64) -> Result[(i64, Map[str, str], str), str]`(v0.27) | Ok 为 (状态码, 响应头, 响应体);超时毫秒可配 |
 
-- 同步实现(worker 线程 fetch + Atomics 阻塞),响应体上限 8MB(超出截断),总超时 35s,遵循重定向。
+- 同步实现(worker 线程 fetch + Atomics 阻塞),响应体上限 8MB(超出截断),遵循重定向;`http_get`/`http_request` 默认 35s 超时,`http_request_opts` 按参数。
 - `http_request` 的 body 可省略;GET/HEAD 不发送体。
+- 重定向固定遵循(redirect: follow);响应头键为小写。
 
 ```ming
 use std.net;
@@ -770,6 +772,28 @@ fn main() with io {
 
 **字符串 Builder 的设计判断(不做)**:Vec[str] + join 已是 O(n) 惯用法,单独 Builder 类型冗余。
 
+### std.fmt(纯函数,v0.27)
+
+数值 → 受控字符串:进制与精度显式指定,输出确定(不受平台/区域设置影响)。
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `fixed` | `(f64, digits: i64) -> str` | 定点小数,指定小数位(四舍五入;`fixed(3.14159, 2)` = "3.14") |
+| `hex` | `(i64) -> str` | 十六进制,`0x` 前缀,**u64 位型**(负数按补码,`hex(-1)` = "0xffffffffffffffff") |
+| `bin` | `(i64) -> str` | 二进制,`0b` 前缀,同 u64 位型 |
+| `exp` | `(f64, digits: i64) -> str` | 科学计数法,指定小数位(`exp(12345.678, 2)` = "1.23e+4") |
+
+```ming
+use std.fmt;
+
+fn main() with io {
+    print(std.fmt.fixed(3.14159, 2));   // 3.14
+    print(std.fmt.hex(255));            // 0xff
+    print(std.fmt.bin(10));             // 0b1010
+    print(std.fmt.exp(12345.678, 2));   // 1.23e+4
+}
+```
+
 ### std.path(纯函数)
 
 `join(a, b) -> str`、`base_name(p) -> str`、`dir_name(p) -> str`、`extension(p) -> str`(含点,如 ".txt")——无效果,可在纯函数中使用。
@@ -867,16 +891,27 @@ fn main() with io {
 
 ## 23. 路线图
 
+逐版进度的**诚实口径**见 [docs/capabilities.md](docs/capabilities.md)(✅/🟡/❌ 矩阵,每版更新)。近版方向:
+
 | 版本 | 内容 |
 |------|------|
-| v0.4(当前) | 整数 number 快路径(值表示优化)、包管理 ming.toml(init/run/build/test 项目模式)、LSP(诊断推送/hover) |
-| v0.5 | 寄存器式/混合后端、泛型类型 impl、更多 prelude trait、原生后端(C)/ WASM |
-| v0.6 | capability IO(net/fs)、结构化并发 |
-| 更远 | 自举、契约与轻量验证 |
+| v0.28 | 日志库(级别/开关)、错误链(cause)、宽度/对齐格式化、二进制 I/O 雏形 |
+| v0.29 | 数学补全(反三角/log2/hypot/cbrt)、覆盖率目标 ≈80%(i18n 宿主委托除外) |
+| 更远 | 发布期门禁:内存配额/动态熔断;合并期门禁:模糊测试;原生后端(C);自举 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.27.0(2026-11-09)
+
+- **std.fmt 格式四函数**(新模块,纯函数):`fixed(f64, 位数)` 定点、`hex(i64)`/`bin(i64)`(u64 位型,负数按补码,`0x`/`0b` 前缀)、`exp(f64, 位数)` 科学计数法——进制与精度显式化,输出确定。
+- **std.net.http_request_opts**:`(method, url, headers, body, timeout_ms) -> Result[(i64, Map[str, str], str), str]`——**响应头可读**(Map,键小写)、**超时毫秒可配**(此前固定 35s 且响应头不可见)。与 http_get/http_request 共用统一执行器(行为一致)。
+- **HTTP 执行器统一(v0.27 重构)**:三个入口同一 worker fetch 路径;SAB 传递协议 `[status@0][len@4][hlen@8][body@12][headers@8+CAP]`。
+- **两个边界 bug(本轮自测暴露并修复,诚实记录)**:
+  1. SAB 布局重叠——hlen 字段(字节 8-11)与 body 起始偏移 8 冲突,body 前 4 字节被 hlen 覆盖(表现为 U+FFFD/NUL 污染);修复:body 移至偏移 12,字节级探针验证。
+  2. Map 键表示——执行器把 V 对象当键存入,违反"ming map 键 = 原始 JS 基元"内部约定,`get()` 永远落空;修复:键存原始串。测试输入 "x-ming" → 响应回显头 6 项键值全对,双引擎一致。
+- 测试:299 项(新增 v0.27 4 项:fmt 3 + http_request_opts 端到端 1;后者含独立 echo 服务器子进程,验证响应头与超时路径)。另:run.mjs 的 HTTP 段重建(子进程服务器保活,避免主线程 Atomics.wait 死锁)。
 
 ### v0.26.0(2026-11-08)
 
