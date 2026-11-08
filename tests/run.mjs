@@ -878,6 +878,59 @@ fn main() with io, fs {
   check('v28:align 是纯函数', rp.code === 0 && rp.stdout === ' x  \n', 'code=' + rp.code + ' stdout=' + JSON.stringify(rp.stdout));
 }
 
+// ===================== 29. v0.29:std.math 补全(反三角/双曲/log2/log10/cbrt/hypot/atan2)=====================
+{
+  const src29 = [
+    'use std.math;',
+    'use std.io;',
+    '',
+    'fn main() with io {',
+    '    print(std.math.asin(1.0));',
+    '    print(std.math.atan2(1.0, 1.0));',
+    '    print(std.math.sinh(0.0));',
+    '    print(std.math.cosh(0.0));',
+    '    print(std.math.log2(8.0));',
+    '    print(std.math.log10(1000.0));',
+    '    print(std.math.cbrt(27.0));',
+    '    print(std.math.hypot(3.0, 4.0));',
+    '    print(std.math.tanh(0.0));',
+    '}',
+  ].join('\n');
+  const p29 = mingFile('v29-math.ming', src29);
+  const want29 = '1.5707963267948966\n0.7853981633974483\n0.0\n1.0\n3.0\n3.0\n3.0\n5.0\n0.0\n';
+  check('v29:math 补全数值表(vm)', runMing(['run', p29]).stdout === want29, JSON.stringify(runMing(['run', p29]).stdout));
+  check('v29:math 补全数值表(tree)', runMing(['run', p29, '--tree']).stdout === want29, '');
+
+  // wasm 桥接:eligible 函数内用新函数;三引擎一致 + MING_WASM_DEBUG 证实编译未被拒绝
+  const pw = mingFile('v29-math-wasm.ming', [
+    'use std.math;',
+    'use std.io;',
+    '',
+    'fn hot(a: f64) -> f64 {',
+    '    return std.math.cbrt(a) + std.math.hypot(a, 2.0) + std.math.log2(a) + std.math.tanh(a);',
+    '}',
+    '',
+    'fn main() with io {',
+    '    print(hot(27.0));',
+    '}',
+  ].join('\n'));
+  const rw1 = runMing(['run', pw]);
+  const rw2 = runMing(['run', pw, '--no-wasm']);
+  const rt3 = runMing(['run', pw, '--tree']);
+  check('v29:math wasm 三层一致', rw1.stdout === rw2.stdout && rw2.stdout === rt3.stdout && rw1.code === 0,
+    'wasm=' + JSON.stringify(rw1.stdout) + ' nowasm=' + JSON.stringify(rw2.stdout) + ' tree=' + JSON.stringify(rt3.stdout));
+  const prevDbg = process.env.MING_WASM_DEBUG;
+  process.env.MING_WASM_DEBUG = '1';
+  const rd = runMing(['run', pw]);
+  if (prevDbg === undefined) delete process.env.MING_WASM_DEBUG; else process.env.MING_WASM_DEBUG = prevDbg;
+  check('v29:math wasm 路径证实(hot 编译 OK)', rd.stderr.includes('[wasm] fn hot OK') && !rd.stderr.includes('REJECT'), rd.stderr.slice(0, 200));
+
+  // 类型门槛:math 只收 f64,int 实参 → M3002
+  const pt = mingFile('v29-math-type.ming', 'use std.math;\nfn main() with io { print(std.math.cbrt(27)); }');
+  const rr = runMing(['check', pt]);
+  check('v29:math 类型门槛 M3002', rr.code === 1 && rr.stderr.includes('M3002'), 'code=' + rr.code + ' stderr=' + rr.stderr.slice(0, 150));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

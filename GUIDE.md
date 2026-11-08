@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.28.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.29.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -581,7 +581,7 @@ $ node bin/ming.js test mylib.ming
 
 ### std.math
 
-`sqrt pow abs floor ceil round min max exp ln sin cos tan pi e` — 均为 f64。
+`sqrt pow abs floor ceil round min max exp ln sin cos tan` + **v0.29 补全**:`asin acos atan atan2(y, x) sinh cosh tanh log2 log10 cbrt hypot(a, b)` — 均为 f64(实参必须显式 f64,int 不隐式转换);`pi` `e` 为常量函数。全部纯函数,wasm 导入桥接(eligible 函数内零回落)。
 
 ### std.io
 
@@ -923,13 +923,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 | 版本 | 内容 |
 |------|------|
-| v0.28(已完成) | std.log 级别日志、std.fmt.align 宽度对齐(错误链与二进制 I/O 顺延) |
-| v0.29 | 错误链(cause)、二进制 I/O 雏形、数学补全(反三角/log2/hypot/cbrt) |
+| v0.28(已完成) | std.log 级别日志、std.fmt.align 宽度对齐 |
+| v0.29(已完成) | std.math 补全(11 函数,wasm 桥接)+ 路径验证制度化 |
+| v0.30 方向 | 错误链(cause)、二进制 I/O 雏形、任务超时/取消 |
 | 更远 | 发布期门禁:内存配额/动态熔断;合并期门禁:模糊测试;原生后端(C);自举 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.29.0(2026-11-09)
+
+- **std.math 补全**(11 个,纯函数):反三角 `asin/acos/atan/atan2(y,x)`、双曲 `sinh/cosh/tanh`、`log2/log10/cbrt/hypot(a,b)`——签名只收 f64(int 实参 M3002,无隐式转换);**wasm 导入桥接**(MATH_IMPORTS 追加,索引动态推导;MING_WASM_DEBUG 证实 eligible 函数编译 OK 零回落,三层输出一致)。
+- 路径验证纪律:v0.20 的"静默缺口"教训制度化——新桥接必须用 MING_WASM_DEBUG 断言 `fn ... OK` 且无 REJECT,输出一致 ≠ 路径正确。
+- 测试:326 项(新增 v0.29 5 项:数值表 vm/tree 双跑、wasm 三层一致、wasm 路径证实、类型门槛 M3002)。
 
 ### v0.28.0(2026-11-09)
 

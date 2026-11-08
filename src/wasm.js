@@ -66,6 +66,10 @@ const MATH_IMPORTS = [
   ['sqrt', Math.sqrt], ['pow', Math.pow], ['abs', Math.abs], ['floor', Math.floor],
   ['ceil', Math.ceil], ['round', Math.round], ['exp', Math.exp], ['ln', Math.log],
   ['sin', Math.sin], ['cos', Math.cos], ['tan', Math.tan],
+  // v0.29 数学补全(追加在尾部,索引动态推导)
+  ['asin', Math.asin], ['acos', Math.acos], ['atan', Math.atan], ['atan2', Math.atan2],
+  ['sinh', Math.sinh], ['cosh', Math.cosh], ['tanh', Math.tanh],
+  ['log2', Math.log2], ['log10', Math.log10], ['cbrt', Math.cbrt], ['hypot', Math.hypot],
 ];
 const MATH_IDX = new Map(MATH_IMPORTS.map(([n], i) => [n, 3 + i]));
 

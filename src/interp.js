@@ -1182,6 +1182,18 @@ export class Interp {
       case 'math.sin': return V.float(Math.sin(asF64(args[0])), 64);
       case 'math.cos': return V.float(Math.cos(asF64(args[0])), 64);
       case 'math.tan': return V.float(Math.tan(asF64(args[0])), 64);
+      // v0.29 数学补全
+      case 'math.asin': return V.float(Math.asin(asF64(args[0])), 64);
+      case 'math.acos': return V.float(Math.acos(asF64(args[0])), 64);
+      case 'math.atan': return V.float(Math.atan(asF64(args[0])), 64);
+      case 'math.atan2': return V.float(Math.atan2(asF64(args[0]), asF64(args[1])), 64);
+      case 'math.sinh': return V.float(Math.sinh(asF64(args[0])), 64);
+      case 'math.cosh': return V.float(Math.cosh(asF64(args[0])), 64);
+      case 'math.tanh': return V.float(Math.tanh(asF64(args[0])), 64);
+      case 'math.log2': return V.float(Math.log2(asF64(args[0])), 64);
+      case 'math.log10': return V.float(Math.log10(asF64(args[0])), 64);
+      case 'math.cbrt': return V.float(Math.cbrt(asF64(args[0])), 64);
+      case 'math.hypot': return V.float(Math.hypot(asF64(args[0]), asF64(args[1])), 64);
       case 'math.pi': return V.float(Math.PI, 64);
       case 'math.e': return V.float(Math.E, 64);
       case 'io.read_line': return V.str(this.readLine());
