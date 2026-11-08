@@ -1,4 +1,4 @@
-# Ming 能力矩阵(v0.27.0)
+# Ming 能力矩阵(v0.28.0)
 
 对照"标准库金字塔"的诚实审计。✅ 生产语义 / 🟡 雏形(有硬限制)/ ❌ 缺失。
 
@@ -9,7 +9,7 @@
 | stdout/stderr | ✅ | print/eprint |
 | stdin 整行 | ✅ | read_line |
 | stdin 全量 | ✅ | read_to_end |
-| 格式化输出(宽度/精度) | 🟡 | std.fmt(v0.27):精度 fixed/exp、进制 hex/bin;宽度/对齐仍缺 |
+| 格式化输出(宽度/精度) | ✅ | std.fmt(v0.27/v0.28):精度 fixed/exp、进制 hex/bin、宽度 align(left/right/center,字符口径) |
 | 文本文件读写 | ✅ | read/write/append(Result 化) |
 | 二进制文件 I/O | ❌ | 仅 UTF-8 文本 |
 | 目录:列名/创建/递归删除 | ✅ | list_dir/make_dir/remove_dir_recursive |
@@ -31,7 +31,7 @@
 | 字符分类 is_alpha/is_digit/is_space/is_upper/is_lower | ✅ | str 方法(Unicode 感知;v0.26) |
 | pad_left/pad_right | ✅ | str 方法(v0.26) |
 | 流式拼接 Builder | ❌ | + 每次全量拷贝 |
-| 格式化语言(对齐/进制) | 🟡 | 进制(hex/bin)与精度(fixed/exp)✅(v0.27 std.fmt);宽度/对齐/千分位 ❌ |
+| 格式化语言(对齐/进制) | 🟡 | 进制(hex/bin)、精度(fixed/exp)、宽度对齐(align)✅;千分位/本地化数字格式 ❌(与 i18n 同策略:宿主委托) |
 | 本地化/国际化 | ❌ | 策略:宿主委托(借 JS Unicode 感知),非语言承诺 |
 
 ## 计算与时间
@@ -55,8 +55,8 @@
 | 子任务错误隔离(Err 化) | ✅ | panic → join Err |
 | 诊断协议(错误码+位置+hint+JSON) | ✅ | 40+ 码 |
 | panic 调用栈 | ✅ | Ming 层栈 |
-| 日志库(级别/开关) | ❌ | v0.28 计划 |
+| 日志库(级别/开关) | ✅ | std.log(v0.28):debug/info/warn/error,set_level/get_level,阈值过滤,stderr 输出;无文件输出/结构化字段 |
 | 错误链(cause) | ❌ | v0.28 计划 |
 | 任务超时/取消 | ❌ | join 固定 120s |
 
-**覆盖率:v0.27.0 ≈ 76%**(口径:37 行,✅=1、🟡=0.5、❌=0 → 27✅ 2🟡 8❌;v0.26 同口径 ≈72%,更早的"62%"口径偏严,自本版起统一为行计数)。目标 v0.29 ≈ 80%(i18n 宿主委托除外)。
+**覆盖率:v0.28.0 ≈ 80%**(口径:37 行,✅=1、🟡=0.5、❌=0 → 29✅ 1🟡 7❌;v0.27 ≈76%)。原定 v0.29 的 80% 目标本版达成;v0.29 目标改为:错误链、二进制 I/O 雏形、数学补全——把剩余 ❌ 里"该做"的做掉(不做:i18n/千分位=宿主委托,TCP 服务端=架构待定,Builder=已判定不做)。

@@ -1,4 +1,4 @@
-# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.27.0)
+# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.28.0)
 
 诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27 无新增码(std.fmt/http_request_opts 复用既有 M2xxx/M3xxx/M4xxx 面)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。

@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.27.1** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.28.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -782,6 +782,7 @@ fn main() with io {
 | `hex` | `(i64) -> str` | 十六进制,`0x` 前缀,**u64 位型**(负数按补码,`hex(-1)` = "0xffffffffffffffff") |
 | `bin` | `(i64) -> str` | 二进制,`0b` 前缀,同 u64 位型 |
 | `exp` | `(f64, digits: i64) -> str` | 科学计数法,指定小数位(`exp(12345.678, 2)` = "1.23e+4") |
+| `align` | `(str, width: i64, mode: str) -> str` | 宽度对齐(v0.28):**字符数口径**,不足补空格,超宽原样;mode = `"left"`/`"right"`/`"center"`(左侧取 floor,补齐偏右);非法 mode → panic |
 
 ```ming
 use std.fmt;
@@ -791,8 +792,21 @@ fn main() with io {
     print(std.fmt.hex(255));            // 0xff
     print(std.fmt.bin(10));             // 0b1010
     print(std.fmt.exp(12345.678, 2));   // 1.23e+4
+    print(std.fmt.align("ab", 5, "center"));  // " ab  "
 }
 ```
+
+### std.log(能力:io,v0.28)
+
+级别日志:`debug/info/warn/error(msg)` 输出 `[LEVEL] msg` 到 **stderr**;级别阈值 debug < info < warn < error,低于阈值直接丢弃。
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `debug` / `info` / `warn` / `error` | `(str) -> ()` · 效果 `io` | 按级别输出;默认级别 `info` |
+| `set_level` | `(str) -> ()` · 效果 `io` | `"debug"`/`"info"`/`"warn"`/`"error"`;非法值 → panic(程序员错误) |
+| `get_level` | `() -> str` · 效果 `io` | 当前级别名 |
+
+设计立场:日志只影响诊断流,不影响程序值——`print` 保持唯一 stdout 输出通道,日志永不与之混流;含 log 调用的函数在 wasm 分层自动回落(语义不变)。
 
 ### std.path(纯函数)
 
@@ -909,13 +923,19 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 | 版本 | 内容 |
 |------|------|
-| v0.28 | 日志库(级别/开关)、错误链(cause)、宽度/对齐格式化、二进制 I/O 雏形 |
-| v0.29 | 数学补全(反三角/log2/hypot/cbrt)、覆盖率目标 ≈80%(i18n 宿主委托除外) |
+| v0.28(已完成) | std.log 级别日志、std.fmt.align 宽度对齐(错误链与二进制 I/O 顺延) |
+| v0.29 | 错误链(cause)、二进制 I/O 雏形、数学补全(反三角/log2/hypot/cbrt) |
 | 更远 | 发布期门禁:内存配额/动态熔断;合并期门禁:模糊测试;原生后端(C);自举 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.28.0(2026-11-09)
+
+- **std.log 级别日志**(能力 io):`debug/info/warn/error(msg)` → `[LEVEL] msg` 到 **stderr**;阈值 debug < info < warn < error,默认 info,低于阈值直接丢弃;`set_level`(非法值 → panic,程序员错误)/`get_level`。设计立场:日志只影响诊断流,不影响程序值——print 保持唯一 stdout 通道,永不混流;含 log 的函数 wasm 自动回落。
+- **std.fmt.align(s, width, mode)**(纯函数):宽度对齐,字符数口径;left/right/center(center 左侧取 floor,补齐偏右——确定性规则);超宽原样;非法 mode → panic。
+- 测试:321 项(新增 v0.28 6 项:级别过滤含 stderr 精确比对/双引擎一致/set_level 非法 panic/align 三模式与中文口径/align 非法 panic/效果强制 M3029/align 纯函数)。
 
 ### v0.27.0(2026-11-09)
 

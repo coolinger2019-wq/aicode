@@ -466,6 +466,7 @@ export class Interp {
     this.methodImpls = checkResult.methodImpls ?? null;
     this.out = opts.out ?? process.stdout;
     this.errOut = opts.errOut ?? process.stderr;
+    this.logLevel = 1;                         // std.log 阈值(v0.28):0=debug 1=info 2=warn 3=error
     this.capture = opts.capture ?? false;      // 测试模式:捕获 print
     this.captured = [];
     this.stdin = opts.stdin ?? null;           // 预读的 stdin 文本
@@ -1184,6 +1185,18 @@ export class Interp {
       case 'math.pi': return V.float(Math.PI, 64);
       case 'math.e': return V.float(Math.E, 64);
       case 'io.read_line': return V.str(this.readLine());
+      // 日志(v0.28):级别过滤,`[LEVEL] msg` 到 stderr;set_level 非法值 = 程序员错误 → panic
+      case 'log.debug': return this.logEmit(0, 'DEBUG', args[0].v);
+      case 'log.info': return this.logEmit(1, 'INFO', args[0].v);
+      case 'log.warn': return this.logEmit(2, 'WARN', args[0].v);
+      case 'log.error': return this.logEmit(3, 'ERROR', args[0].v);
+      case 'log.set_level': {
+        const lv = { debug: 0, info: 1, warn: 2, error: 3 }[args[0].v];
+        if (lv === undefined) throw new Panic('M4001', '非法日志级别: ' + args[0].v + '(有效:debug/info/warn/error)', null);
+        this.logLevel = lv;
+        return UNIT;
+      }
+      case 'log.get_level': return V.str(['debug', 'info', 'warn', 'error'][this.logLevel]);
       case 'time.now_ms': return V.int(BigInt(Date.now()), 64, true);
       // ---- std.fs(capability:调用方必须声明 fs 效果,检查器强制)----
       case 'fs.read_file': {
@@ -1330,6 +1343,22 @@ export class Interp {
       case 'fmt.hex': return V.str('0x' + BigInt.asUintN(64, BigInt(args[0].v)).toString(16));
       case 'fmt.bin': return V.str('0b' + BigInt.asUintN(64, BigInt(args[0].v)).toString(2));
       case 'fmt.exp': return V.str(args[0].v.toExponential(Math.max(0, Math.min(100, Number(args[1].v)))));
+      case 'fmt.align': {
+        // 宽度对齐(v0.28):字符数口径;不足补空格,超宽原样;center 左侧取 floor(补齐偏右)
+        const s = args[0].v;
+        const width = Number(args[1].v);
+        const mode = args[2].v;
+        const len = [...s].length;
+        if (width <= len) return V.str(s);
+        const pad = width - len;
+        if (mode === 'left') return V.str(s + ' '.repeat(pad));
+        if (mode === 'right') return V.str(' '.repeat(pad) + s);
+        if (mode === 'center') {
+          const l = Math.floor(pad / 2);
+          return V.str(' '.repeat(l) + s + ' '.repeat(pad - l));
+        }
+        throw new Panic('M4001', '非法对齐模式: ' + mode + '(有效:left/right/center)', null);
+      }
       case 're.is_match': return V.bool(this.reCompile(args[0].v, 'u').test(args[1].v));
       case 're.find': {
         const m = this.reCompile(args[0].v, 'u').exec(args[1].v);
@@ -1545,6 +1574,12 @@ export class Interp {
       V.str(parsed.stdout),
       V.str(parsed.stderr),
     ])]);
+  }
+
+  // std.log 输出(v0.28):达到阈值才写 stderr;日志只影响诊断流,不影响程序值
+  logEmit(level, name, msg) {
+    if (level >= this.logLevel) this.errOut.write('[' + name + '] ' + msg + '\n');
+    return UNIT;
   }
 
   reCompile(pattern, flags) {

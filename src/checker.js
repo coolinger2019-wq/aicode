@@ -304,6 +304,18 @@ export const STD_MODULES = {
       mF('hex', [INT_TYPES.i64], T_STR),
       mF('bin', [INT_TYPES.i64], T_STR),
       mF('exp', [tfloat(64), INT_TYPES.i64], T_STR),
+      mF('align', [T_STR, INT_TYPES.i64, T_STR], T_STR),
+    ],
+  },
+  // 日志(能力:io;级别过滤,stderr 输出;v0.28)
+  log: {
+    fns: [
+      mF('debug', [T_STR], T_UNIT, { effect: 'io' }),
+      mF('info', [T_STR], T_UNIT, { effect: 'io' }),
+      mF('warn', [T_STR], T_UNIT, { effect: 'io' }),
+      mF('error', [T_STR], T_UNIT, { effect: 'io' }),
+      mF('set_level', [T_STR], T_UNIT, { effect: 'io' }),
+      mF('get_level', [], T_STR, { effect: 'io' }),
     ],
   },
   // 操作系统进程(能力:proc;worker 同步化)

@@ -824,6 +824,60 @@ fn main() with io, fs {
   check('kit:未知子命令', r.code === 1 && r.stderr.includes('未知子命令'), r.stderr.slice(0, 100));
 }
 
+// ===================== 28. v0.28:std.log + std.fmt.align =====================
+{
+  const src28 = [
+    'use std.log;',
+    'use std.fmt;',
+    '',
+    'fn main() with io {',
+    '    std.log.warn("w1");',
+    '    std.log.debug("d-hidden");',
+    '    std.log.info("i1");',
+    '    std.log.set_level("debug");',
+    '    std.log.debug("d-now");',
+    '    print(std.log.get_level());',
+    '    std.log.set_level("error");',
+    '    std.log.warn("w-hidden");',
+    '    std.log.error("e1");',
+    '    print(std.fmt.align("ab", 5, "left") + "|");',
+    '    print(std.fmt.align("ab", 5, "right") + "|");',
+    '    print(std.fmt.align("ab", 5, "center") + "|");',
+    '    print(std.fmt.align("中文", 5, "right") + "|");',
+    '    print(std.fmt.align("toolong", 3, "left") + "|");',
+    '}',
+  ].join('\n');
+  const p28 = mingFile('v28-log-align.ming', src28);
+  const r28 = runMing(['run', p28]);
+  const wantOut = 'debug\nab   |\n   ab|\n ab  |\n   中文|\ntoolong|\n';
+  const wantErr = '[WARN] w1\n[INFO] i1\n[DEBUG] d-now\n[ERROR] e1\n';
+  check('v28:log 级别过滤 + align 三模式', r28.code === 0 && r28.stdout === wantOut && r28.stderr === wantErr,
+    'code=' + r28.code + ' stdout=' + JSON.stringify(r28.stdout) + ' stderr=' + JSON.stringify(r28.stderr));
+  const rt28 = runMing(['run', p28, '--tree']);
+  check('v28:双引擎一致(tree)', rt28.code === 0 && rt28.stdout === wantOut && rt28.stderr === wantErr,
+    'code=' + rt28.code + ' stderr=' + JSON.stringify(rt28.stderr));
+
+  // set_level 非法 → panic M4001(退出码 101)
+  const pb = mingFile('v28-log-bad.ming', 'use std.log;\nfn main() with io { std.log.set_level("loud"); }');
+  const rb = runMing(['run', pb]);
+  check('v28:set_level 非法 panic', rb.code === 101 && rb.stderr.includes('M4001') && rb.stderr.includes('非法日志级别'), 'code=' + rb.code);
+
+  // align 非法模式 → panic
+  const pc = mingFile('v28-align-bad.ming', 'use std.fmt;\nfn main() with io { print(std.fmt.align("a", 5, "middle")); }');
+  const rc = runMing(['run', pc]);
+  check('v28:align 非法模式 panic', rc.code === 101 && rc.stderr.includes('M4001') && rc.stderr.includes('对齐模式'), 'code=' + rc.code);
+
+  // 效果强制:log 未声明 io → M3029
+  const pe = mingFile('v28-log-cap.ming', 'use std.log;\nfn main() { std.log.info("x"); }');
+  const re28 = runMing(['check', pe]);
+  check('v28:log 效果强制 M3029', re28.code === 1 && re28.stderr.includes('M3029'), 'code=' + re28.code + ' stderr=' + re28.stderr.slice(0, 150));
+
+  // align 纯函数:无 io 也能用
+  const pp = mingFile('v28-align-pure.ming', 'use std.fmt;\nfn pad(s: str) -> str { return std.fmt.align(s, 4, "center"); }\nfn main() with io { print(pad("x")); }');
+  const rp = runMing(['run', pp]);
+  check('v28:align 是纯函数', rp.code === 0 && rp.stdout === ' x  \n', 'code=' + rp.code + ' stdout=' + JSON.stringify(rp.stdout));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
