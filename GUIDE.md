@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.23.0** · 字节码 VM + WASM 分层(线性内存统一语义:构造/写/读/返回)+ JSON + capability fs/net/sync + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.24.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + capability fs/net/sync/proc/env + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -488,7 +488,7 @@ fn stamped() with io, time {         // 多个效果用逗号分隔
 }
 ```
 
-- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(std.sync.*,v0.14 结构化并发)。
+- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
 - **传播**:调用带效果的函数,调用方必须声明同样(或更多)的效果,否则 M3029;效果清单就是审计清单。
 - `main` 与 `test` 块是入口,声明自己需要的效果(main)或拥有全部效果(test)。
 - 闭包在**创建处**继承所在函数的效果(已知限制:存入数据结构的闭包在 v0.2 不追踪调用点效果)。
@@ -835,6 +835,17 @@ fn main() with io, sync {
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.24.0(2026-11-08)
+
+- **系统接口补全**(对标准库金字塔的差距审计后,最大缺口优先):
+  - `std.proc.exec(cmd, args) -> Result[(exit, stdout, stderr), str]`(新效果 proc;worker 同步化,60s 超时,10MB 输出上限)——胶水语言的灵魂能力。
+  - `std.env.get/set/remove`(新效果 env)——环境变量读写删。
+  - fs 补全:`metadata → Json(size/is_dir/is_file/modified_ms/name)`、`copy_file`、`rename`、`remove_dir`、`remove_dir_recursive`。
+  - io 补全:`read_to_end() -> str`(stdin 全量)。
+- **docs/capabilities.md**:标准库金字塔诚实覆盖率矩阵(✅/🟡/❌),每版更新。v0.24 覆盖率 ≈45%(v0.23 约 1/3)。
+- 定位修正:v0.24 前"可以使用"的说法过宽——诚实的说法是"可用于受控场景的胶水脚本"(纯计算/文本文件/HTTP 拉取/并行数值)。exec/env 落地后覆盖面显著扩大,但正则/日期/随机/日志仍在路上。
+- 测试:256 项维持全绿(proc/env/fs 新能力随文档示例验证,效果强制 M3029 已覆盖)。
 
 ### v0.23.0(2026-11-08)
 

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 const SRC_DIR = nodePath.dirname(fileURLToPath(import.meta.url));
 const SRC_URL = (f) => 'file:///' + nodePath.join(SRC_DIR, f).split(nodePath.sep).join('/');
 import { Worker } from 'node:worker_threads';
+import * as nodeChildProcess from 'node:child_process';
 
 // ===================== 运行时值 =====================
 // 全部带类型标签 t:
@@ -1228,6 +1229,60 @@ export class Interp {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
       }
+      case 'fs.metadata': {
+        try {
+          const st = nodeFs.statSync(args[0].v);
+          const meta = V.json('obj', new Map([
+            ['size', V.json('num', st.size)],
+            ['is_dir', V.json('bool', st.isDirectory())],
+            ['is_file', V.json('bool', st.isFile())],
+            ['modified_ms', V.json('num', st.mtimeMs)],
+            ['name', V.json('str', nodePath.basename(args[0].v))],
+          ]));
+          return V.enumv('builtin-res', 'Ok', [meta]);
+        } catch (e) {
+          return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
+        }
+      }
+      case 'fs.copy_file': {
+        try { nodeFs.copyFileSync(args[0].v, args[1].v); return V.enumv('builtin-res', 'Ok', [V.bool(true)]); }
+        catch (e) { return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]); }
+      }
+      case 'fs.rename': {
+        try { nodeFs.renameSync(args[0].v, args[1].v); return V.enumv('builtin-res', 'Ok', [V.bool(true)]); }
+        catch (e) { return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]); }
+      }
+      case 'fs.remove_dir': {
+        try { nodeFs.rmdirSync(args[0].v, { recursive: false }); return V.enumv('builtin-res', 'Ok', [V.bool(true)]); }
+        catch (e) { return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]); }
+      }
+      case 'fs.remove_dir_recursive': {
+        try { nodeFs.rmSync(args[0].v, { recursive: true, force: true }); return V.enumv('builtin-res', 'Ok', [V.bool(true)]); }
+        catch (e) { return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]); }
+      }
+      case 'proc.exec': return this.procExec(args[0].v, args[1], span);
+      case 'env.get': {
+        const v = process.env[args[0].v];
+        return v === undefined ? V.enumv('builtin-opt', 'None', []) : V.enumv('builtin-opt', 'Some', [V.str(v)]);
+      }
+      case 'env.set': {
+        try { process.env[args[0].v] = args[1].v; return V.enumv('builtin-res', 'Ok', [V.bool(true)]); }
+        catch (e) { return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]); }
+      }
+      case 'env.remove': {
+        const had = args[0].v in process.env;
+        delete process.env[args[0].v];
+        return V.bool(had);
+      }
+      case 'io.read_to_end': {
+        if (!this.stdinLoaded) {
+          if (this.stdin === null) { try { this.stdin = nodeFs.readFileSync(0, 'utf8'); } catch { this.stdin = ''; } }
+          this.stdinLoaded = true;
+        }
+        const rest = this.stdin.slice(this.stdinPos);
+        this.stdinPos = this.stdin.length;
+        return V.str(rest);
+      }
       case 'fs.remove_file': {
         try {
           nodeFs.unlinkSync(args[0].v);
@@ -1348,6 +1403,63 @@ export class Interp {
     if (nl === -1) { line = this.stdin.slice(this.stdinPos); this.stdinPos = this.stdin.length; }
     else { line = this.stdin.slice(this.stdinPos, nl); this.stdinPos = nl + 1; }
     return line.replace(/\r$/, '');
+  }
+
+  // ---------- 外部进程(v0.24):worker 同步化 ----------
+  procExec(cmd, argsV, span) {
+    const CAP = 10 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(8 + CAP);
+    const argList = argsV.a.map(x => x.v);
+    const workerCode = [
+      "import { workerData, parentPort } from 'node:worker_threads';",
+      "import * as cp from 'node:child_process';",
+      'try {',
+      "    cp.execFile(workerData.cmd, workerData.args, { timeout: 55000, maxBuffer: workerData.cap, encoding: 'utf8' }, (err, stdout, stderr) => {",
+      '      const code = err && typeof err.code === "number" ? err.code : (err ? -1 : 0);',
+      '      const payload = { ok: true, exit: code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") };',
+      '      if (err && err.killed) payload.ok = false;',
+      '      const bytes = Buffer.from(JSON.stringify(payload), "utf8").slice(0, workerData.cap);',
+      '      Buffer.from(workerData.sab).set(bytes, 8);',
+      '      const i32 = new Int32Array(workerData.sab);',
+      '      Atomics.store(i32, 1, bytes.length);',
+      '      Atomics.store(i32, 0, 1);',
+      '      Atomics.notify(i32, 0);',
+      '    });',
+      '} catch (e) {',
+      '    const bytes = Buffer.from(JSON.stringify({ ok: true, exit: -1, stdout: "", stderr: String(e.message) }), "utf8");',
+      '    Buffer.from(workerData.sab).set(bytes, 8);',
+      '    const i32 = new Int32Array(workerData.sab);',
+      '    Atomics.store(i32, 1, bytes.length);',
+      '    Atomics.store(i32, 0, 1);',
+      '    Atomics.notify(i32, 0);',
+      '}',
+    ].join('\n');
+    let worker;
+    try {
+      worker = new Worker(workerCode, { eval: true, workerData: { sab, cap: CAP, cmd, args: argList } });
+    } catch (e) {
+      return V.enumv('builtin-res', 'Err', [V.str('无法启动 exec worker: ' + e.message)]);
+    }
+    const int32 = new Int32Array(sab);
+    const wr = Atomics.wait(int32, 0, 0, 60000);
+    if (wr === 'timed-out') {
+      worker.terminate();
+      return V.enumv('builtin-res', 'Err', [V.str('exec 超时(60s): ' + cmd)]);
+    }
+    const len = Atomics.load(int32, 1);
+    const text = len > 0 ? Buffer.from(sab, 8, len).toString('utf8') : '';
+    let parsed;
+    try { parsed = JSON.parse(text); } catch {
+      return V.enumv('builtin-res', 'Err', [V.str('exec:结果损坏')]);
+    }
+    if (parsed.exit === -1 && parsed.stderr) {
+      return V.enumv('builtin-res', 'Err', [V.str('命令不存在或无法执行: ' + parsed.stderr)]);
+    }
+    return V.enumv('builtin-res', 'Ok', [V.tuple([
+      V.int(BigInt(parsed.exit)),
+      V.str(parsed.stdout),
+      V.str(parsed.stderr),
+    ])]);
   }
 
   // ---------- 结构化并发(v0.14)----------

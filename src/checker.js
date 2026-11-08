@@ -172,7 +172,7 @@ export function isPrimitiveDisplay(t, binds) {
 // ===================== 效果系统 =====================
 // v0.2 已开放:io(stdout/stderr/stdin)、time(时钟)。
 // 副作用必须显式声明并逐层传播;声明为纯函数的代码在编译期即可证明无副作用。
-export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync']);
+export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env']);
 
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
@@ -236,7 +236,11 @@ export const STD_MODULES = {
     ],
   },
   io: {
-    fns: [mF('read_line', [], T_STR, { effect: 'io' })],
+    fns: [
+      mF('read_line', [], T_STR, { effect: 'io' }),
+      mF('read_to_end', [], T_STR, { effect: 'io' }),
+      mF('read_to_end', [], T_STR, { effect: 'io' }),
+    ],
   },
   time: {
     fns: [mF('now_ms', [], INT_TYPES.i64, { effect: 'time' }), mF('sleep', [INT_TYPES.i64], T_UNIT, { effect: 'time' })],
@@ -252,6 +256,11 @@ export const STD_MODULES = {
       mF('list_dir', [T_STR], mkRes(mkVec(T_STR), T_STR), { effect: 'fs' }),
       mF('make_dir', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_file', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('metadata', [T_STR], mkRes({ k: 'json' }, T_STR), { effect: 'fs' }),
+      mF('copy_file', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('rename', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('remove_dir', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('remove_dir_recursive', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
     ],
   },
   // HTTP 客户端(capability:必须声明 net 效果;同步实现:worker + Atomics)
@@ -259,6 +268,20 @@ export const STD_MODULES = {
     fns: [
       mF('http_get', [T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net' }),
       mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net', min: 3, max: 4 }),
+    ],
+  },
+  // 操作系统进程(能力:proc;worker 同步化)
+  proc: {
+    fns: [
+      mF('exec', [T_STR, mkVec(T_STR)], mkRes(mkTuple([INT_TYPES.i64, T_STR, T_STR]), T_STR), { effect: 'proc' }),
+    ],
+  },
+  // 环境变量(能力:env)
+  env: {
+    fns: [
+      mF('get', [T_STR], mkOpt(T_STR), { effect: 'env' }),
+      mF('set', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'env' }),
+      mF('remove', [T_STR], T_BOOL, { effect: 'env' }),
     ],
   },
   // 结构化并发(能力:sync;spawn/join 走特例签名)

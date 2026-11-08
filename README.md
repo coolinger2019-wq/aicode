@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.23)
+## 核心特性(v0.24)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,9 +74,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.23(当前)** — 线性内存统一语义(Vec 构造/拷贝/返回全走内存)
-- **v0.24** — 契约与轻量验证探索、str 元素 Vec 内存化
-- **更远** — 原生后端(需 C 编译器验证途径)、自举
+- **v0.24(当前)** — 系统接口补全(proc.exec/env/fs 元数据)+ 能力矩阵 capabilities.md
+- **v0.25** — 时间日期与随机(效果 rand)、正则桥接
+- **更远** — 格式化语言、日志/错误链、原生后端探索、自举
 
 ## 设计原则(全文见 design.md)
 
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.23.0:字节码 VM + WASM 分层(线性内存统一语义)+ 结构化并发 + JSON + capability fs/net/sync + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。欢迎在 examples/ 基础上实验。
+v0.24.0:字节码 VM + WASM 分层(线性内存)+ 结构化并发 + JSON + capability fs/net/sync/proc/env + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md。
