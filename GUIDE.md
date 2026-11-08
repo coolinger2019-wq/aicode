@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.35.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.36.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -760,6 +760,8 @@ fn main() with io, sync {
 |------|------|------|
 | `md5` / `sha1` / `sha256` / `sha384` / `sha512` | `(str) -> str` · 效果 `crypto` | 标准 Hash,hex 小写 |
 | `hmac_md5` / `hmac_sha1` / `hmac_sha256` / `hmac_sha384` / `hmac_sha512` | `(key: str, msg: str) -> str` · 效果 `crypto` | HMAC(v0.35) |
+| `aes256_encrypt` | `(key: str, plaintext: str) -> Result[Vec[u8], str]` · 效果 `crypto` | AES-256-CBC(v0.36):key 恰好 32 字节;输出 = IV(16B 随机)+ 密文;**无认证**,防篡改组合 hmac_sha256 |
+| `aes256_decrypt` | `(key: str, data: Vec[u8]) -> Result[str, str]` · 效果 `crypto` | 解密;长度非法/密钥错误(padding 校验失败)→ Err |
 
 ```ming
 use std.crypto;
@@ -782,6 +784,7 @@ fn main() with io, crypto {
 | `unpack_u16_le` … `unpack_u64_be` | `(Vec[u8], off: i64) -> Result[i64, str]` | 解包;偏移越界/短缓冲/非 u8 字节 → Err(数据驱动错误) |
 
 - unpack_u64 读数 ≥ 2^63 按补码位型转负 i64(位型与 fmt.hex 对称)。
+- **位域/struct packing 的设计判断(不做)**:C 式 struct 内存布局控制与 Ming 的值语义(处处深拷贝)正交——显式 pack/unpack(v0.35 std.bin)**就是** Ming 的 packing 答案;位域 = 移位掩码惯用法(checked 位运算已内置),不做位域类型。布局控制随原生后端与受控 unsafe 再评估(design.md §6.1)。
 
 ```ming
 use std.bin;
@@ -802,6 +805,9 @@ fn main() with io {
 | `find_all` | `(pattern, s) -> Vec[str]` | 全部匹配 |
 | `replace` | `(pattern, s, repl) -> str` | 替换全部(repl 支持 $1 捕获引用) |
 | `split` | `(pattern, s) -> Vec[str]` | 分割 |
+| `is_match_bytes` | `(pattern, Vec[u8]) -> bool` | 字节流匹配(v0.36):latin1 无损桥接,pattern 可用 `\xNN` 匹配原始字节 |
+| `find_bytes` | `(pattern, Vec[u8]) -> Option[Vec[u8]]` | 字节流查找(结果为字节切片拷贝) |
+| `replace_bytes` | `(pattern, Vec[u8], Vec[u8]) -> Vec[u8]` | 字节流替换 |
 
 ```ming
 use std.re;
@@ -978,12 +984,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.33(已完成) | for-in 步长根因(×3→×8,4 处)+ for-in 回归 wasm 直跑 + **模糊测试基线**(三后端差分)+ 树引擎 `as` 崩溃修复 |
 | v0.34(已完成) | **北星立项**(design.md §6 安全工具之北)+ std.crypto 哈希五件套(新能力 crypto) |
 | v0.35(已完成) | std.bin 显式字节序 12 函数(支柱 1 落地)+ crypto HMAC 五件套 + 模糊器 as 扩展 |
-| v0.36 方向 | 字节流正则(Vec[u8] 版 std.re)、位域/struct packing 设计、AES 对称加密、模糊器 str 深形态 |
+| v0.36(已完成) | 字节流正则三函数(latin1 无损,支柱 4 落地)+ AES-256-CBC(支柱 6)+ 位域/packing 设计判断(不做) |
+| v0.37 方向 | 模糊器 str/深形态扩展、AES-GCM(带认证)、ming build 单文件产物预研(wasm 部署形态) |
 | 更远(北星对齐) | 原生后端(C)→ FFI/unsafe 块/内联汇编/syscall;async 运行时 → 海量并发;eval 能力;交叉编译部署;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.36.0(2026-11-09)
+
+- **字节流正则**(std.re 扩展,纯函数;北星支柱 4 落地):`is_match_bytes/find_bytes/replace_bytes`——Vec[u8] 按 **latin1 无损桥接**(1 字节 = 1 码点 0..255),pattern 可用 `\xNN` 匹配原始字节,结果按 latin1 编回,全程零损坏。逆向特征提取/二进制协议匹配的基础。
+- **AES-256-CBC 加解密**(std.crypto,能力 crypto):`aes256_encrypt(key, plaintext) -> Result[Vec[u8], str]`(key 恰好 32 字节,输出 IV 16B 随机 + 密文)、`aes256_decrypt(key, data) -> Result[str, str]`(padding 校验失败 → Err)。**诚实声明:CBC 无认证**,防篡改组合 hmac_sha256(key, data)——文档明示。
+- **位域/struct packing 设计判断(不做)**:C 式 struct 布局控制与值语义正交;显式 pack/unpack(v0.35 std.bin)就是 Ming 的 packing 答案,位域 = 移位掩码惯用法。设计记录入 GUIDE std.bin 节与 design.md §6.1。
+- 测试:366 项(新增 v0.36 4 项:字节流正则向量双引擎、AES 往返/短 key/随机 IV 双引擎)。
 
 ### v0.35.0(2026-11-09)
 

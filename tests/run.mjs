@@ -1353,6 +1353,65 @@ fn main() with io, fs {
   check('v35:模糊 as/扩展形态(30 程序三后端一致)', fuzz35.status === 0 && /一致 30,分歧 0/.test(fuzz35.stdout ?? ''), 'code=' + fuzz35.status + ' tail=' + (fuzz35.stdout ?? '').slice(-120));
 }
 
+// ===================== 36. v0.36:字节流正则 + AES-256-CBC =====================
+{
+  // 字节流正则:latin1 无损(零字节与高位字节可匹配;双引擎)
+  const rb = mingFile('v36-re-bytes.ming', [
+    'use std.re;',
+    '',
+    'fn main() with io {',
+    '    let data: Vec[u8] = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x01, 0x57, 0x6f, 0x72, 0x6c, 0x64];',
+    '    print(str(std.re.is_match_bytes(r"World", data)));',
+    '    print(str(std.re.is_match_bytes(r"\\x00\\x01", data)));',
+    '    match std.re.find_bytes(r"W\\x6frld", data) {',
+    '        Some(m) => print(str(m.len())),',
+    '        None    => print("none"),',
+    '    }',
+    '    let out = std.re.replace_bytes(r"\\x00\\x01", data, [0x2d, 0x2d]);',
+    '    print(str(out.len()));',
+    '    print(str(std.re.is_match_bytes(r"\\x2d\\x2d", out)));',
+    '}',
+  ].join('\n'));
+  const wantRb = 'true\ntrue\n5\n12\ntrue\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', rb, ...eng]);
+    check('v36:字节流正则' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantRb,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+
+  // AES-256-CBC:往返 + key 长度校验 + 随机 IV(两次密文不同;双引擎)
+  const ae = mingFile('v36-aes.ming', [
+    'use std.crypto;',
+    '',
+    'fn main() with io, crypto {',
+    '    let key = "0123456789abcdef0123456789abcdef";',
+    '    match std.crypto.aes256_encrypt(key, "机密数据 secret-42") {',
+    '        Ok(data) => {',
+    '            print(str(data.len()));',
+    '            match std.crypto.aes256_decrypt(key, data) {',
+    '                Ok(pt) => print(pt),',
+    '                Err(e) => print("D-ERR: " + e),',
+    '            }',
+    '        }',
+    '        Err(e) => print("E-ERR: " + e),',
+    '    }',
+    '    match std.crypto.aes256_encrypt("short", "x") {',
+    '        Ok(_) => print("bug"),',
+    '        Err(e) => print("KEY-ERR: " + e),',
+    '    }',
+    '    let c1 = std.crypto.aes256_encrypt(key, "same-input");',
+    '    let c2 = std.crypto.aes256_encrypt(key, "same-input");',
+    '    print(str(c1.unwrap() == c2.unwrap()));',
+    '}',
+  ].join('\n'));
+  const wantAe = ['48', '机密数据 secret-42', 'KEY-ERR: aes256_encrypt:key 必须恰好 32 字节(AES-256),得到 5', 'false'].join('\n') + '\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', ae, ...eng]);
+    check('v36:AES-256 往返/校验/随机 IV' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantAe,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

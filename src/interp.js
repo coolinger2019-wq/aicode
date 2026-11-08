@@ -1433,6 +1433,27 @@ export class Interp {
         const re = this.reCompile(args[0].v, 'gu');
         return V.vec(args[1].v.split(re).map(x => V.str(x)));
       }
+      // 字节流正则(v0.36;安全工具之北支柱 4):Vec[u8] 按 latin1 无损解码(1 字节 = 1 码点
+      // 0..255),pattern 可用 \xNN 匹配原始字节;结果再按 latin1 编回,全程零损坏
+      case 're.is_match_bytes': {
+        const buf = this.u8VecToBuf(args[1], span);
+        return V.bool(this.reCompile(args[0].v, 'u').test(buf.toString('latin1')));
+      }
+      case 're.find_bytes': {
+        const buf = this.u8VecToBuf(args[1], span);
+        const m = this.reCompile(args[0].v, 'u').exec(buf.toString('latin1'));
+        if (!m) return V.enumv('builtin-opt', 'None', []);
+        const out = Buffer.from(m[0], 'latin1');
+        return V.enumv('builtin-opt', 'Some', [V.vec([...out].map(b => V.int(BigInt(b), 8, false)))]);
+      }
+      case 're.replace_bytes': {
+        const buf = this.u8VecToBuf(args[1], span);
+        const rep = this.u8VecToBuf(args[2], span);
+        const re = this.reCompile(args[0].v, 'gu');
+        const out = buf.toString('latin1').replace(re, rep.toString('latin1'));
+        const ob = Buffer.from(out, 'latin1');
+        return V.vec([...ob].map(x => V.int(BigInt(x), 8, false)));
+      }
       case 'time.monotonic_ms': {
         return V.int(BigInt(Math.floor(performance.now())), 64, true);
       }
@@ -1474,6 +1495,37 @@ export class Interp {
       case 'crypto.hmac_sha256': return V.str(nodeCrypto.createHmac('sha256', args[0].v).update(args[1].v, 'utf8').digest('hex'));
       case 'crypto.hmac_sha384': return V.str(nodeCrypto.createHmac('sha384', args[0].v).update(args[1].v, 'utf8').digest('hex'));
       case 'crypto.hmac_sha512': return V.str(nodeCrypto.createHmac('sha512', args[0].v).update(args[1].v, 'utf8').digest('hex'));
+      // AES-256-CBC(v0.36;支柱 6):key = 恰好 32 字节的 UTF-8 串;输出 = IV(16B 随机)+ 密文;
+      // 无认证(CBC 无 HMAC 时可被篡改)——防篡改请组合 hmac_sha256(key, data),文档明示
+      case 'crypto.aes256_encrypt': {
+        const key = Buffer.from(args[0].v, 'utf8');
+        if (key.length !== 32) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_encrypt:key 必须恰好 32 字节(AES-256),得到 ${key.length}`)]);
+        }
+        const iv = nodeCrypto.randomBytes(16);
+        const cipher = nodeCrypto.createCipheriv('aes-256-cbc', key, iv);
+        const ct = Buffer.concat([cipher.update(args[1].v, 'utf8'), cipher.final()]);
+        const out = Buffer.concat([iv, ct]);
+        return V.enumv('builtin-res', 'Ok', [V.vec([...out].map(b => V.int(BigInt(b), 8, false)))]);
+      }
+      case 'crypto.aes256_decrypt': {
+        const key = Buffer.from(args[0].v, 'utf8');
+        if (key.length !== 32) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_decrypt:key 必须恰好 32 字节(AES-256),得到 ${key.length}`)]);
+        }
+        const data = this.u8VecToBuf(args[1], span);
+        if (!data || data.length < 32 || (data.length - 16) % 16 !== 0) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_decrypt:密文长度非法(需 IV 16B + 16 的倍数),得到 ${data ? data.length : '非 Vec[u8]'}`)]);
+        }
+        try {
+          const iv = data.subarray(0, 16);
+          const decipher = nodeCrypto.createDecipheriv('aes-256-cbc', key, iv);
+          const pt = Buffer.concat([decipher.update(data.subarray(16)), decipher.final()]);
+          return V.enumv('builtin-res', 'Ok', [V.str(pt.toString('utf8'))]);
+        } catch (e) {
+          return V.enumv('builtin-res', 'Err', [V.str('解密失败:密文损坏或密钥错误(padding 校验未通过)')]);
+        }
+      }
       // 二进制显式字节序(v0.35;安全工具之北支柱 1):pack 值域超限 = 不变量破坏 → panic;
       // unpack 越界/短缓冲 = 数据驱动错误 → Err;u64 读数 ≥ 2^63 按补码位型转 i64(与 fmt.hex 对称)
       case 'bin.pack_u16_le': return this.binPack(args[0].v, 2, 'le', 16);
@@ -1912,6 +1964,18 @@ export class Interp {
     } catch (e) {
       return V.enumv('builtin-res', 'Err', [V.str('join:结果反序列化失败 ' + e.message)]);
     }
+  }
+
+  // Vec[u8] → Buffer(v0.36);非 u8 字节返回 null(调用方决定 panic/Err)
+  u8VecToBuf(val, span) {
+    if (!val || val.t !== 'vec') throw new Panic('M4001', '内部错误:期望 Vec[u8]', span);
+    const buf = Buffer.alloc(val.a.length);
+    for (let i = 0; i < val.a.length; i++) {
+      const el = val.a[i];
+      if (el.t !== 'int' || el.v < 0n || el.v > 255n) return null;
+      buf[i] = Number(el.v);
+    }
+    return buf;
   }
 
   // 显式字节序打包(v0.35):值域超限 = 不变量破坏 → panic;bits 为位型宽度

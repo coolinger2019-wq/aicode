@@ -287,6 +287,9 @@ export const STD_MODULES = {
       mF('find_all', [T_STR, T_STR], mkVec(T_STR)),
       mF('replace', [T_STR, T_STR, T_STR], T_STR),
       mF('split', [T_STR, T_STR], mkVec(T_STR)),
+      mF('is_match_bytes', [T_STR, mkVec(INT_TYPES.u8)], T_BOOL),
+      mF('find_bytes', [T_STR, mkVec(INT_TYPES.u8)], mkOpt(mkVec(INT_TYPES.u8))),
+      mF('replace_bytes', [T_STR, mkVec(INT_TYPES.u8), mkVec(INT_TYPES.u8)], mkVec(INT_TYPES.u8)),
     ],
   },
   // 随机数(能力:rand;确定性模式:seed 后同序列)
@@ -311,6 +314,8 @@ export const STD_MODULES = {
       mF('hmac_sha256', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
       mF('hmac_sha384', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
       mF('hmac_sha512', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
+      mF('aes256_encrypt', [T_STR, T_STR], mkRes(mkVec(INT_TYPES.u8), T_STR), { effect: 'crypto' }),
+      mF('aes256_decrypt', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_STR, T_STR), { effect: 'crypto' }),
     ],
   },
   // 二进制显式字节序打包/解包(纯函数;安全工具之北支柱 1:拒绝隐式端序,be/le 显式枚举;v0.35)

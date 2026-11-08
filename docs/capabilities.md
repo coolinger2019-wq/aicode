@@ -1,4 +1,4 @@
-# Ming 能力矩阵(v0.35.0)
+# Ming 能力矩阵(v0.36.0)
 
 对照"标准库金字塔"的诚实审计。✅ 生产语义 / 🟡 雏形(有硬限制)/ ❌ 缺失。
 
@@ -59,9 +59,10 @@
 | 错误链(cause) | ✅ | v0.30:join_detailed(Json {code,message,stack})、scoped 子 panic 真实码透传 + Panic.cause、诊断协议 cause 字段;顺带修复 panic 调用栈从未填充的缺口 |
 | 任务超时/取消 | 🟡 | v0.31:join_detailed 超时可配(超时硬杀,Err M4010)+ cancel(硬杀,不可捕获);无协作取消/子任务自检 |
 | 运行时资源熔断 | ✅ | v0.32:maxSteps + --max-alloc(M4011)+ --max-ms(M4012),子任务继承;配额为累计分配估算口径 |
-| 密码学原语 | ✅ | v0.34:std.crypto(md5/sha1/sha256/sha384/sha512,能力 crypto);AES/RSA/国密/HMAC 随后 |
+| 密码学原语 | ✅ | v0.34/v0.36:std.crypto(Hash 五件套 + HMAC 五件套 + AES-256-CBC 加解密,能力 crypto);RSA/国密/字节流接口随后 |
 | 位运算 | ✅ | checked 位运算(& \| ^ << >>)+ 位截断 as(全引擎一致,溢出语义显式) |
-| 字节序/位域解包 | ✅ | v0.35:std.bin pack/unpack × u16/u32/u64 × le/be(纯函数,显式端序);位域与 struct packing 待设计 |
+| 字节序/位域解包 | ✅ | v0.35:std.bin pack/unpack × u16/u32/u64 × le/be(纯函数,显式端序);位域与 struct packing 判定不做(设计记录 GUIDE std.bin 节) |
+| 字节流正则 | ✅ | v0.36:std.re is_match_bytes/find_bytes/replace_bytes(latin1 无损桥接,\xNN 原始字节匹配) |
 | FFI(外部函数接口) | ❌ | 北星支柱 2:载体为原生后端(C);将经 `with ffi` capability 门禁 |
 | 内联汇编/直接 syscall | ❌ | 北星支柱 2:原生后端之后;经 `with unsafe` 门禁(效果系统即泛化 unsafe 块) |
 | 海量并发网络(10 万级连接) | ❌ | 北星支柱 3:需 async/green-thread 运行时(与确定性语义的调和待设计) |
@@ -69,4 +70,4 @@
 | eval/热重载 | ❌ | 北星支柱 4:解释器即库,eval 可作显式能力(`with eval`)落地,成本低于多数语言 |
 | 交叉编译静态二进制 | ❌ | 北星支柱 5:中期 wasm 单文件产物;远期 C 后端交叉编译 |
 
-**覆盖率:v0.35.0 ≈ 78%**(口径:47 行,✅=1、🟡=0.5、❌=0 → 35✅ 3🟡 9❌;v0.34 口径 76%)。北星立项把安全工具六大支柱纳入矩阵(47 行),覆盖率反映"承诺的面"。
+**覆盖率:v0.36.0 ≈ 79%**(口径:48 行,✅=1、🟡=0.5、❌=0 → 36✅ 3🟡 9❌;v0.35 口径 78%)。北星立项把安全工具六大支柱纳入矩阵(48 行),覆盖率反映"承诺的面"。
