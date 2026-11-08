@@ -948,7 +948,7 @@ export class Interp {
       }
       case 'As': {
         const v = this.evalExpr(e.expr, env);
-        return this.castValue(v, e.asType, e.span);
+        return this.castValue(v, e.type, e.span); // v0.33 修复:字段名是 type(与解析器/VM 一致);asType 恒为 undefined,树引擎一切 as 必崩
       }
       case 'PostQ': {
         const v = this.evalExpr(e.expr, env);

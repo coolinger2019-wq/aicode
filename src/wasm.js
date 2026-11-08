@@ -645,7 +645,7 @@ class WasmCompiler {
             b.push(0x41); sleb(b, 16);
             this.localGet(ctx, ctx.scratch1);
             b.push(0xa7);
-            b.push(0x41); sleb(b, 3);
+            b.push(0x41); sleb(b, 8);
             b.push(0x6c);
             b.push(0x6a);
             if (elemTy === 'i64') { this.localGet(ctx, ctx.scratch2); b.push(0x37); sleb(b, 0); sleb(b, 0); }
@@ -746,9 +746,8 @@ class WasmCompiler {
         const isMapTy = hTy === 'mi64' || hTy === 'mf64' || hTy === 'mstr';
         if (!isVecPtr && !isMapTy) throw new Unsupported('for 容器 ' + hTy);
         const elem = isVecPtr ? hTy.slice(1).replace('ptr', '') : hTy.slice(1);
-        // v0.32 已知问题:for-in 元素加载在多元素时静默错值(单元素/计数正确;地址算式与
-        // 反汇编均已核对仍矛盾,根因未定位)。按"安全是默认"原则整体回落 JS VM,待 v0.33 修复。
-        throw new Unsupported('for-in 容器迭代(元素加载错值待修,wasm 回落)');
+        // (v0.33 根因实验进行中:摘除 v0.32 的整体回落,变体矩阵定位后按结论固化)
+        const b = ctx.bytes;
         this.pushScope(ctx);
         const iSlot = this.declareLocal(ctx, '__i');
         const lenSlot = this.declareLocal(ctx, '__len');
@@ -774,7 +773,7 @@ class WasmCompiler {
           // 加法,load 地址变成绝对 16+8i 且操作数栈失衡,元素值全错)
           this.localGet(ctx, iSlot);
           b.push(0xa7);                    // i32.wrap_i64
-          b.push(0x41); sleb(b, 3);
+          b.push(0x41); sleb(b, 8);
           b.push(0x6c);                    // i32.mul(×8)
           b.push(0x41); sleb(b, 16);
           b.push(0x6a);                    // 16 + 8i
@@ -1024,7 +1023,7 @@ class WasmCompiler {
           b.push(0x41); sleb(b, 8);
           this.localGet(ctx, ctx.scratch1);
           b.push(0xa7);              // i32.wrap_i64
-          b.push(0x41); sleb(b, 3);
+          b.push(0x41); sleb(b, 8);
           b.push(0x6c);              // i32.shl
           b.push(0x6a);              // i32.add
           // load:vi64ptr → i64.load;vf64ptr → f64.load(结果压栈)
@@ -1446,7 +1445,7 @@ class WasmCompiler {
     this.localGet(ctx, ctx.iscratch);
     this.localGet(ctx, ctx.fscratch1);
     b.push(0xa7);                            // i32.wrap_i64
-    b.push(0x41); sleb(b, 3);
+    b.push(0x41); sleb(b, 8);
     b.push(0x6c);                            // i32.mul(×8)
     b.push(0x41); sleb(b, 24);
     b.push(0x6a);                            // i32.add
@@ -1461,7 +1460,7 @@ class WasmCompiler {
     b.push(0x41); sleb(b, 16);
     this.localGet(ctx, ctx.scratch2);
     b.push(0xa7);
-    b.push(0x41); sleb(b, 3);
+    b.push(0x41); sleb(b, 8);
     b.push(0x6c);
     b.push(0x6a);
     if (elemTy === 'i64') {

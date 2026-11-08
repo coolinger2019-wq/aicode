@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.32)
+## 核心特性(v0.33)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,9 +74,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.32(当前)** — 发布期门禁(--max-alloc/--max-ms,M4011/M4012)+ **wasm 层复活**(11 层静默回落根因修复,存活断言制度化)
-- **v0.33 方向** — wasm for-in 元素加载错值根因、模糊测试
-- **更远** — 原生后端探索、自举、动态权限收回
+- **v0.33(当前)** — wasm for-in 步长根因修复(×3→×8)+ 三后端差分模糊测试基线 + 树引擎 `as` 崩溃修复
+- **v0.34 方向** — 模糊器扩展、原生后端(C)预研
+- **更远** — 自举、动态权限收回、形式化验证
 
 ## 设计原则(全文见 design.md)
 
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.32.0:字节码 VM + **WASM 分层(v0.32 复活,存活断言制度化)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈90%)。
+v0.33.0:字节码 VM + **WASM 分层(v0.32 复活,存活断言制度化)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈90%)。模糊基线:tests/fuzz.mjs(三后端差分)。

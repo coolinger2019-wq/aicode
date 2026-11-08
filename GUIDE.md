@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.32.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.33.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -936,12 +936,19 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.30(已完成) | 错误链(cause):wire v2、join_detailed、scoped 码透传、panic 调用栈修复、诊断协议 cause 字段 |
 | v0.31(已完成) | 二进制 I/O 雏形(Vec[u8] + 8MB 上限)、任务超时/取消(join_detailed 超时参数、cancel、M4010) |
 | v0.32(已完成) | 发布期门禁(max-alloc/max-ms/M4011/M4012)+ **wasm 层复活**(11 层静默回落根因修复;for-in 加载已知问题回落待修) |
-| v0.33 方向 | wasm for-in 元素加载错值根因;流式二进制再评估;合并期门禁:模糊测试 |
-| 更远 | 原生后端(C);自举;动态权限收回 |
+| v0.33(已完成) | for-in 步长根因(×3→×8,4 处)+ for-in 回归 wasm 直跑 + **模糊测试基线**(三后端差分)+ 树引擎 `as` 崩溃修复 |
+| v0.34 方向 | 模糊器扩展(str/Vec 深度形态、`as` 全面覆盖)、原生后端(C)预研 |
+| 更远 | 自举;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.33.0(2026-11-09)
+
+- **wasm for-in 错值根因钉死:元素步长常数写的是 3 而非 8**(`i32.const 3; i32.mul`,注释却写"×8")。自线性内存引入以来,所有 for-in 元素读取都按 3 字节步长错位取值。定位方法:逐轮探针(x 与 t 每轮存入魔法地址,JS 侧读回)→ 每轮读值 1, 2, 0 且移位模式与"3 步长错位"逐字节吻合 → 全库排查同款错字:**4 处** `const 3; mul`(for-in 加载 / vec 下标赋值 / ptr push / grow 搬迁)全部改为 ×8;合法的 align=3(load/store 对齐提示)与 shl-3(移位乘法惯用法)保留。修复后 for-in 求和**直接经 wasm 导出**金标准(sumv([20,22,24,26])=92,基址非零、多元素),v0.32 的回落防御撤除。
+- **最小模糊测试基线**(`tests/fuzz.mjs`):随机纯 i64 程序(变量/算术/比较/有界循环/Vec)在三后端(树引擎 / VM+wasm / VM--no-wasm)差分对比 stdout+退出码+错误码;mulberry32 确定性种子,`--seed/--count` 可调。**首战战果:第 6 个程序即抓到树引擎 `as` 崩溃**——字段名 `asType` 应为 `type`(与解析器/VM 不一致;树引擎一切 `as` 表达式必崩,自 as 诞生起未被发现——`as` 缺树引擎专属测试)。修复后 40+200 程序零分歧。回归套件内置快速档(40 程序,种子固定);完整档:`node tests/fuzz.mjs --count 500 --seed N`。
+- 测试:352 项(新增 v0.33 3 项:for-in 经 wasm 导出金标准、双引擎结果、模糊快速档)。
 
 ### v0.32.0(2026-11-09)
 

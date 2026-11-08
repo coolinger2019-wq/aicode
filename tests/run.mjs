@@ -1204,6 +1204,49 @@ fn main() with io, fs {
   check('v32:for-in 回落结果正确', rfor.code === 0 && rfor.stdout === '10\n', 'stdout=' + JSON.stringify(rfor.stdout));
 }
 
+// ===================== 33. v0.33:for-in 步长修复确认 + 模糊基线快速档 =====================
+{
+  // 步长修复后,for-in 求和经由 wasm 导出金标准(此前该形态回落)
+  {
+    const { VMInterp } = await import('../src/vm.js');
+    const { Checker } = await import('../src/checker.js');
+    const src33 = [
+      'fn sumv(v: Vec[i64]) -> i64 {',
+      '    let mut t = 0;',
+      '    for x in v {',
+      '        t = t + x;',
+      '    }',
+      '    return t;',
+      '}',
+      '',
+      'fn main() with io { print(str(sumv([20, 22, 24, 26]))); }',
+    ].join('\n');
+    const p33 = path.join(TMP, 'w33.ming');
+    fs.writeFileSync(p33, src33);
+    const result = new Checker(p33, () => src33).run();
+    const vm = new VMInterp(result, { capture: true });
+    let fe = null, mod = null;
+    for (const m of result.modules) {
+      const e = m.items.get('sumv');
+      if (e?.kind === 'fn') { fe = e; mod = m; break; }
+    }
+    const elems = [20, 22, 24, 26];
+    const ptr = vm.mingAllocRaw(16 + elems.length * 8);
+    const dv = new DataView(vm.wasmMemory.buffer);
+    dv.setBigInt64(ptr, BigInt(elems.length), true);
+    dv.setBigInt64(ptr + 8, BigInt(elems.length), true);
+    elems.forEach((x, i) => dv.setBigInt64(ptr + 16 + 8 * i, BigInt(x), true));
+    const r = vm.wasmExports.m0(ptr);
+    check('v33:for-in 求和经 wasm 导出(步长修复)', Number(r) === 92, 'm0=' + String(r));
+    const rr = runMing(['run', p33]);
+    check('v33:for-in 双引擎结果', rr.code === 0 && rr.stdout === '92\n', rr.stderr.slice(0, 150));
+  }
+
+  // 模糊基线快速档(种子固定可复现;完整档:node tests/fuzz.mjs --count 500 --seed 变化)
+  const fuzz = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '20261109'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v33:模糊基线快速档(40 程序三后端一致)', fuzz.status === 0 && /一致 40,分歧 0/.test(fuzz.stdout), 'code=' + fuzz.status + ' tail=' + (fuzz.stdout ?? '').slice(-120));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
