@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.27.0:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + JSON + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时可配)+ std.fmt + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md。
+v0.27.1:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + JSON + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时可配)+ std.fmt + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md。

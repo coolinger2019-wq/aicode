@@ -1,0 +1,240 @@
+// tools/mingkit.ming — Ming 文件工具箱(仓库中第一个用 Ming 自写的工具)
+//
+// 动机:AI 协作中,文件读写的最大摩擦不是功能,而是"转义层"——
+// shell 引号嵌套、heredoc、内联脚本的模板串,层层转义极易损坏目标文件。
+// mingkit 只保留一层转义(\\n \\t \\\\),其余语义由 Ming 自身保证:
+// 精确匹配、确定性、错误显式化(0 处或多处命中都拒绝写入)。
+//
+// 用法:node bin/ming.js run tools/mingkit.ming -- <子命令> ...
+
+use std.fs;
+
+// 转义解释:\\n → 换行,\\t → 制表,\\\\ → 反斜杠;未知转义原样保留
+fn esc(s: str) -> str {
+    let mut out = "";
+    let mut bs = false;
+    for c in s.chars() {
+        if bs {
+            if c == "n" { out = out + "\n"; }
+            else if c == "t" { out = out + "\t"; }
+            else if c == "\\" { out = out + "\\"; }
+            else { out = out + "\\" + c; }
+            bs = false;
+        } else if c == "\\" {
+            bs = true;
+        } else {
+            out = out + c;
+        }
+    }
+    if bs { out = out + "\\"; }
+    return out;
+}
+
+// 行列表 → 文本(保留"是否以换行结尾"的原貌:split 产生的末空元素负责还原)
+fn join_lines(lines: Vec[str]) -> str {
+    let mut out = "";
+    let mut first = true;
+    for ln in lines {
+        if !first { out = out + "\n"; }
+        out = out + ln;
+        first = false;
+    }
+    return out;
+}
+
+fn usage() -> i64 with io {
+    eprint("mingkit — Ming 文件工具箱(用 Ming 自写)");
+    eprint("用法: node bin/ming.js run tools/mingkit.ming -- <子命令> ...");
+    eprint("  read <file> [start] [end]          输出文件(或行区间,1-based 含端点)");
+    eprint("  write <file>                       stdin 全量覆盖写入");
+    eprint("  append <file>                      stdin 全量追加");
+    eprint("  replace <file> <old> <new>         精确替换恰好 1 处(0/多处拒绝并报错)");
+    eprint("  replace-all <file> <old> <new>     替换全部");
+    eprint("  insert-after <file> <pat> <text>   在第一个含 pat 的行后插入一行");
+    eprint("  insert-before <file> <pat> <text>  在第一个含 pat 的行前插入一行");
+    eprint("  delete-lines <file> <start> [end]  删行区间(缺 end = 删到文件尾)");
+    eprint("  count <file>                       行数/字符/字节统计");
+    eprint("old/new/text 支持 \\n \\t \\\\ 转义。退出码:0 成功,1 错误。");
+    return 1;
+}
+
+fn fail(msg: str) -> i64 with io {
+    eprint("mingkit: " + msg);
+    return 1;
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs {
+    if args.len() < 1 { return usage(); }
+    let cmd = args[0];
+
+    // ---- read:整文件或行区间 ----
+    if cmd == "read" {
+        if args.len() < 2 { return fail("read 需要 <file> [start] [end]"); }
+        let mut content = "";
+        match std.fs.read_file(args[1]) {
+            Ok(t) => { content = t; }
+            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+        }
+        if args.len() >= 4 {
+            let mut start: i64 = 0;
+            match args[2].parse_i64() {
+                Ok(n) => { start = n; }
+                Err(_) => { return fail("start 不是整数: " + args[2]); }
+            }
+            let mut end: i64 = 0;
+            match args[3].parse_i64() {
+                Ok(n) => { end = n; }
+                Err(_) => { return fail("end 不是整数: " + args[3]); }
+            }
+            let lines = content.split("\n");
+            let mut i: i64 = 0;
+            for ln in lines {
+                i = i + 1;
+                if i >= start && i <= end { print(ln); }
+            }
+            return 0;
+        }
+        // 原样输出:剥掉一个尾部换行,抵消 print 自带的换行
+        let mut body = content;
+        if body.ends_with("\n") {
+            body = body.slice_chars(0, body.char_len() - 1);
+        }
+        print(body);
+        return 0;
+    }
+
+    // ---- write / append:stdin 全量落盘 ----
+    if cmd == "write" || cmd == "append" {
+        if args.len() < 2 { return fail(cmd + " 需要 <file>"); }
+        let data = std.io.read_to_end();
+        let r = if cmd == "write" {
+            std.fs.write_file(args[1], data)
+        } else {
+            std.fs.append_file(args[1], data)
+        };
+        match r {
+            Ok(_) => { return 0; }
+            Err(e) => { return fail(cmd + " 失败: " + e); }
+        }
+    }
+
+    // ---- replace / replace-all ----
+    if cmd == "replace" || cmd == "replace-all" {
+        if args.len() < 4 { return fail(cmd + " 需要 <file> <old> <new>"); }
+        let mut content = "";
+        match std.fs.read_file(args[1]) {
+            Ok(t) => { content = t; }
+            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+        }
+        let old = esc(args[2]);
+        let repl = esc(args[3]);
+        if old == "" { return fail("old 不能为空串"); }
+        let parts = content.split(old);
+        let mut out = "";
+        if cmd == "replace" {
+            if parts.len() == 1 { return fail("未找到目标串(0 处): " + args[2]); }
+            if parts.len() > 2 {
+                return fail("目标串出现 " + str(parts.len() - 1) + " 处,要求恰好 1 处;请改用 replace-all");
+            }
+            out = parts[0] + repl + parts[1];
+        } else {
+            let mut first = true;
+            for p in parts {
+                if !first { out = out + repl; }
+                out = out + p;
+                first = false;
+            }
+        }
+        match std.fs.write_file(args[1], out) {
+            Ok(_) => { return 0; }
+            Err(e) => { return fail("写入失败: " + e); }
+        }
+    }
+
+    // ---- insert-after / insert-before:首个含 pat 的行前/后插一行 ----
+    if cmd == "insert-after" || cmd == "insert-before" {
+        if args.len() < 4 { return fail(cmd + " 需要 <file> <pat> <text>"); }
+        let mut content = "";
+        match std.fs.read_file(args[1]) {
+            Ok(t) => { content = t; }
+            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+        }
+        let pat = esc(args[2]);
+        let text = esc(args[3]);
+        let lines = content.split("\n");
+        let mut outv: Vec[str] = [];
+        let mut done = false;
+        for ln in lines {
+            if !done && ln.contains(pat) {
+                if cmd == "insert-after" {
+                    outv.push(ln);
+                    outv.push(text);
+                } else {
+                    outv.push(text);
+                    outv.push(ln);
+                }
+                done = true;
+            } else {
+                outv.push(ln);
+            }
+        }
+        if !done { return fail("没有行包含模式: " + pat); }
+        match std.fs.write_file(args[1], join_lines(outv)) {
+            Ok(_) => { return 0; }
+            Err(e) => { return fail("写入失败: " + e); }
+        }
+    }
+
+    // ---- delete-lines ----
+    if cmd == "delete-lines" {
+        if args.len() < 3 { return fail("delete-lines 需要 <file> <start> [end]"); }
+        let mut content = "";
+        match std.fs.read_file(args[1]) {
+            Ok(t) => { content = t; }
+            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+        }
+        let mut start: i64 = 0;
+        match args[2].parse_i64() {
+            Ok(n) => { start = n; }
+            Err(_) => { return fail("start 不是整数: " + args[2]); }
+        }
+        let mut end: i64 = 2147483647;
+        if args.len() >= 4 {
+            match args[3].parse_i64() {
+                Ok(n) => { end = n; }
+                Err(_) => { return fail("end 不是整数: " + args[3]); }
+            }
+        }
+        let lines = content.split("\n");
+        let mut outv: Vec[str] = [];
+        let mut i: i64 = 0;
+        for ln in lines {
+            i = i + 1;
+            if i < start || i > end { outv.push(ln); }
+        }
+        match std.fs.write_file(args[1], join_lines(outv)) {
+            Ok(_) => { return 0; }
+            Err(e) => { return fail("写入失败: " + e); }
+        }
+    }
+
+    // ---- count ----
+    if cmd == "count" {
+        if args.len() < 2 { return fail("count 需要 <file>"); }
+        let mut content = "";
+        match std.fs.read_file(args[1]) {
+            Ok(t) => { content = t; }
+            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+        }
+        let lines = content.split("\n");
+        let mut n = lines.len();
+        // 末尾换行产生的空元素不算一行;空文件算 0 行
+        if n > 0 && lines[n - 1] == "" { n = n - 1; }
+        print("行 " + str(n));
+        print("字符 " + str(content.char_len()));
+        print("字节 " + str(content.byte_len()));
+        return 0;
+    }
+
+    return fail("未知子命令: " + cmd + "(无参数查看用法)");
+}

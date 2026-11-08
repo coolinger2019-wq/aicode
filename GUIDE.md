@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.27.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.27.1** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -835,6 +835,20 @@ fn main() with io {
 - 错误码稳定且可查:`docs/diagnostics.md`。M1xxx 词法、M2xxx 语法、M3xxx 类型、M4xxx 运行时、W3xxx 警告。
 - `ming fmt` 是唯一风格:4 空格、`;` 显式、注释保留。**不要手调格式,也不要为格式争论。**
 
+### mingkit 文件工具箱(v0.27.1,用 Ming 自写)
+
+`tools/mingkit.ming` —— 仓库中第一个用 Ming 自写的工具,为 AI 协作中的文件读写而设:跨 shell 的转义损耗是文件补丁的最大摩擦源,mingkit 只保留一层转义(`\n` `\t` `\\`),并拒绝歧义写入(replace 0 处/多处命中即报错退出 1,不落盘)。
+
+```bash
+node bin/ming.js run tools/mingkit.ming -- read  <file> [start] [end]
+node bin/ming.js run tools/mingkit.ming -- write <file>          # stdin 全量覆盖
+node bin/ming.js run tools/mingkit.ming -- replace <file> <old> <new>   # 恰好 1 处,否则报错
+node bin/ming.js run tools/mingkit.ming -- insert-after <file> <pat> <text>
+node bin/ming.js run tools/mingkit.ming -- count <file>
+```
+
+语义由回归套件锁定(双引擎一致);这也是自举的第一块碎片。
+
 ---
 
 ## 20. 给 AI 的使用建议
@@ -912,6 +926,12 @@ fn main() with io {
   1. SAB 布局重叠——hlen 字段(字节 8-11)与 body 起始偏移 8 冲突,body 前 4 字节被 hlen 覆盖(表现为 U+FFFD/NUL 污染);修复:body 移至偏移 12,字节级探针验证。
   2. Map 键表示——执行器把 V 对象当键存入,违反"ming map 键 = 原始 JS 基元"内部约定,`get()` 永远落空;修复:键存原始串。测试输入 "x-ming" → 响应回显头 6 项键值全对,双引擎一致。
 - 测试:299 项(新增 v0.27 4 项:fmt 3 + http_request_opts 端到端 1;后者含独立 echo 服务器子进程,验证响应头与超时路径)。另:run.mjs 的 HTTP 段重建(子进程服务器保活,避免主线程 Atomics.wait 死锁)。
+
+### v0.27.1(2026-11-09)
+
+- **tools/mingkit.ming——用 Ming 自写的文件工具箱**(仓库第一个自举工具):read(整文件/行区间)/ write / append(stdin 全量)/ replace(恰好 1 处,0/多处拒绝写入)/ replace-all / insert-after / insert-before / delete-lines / count。设计动机:AI 文件补丁的最大摩擦是跨 shell 转义层,mingkit 只保留一层转义(`\n` `\t` `\\`),歧义写入一律拒绝(退出码 1,不落盘)。
+- 过程中的语义核对:`new` 是 Ming 保留字(M1006 拦截,改用 repl);main 的 args 不含程序名;count 行数 = `split("\n")` 去掉末尾空元素(空文件 0 行);print 自带换行,read 原样输出需先剥一个尾部换行。
+- 测试:315 项(新增 mingkit 16 项:往返/区间/精确替换拒绝/转义/插入/删行/count 中文字节口径/append/双引擎一致/用法)。
 
 ### v0.26.0(2026-11-08)
 

@@ -761,6 +761,69 @@ fn main() with io, fs {
   echoServer.kill();
 }
 
+// ===================== 27. v0.27.1:mingkit 文件工具(用 Ming 自写)=====================
+{
+  const KIT = path.join(ROOT, 'tools', 'mingkit.ming');
+  const kitRun = (args, stdin = '') => runMing(['run', KIT, ...args], { stdin });
+  const f = (n) => path.join(TMP, n);
+
+  // write + read 往返(含中文)
+  let r = kitRun(['write', f('k1.txt')], 'alpha\nbeta\ngamma\n');
+  check('kit:write 退出码', r.code === 0, r.stderr.slice(0, 150));
+  r = kitRun(['read', f('k1.txt')]);
+  check('kit:read 往返', r.code === 0 && r.stdout === 'alpha\nbeta\ngamma\n', JSON.stringify(r.stdout));
+  r = kitRun(['read', f('k1.txt'), '2', '3']);
+  check('kit:read 行区间', r.stdout === 'beta\ngamma\n', JSON.stringify(r.stdout));
+
+  // replace:恰好 1 处;0 处与多处拒绝(退出码 1,不改文件)
+  r = kitRun(['replace', f('k1.txt'), 'beta', 'BETA']);
+  check('kit:replace 恰好 1 处', r.code === 0 && kitRun(['read', f('k1.txt')]).stdout === 'alpha\nBETA\ngamma\n', r.stderr.slice(0, 150));
+  r = kitRun(['replace', f('k1.txt'), 'nope', 'X']);
+  check('kit:replace 0 处拒绝', r.code === 1 && r.stderr.includes('未找到'), 'code=' + r.code);
+  fs.writeFileSync(f('k2.txt'), 'dup dup\n');
+  r = kitRun(['replace', f('k2.txt'), 'dup', 'Y']);
+  check('kit:replace 多处拒绝', r.code === 1 && r.stderr.includes('2 处'), r.stderr.slice(0, 150));
+  r = kitRun(['replace-all', f('k2.txt'), 'dup', 'Y']);
+  check('kit:replace-all', r.code === 0 && kitRun(['read', f('k2.txt')]).stdout === 'Y Y\n', r.stderr.slice(0, 150));
+
+  // \n 转义:单参数实现跨行替换
+  fs.writeFileSync(f('k3.txt'), 'one\n');
+  r = kitRun(['replace', f('k3.txt'), 'one', 'two\\nthree']);
+  check('kit:replace \\n 转义', r.code === 0 && kitRun(['read', f('k3.txt')]).stdout === 'two\nthree\n', JSON.stringify(r.stdout));
+
+  // insert-after / insert-before(只动第一个命中行)
+  fs.writeFileSync(f('k4.txt'), 'a1\na2\na3\n');
+  kitRun(['insert-after', f('k4.txt'), 'a2', '插入']);
+  kitRun(['insert-before', f('k4.txt'), 'a1', '首前']);
+  r = kitRun(['read', f('k4.txt')]);
+  check('kit:insert-after/before', r.stdout === '首前\na1\na2\n插入\na3\n', JSON.stringify(r.stdout));
+
+  // delete-lines:带 end 与缺 end(删到尾)
+  fs.writeFileSync(f('k5.txt'), '1\n2\n3\n4\n');
+  kitRun(['delete-lines', f('k5.txt'), '2', '3']);
+  r = kitRun(['read', f('k5.txt')]);
+  check('kit:delete-lines 区间', r.stdout === '1\n4\n', JSON.stringify(r.stdout));
+  kitRun(['delete-lines', f('k5.txt'), '2']);
+  r = kitRun(['read', f('k5.txt')]);
+  check('kit:delete-lines 缺 end', r.stdout === '1\n', JSON.stringify(r.stdout));
+
+  // count + append + 双引擎一致
+  fs.writeFileSync(f('k6.txt'), '中\n');
+  r = kitRun(['count', f('k6.txt')]);
+  check('kit:count 字节口径', r.stdout === '行 1\n字符 2\n字节 4\n', JSON.stringify(r.stdout));
+  r = kitRun(['append', f('k6.txt')], '尾\n');
+  check('kit:append', r.code === 0 && kitRun(['read', f('k6.txt')]).stdout === '中\n尾\n', JSON.stringify(r.stdout));
+  fs.writeFileSync(f('k7.txt'), 'p\nq\n');
+  const rt = runMing(['run', KIT, '--tree', 'replace', f('k7.txt'), 'p', 'P']);
+  check('kit:双引擎一致(tree)', rt.code === 0 && kitRun(['read', f('k7.txt')]).stdout === 'P\nq\n', rt.stderr.slice(0, 150));
+
+  // 用法与未知子命令
+  r = kitRun([]);
+  check('kit:无参数出用法', r.code === 1 && r.stderr.includes('mingkit'), r.stderr.slice(0, 100));
+  r = kitRun(['bogus']);
+  check('kit:未知子命令', r.code === 1 && r.stderr.includes('未知子命令'), r.stderr.slice(0, 100));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
