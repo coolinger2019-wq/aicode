@@ -369,7 +369,7 @@ fn main() with io, fs {
   for (const [desc, src, expectOut] of srcs) {
     const p = mingFile('sync-' + desc.replace(/[^a-zA-Z0-9\\u4e00-\\u9fa5]+/g, '-') + '.ming', src);
     const r = runMing(['run', p]);
-    check(desc, r.code === 0 && r.stdout === expectOut, 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 150));
+    check(desc, r.code === 0 && r.stdout === expectOut, 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 150) + ' FILELEN=' + fs.statSync(p).size + ' SRCHEAD=' + JSON.stringify(fs.readFileSync(p, 'utf8').slice(0, 80)));
   }
   // 效果强制:未声明 sync 不得 spawn
   const p = mingFile('sync-cap.ming', 'use std.sync;\nfn f() -> i64 { return 1; }\nfn main() with io { print(str(std.sync.join(std.sync.spawn(f)).unwrap())); }\n');
@@ -573,7 +573,7 @@ fn main() with io, fs {
 
 // ===================== 20. v0.21:WASM 插值 + str 方法面 =====================
 {
-  const BS = String.fromCharCode(92);
+  const BS = "\\";
   const I = (e) => BS + '{' + e + '}';
   const srcs = [
     ['v21:wasm 内插值(混合类型)', 'fn describe(n: i64, ok: bool) -> str { return "' + I('n') + ' ok=' + I('ok') + '"; } fn main() with io { print(describe(7, true)); }', '7 ok=true\n'],
@@ -622,6 +622,51 @@ fn main() with io, fs {
     ['lmem23:let mut w = v 拷贝独立', 'fn main() with io { let v: Vec[i64] = [5]; let mut w = v; w.push(9); print(str(v.len())); print(str(w.len())); }', '1\n2\n'],
   ];
   for (const [desc, src, expectOut] of srcs) {
+    const p = mingFile(desc.replace(/[^a-zA-Z0-9]+/g, '-') + '.ming', src);
+    const r = runMing(['run', p]);
+    check(desc, r.code === 0 && r.stdout === expectOut, 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 150));
+    const rt = runMing(['run', p, '--tree']);
+    check(desc + '(tree)', rt.code === 0 && rt.stdout === expectOut, 'stdout=' + JSON.stringify(rt.stdout));
+  }
+}
+
+// ===================== 23. v0.25:时间日期 + 随机 =====================
+{
+  const BS = String.fromCharCode(92);
+  const I = (e) => BS + '{' + e + '}';
+  const srcs = [
+    ['v25:rand 确定性(seed)', 'use std.rand; fn main() with io, rand { std.rand.seed(42); let a = std.rand.range(1, 100); std.rand.seed(42); let b = std.rand.range(1, 100); print(str(a)); print(str(b)); print(str(a == b)); }', '46\n46\ntrue\n'],
+    ['v25:rand u64/f64 范围', 'use std.rand; fn main() with io, rand { let u = std.rand.u64(); let f = std.rand.f64(); print(str(f >= 0.0 && f < 1.0)); }', 'true\n'],
+    ['v25:rand range 范围', 'use std.rand; fn main() with io, rand { std.rand.seed(7); let mut ok = true; let mut i = 0; while i < 50 { let r = std.rand.range(5, 10); if r < 5 || r >= 10 { ok = false; } i += 1; } print(str(ok)); }', 'true\n'],
+    ['v25:monotonic 测 sleep', 'use std.time; fn main() with io, time { let t0 = std.time.monotonic_ms(); std.time.sleep(30); let dt = std.time.monotonic_ms() - t0; print(str(dt >= 25)); }', 'true\n'],
+    ['v25:date_parts 字段', 'use std.time; fn main() with io, time { let parts = std.time.date_parts(std.time.now_ms()); print(str(parts.get("year").unwrap().as_num().unwrap() >= 2026.0)); print(str(parts.get("month").unwrap().as_num().unwrap() >= 1.0)); print(str(parts.get("month").unwrap().as_num().unwrap() <= 12.0)); }', 'true\ntrue\ntrue\n'],
+    ['v25:ISO 往返', 'use std.time; fn main() with io, time { let now = std.time.now_ms(); let iso = std.time.format_iso(now); print(str(std.time.parse_iso(iso).unwrap() / 1000 == now / 1000)); }', 'true\n'],
+    ['v25:parse_iso 非法输入', 'use std.time; fn main() with io, time { print(str(std.time.parse_iso("not-a-date").is_err())); }', 'true\n'],
+  ];
+  for (const [desc, src, expectOut] of srcs) {
+    const p = mingFile(desc.replace(/[^a-zA-Z0-9]+/g, '-') + '.ming', src);
+    const r = runMing(['run', p]);
+    check(desc, r.code === 0 && r.stdout === expectOut, 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 150));
+    const rt = runMing(['run', p, '--tree']);
+    check(desc + '(tree)', rt.code === 0 && rt.stdout === expectOut, 'stdout=' + JSON.stringify(rt.stdout));
+  }
+}
+
+// ===================== 24. 短路求值真值表(v0.20 遗留 bug 回归)=====================
+{
+  // || 与 && 的 l true/false 全真值表(双引擎)——锁定 v0.20 修复的 || 短路结构
+  const cases = [
+    ['||:l true', 'print(str(3 < 5 || 4 >= 10));', 'true\n'],
+    ['||:l false', 'print(str(3 > 5 || 4 < 10));', 'true\n'],
+    ['||:两侧 false', 'print(str(3 > 5 || 4 > 10));', 'false\n'],
+    ['&&:l true', 'print(str(3 < 5 && 4 < 10));', 'true\n'],
+    ['&&:l false', 'print(str(3 > 5 && 4 < 10));', 'false\n'],
+    ['&&:两侧 true', 'print(str(3 < 5 && 4 < 10));', 'true\n'],
+    ['||:闭包捕获不影响外部(值语义)', 'let mut n = 0; let inc = () => { n += 1; true }; let a = false || inc(); print(str(n)); print(str(a));', '0\ntrue\n'],
+    ['&&:闭包捕获不影响外部(值语义)', 'let mut n = 0; let inc = () => { n += 1; true }; let a = true && inc(); print(str(n)); print(str(a));', '0\ntrue\n'],
+  ];
+  for (const [desc, body, expectOut] of cases) {
+    const src = 'fn main() with io { ' + body + ' }';
     const p = mingFile(desc.replace(/[^a-zA-Z0-9]+/g, '-') + '.ming', src);
     const r = runMing(['run', p]);
     check(desc, r.code === 0 && r.stdout === expectOut, 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 150));

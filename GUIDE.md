@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.24.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + capability fs/net/sync/proc/env + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.25.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + capability fs/net/sync/proc/env/rand + 时间日期 + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -591,8 +591,12 @@ $ node bin/ming.js test mylib.ming
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `now_ms` | `() -> i64` · 效果 `time` | 毫秒时间戳 |
+| `now_ms` | `() -> i64` · 效果 `time` | 墙钟毫秒时间戳 |
 | `sleep` | `(i64) -> ()` · 效果 `time` | 同步睡眠(毫秒;v0.10) |
+| `monotonic_ms` | `() -> i64` · 效果 `time` | **单调时钟**(测耗时;不受系统调钟影响;v0.25) |
+| `date_parts` | `(i64) -> Json` · 效果 `time` | 本地时区分解:{year, month, day, hour, min, sec, weekday(1=周一)}(v0.25) |
+| `format_iso` | `(i64) -> str` · 效果 `time` | 本地时区 ISO 8601(YYYY-MM-DDTHH:mm:ss)(v0.25) |
+| `parse_iso` | `(str) -> Result[i64, str]` · 效果 `time` | 解析 ISO 8601(本地时区)(v0.25) |
 
 ### std.json(纯函数,v0.10)
 
@@ -728,6 +732,17 @@ fn main() with io, sync {
 }
 ```
 
+### std.rand(能力:rand,v0.25)
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `u64` | `() -> u64` · 效果 `rand` | 64 位随机 |
+| `f64` | `() -> f64` · 效果 `rand` | [0, 1) 均匀 |
+| `range` | `(lo, hi) -> i64` · 效果 `rand` | [lo, hi) 整数 |
+| `seed` | `(u64) -> ()` · 效果 `rand` | 确定性模式:seed 后同序列(测试友好,符合确定性哲学) |
+
+内部 mulberry32;初始种子来自时钟+pid,`seed` 后完全确定。
+
 ### std.path(纯函数)
 
 `join(a, b) -> str`、`base_name(p) -> str`、`dir_name(p) -> str`、`extension(p) -> str`(含点,如 ".txt")——无效果,可在纯函数中使用。
@@ -835,6 +850,13 @@ fn main() with io, sync {
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.25.0(2026-11-08)
+
+- **时间日期**:monotonic_ms(单调钟,测耗时不受调钟影响)、date_parts(本地时区七字段 Json)、format_iso/parse_iso(ISO 8601 往返,秒级精度)。
+- **std.rand**:效果 rand;mulberry32(32 位状态);u64/f64/range/seed——**seed 后完全确定**(同 seed 同序列,测试友好,符合确定性哲学);初始种子 = 时钟 ^ pid。
+- **重大 bug 修复(测试暴露):JS VM 的 || 短路结构反了**——`l || r` 在 l=true 时错误地落入 r 求值(实现成了 !l || r)。该 bug 自 v0.11 字节码 || 诞生即存在,此前所有测试的 || 左操作数恰好为 false,从未暴露;新增 ||/&& 真值表全枚举 + 求值次数测试(闭包计数器验证短路)锁定。同源确认 && 编译正确。
+- 测试:286 项(新增 v0.25 14 项:rand 确定性/范围/单调钟/date_parts/ISO 往返/非法输入 + 短路真值表 16 项,全双引擎)。
 
 ### v0.24.0(2026-11-08)
 

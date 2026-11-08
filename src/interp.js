@@ -459,6 +459,8 @@ export class Interp {
     this.check = checkResult;
     this.syncTasks = new Map(); // handleId → {sab, worker, done}
     this.syncTaskSeq = 0;
+    this.randState = (BigInt(Date.now()) ^ BigInt(process.pid)) & 0xFFFFFFFFn; // mulberry32
+    this.syncTaskSeq = 0;
     this.syncScopeStack = [];   // scoped 块栈(v0.17):[{tasks: [handleId]}]
     this.entry = checkResult.entry;
     this.methodImpls = checkResult.methodImpls ?? null;
@@ -1315,6 +1317,57 @@ export class Interp {
         }
       }
       // ---- std.time.sleep(效果 time;Atomics 同步睡眠)----
+      case 'time.monotonic_ms': {
+        return V.int(BigInt(Math.floor(performance.now())), 64, true);
+      }
+      case 'time.date_parts': {
+        const d = new Date(Number(args[0].v));
+        const obj = new Map([
+          ['year', V.json('num', d.getFullYear())],
+          ['month', V.json('num', d.getMonth() + 1)],
+          ['day', V.json('num', d.getDate())],
+          ['hour', V.json('num', d.getHours())],
+          ['min', V.json('num', d.getMinutes())],
+          ['sec', V.json('num', d.getSeconds())],
+          ['weekday', V.json('num', d.getDay() === 0 ? 7 : d.getDay())],
+        ]);
+        return V.json('obj', obj);
+      }
+      case 'time.format_iso': {
+        const d = new Date(Number(args[0].v));
+        const p2 = (x) => String(x).padStart(2, '0');
+        return V.str(d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
+          + 'T' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()));
+      }
+      case 'time.parse_iso': {
+        const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(args[0].v.trim());
+        if (!m) return V.enumv('builtin-res', 'Err', [V.str('不是有效的 ISO 日期时间: ' + args[0].v)]);
+        const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4] ?? 0), Number(m[5] ?? 0), Number(m[6] ?? 0));
+        if (Number.isNaN(d.getTime())) return V.enumv('builtin-res', 'Err', [V.str('日期超出范围: ' + args[0].v)]);
+        return V.enumv('builtin-res', 'Ok', [V.int(BigInt(d.getTime()), 64, true)]);
+      }
+      case 'rand.u64': {
+        this.randStep();
+        const hi = this.randState;
+        this.randStep();
+        const lo = this.randState & 0xFFFFFFFFn;
+        return V.int((hi << 32n) | lo, 64, false);
+      }
+      case 'rand.f64': {
+        this.randStep();
+        return V.float(Number(this.randState) / 4294967296, 64);
+      }
+      case 'rand.range': {
+        const lo = BigInt(args[0].v), hi = BigInt(args[1].v);
+        if (hi <= lo) throw new Panic('M4001', 'rand.range 要求 lo < hi', span);
+        this.randStep();
+        const r = this.randState & 0x7FFFFFFFFFFFFFFFn;
+        return V.int(lo + (r % (hi - lo)), 64, true);
+      }
+      case 'rand.seed': {
+        this.randState = BigInt(args[0].v) & 0xFFFFFFFFn;
+        return UNIT;
+      }
       case 'time.sleep': {
         const ms = Number(args[0].v);
         if (Number.isFinite(ms) && ms > 0) {
@@ -1460,6 +1513,14 @@ export class Interp {
       V.str(parsed.stdout),
       V.str(parsed.stderr),
     ])]);
+  }
+
+  randStep() {
+    this.randState = (this.randState + 0x6D2B79F5n) & 0xFFFFFFFFn;
+    let t = this.randState;
+    t = ((t ^ (t >> 15n)) * (t | 1n)) & 0xFFFFFFFFn;
+    t = (t ^ (t + ((t ^ (t >> 7n)) * (t | 61n)))) & 0xFFFFFFFFn;
+    this.randState = (t ^ (t >> 14n)) & 0xFFFFFFFFn;
   }
 
   // ---------- 结构化并发(v0.14)----------

@@ -677,15 +677,16 @@ class BytecodeCompiler {
           return;
         }
         if (e.op === '||') {
+          // 短路或:l true → 结果 true(跳过 r);l false → 结果 = r
           this.compileExpr(e.l, st);
-          this.emit(st, OP.JUMPFALSE, 0, 0, e.span); // 弹 l;false 时跳
-          const j = this.here(st) - 1;
-          this.compileExpr(e.r, st);                  // push bool
+          this.emit(st, OP.JUMPFALSE, 0, 0, e.span); // 弹 l;false 时跳到 r
+          const jR = this.here(st) - 1;
+          this.emit(st, OP.CONST, this.poolAdd(V.bool(true)), 0, e.span); // l true → true
           this.emit(st, OP.JUMP, 0, 0, e.span);
-          const j2 = this.here(st) - 1;
-          this.patch(st, j, this.here(st));
-          this.emit(st, OP.CONST, this.poolAdd(V.bool(true)), 0, e.span);
-          this.patch(st, j2, this.here(st));
+          const jE = this.here(st) - 1;
+          this.patch(st, jR, this.here(st));
+          this.compileExpr(e.r, st);                  // push r
+          this.patch(st, jE, this.here(st));
           return;
         }
         this.compileExpr(e.l, st);
