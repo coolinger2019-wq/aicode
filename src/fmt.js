@@ -429,7 +429,7 @@ function wrap(e, myPrec, minPrec, s) {
 }
 
 function strLit(e) {
-  let s = '"';
+  let s = (e.raw ? 'r' : '') + '"';
   for (const p of e.parts) {
     if ('lit' in p) {
       s += p.lit.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t');

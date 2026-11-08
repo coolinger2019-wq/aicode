@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.25.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + capability fs/net/sync/proc/env/rand + 时间日期 + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.26.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -743,6 +743,33 @@ fn main() with io, sync {
 
 内部 mulberry32;初始种子来自时钟+pid,`seed` 后完全确定。
 
+### std.re(纯函数,v0.26)
+
+正则 = **JS RegExp 桥接**(ECMAScript 语法),pattern 用**原始字符串** `r"..."(无转义,\\d 原样保留)。非法 pattern = 程序员错误 → panic;含 re 调用的函数在 wasm 分层自动回落 JS VM(语义不变)。
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `is_match` | `(pattern, s) -> bool` | 是否存在匹配 |
+| `find` | `(pattern, s) -> Option[str]` | 第一个匹配 |
+| `find_all` | `(pattern, s) -> Vec[str]` | 全部匹配 |
+| `replace` | `(pattern, s, repl) -> str` | 替换全部(repl 支持 $1 捕获引用) |
+| `split` | `(pattern, s) -> Vec[str]` | 分割 |
+
+```ming
+use std.re;
+
+fn main() with io {
+    print(str(std.re.is_match(r"\\d+", "abc123")));       // true
+    for part in std.re.split(r",\\s*", "a, b,c") { print(part); }
+}
+```
+
+### 字符判定与 pad(v0.26)
+
+`is_alpha()` / `is_digit()` / `is_space()` / `is_upper()` / `is_lower()`(整串判定,空串 false,Unicode 感知 \p{L}/\p{Nd});`pad_left(n)` / `pad_right(n)`(空格填充)。
+
+**字符串 Builder 的设计判断(不做)**:Vec[str] + join 已是 O(n) 惯用法,单独 Builder 类型冗余。
+
 ### std.path(纯函数)
 
 `join(a, b) -> str`、`base_name(p) -> str`、`dir_name(p) -> str`、`extension(p) -> str`(含点,如 ".txt")——无效果,可在纯函数中使用。
@@ -850,6 +877,14 @@ fn main() with io, sync {
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.26.0(2026-11-08)
+
+- **原始字符串字面量**:`r"..."`(语言特性)——无转义无插值,\\d 原样保留;正则标配(Rust 风格)。
+- **std.re 正则五函数**:is_match/find/find_all/replace($1 捕获引用)/split——JS RegExp 桥接,纯函数;非法 pattern = 程序员错误 → panic;含 re 调用的函数 wasm 自动回落(语义不变)。
+- **str 方法面扩大**:is_alpha/is_digit/is_space(Unicode \\p{L}/\\p{Nd} 感知,空串 false)、is_upper/is_lower、pad_left/pad_right。
+- **Builder 设计判断(不做)**:Vec[str] + join 已是 O(n) 惯用法,单独 Builder 冗余(写入 GUIDE 迁移说明)。
+- 测试:295 项(新增 v0.26 9 项:re 五函数/非法 pattern panic/字符分类/大小写/pad)。
 
 ### v0.25.0(2026-11-08)
 

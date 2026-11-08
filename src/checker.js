@@ -270,6 +270,16 @@ export const STD_MODULES = {
       mF('remove_dir_recursive', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
     ],
   },
+  // 正则(JS RegExp 桥接;pattern 非法 = 程序员错误 → panic;纯函数,wasm 内自动回落)
+  re: {
+    fns: [
+      mF('is_match', [T_STR, T_STR], T_BOOL),
+      mF('find', [T_STR, T_STR], mkOpt(T_STR)),
+      mF('find_all', [T_STR, T_STR], mkVec(T_STR)),
+      mF('replace', [T_STR, T_STR, T_STR], T_STR),
+      mF('split', [T_STR, T_STR], mkVec(T_STR)),
+    ],
+  },
   // 随机数(能力:rand;确定性模式:seed 后同序列)
   rand: {
     fns: [
@@ -339,7 +349,8 @@ export const METHOD_NAMES = {
   map: ['len', 'get', 'set', 'has', 'delete', 'keys', 'values', 'items', 'clear', 'clone', 'is_empty'],
   str: ['char_len', 'byte_len', 'chars', 'bytes', 'split', 'trim', 'trim_start', 'trim_end',
     'to_upper', 'to_lower', 'starts_with', 'ends_with', 'contains', 'replace', 'repeat',
-    'get', 'slice_chars', 'parse_i64', 'parse_f64', 'is_empty'],
+    'get', 'slice_chars', 'parse_i64', 'parse_f64', 'is_empty',
+    'is_alpha', 'is_digit', 'is_space', 'is_upper', 'is_lower', 'pad_left', 'pad_right'],
   opt: ['unwrap', 'expect', 'unwrap_or', 'is_some', 'is_none'],
   res: ['unwrap', 'unwrap_err', 'expect', 'unwrap_or', 'is_ok', 'is_err'],
   int: ['abs', 'to_f32', 'to_f64', 'to_i8', 'to_i16', 'to_i32', 'to_i64', 'to_u8', 'to_u16', 'to_u32', 'to_u64'],
@@ -2325,6 +2336,11 @@ export class Checker {
       case 'parse_i64': if (!this.arityCheck(name, args, 0, 0, span)) return null; return mkRes(INT_TYPES.i64, T_STR);
       case 'parse_f64': if (!this.arityCheck(name, args, 0, 0, span)) return null; return mkRes(tfloat(64), T_STR);
       case 'is_empty': if (!this.arityCheck(name, args, 0, 0, span)) return null; return T_BOOL;
+      case 'is_alpha': case 'is_digit': case 'is_space': case 'is_upper': case 'is_lower':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return T_BOOL;
+      case 'pad_left': case 'pad_right':
+        if (!this.arityCheck(name, args, 1, 1, span)) return null; i64Arg(0, '.' + name + '()'); return T_STR;
       default:
         this.diags.push(err('M3015', `str 没有方法 ".${name}"(有:${METHOD_NAMES.str.join(', ')})`, span));
         return null;

@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.25)
+## 核心特性(v0.26)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,9 +74,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.25(当前)** — 时间日期(monotonic/ISO)+ std.rand(确定性 seed)
-- **v0.26** — 正则(JS RegExp 桥接)、字符分类、Builder
-- **更远** — 格式化语言、日志/错误链、原生后端探索、自举
+- **v0.26(当前)** — 正则(std.re + r-string)、字符分类、pad
+- **v0.27** — HTTP 成熟化(响应头/超时/重定向)、格式化语言
+- **更远** — 日志/错误链、原生后端探索、自举
 
 ## 设计原则(全文见 design.md)
 
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.25.0:字节码 VM + WASM 分层(线性内存)+ 结构化并发 + JSON + capability fs/net/sync/proc/env/rand + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md。
+v0.26.0:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + JSON + capability fs/net/sync/proc/env/rand + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md。

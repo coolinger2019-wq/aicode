@@ -1317,6 +1317,25 @@ export class Interp {
         }
       }
       // ---- std.time.sleep(效果 time;Atomics 同步睡眠)----
+      case 're.is_match': return V.bool(this.reCompile(args[0].v, 'u').test(args[1].v));
+      case 're.find': {
+        const m = this.reCompile(args[0].v, 'u').exec(args[1].v);
+        return m ? V.enumv('builtin-opt', 'Some', [V.str(m[0])]) : V.enumv('builtin-opt', 'None', []);
+      }
+      case 're.find_all': {
+        const re = this.reCompile(args[0].v, 'gu');
+        const out = [];
+        for (const m of args[1].v.matchAll(re)) out.push(V.str(m[0]));
+        return V.vec(out);
+      }
+      case 're.replace': {
+        const re = this.reCompile(args[0].v, 'gu');
+        return V.str(args[1].v.replace(re, args[2].v));
+      }
+      case 're.split': {
+        const re = this.reCompile(args[0].v, 'gu');
+        return V.vec(args[1].v.split(re).map(x => V.str(x)));
+      }
       case 'time.monotonic_ms': {
         return V.int(BigInt(Math.floor(performance.now())), 64, true);
       }
@@ -1513,6 +1532,28 @@ export class Interp {
       V.str(parsed.stdout),
       V.str(parsed.stderr),
     ])]);
+  }
+
+  reCompile(pattern, flags) {
+    const key = pattern + '\u0000' + flags;
+    let re = this.reCache?.get(key);
+    if (!re) {
+      try { re = new RegExp(pattern, flags); }
+      catch (e) { throw new Panic('M4001', '非法正则 pattern: ' + String(e.message), null); }
+      this.reCache?.set(key, re);
+    }
+    return re;
+  }
+
+  cachedRe(pattern, flags) {
+    const key = pattern + '\u0000' + flags;
+    let re = this.reCache?.get(key);
+    if (!re) {
+      try { re = new RegExp(pattern, flags); }
+      catch (e) { throw new Panic('M4001', '非法正则 pattern: ' + String(e.message), null); }
+      this.reCache?.set(key, re);
+    }
+    return re;
   }
 
   randStep() {
@@ -2042,6 +2083,13 @@ export class Interp {
         return V.enumv('builtin-res', 'Err', [V.str(`不是有效的浮点数: "${s.trim()}"`)]);
       }
       case 'is_empty': return V.bool(s === '');
+      case 'is_alpha': return V.bool(s.length > 0 && /^\p{L}+$/u.test(s));
+      case 'is_digit': return V.bool(s.length > 0 && /^\p{Nd}+$/u.test(s));
+      case 'is_space': return V.bool(s.length > 0 && /^\s+$/u.test(s));
+      case 'is_upper': return V.bool(s.length > 0 && /\p{L}/u.test(s) && s === s.toUpperCase());
+      case 'is_lower': return V.bool(s.length > 0 && /\p{L}/u.test(s) && s === s.toLowerCase());
+      case 'pad_left': return V.str(s.padStart(Number(args[0].v), ' '));
+      case 'pad_right': return V.str(s.padEnd(Number(args[0].v), ' '));
       default: throw new Panic('M4001', `内部错误:str.${name}`, span);
     }
   }

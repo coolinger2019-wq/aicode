@@ -106,6 +106,14 @@ export class Lexer {
     const m = this.mark();
     const ch = this.peek();
 
+    if (ch === 'r' && this.peek(1) === '"') {
+      // 原始字符串 r"...":无转义、无插值(正则 pattern 用;v0.26)
+      this.adv();
+      this.lexString(m, true);
+      const tok = this.tokens[this.tokens.length - 1];
+      tok.raw = true;
+      return;
+    }
     if (isIdentStart(ch)) { this.lexIdent(m); return; }
     if (isDigit(ch)) { this.lexNumber(m); return; }
     if (ch === '"') { this.lexString(m, false); return; }
