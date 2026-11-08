@@ -1284,6 +1284,75 @@ fn main() with io, fs {
   check('v34:crypto 效果强制 M3029', rp.code === 1 && rp.stderr.includes('M3029') && rp.stderr.includes('crypto'), rp.stderr.slice(0, 150));
 }
 
+// ===================== 35. v0.35:std.bin 显式字节序 + crypto HMAC + 模糊器 as 扩展 =====================
+{
+  // bin:LE/BE 打包已知向量 + 往返 + 越界 Err + u64 补码位型(双引擎)
+  const bn = mingFile('v35-bin.ming', [
+    'use std.bin;',
+    '',
+    'fn main() with io {',
+    '    let le = std.bin.pack_u32_le(0x12345678);',
+    '    print(str(le[0]) + "," + str(le[1]) + "," + str(le[2]) + "," + str(le[3]));',
+    '    let be = std.bin.pack_u32_be(0x12345678);',
+    '    print(str(be[0]) + "," + str(be[1]) + "," + str(be[2]) + "," + str(be[3]));',
+    '    match std.bin.unpack_u32_le(std.bin.pack_u32_le(305419896), 0) {',
+    '        Ok(v) => print(str(v)),',
+    '        Err(e) => print("ERR: " + e),',
+    '    }',
+    '    match std.bin.unpack_u16_le(std.bin.pack_u32_le(1), 3) {',
+    '        Ok(_) => print("bug"),',
+    '        Err(e) => print("ERR: " + e),',
+    '    }',
+    '    match std.bin.unpack_u64_le(std.bin.pack_u64_le(-1), 0) {',
+    '        Ok(v) => print(str(v)),',
+    '        Err(e) => print("ERR: " + e),',
+    '    }',
+    '    print(str(std.bin.pack_u16_be(1).len()));',
+    '}',
+  ].join('\n'));
+  const wantBn = [
+    '120,86,52,18',
+    '18,52,86,120',
+    '305419896',
+    'ERR: unpack:偏移越界(需 [3, 5),长度 4)',
+    '-1',
+    '2',
+  ].join('\n') + '\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', bn, ...eng]);
+    check('v35:bin 显式字节序' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantBn,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout));
+  }
+
+  // pack 值域超限 → panic M4001(u16 收到负数)
+  const qv = mingFile('v35-bin-range.ming', 'use std.bin;\nfn main() with io { print(str(std.bin.pack_u16_le(-1).len())); }');
+  const rqv = runMing(['run', qv]);
+  check('v35:pack 值域超限 M4001', rqv.code === 101 && rqv.stderr.includes('M4001') && rqv.stderr.includes('超出 u16'), 'code=' + rqv.code + ' stderr=' + rqv.stderr.slice(0, 150));
+
+  // HMAC 公开向量(维基百科 HMAC-SHA256 标准例)
+  const hm = mingFile('v35-hmac.ming', [
+    'use std.crypto;',
+    '',
+    'fn main() with io, crypto {',
+    '    print(std.crypto.hmac_sha256("key", "The quick brown fox jumps over the lazy dog"));',
+    '    print(std.crypto.hmac_md5("key", "The quick brown fox jumps over the lazy dog"));',
+    '}',
+  ].join('\n'));
+  const wantHm = [
+    'f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8',
+    '80070713463e7749b90c2dc24911e275',
+  ].join('\n') + '\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', hm, ...eng]);
+    check('v35:HMAC 公开向量' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantHm,
+      'stdout=' + JSON.stringify(r.stdout));
+  }
+
+  // 模糊器 as 扩展快速验证(小种子;完整覆盖见 fuzz.mjs 深档)
+  const fuzz35 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '30', '--seed', '35035'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v35:模糊 as/扩展形态(30 程序三后端一致)', fuzz35.status === 0 && /一致 30,分歧 0/.test(fuzz35.stdout ?? ''), 'code=' + fuzz35.status + ' tail=' + (fuzz35.stdout ?? '').slice(-120));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

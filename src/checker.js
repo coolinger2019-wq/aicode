@@ -306,6 +306,28 @@ export const STD_MODULES = {
       mF('sha256', [T_STR], T_STR, { effect: 'crypto' }),
       mF('sha384', [T_STR], T_STR, { effect: 'crypto' }),
       mF('sha512', [T_STR], T_STR, { effect: 'crypto' }),
+      mF('hmac_md5', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
+      mF('hmac_sha1', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
+      mF('hmac_sha256', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
+      mF('hmac_sha384', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
+      mF('hmac_sha512', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
+    ],
+  },
+  // 二进制显式字节序打包/解包(纯函数;安全工具之北支柱 1:拒绝隐式端序,be/le 显式枚举;v0.35)
+  bin: {
+    fns: [
+      mF('pack_u16_le', [INT_TYPES.i64], mkVec(INT_TYPES.u8)),
+      mF('pack_u16_be', [INT_TYPES.i64], mkVec(INT_TYPES.u8)),
+      mF('pack_u32_le', [INT_TYPES.i64], mkVec(INT_TYPES.u8)),
+      mF('pack_u32_be', [INT_TYPES.i64], mkVec(INT_TYPES.u8)),
+      mF('pack_u64_le', [INT_TYPES.i64], mkVec(INT_TYPES.u8)),
+      mF('pack_u64_be', [INT_TYPES.i64], mkVec(INT_TYPES.u8)),
+      mF('unpack_u16_le', [mkVec(INT_TYPES.u8), INT_TYPES.i64], mkRes(INT_TYPES.i64, T_STR)),
+      mF('unpack_u16_be', [mkVec(INT_TYPES.u8), INT_TYPES.i64], mkRes(INT_TYPES.i64, T_STR)),
+      mF('unpack_u32_le', [mkVec(INT_TYPES.u8), INT_TYPES.i64], mkRes(INT_TYPES.i64, T_STR)),
+      mF('unpack_u32_be', [mkVec(INT_TYPES.u8), INT_TYPES.i64], mkRes(INT_TYPES.i64, T_STR)),
+      mF('unpack_u64_le', [mkVec(INT_TYPES.u8), INT_TYPES.i64], mkRes(INT_TYPES.i64, T_STR)),
+      mF('unpack_u64_be', [mkVec(INT_TYPES.u8), INT_TYPES.i64], mkRes(INT_TYPES.i64, T_STR)),
     ],
   },
   // HTTP 客户端(capability:必须声明 net 效果;同步实现:worker + Atomics)

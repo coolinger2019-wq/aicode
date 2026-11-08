@@ -35,7 +35,7 @@ function genExpr(vars, depth) {
     if (vars.length && rng() < 0.6) return pick(vars);
     return String(int(-99, 999));
   }
-  const kind = pick(['bin', 'bin', 'bin', 'cmp', 'neg', 'if']);
+  const kind = pick(['bin', 'bin', 'bin', 'cmp', 'neg', 'if', 'cast']);
   const l = genExpr(vars, depth - 1);
   const r = genExpr(vars, depth - 1);
   if (kind === 'bin') {
@@ -43,6 +43,10 @@ function genExpr(vars, depth) {
     const op = pick(['+', '+', '-', '*', '%', '&', '|', '^', '<<', '>>']);
     if (op === '%' || op === '<<' || op === '>>') return `(${l} ${op} ${int(1, 5)})`;
     return `(${l} ${op} ${r})`;
+  }
+  if (kind === 'cast') {
+    // v0.35:as 随机转换(位截断/有符号回绕三后端必须一致——树引擎 asType 字段 bug 的回归防线)
+    return `(${l} as ${pick(['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'i64'])} as i64)`;
   }
   if (kind === 'cmp') return `(${l} ${pick(['<', '<=', '>', '>=', '==', '!='])} ${r} as i64)`;
   if (kind === 'neg') return `(-(${l}))`;

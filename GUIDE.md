@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.34.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.35.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -754,11 +754,12 @@ fn main() with io, sync {
 
 ### std.crypto(能力:crypto,v0.34)
 
-哈希原语(node:crypto 桥接;安全工具之北支柱 6 第一块):输入 UTF-8 字符串,输出小写 hex。AES/RSA/国密与字节流接口随后续版本。
+哈希/HMAC 原语(node:crypto 桥接;安全工具之北支柱 6):输入 UTF-8 字符串,输出小写 hex。AES/RSA/国密与字节流接口随后续版本。
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
 | `md5` / `sha1` / `sha256` / `sha384` / `sha512` | `(str) -> str` · 效果 `crypto` | 标准 Hash,hex 小写 |
+| `hmac_md5` / `hmac_sha1` / `hmac_sha256` / `hmac_sha384` / `hmac_sha512` | `(key: str, msg: str) -> str` · 效果 `crypto` | HMAC(v0.35) |
 
 ```ming
 use std.crypto;
@@ -766,6 +767,27 @@ use std.crypto;
 fn main() with io, crypto {
     print(std.crypto.sha256("abc"));
     // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    print(std.crypto.hmac_sha256("key", "msg"));
+}
+```
+
+### std.bin(纯函数,v0.35)
+
+显式字节序打包/解包(安全工具之北支柱 1):**拒绝隐式端序**——be/le 显式枚举为独立函数,一种结构一个语法。全部纯函数(无效果)。
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `pack_u16_le` / `pack_u16_be` / `pack_u32_le` / `pack_u32_be` | `(i64) -> Vec[u8]` | 打包;值域超限 → panic(需要截断请显式 `as`) |
+| `pack_u64_le` / `pack_u64_be` | `(i64) -> Vec[u8]` | 任意 i64 按 u64 补码位型(与 fmt.hex/bin 对称) |
+| `unpack_u16_le` … `unpack_u64_be` | `(Vec[u8], off: i64) -> Result[i64, str]` | 解包;偏移越界/短缓冲/非 u8 字节 → Err(数据驱动错误) |
+
+- unpack_u64 读数 ≥ 2^63 按补码位型转负 i64(位型与 fmt.hex 对称)。
+
+```ming
+use std.bin;
+
+fn main() with io {
+    let b = std.bin.pack_u32_le(0x12345678);   // [0x78, 0x56, 0x34, 0x12]
 }
 ```
 
@@ -955,12 +977,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.32(已完成) | 发布期门禁(max-alloc/max-ms/M4011/M4012)+ **wasm 层复活**(11 层静默回落根因修复;for-in 加载已知问题回落待修) |
 | v0.33(已完成) | for-in 步长根因(×3→×8,4 处)+ for-in 回归 wasm 直跑 + **模糊测试基线**(三后端差分)+ 树引擎 `as` 崩溃修复 |
 | v0.34(已完成) | **北星立项**(design.md §6 安全工具之北)+ std.crypto 哈希五件套(新能力 crypto) |
-| v0.35 方向 | 字节序/位域解包 API(be/le 显式)、字节流正则(Vec[u8] 版 std.re)、HMAC、模糊器扩展 |
-| 更远(北星对齐) | 原生后端(C)→ FFI/unsafe 块/内联汇编/syscall;async 运行时 → 海量并发;eval 能力;交叉编译部署;AES/RSA/国密;动态权限收回;形式化验证 |
+| v0.35(已完成) | std.bin 显式字节序 12 函数(支柱 1 落地)+ crypto HMAC 五件套 + 模糊器 as 扩展 |
+| v0.36 方向 | 字节流正则(Vec[u8] 版 std.re)、位域/struct packing 设计、AES 对称加密、模糊器 str 深形态 |
+| 更远(北星对齐) | 原生后端(C)→ FFI/unsafe 块/内联汇编/syscall;async 运行时 → 海量并发;eval 能力;交叉编译部署;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.35.0(2026-11-09)
+
+- **std.bin 显式字节序打包/解包**(纯函数,安全工具之北支柱 1 落地):pack/unpack × u16/u32/u64 × le/be 共 12 函数。设计立场:**拒绝隐式端序**——be/le 显式枚举为独立函数(一种结构一个语法),而非字符串参数。语义:pack 值域超限 = 不变量破坏 → panic(提示显式 `as` 截断);unpack 越界/短缓冲/非 u8 字节 = 数据驱动错误 → Err;u64 读数 ≥ 2^63 按补码位型转 i64(与 fmt.hex/bin 对称)。
+- **crypto 补 HMAC 五件套**:`hmac_md5/sha1/sha256/sha384/sha512(key, msg)`,维基百科公开向量测试。
+- **模糊器 as 扩展**:随机 `as u8/i8/u16/i16/u32/i32/i64 as i64` 双重转换进入表达式池——树引擎 castValue 位截断/回绕语义 vs VM CAST 指令的差分回归防线;80 程序新种子零分歧。
+- 测试:362 项(新增 v0.35 6 项:bin LE/BE 向量/往返/越界/u64 补码 双引擎、pack 值域 panic、HMAC 公开向量 双引擎、模糊快速档)。
 
 ### v0.34.0(2026-11-09)
 

@@ -1468,6 +1468,26 @@ export class Interp {
       case 'crypto.sha256': return V.str(nodeCrypto.createHash('sha256').update(args[0].v, 'utf8').digest('hex'));
       case 'crypto.sha384': return V.str(nodeCrypto.createHash('sha384').update(args[0].v, 'utf8').digest('hex'));
       case 'crypto.sha512': return V.str(nodeCrypto.createHash('sha512').update(args[0].v, 'utf8').digest('hex'));
+      // HMAC(v0.35):(key, msg) → hex
+      case 'crypto.hmac_md5': return V.str(nodeCrypto.createHmac('md5', args[0].v).update(args[1].v, 'utf8').digest('hex'));
+      case 'crypto.hmac_sha1': return V.str(nodeCrypto.createHmac('sha1', args[0].v).update(args[1].v, 'utf8').digest('hex'));
+      case 'crypto.hmac_sha256': return V.str(nodeCrypto.createHmac('sha256', args[0].v).update(args[1].v, 'utf8').digest('hex'));
+      case 'crypto.hmac_sha384': return V.str(nodeCrypto.createHmac('sha384', args[0].v).update(args[1].v, 'utf8').digest('hex'));
+      case 'crypto.hmac_sha512': return V.str(nodeCrypto.createHmac('sha512', args[0].v).update(args[1].v, 'utf8').digest('hex'));
+      // 二进制显式字节序(v0.35;安全工具之北支柱 1):pack 值域超限 = 不变量破坏 → panic;
+      // unpack 越界/短缓冲 = 数据驱动错误 → Err;u64 读数 ≥ 2^63 按补码位型转 i64(与 fmt.hex 对称)
+      case 'bin.pack_u16_le': return this.binPack(args[0].v, 2, 'le', 16);
+      case 'bin.pack_u16_be': return this.binPack(args[0].v, 2, 'be', 16);
+      case 'bin.pack_u32_le': return this.binPack(args[0].v, 4, 'le', 32);
+      case 'bin.pack_u32_be': return this.binPack(args[0].v, 4, 'be', 32);
+      case 'bin.pack_u64_le': return this.binPack(args[0].v, 8, 'le', 64);
+      case 'bin.pack_u64_be': return this.binPack(args[0].v, 8, 'be', 64);
+      case 'bin.unpack_u16_le': return this.binUnpack(args[0], args[1].v, 2, 'le', false, span);
+      case 'bin.unpack_u16_be': return this.binUnpack(args[0], args[1].v, 2, 'be', false, span);
+      case 'bin.unpack_u32_le': return this.binUnpack(args[0], args[1].v, 4, 'le', false, span);
+      case 'bin.unpack_u32_be': return this.binUnpack(args[0], args[1].v, 4, 'be', false, span);
+      case 'bin.unpack_u64_le': return this.binUnpack(args[0], args[1].v, 8, 'le', true, span);
+      case 'bin.unpack_u64_be': return this.binUnpack(args[0], args[1].v, 8, 'be', true, span);
       case 'rand.u64': {
         this.randStep();
         const hi = this.randState;
@@ -1892,6 +1912,45 @@ export class Interp {
     } catch (e) {
       return V.enumv('builtin-res', 'Err', [V.str('join:结果反序列化失败 ' + e.message)]);
     }
+  }
+
+  // 显式字节序打包(v0.35):值域超限 = 不变量破坏 → panic;bits 为位型宽度
+  binPack(val, size, order, bits) {
+    const v = BigInt(val);
+    if (bits < 64) {
+      const max = (1n << BigInt(bits)) - 1n;
+      if (v < 0n || v > max) {
+        throw new Panic('M4001', `pack_u${bits}_${order}:值 ${v} 超出 u${bits} 范围(0..${max});需要截断请显式 as`, null);
+      }
+    }
+    // bits=64:任意 i64 按 u64 补码位型(与 fmt.hex/bin 对称)
+    const buf = Buffer.alloc(size);
+    const big = BigInt.asUintN(64, v);
+    for (let i = 0; i < size; i++) {
+      const byte = order === 'le' ? (big >> BigInt(8 * i)) & 0xffn : (big >> BigInt(8 * (size - 1 - i))) & 0xffn;
+      buf[i] = Number(byte);
+    }
+    return V.vec([...buf].map(x => V.int(BigInt(x), 8, false)));
+  }
+
+  // 显式字节序解包(v0.35):越界/短缓冲 → Err;u64 读数按补码位型转 i64(wrap64=true)
+  binUnpack(val, off, size, order, wrap64, span) {
+    if (!val || val.t !== 'vec') return V.enumv('builtin-res', 'Err', [V.str('unpack:第一个参数必须是 Vec[u8]')]);
+    const offN = Number(off);
+    if (!Number.isInteger(offN) || offN < 0 || offN + size > val.a.length) {
+      return V.enumv('builtin-res', 'Err', [V.str(`unpack:偏移越界(需 [${offN}, ${offN + size}),长度 ${val.a.length})`)]);
+    }
+    let big = 0n;
+    for (let i = 0; i < size; i++) {
+      const el = val.a[offN + i];
+      if (el.t !== 'int' || el.v < 0n || el.v > 255n) {
+        return V.enumv('builtin-res', 'Err', [V.str(`unpack:字节 #${offN + i} 不在 u8 范围`)]);
+      }
+      const b = BigInt(el.v);
+      big = order === 'le' ? (big | (b << BigInt(8 * i))) : ((big << 8n) | b);
+    }
+    if (wrap64) big = BigInt.asIntN(64, big);
+    return V.enumv('builtin-res', 'Ok', [V.int(big, 64, true)]);
   }
 
   // Vec[u8] → 写文件(v0.31 二进制雏形);返回 null = 成功,string = 错误消息

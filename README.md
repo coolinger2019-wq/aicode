@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.34)
+## 核心特性(v0.35)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,9 +74,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.34(当前)** — **北星立项**(安全工具之北,design.md §6)+ std.crypto 哈希五件套(新能力 crypto)
-- **v0.35 方向** — 字节序/位域解包 API、字节流正则、HMAC、模糊器扩展
-- **更远(北星对齐)** — 原生后端 → FFI/unsafe/内联汇编/syscall;async 运行时;eval 能力;交叉编译;AES/RSA/国密
+- **v0.35(当前)** — std.bin 显式字节序 12 函数(北星支柱 1 落地)+ crypto HMAC 五件套 + 模糊器 as 扩展
+- **v0.36 方向** — 字节流正则(Vec[u8] 版 std.re)、位域/struct packing 设计、AES 对称加密
+- **更远(北星对齐)** — 原生后端 → FFI/unsafe/内联汇编/syscall;async 运行时;eval 能力;交叉编译;RSA/国密
 
 ## 设计原则(全文见 design.md)
 
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.34.0:字节码 VM + **WASM 分层(v0.32 复活,存活断言制度化)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash 五件套)+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈90%)。模糊基线:tests/fuzz.mjs(三后端差分)。
+v0.35.0:字节码 VM + **WASM 分层(v0.32 复活,存活断言制度化)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈90%)。模糊基线:tests/fuzz.mjs(三后端差分)。
