@@ -1225,6 +1225,29 @@ export class Interp {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
       }
+      // v0.31 二进制 I/O 雏形:整文件 ↔ Vec[u8];单文件上限 8MB(无流式)
+      case 'fs.read_bytes': {
+        try {
+          const st = nodeFs.statSync(args[0].v);
+          if (st.size > 8 * 1024 * 1024) {
+            return V.enumv('builtin-res', 'Err', [V.str('read_bytes:文件超过 8MB 上限(' + st.size + ' 字节): ' + args[0].v)]);
+          }
+          const buf = nodeFs.readFileSync(args[0].v);
+          return V.enumv('builtin-res', 'Ok', [V.vec([...buf].map(b => V.int(BigInt(b), 8, false)))]);
+        } catch (e) {
+          return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
+        }
+      }
+      case 'fs.write_bytes': {
+        const r = this.u8VecToFile(args[0].v, args[1], 'write');
+        if (r !== null) return V.enumv('builtin-res', 'Err', [V.str(r)]);
+        return V.enumv('builtin-res', 'Ok', [V.bool(true)]);
+      }
+      case 'fs.append_bytes': {
+        const r = this.u8VecToFile(args[0].v, args[1], 'append');
+        if (r !== null) return V.enumv('builtin-res', 'Err', [V.str(r)]);
+        return V.enumv('builtin-res', 'Ok', [V.bool(true)]);
+      }
       case 'fs.write_file': {
         try {
           nodeFs.writeFileSync(args[0].v, args[1].v, 'utf8');
@@ -1341,6 +1364,7 @@ export class Interp {
       case 'sync.spawn_all': return this.syncSpawnAll(args, span);
       case 'sync.join': return this.syncJoin(args, span);
       case 'sync.join_detailed': return this.syncJoinDetailed(args, span);
+      case 'sync.cancel': return this.syncCancel(args, span);
       case 'path.join': return V.str(nodePath.join(args[0].v, args[1].v));
       case 'path.base_name': return V.str(nodePath.basename(args[0].v));
       case 'path.dir_name': return V.str(nodePath.dirname(args[0].v));
@@ -1808,6 +1832,10 @@ export class Interp {
     if (!task) {
       return V.enumv('builtin-res', 'Err', [V.str('join:句柄 #' + h.id + ' 不存在或已 join 过')]);
     }
+    if (task.cancelled) {
+      this.syncTasks.delete(h.id);
+      return V.enumv('builtin-res', 'Err', [V.str('任务已取消: #' + h.id)]);
+    }
     this.syncTasks.delete(h.id);
     const int32 = new Int32Array(task.sab);
     const wr = Atomics.wait(int32, 0, 0, 120000);
@@ -1827,21 +1855,53 @@ export class Interp {
     }
   }
 
-  // join_detailed(v0.30 错误链):Ok 与 join 相同;Err → Json {code, message, stack}——
+  // Vec[u8] → 写文件(v0.31 二进制雏形);返回 null = 成功,string = 错误消息
+  u8VecToFile(path, val, mode) {
+    if (!val || val.t !== 'vec') return 'write_bytes:第二个参数必须是 Vec[u8]';
+    const buf = Buffer.alloc(val.a.length);
+    for (let i = 0; i < val.a.length; i++) {
+      const el = val.a[i];
+      if (el.t !== 'int' || el.v < 0n || el.v > 255n) return 'write_bytes:元素 #' + i + ' 不在 u8 范围(0-255)';
+      buf[i] = Number(el.v);
+    }
+    if (buf.length > 8 * 1024 * 1024) return 'write_bytes:超过 8MB 单文件上限';
+    try {
+      if (mode === 'append') nodeFs.appendFileSync(path, buf);
+      else nodeFs.writeFileSync(path, buf);
+      return null;
+    } catch (e) {
+      return String(e.message);
+    }
+  }
+
+  // join_detailed(v0.30 错误链;v0.31 可选超时):Ok 与 join 相同;Err → Json {code, message, stack}——
   // 子任务 panic 的错误码与 Ming 层调用栈经 wire v2 保留,不再退化为纯消息字符串。
+  // 超时:Err 码 M4010(任务超时),任务被硬杀(terminate)且句柄失效;cancel 后:Err M4010"任务已取消"。
   syncJoinDetailed(args, span) {
     const h = args[0];
     if (!h || h.t !== 'handle') throw new Panic('M4001', '内部错误:join_detailed 目标必须是句柄', span);
+    let timeoutMs = 120000;
+    if (args.length > 1) {
+      timeoutMs = Number(args[1].v);
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Panic('M4001', 'join_detailed 超时必须为正毫秒,得到: ' + String(args[1]?.v), span);
+      }
+      timeoutMs = Math.min(timeoutMs, 3_600_000);
+    }
     const task = this.syncTasks.get(h.id);
     if (!task) {
       return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed:句柄 #' + h.id + ' 不存在或已 join 过', [])]);
     }
+    if (task.cancelled) {
+      this.syncTasks.delete(h.id);
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4010', '任务已取消: #' + h.id, [])]);
+    }
     this.syncTasks.delete(h.id);
     const int32 = new Int32Array(task.sab);
-    const wr = Atomics.wait(int32, 0, 0, 120000);
+    const wr = Atomics.wait(int32, 0, 0, timeoutMs);
     if (wr === 'timed-out') {
       task.worker.terminate();
-      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed 超时(120s):任务 #' + h.id, [])]);
+      return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4010', 'join_detailed 超时(' + timeoutMs + 'ms):任务 #' + h.id, [])]);
     }
     const len = Atomics.load(int32, 1);
     const text = len > 0 ? Buffer.from(task.sab, 8, len).toString('utf8') : '';
@@ -1858,6 +1918,19 @@ export class Interp {
     } catch (e) {
       return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4001', 'join_detailed:结果反序列化失败 ' + e.message, [])]);
     }
+  }
+
+  // cancel(v0.31):硬杀子任务(terminate,不可捕获);句柄仍被跟踪 → join/join_detailed 得"任务已取消"
+  syncCancel(args, span) {
+    const h = args[0];
+    if (!h || h.t !== 'handle') throw new Panic('M4001', '内部错误:cancel 目标必须是句柄', span);
+    const task = this.syncTasks.get(h.id);
+    if (!task) return V.bool(false);
+    if (!task.cancelled) {
+      task.cancelled = true;
+      try { task.worker.terminate(); } catch { /* 已退出 */ }
+    }
+    return V.bool(true);
   }
 
   // 错误链 Json 形态:{code: str, message: str, stack: Vec[str]("at 名 (file:line:col)")}
@@ -1884,6 +1957,7 @@ export class Interp {
     for (const id of frame.tasks) {
       const task = this.syncTasks.get(id);
       if (!task) continue; // 已显式 join
+      if (task.cancelled) { this.syncTasks.delete(id); continue; } // v0.31:已取消的任务不再等待(terminate 后 SAB 永不写)
       this.syncTasks.delete(id);
       const int32 = new Int32Array(task.sab);
       const wr = Atomics.wait(int32, 0, 0, 120000);
@@ -2095,6 +2169,18 @@ export class Interp {
       }
       case 'reverse': a.reverse(); return UNIT;
       case 'clear': a.length = 0; return UNIT;
+      // v0.31 二进制雏形:Vec[u8] → str(UTF-8 解码,无效序列 → U+FFFD;纯函数)
+      case 'to_str': {
+        const buf = Buffer.alloc(a.length);
+        for (let i = 0; i < a.length; i++) {
+          const el = a[i];
+          if (el.t !== 'int' || el.v < 0n || el.v > 255n) {
+            throw new Panic('M4001', `to_str:元素 #${i} 不在 u8 范围(0-255)`, span);
+          }
+          buf[i] = Number(el.v);
+        }
+        return V.str(buf.toString('utf8'));
+      }
       case 'sort': {
         const first = a[0];
         if (first && (first.t === 'int' || first.t === 'float')) a.sort((x, y) => (x.v < y.v ? -1 : x.v > y.v ? 1 : 0));
@@ -2239,6 +2325,11 @@ export class Interp {
       case 'is_lower': return V.bool(s.length > 0 && /\p{L}/u.test(s) && s === s.toLowerCase());
       case 'pad_left': return V.str(s.padStart(Number(args[0].v), ' '));
       case 'pad_right': return V.str(s.padEnd(Number(args[0].v), ' '));
+      // v0.31 二进制雏形:UTF-8 编码(纯函数;解码见 Vec[u8].to_str)
+      case 'to_bytes': {
+        const buf = Buffer.from(s, 'utf8');
+        return V.vec([...buf].map(b => V.int(BigInt(b), 8, false)));
+      }
       default: throw new Panic('M4001', `内部错误:str.${name}`, span);
     }
   }

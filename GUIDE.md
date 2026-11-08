@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.30.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.31.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -638,6 +638,11 @@ fn main() with io {
 | `list_dir` | `(str) -> Result[Vec[str], str]` | 列目录项 |
 | `make_dir` | `(str) -> Result[bool, str]` | 建目录(含父级) |
 | `remove_file` | `(str) -> Result[bool, str]` | 删文件 |
+| `read_bytes` | `(str) -> Result[Vec[u8], str]` | 二进制读(v0.31):整文件,单文件上限 8MB;无流式 |
+| `write_bytes` | `(str, Vec[u8]) -> Result[bool, str]` | 二进制写/覆盖(v0.31) |
+| `append_bytes` | `(str, Vec[u8]) -> Result[bool, str]` | 二进制追加(v0.31) |
+
+二进制配套转换(纯函数):`s.to_bytes() -> Vec[u8]`(UTF-8 编码)与 `bytes.to_str() -> str`(UTF-8 解码,无效序列 → U+FFFD;仅 Vec[u8] 有此方法)。
 
 ```ming
 use std.fs;
@@ -682,7 +687,8 @@ fn main(args: Vec[str]) with io, net {
 | `spawn` | `(fn: (T1..Tn) -> R, args...) -> Join[R]` | 启动子任务;参数按函数签名逐个传递(v0.16 起支持多参数);函数必须是**模块级命名函数** |
 | `spawn_all` | `(fn: (T) -> R, Vec[T]) -> Vec[Result[R, str]]` | 批量并行:同函数对 Vec 中每个参数各启动一个子任务,返回全部结果(v0.16)——**接口不暴露句柄**,与线性纪律自洽 |
 | `join` | `(Join[R]) -> Result[R, str]` | 阻塞等待;子任务 panic → Err(带消息);每个句柄只能 join 一次 |
-| `join_detailed` | `(Join[R]) -> Result[R, Json]` | 错误链版 join(v0.30):Err 为 Json `{code, message, stack}`——子任务 panic 的**错误码与 Ming 层调用栈**不再丢失;Ok 与 join 相同 |
+| `join_detailed` | `(Join[R], timeout_ms: i64?) -> Result[R, Json]` | 错误链版 join(v0.30):Err 为 Json `{code, message, stack}`——子任务 panic 的**错误码与 Ming 层调用栈**不再丢失;超时可配(v0.31,缺省 120s;超时/取消 → Err 码 M4010,任务被硬杀) |
+| `cancel` | `(Join[R]) -> bool` | 硬杀子任务(v0.31,terminate 不可捕获);返回句柄是否仍被跟踪;之后 join/join_detailed → Err"任务已取消";scoped 块不再等待已取消任务 |
 
 ```ming
 use std.sync;
@@ -927,12 +933,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.28(已完成) | std.log 级别日志、std.fmt.align 宽度对齐 |
 | v0.29(已完成) | std.math 补全(11 函数,wasm 桥接)+ 路径验证制度化 |
 | v0.30(已完成) | 错误链(cause):wire v2、join_detailed、scoped 码透传、panic 调用栈修复、诊断协议 cause 字段 |
-| v0.31 方向 | 二进制 I/O 雏形、任务超时/取消 |
-| 更远 | 发布期门禁:内存配额/动态熔断;合并期门禁:模糊测试;原生后端(C);自举 |
+| v0.31(已完成) | 二进制 I/O 雏形(Vec[u8] + 8MB 上限)、任务超时/取消(join_detailed 超时参数、cancel、M4010) |
+| v0.32 方向 | 发布期门禁:内存配额/动态熔断;流式二进制读写评估 |
+| 更远 | 合并期门禁:模糊测试;原生后端(C);自举 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.31.0(2026-11-09)
+
+- **二进制 I/O 雏形**(能力 fs):`fs.read_bytes -> Result[Vec[u8], str]`(整文件,单文件上限 8MB)、`fs.write_bytes` / `fs.append_bytes`;配套纯函数 `s.to_bytes() -> Vec[u8]`(UTF-8 编码)与 `bytes.to_str() -> str`(UTF-8 解码,无效序列 → U+FFFD;仅 Vec[u8] 有此方法,Vec[i64] 调用 M3015 拒绝)。诚实口径:无流式、无随机访问、无 mmap——雏形。
+- **任务超时/取消**(能力 sync):`join_detailed(h, timeout_ms)` 可选第二参数(缺省 120s;≤0 → panic M4001;上限 1 小时);超时 → Err 码 **M4010**(task-timeout,新稳定码,以 Err Json 的 code 字段出现)且任务被 terminate;`std.sync.cancel(h) -> bool` 硬杀(不可捕获),之后 join/join_detailed → Err"任务已取消",scoped 块不再等待已取消任务(否则会等满 120s——terminate 后 SAB 永不写);join 超时路径补句柄清理(此前超时句柄滞留,二次 join 会再等 120s)。
+- 效果系统现场验证:探针程序漏写 `with time` 被编译期 M3029 拦截,提示语直接给出修法——门禁按设计工作。
+- 测试:341 项(新增 v0.31 7 项:二进制往返含 0/255 边界/缺文件 Err/双类型门槛/超时与取消全流程,双引擎)。
 
 ### v0.30.0(2026-11-09)
 

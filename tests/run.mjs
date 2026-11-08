@@ -1031,6 +1031,96 @@ fn main() with io, fs {
   check('v30:join_detailed 类型门槛 M3002', rr30.code === 1 && rr30.stderr.includes('M3002'), 'code=' + rr30.code + ' stderr=' + rr30.stderr.slice(0, 150));
 }
 
+// ===================== 31. v0.31:二进制 I/O 雏形 + 任务超时/取消 =====================
+{
+  // 二进制:to_bytes/to_str 往返 + write/read/append_bytes(含 0/255 边界)
+  const bio = mingFile('v31-binary.ming', [
+    'use std.fs;',
+    'use std.io;',
+    '',
+    'fn main() with io, fs {',
+    '    let bytes = "中文abc".to_bytes();',
+    '    print(str(bytes.len()));',
+    '    print(bytes.to_str());',
+    '    let raw: Vec[u8] = [0, 1, 255, 128];',
+    '    match std.fs.write_bytes("/tmp/ming-v31.bin", raw) {',
+    '        Ok(_) => { },',
+    '        Err(e) => print("W-ERR: " + e),',
+    '    }',
+    '    match std.fs.read_bytes("/tmp/ming-v31.bin") {',
+    '        Ok(v) => { print(str(v.len())); print(str(v[2])); }',
+    '        Err(e) => print("R-ERR: " + e),',
+    '    }',
+    '    std.fs.append_bytes("/tmp/ming-v31.bin", [7]);',
+    '    match std.fs.read_bytes("/tmp/ming-v31.bin") {',
+    '        Ok(v) => print(str(v.len())),',
+    '        Err(e) => print("R2-ERR: " + e),',
+    '    }',
+    '    let bad: Vec[u8] = [255];',
+    '    print(str(bad.to_str().char_len()));',
+    '}',
+  ].join('\n'));
+  const wantBio = '9\n中文abc\n4\n255\n5\n1\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', bio, ...eng]);
+    check('v31:二进制 I/O 往返' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantBio,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+
+  // read_bytes 不存在 → Err
+  const rb = mingFile('v31-read-missing.ming', 'use std.fs;\nuse std.io;\nfn main() with io, fs { match std.fs.read_bytes("/tmp/ming-v31-nope.bin") { Ok(_) => print("bug"), Err(_) => print("err-ok") } }');
+  const rrb = runMing(['run', rb]);
+  check('v31:read_bytes 缺文件 Err', rrb.code === 0 && rrb.stdout === 'err-ok\n', rrb.stderr.slice(0, 150));
+
+  // 类型门槛:Vec[i64].to_str → M3015;join_detailed 非句柄 → M3002
+  const bt = mingFile('v31-tostr-type.ming', 'use std.io;\nfn main() with io { let v: Vec[i64] = [1]; v.to_str(); }');
+  const rbt = runMing(['check', bt]);
+  check('v31:Vec[i64].to_str 拒绝 M3015', rbt.code === 1 && rbt.stderr.includes('M3015') && rbt.stderr.includes('Vec[u8]'), rbt.stderr.slice(0, 150));
+  const jt = mingFile('v31-jd-type.ming', 'use std.sync;\nfn main() with sync { std.sync.join_detailed(3, 100); }');
+  const rjt = runMing(['check', jt]);
+  check('v31:join_detailed 非句柄 M3002', rjt.code === 1 && rjt.stderr.includes('M3002'), rjt.stderr.slice(0, 150));
+
+  // 超时与取消:join_detailed(h, ms) 超时 M4010;cancel → join 得"任务已取消";重复 cancel false
+  const tc = mingFile('v31-timeout-cancel.ming', [
+    'use std.io;',
+    'use std.sync;',
+    'use std.time;',
+    '',
+    'fn slow(n: i64) -> i64 with time {',
+    '    std.time.sleep(8000);',
+    '    return n;',
+    '}',
+    '',
+    'fn fast(n: i64) -> i64 { return n * 2; }',
+    '',
+    'fn main() with io, sync, time {',
+    '    let h1 = std.sync.spawn(slow, 1);',
+    '    match std.sync.join_detailed(h1, 300) {',
+    '        Ok(_)  => print("bug"),',
+    '        Err(info) => print("timeout code=" + info.get("code").unwrap().as_str().unwrap()),',
+    '    }',
+    '    let h2 = std.sync.spawn(slow, 2);',
+    '    print("cancel=" + str(std.sync.cancel(h2)));',
+    '    match std.sync.join(h2) {',
+    '        Ok(_)  => print("bug2"),',
+    '        Err(e) => print("join-after-cancel: " + e),',
+    '    }',
+    '    print("cancel-again=" + str(std.sync.cancel(h2)));',
+    '    let h3 = std.sync.spawn(fast, 21);',
+    '    match std.sync.join_detailed(h3, 5000) {',
+    '        Ok(v) => print("ok=" + str(v)),',
+    '        Err(info) => print("ERR " + debug(info)),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const wantTc = 'timeout code=M4010\ncancel=true\njoin-after-cancel: 任务已取消: #2\ncancel-again=false\nok=42\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', tc, ...eng], { });
+    check('v31:超时与取消' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantTc,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

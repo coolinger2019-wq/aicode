@@ -1,4 +1,4 @@
-# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.30.0)
+# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.31.0)
 
 诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27-v0.30 无新增码(错误链复用既有码面,新增可选字段)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。
@@ -101,6 +101,7 @@
 | M4006 | unwrap-failed | 对 None/Err 调用 unwrap / expect |
 | M4007 | missing-key | map 下标缺键(用 .get(k) 得 Option) |
 | M4008 | assertion-failed | assert / assert_eq 失败(附两侧 debug 值) |
+| M4010 | task-timeout | 子任务超时/已取消(join_detailed 超时参数、cancel 后 join;以 Err 值的 code 字段出现,非 panic;v0.30 起) |
 
 ## 约定
 

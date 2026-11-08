@@ -274,6 +274,9 @@ export const STD_MODULES = {
       mF('rename', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_dir', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_dir_recursive', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('read_bytes', [T_STR], mkRes(mkVec(INT_TYPES.u8), T_STR), { effect: 'fs' }),
+      mF('write_bytes', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('append_bytes', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
     ],
   },
   // 正则(JS RegExp 桥接;pattern 非法 = 程序员错误 → panic;纯函数,wasm 内自动回落)
@@ -345,6 +348,7 @@ export const STD_MODULES = {
       mF('spawn_all', [], mkVec(mkRes(tvar(), T_STR)), { effect: 'sync' }),
       mF('join', [], mkRes(tvar(), T_STR), { effect: 'sync' }),
       mF('join_detailed', [], mkRes(tvar(), { k: 'json' }), { effect: 'sync' }),
+      mF('cancel', [], T_BOOL, { effect: 'sync' }),
     ],
   },
   // JSON(纯函数)
@@ -374,12 +378,12 @@ export const MUT_METHODS = new Set(['push', 'pop', 'reverse', 'sort', 'sort_by',
 export const METHOD_NAMES = {
   vec: ['len', 'push', 'pop', 'get', 'first', 'last', 'contains', 'index_of', 'reverse',
     'sort', 'sort_by', 'map', 'filter', 'fold', 'join', 'slice', 'insert', 'remove',
-    'extend', 'clear', 'clone', 'is_empty', 'min', 'max'],
+    'extend', 'clear', 'clone', 'is_empty', 'min', 'max', 'to_str'],
   map: ['len', 'get', 'set', 'has', 'delete', 'keys', 'values', 'items', 'clear', 'clone', 'is_empty'],
   str: ['char_len', 'byte_len', 'chars', 'bytes', 'split', 'trim', 'trim_start', 'trim_end',
     'to_upper', 'to_lower', 'starts_with', 'ends_with', 'contains', 'replace', 'repeat',
     'get', 'slice_chars', 'parse_i64', 'parse_f64', 'is_empty',
-    'is_alpha', 'is_digit', 'is_space', 'is_upper', 'is_lower', 'pad_left', 'pad_right'],
+    'is_alpha', 'is_digit', 'is_space', 'is_upper', 'is_lower', 'pad_left', 'pad_right', 'to_bytes'],
   opt: ['unwrap', 'expect', 'unwrap_or', 'is_some', 'is_none'],
   res: ['unwrap', 'unwrap_err', 'expect', 'unwrap_or', 'is_ok', 'is_err'],
   int: ['abs', 'to_f32', 'to_f64', 'to_i8', 'to_i16', 'to_i32', 'to_i64', 'to_u8', 'to_u16', 'to_u32', 'to_u64'],
@@ -1943,8 +1947,8 @@ export class Checker {
     }
     if (f.mod === 'sync' && f.fn.name === 'join_detailed') {
       if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
-      if (e.args.length !== 1) {
-        this.diags.push(err('M3005', 'join_detailed 需要 1 个参数:join_detailed(句柄)', e.span));
+      if (e.args.length < 1 || e.args.length > 2) {
+        this.diags.push(err('M3005', 'join_detailed 需要 1-2 个参数:join_detailed(句柄[, 超时毫秒])', e.span));
         return null;
       }
       const ht = this.checkExpr(e.args[0], ctx);
@@ -1953,7 +1957,29 @@ export class Checker {
         this.diags.push(err('M3002', `join_detailed 的参数必须是 Join[T] 句柄(实际 ${typeStr(hr, new Map())})`, e.args[0].span));
         return null;
       }
+      if (e.args.length === 2) {
+        const tt = this.checkExpr(e.args[1], ctx, INT_TYPES.i64);
+        const tr = resolveT(tt, new Map());
+        if (!tr || tr.k !== 'int' || tr.bits !== 64 || tr.signed !== true) {
+          this.diags.push(err('M3002', `join_detailed 的超时参数必须是 i64 毫秒(实际 ${typeStr(tr, new Map())})`, e.args[1].span));
+          return null;
+        }
+      }
       return mkRes(hr.el, { k: 'json' });
+    }
+    if (f.mod === 'sync' && f.fn.name === 'cancel') {
+      if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
+      if (e.args.length !== 1) {
+        this.diags.push(err('M3005', 'cancel 需要 1 个参数:cancel(句柄)', e.span));
+        return null;
+      }
+      const ht = this.checkExpr(e.args[0], ctx);
+      const hr = resolveT(ht, new Map());
+      if (!hr || hr.k !== 'join') {
+        this.diags.push(err('M3002', `cancel 的参数必须是 Join[T] 句柄(实际 ${typeStr(hr, new Map())})`, e.args[0].span));
+        return null;
+      }
+      return T_BOOL;
     }
     if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
     const min = f.fn.min ?? f.fn.params.length;
@@ -2162,6 +2188,15 @@ export class Checker {
       case 'len': case 'is_empty':
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
         return name === 'len' ? INT_TYPES.i64 : T_BOOL;
+      case 'to_str': {
+        // v0.31:仅 Vec[u8] 支持(UTF-8 解码,无效序列 → U+FFFD)
+        if (!(T && T.k === 'int' && T.bits === 8 && T.signed === false)) {
+          this.diags.push(err('M3015', `Vec[${typeStr(T, binds)}] 没有方法 ".to_str"(只有 Vec[u8] 支持,UTF-8 解码)`, span));
+          return null;
+        }
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return T_STR;
+      }
       case 'push': {
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
         if (mutNeeded) this.checkMutReceiver(fieldCallee.base, ctx, name, span);
@@ -2384,6 +2419,9 @@ export class Checker {
         return T_BOOL;
       case 'pad_left': case 'pad_right':
         if (!this.arityCheck(name, args, 1, 1, span)) return null; i64Arg(0, '.' + name + '()'); return T_STR;
+      case 'to_bytes':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return mkVec(INT_TYPES.u8);
       default:
         this.diags.push(err('M3015', `str 没有方法 ".${name}"(有:${METHOD_NAMES.str.join(', ')})`, span));
         return null;

@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.30)
+## 核心特性(v0.31)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,9 +74,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.30(当前)** — 错误链(cause):join_detailed、scoped 真实码透传、诊断协议 cause 字段、panic 调用栈修复
-- **v0.31 方向** — 二进制 I/O 雏形、任务超时/取消
-- **更远** — 发布期门禁(内存配额/动态熔断)、模糊测试、原生后端探索、自举
+- **v0.31(当前)** — 二进制 I/O 雏形(Vec[u8],8MB 上限)+ 任务超时/取消(join_detailed 超时参数、cancel、M4010)
+- **v0.32 方向** — 发布期门禁(内存配额/动态熔断)、流式二进制读写评估
+- **更远** — 模糊测试、原生后端探索、自举
 
 ## 设计原则(全文见 design.md)
 
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.30.0:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + **错误链(cause)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈85%)。
+v0.31.0:字节码 VM + WASM 分层(线性内存)+ 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈88%)。

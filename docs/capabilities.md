@@ -1,4 +1,4 @@
-# Ming 能力矩阵(v0.30.0)
+# Ming 能力矩阵(v0.31.0)
 
 对照"标准库金字塔"的诚实审计。✅ 生产语义 / 🟡 雏形(有硬限制)/ ❌ 缺失。
 
@@ -11,7 +11,7 @@
 | stdin 全量 | ✅ | read_to_end |
 | 格式化输出(宽度/精度) | ✅ | std.fmt(v0.27/v0.28):精度 fixed/exp、进制 hex/bin、宽度 align(left/right/center,字符口径) |
 | 文本文件读写 | ✅ | read/write/append(Result 化) |
-| 二进制文件 I/O | ❌ | 仅 UTF-8 文本 |
+| 二进制文件 I/O | 🟡 | v0.31 雏形:read/write/append_bytes 整文件 ↔ Vec[u8],to_bytes/to_str 转换;8MB 上限,无流式/随机访问/mmap |
 | 目录:列名/创建/递归删除 | ✅ | list_dir/make_dir/remove_dir_recursive |
 | 文件元数据(大小/时间/类型) | ✅ | metadata → Json(v0.24) |
 | copy/rename | ✅ | v0.24 |
@@ -57,6 +57,6 @@
 | panic 调用栈 | ✅ | Ming 层栈 |
 | 日志库(级别/开关) | ✅ | std.log(v0.28):debug/info/warn/error,set_level/get_level,阈值过滤,stderr 输出;无文件输出/结构化字段 |
 | 错误链(cause) | ✅ | v0.30:join_detailed(Json {code,message,stack})、scoped 子 panic 真实码透传 + Panic.cause、诊断协议 cause 字段;顺带修复 panic 调用栈从未填充的缺口 |
-| 任务超时/取消 | ❌ | join 固定 120s |
+| 任务超时/取消 | 🟡 | v0.31:join_detailed 超时可配(超时硬杀,Err M4010)+ cancel(硬杀,不可捕获);无协作取消/子任务自检 |
 
-**覆盖率:v0.30.0 ≈ 85%**(口径:37 行,✅=1、🟡=0.5、❌=0 → 31✅ 1🟡 5❌;v0.29 ≈82%)。v0.31 方向:二进制 I/O 雏形、任务超时/取消——剩余 ❌ 中"该做"的项(不做:i18n/千分位=宿主委托,TCP 服务端=架构待定,Builder=已判定不做)。
+**覆盖率:v0.31.0 ≈ 88%**(口径:37 行,✅=1、🟡=0.5、❌=0 → 31✅ 3🟡 3❌;v0.30 ≈85%)。剩余 ❌ 与 🟡 的硬限制见各表;不做项:i18n/千分位=宿主委托,TCP 服务端=架构待定,Builder=已判定不做。v0.32 方向:发布期门禁(内存配额/动态熔断)、流式二进制读写评估。
