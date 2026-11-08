@@ -1247,6 +1247,43 @@ fn main() with io, fs {
   check('v33:模糊基线快速档(40 程序三后端一致)', fuzz.status === 0 && /一致 40,分歧 0/.test(fuzz.stdout), 'code=' + fuzz.status + ' tail=' + (fuzz.stdout ?? '').slice(-120));
 }
 
+// ===================== 34. v0.34:std.crypto(安全工具之北支柱 6 第一块)=====================
+{
+  const ck = mingFile('v34-crypto.ming', [
+    'use std.crypto;',
+    '',
+    'fn main() with io, crypto {',
+    '    print(std.crypto.md5("abc"));',
+    '    print(std.crypto.sha1("abc"));',
+    '    print(std.crypto.sha256("abc"));',
+    '    print(str(std.crypto.sha512("abc").char_len()));',
+    '    print(str(std.crypto.sha384("").char_len()));',
+    '}',
+  ].join('\n'));
+  const wantCk = [
+    '900150983cd24fb0d6963f7d28e17f72',
+    'a9993e364706816aba3e25717850c26c9cd0d89d',
+    'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    '128',
+    '96',
+  ].join('\n') + '\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', ck, ...eng]);
+    check('v34:crypto 已知向量' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantCk,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout));
+  }
+
+  // 空串向量(sha256("") 公开值)
+  const ce = mingFile('v34-crypto-empty.ming', 'use std.crypto;\nfn main() with io, crypto { print(std.crypto.sha256("")); }');
+  const re = runMing(['run', ce]);
+  check('v34:sha256 空串向量', re.code === 0 && re.stdout === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n', re.stdout);
+
+  // crypto 效果强制 M3029(新效果名)
+  const cp = mingFile('v34-crypto-cap.ming', 'use std.crypto;\nfn main() with io { print(std.crypto.sha256("x")); }');
+  const rp = runMing(['check', cp]);
+  check('v34:crypto 效果强制 M3029', rp.code === 1 && rp.stderr.includes('M3029') && rp.stderr.includes('crypto'), rp.stderr.slice(0, 150));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

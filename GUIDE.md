@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.33.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.34.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -752,6 +752,23 @@ fn main() with io, sync {
 
 内部 mulberry32;初始种子来自时钟+pid,`seed` 后完全确定。
 
+### std.crypto(能力:crypto,v0.34)
+
+哈希原语(node:crypto 桥接;安全工具之北支柱 6 第一块):输入 UTF-8 字符串,输出小写 hex。AES/RSA/国密与字节流接口随后续版本。
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `md5` / `sha1` / `sha256` / `sha384` / `sha512` | `(str) -> str` · 效果 `crypto` | 标准 Hash,hex 小写 |
+
+```ming
+use std.crypto;
+
+fn main() with io, crypto {
+    print(std.crypto.sha256("abc"));
+    // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+}
+```
+
 ### std.re(纯函数,v0.26)
 
 正则 = **JS RegExp 桥接**(ECMAScript 语法),pattern 用**原始字符串** `r"..."(无转义,\\d 原样保留)。非法 pattern = 程序员错误 → panic;含 re 调用的函数在 wasm 分层自动回落 JS VM(语义不变)。
@@ -937,12 +954,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.31(已完成) | 二进制 I/O 雏形(Vec[u8] + 8MB 上限)、任务超时/取消(join_detailed 超时参数、cancel、M4010) |
 | v0.32(已完成) | 发布期门禁(max-alloc/max-ms/M4011/M4012)+ **wasm 层复活**(11 层静默回落根因修复;for-in 加载已知问题回落待修) |
 | v0.33(已完成) | for-in 步长根因(×3→×8,4 处)+ for-in 回归 wasm 直跑 + **模糊测试基线**(三后端差分)+ 树引擎 `as` 崩溃修复 |
-| v0.34 方向 | 模糊器扩展(str/Vec 深度形态、`as` 全面覆盖)、原生后端(C)预研 |
-| 更远 | 自举;动态权限收回;形式化验证 |
+| v0.34(已完成) | **北星立项**(design.md §6 安全工具之北)+ std.crypto 哈希五件套(新能力 crypto) |
+| v0.35 方向 | 字节序/位域解包 API(be/le 显式)、字节流正则(Vec[u8] 版 std.re)、HMAC、模糊器扩展 |
+| 更远(北星对齐) | 原生后端(C)→ FFI/unsafe 块/内联汇编/syscall;async 运行时 → 海量并发;eval 能力;交叉编译部署;AES/RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.34.0(2026-11-09)
+
+- **北极星立项:安全工具之北**(design.md §6,用户定义的远期定位)——六大支柱(二进制/内存控制、原生系统交互、海量并发网络、动态执行、交叉编译部署、密码学对抗)与 Ming 的映射、冲突(值语义 vs 零拷贝、沙箱 vs syscall)及差异化答案(效果系统 = 泛化的 unsafe 块,每个危险操作都是签名里的一行字)。能力矩阵纳入北星行列(新增 FFI/原始包/eval/交叉编译等 ❌ 行,覆盖率口径如实回落)。
+- **std.crypto 哈希五件套**(能力 crypto,新效果名):md5/sha1/sha256/sha384/sha512,node:crypto 桥接,hex 小写;已知向量测试("abc" 三向量 + 空串向量);效果强制 M3029 现场验证。后续:AES/RSA/国密、字节流接口、HMAC。
+- **wasm 步长修复后的首轮全量运行**:for-in/vec 全形态在真实 wasm 上经受 352+ 项回归与三后端差分模糊(40+200+100 程序,三种子零分歧)。
+- 测试:356 项(新增 v0.34 4 项:已知向量双引擎/空串向量/效果强制)。
 
 ### v0.33.0(2026-11-09)
 

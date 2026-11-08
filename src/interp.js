@@ -9,6 +9,7 @@ import { err } from './diag.js';
 import { PRIM_TYPES, INT_TYPES, typeStr, resolveT, unify, mkOpt, mkRes, T_UNIT, T_STR, T_BOOL } from './checker.js';
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
+import * as nodeCrypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 // 源码文件绝对 URL(wasm/worker eval 的 ESM import 用)
@@ -1461,6 +1462,12 @@ export class Interp {
         if (Number.isNaN(d.getTime())) return V.enumv('builtin-res', 'Err', [V.str('日期超出范围: ' + args[0].v)]);
         return V.enumv('builtin-res', 'Ok', [V.int(BigInt(d.getTime()), 64, true)]);
       }
+      // 密码学哈希(v0.34;安全工具之北支柱 6 第一块):node:crypto 桥接,hex 输出小写
+      case 'crypto.md5': return V.str(nodeCrypto.createHash('md5').update(args[0].v, 'utf8').digest('hex'));
+      case 'crypto.sha1': return V.str(nodeCrypto.createHash('sha1').update(args[0].v, 'utf8').digest('hex'));
+      case 'crypto.sha256': return V.str(nodeCrypto.createHash('sha256').update(args[0].v, 'utf8').digest('hex'));
+      case 'crypto.sha384': return V.str(nodeCrypto.createHash('sha384').update(args[0].v, 'utf8').digest('hex'));
+      case 'crypto.sha512': return V.str(nodeCrypto.createHash('sha512').update(args[0].v, 'utf8').digest('hex'));
       case 'rand.u64': {
         this.randStep();
         const hi = this.randState;

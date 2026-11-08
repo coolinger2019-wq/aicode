@@ -172,7 +172,7 @@ export function isPrimitiveDisplay(t, binds) {
 // ===================== 效果系统 =====================
 // v0.2 已开放:io(stdout/stderr/stdin)、time(时钟)。
 // 副作用必须显式声明并逐层传播;声明为纯函数的代码在编译期即可证明无副作用。
-export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand']);
+export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto']);
 
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
@@ -296,6 +296,16 @@ export const STD_MODULES = {
       mF('f64', [], tfloat(64), { effect: 'rand' }),
       mF('range', [INT_TYPES.i64, INT_TYPES.i64], INT_TYPES.i64, { effect: 'rand' }),
       mF('seed', [INT_TYPES.u64], T_UNIT, { effect: 'rand' }),
+    ],
+  },
+  // 密码学哈希(能力:crypto;node:crypto 桥接;安全工具之北支柱 6 第一块,v0.34)
+  crypto: {
+    fns: [
+      mF('md5', [T_STR], T_STR, { effect: 'crypto' }),
+      mF('sha1', [T_STR], T_STR, { effect: 'crypto' }),
+      mF('sha256', [T_STR], T_STR, { effect: 'crypto' }),
+      mF('sha384', [T_STR], T_STR, { effect: 'crypto' }),
+      mF('sha512', [T_STR], T_STR, { effect: 'crypto' }),
     ],
   },
   // HTTP 客户端(capability:必须声明 net 效果;同步实现:worker + Atomics)
