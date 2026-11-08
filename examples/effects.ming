@@ -1,0 +1,28 @@
+// 常量与效果:副作用显式化(v0.2)
+// const 只接受常量表达式;with 声明效果并逐层传播
+const GREETING = "你好,Ming";
+
+const LIMIT = 3;
+
+const TABLE = [1, 10, 100];
+
+// 纯函数:签名本身就是"无副作用"的证明,可在代码评审/审计时直接采信
+fn double(n: i64) -> i64 {
+    return n * 2;
+}
+
+// 打印是副作用,必须声明 io;调用纯函数不需要任何效果
+fn show(n: i64) with io {
+    print("\{n} → \{double(n)}");
+}
+
+fn main() with io, time {
+    print(GREETING);
+    for n in TABLE {
+        show(n);
+    }
+
+    // now_ms 是时间效果,需要 with time
+    let t0 = std.time.now_ms();
+    print("LIMIT = \{LIMIT}, t0 = \{t0 > 0}");
+}

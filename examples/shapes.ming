@@ -1,0 +1,36 @@
+// 用户枚举 + match 穷尽性检查
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Shape.Circle(r) => std.math.pi() * r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Point => 0.0,
+    }
+}
+
+fn describe(s: Shape) -> str {
+    match s {
+        Shape.Point => "一个点",
+        _ => debug(area(s)),
+    }
+}
+
+test shapes {
+    assert_eq(area(Shape.Point), 0.0);
+    assert_eq(area(Shape.Rect(3.0, 4.0)), 12.0);
+
+    // 浮点比较会有精度警告;这里的值是精确的
+    assert_eq(area(Shape.Circle(2.0)), 12.566370614359172);
+}
+
+fn main() with io {
+    let shapes: Vec[Shape] = [Shape.Circle(1.0), Shape.Rect(2.0, 5.0), Shape.Point];
+    for s in shapes {
+        print("\{describe(s)}");
+    }
+}

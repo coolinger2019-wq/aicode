@@ -1,0 +1,92 @@
+# Ming(明)编程语言
+
+> **明**——程序的含义必须和它写出来的一模一样。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
+
+Ming 是一门为 **AI 与人类协作** 设计的编程语言。它的每一个设计决定都在回答一个问题:*怎样让生成式 AI 更难写出错的代码,更容易被验证?*
+
+## 为什么要有 Ming
+
+AI 写代码的失败模式高度集中:隐式类型转换、真值化、null 传播、静默溢出、别名共享可变状态、忘不掉的分号歧义。人类语言的历史包袱把这些坑全部留给了 AI。Ming 从零开始,把这一整类问题**在语言层面消灭**,并把验证反馈做成机器可消费的协议:
+
+```ming
+fn main() {
+    let name = "世界";
+    let mut total = 0;
+    for i in 1..11 {
+        total += i;
+    }
+    print("你好, \{name}! 1..11 的和是 \{total}");
+}
+```
+
+```bash
+$ node bin/ming.js run examples/hello.ming
+你好, 世界! 1..11 的和是 55
+
+$ node bin/ming.js check examples/hello.ming --json
+{ "ok": true, "diagnostics": [] }
+```
+
+## 核心特性(v0.23)
+
+| 特性 | 说明 |
+|------|------|
+| **明确** | 无隐式转换、无 null(用 `Option[T]`)、无真值化、无操作符重载、`mut` 显式声明 |
+| **效果系统** | 副作用必须显式声明并逐层传播:`fn f() with io, time { ... }`;纯函数是编译期可证明的 |
+| **安全** | 整数溢出/除零/越界/缺键全部 panic(可预期、有位置、有错误码);v0.2 程序**没有文件系统与网络能力** |
+| **值语义** | 赋值/传参/捕获都是深拷贝,结构共享不可能发生——没有别名 bug,没有数据竞争 |
+| **trait + impl** | 用户类型的方法必须定义在 trait 中;prelude 内置 `Eq` / `ToStr`;泛型 bound `[T: Eq]` 调用处校验 |
+| **确定确定** | Map 保持插入序、求值顺序从左到右、溢出行为有定义、`ming fmt` 唯一风格 |
+| **机器友好** | 所有工具支持 `--json`;稳定诊断码(M1xxx~M4xxx)带 hint;`ming doc` 提取文档 |
+| **快速反馈** | `check` 秒级类型检查;内置 `test` 块;`?` 错误传播;模式匹配穷尽性检查 |
+| **双引擎** | 默认字节码 VM;`--tree` 树遍历对照;同一测试套锁定语义一致 |
+| **工程化** | ming.toml 项目模式(init/run/build/test)、LSP 服务器(诊断/hover)、number 快路径 |
+| **泛型 impl** | `impl[A: Eq, B: Eq] Eq for Pair[A, B]`;bound 递归校验;Compare trait + Vec.min/max |
+| **capability fs** | `std.fs` 文件系统以 fs 效果开放——碰磁盘的代码在签名上自首 |
+| **capability net** | `std.net.http_get` / `http_request` 以 net 效果开放;同步 HTTP(worker + Atomics 桥接) |
+| **REPL** | `ming repl`:表达式回显、声明持久化、失败回滚、多行续行 |
+| **指令融合** | 高频赋值单指令化(读-算-存),溢出检查逐点保留 |
+| **JSON** | 动态 `Json` 类型 + 编译期序列化兼容性检查;parse 错误带位置 |
+| **WASM 分层** | i64/u64/f64/str/Vec/Map 编译为 WebAssembly;线性内存统一语义(构造/拷贝/读写/返回);纯 sum ~4x |
+| **结构化并发** | `spawn`(多参数)/`spawn_all`(批量)/`join`/`sync scope`(作用域自动 join):确定性并行 |
+| **线性句柄** | Join 句柄禁入集合/struct(M3034);trait 方法调用点校验 impl bound |
+
+## 快速开始
+
+需要 Node.js ≥ 18(任何平台:Windows / macOS / Linux)。
+
+```bash
+node bin/ming.js run examples/fizzbuzz.ming   # 运行
+node bin/ming.js check your.ming --json       # 类型检查(JSON 协议)
+node bin/ming.js test your.ming               # 运行 test 块
+node bin/ming.js fmt your.ming --write        # 规范格式化
+node bin/ming.js doc your.ming                # 提取 /// 文档
+```
+
+Windows 下也可以用 `bin\ming.cmd`。
+
+## 文档
+
+- **[GUIDE.md](GUIDE.md)** — 使用指南(语法、类型、标准库、工具链、AI 使用建议)
+- **[docs/design.md](docs/design.md)** — 设计哲学与语言规范要点
+- **[docs/diagnostics.md](docs/diagnostics.md)** — 稳定诊断码表
+- **[examples/](examples/)** — 可运行的示例程序
+
+## 路线图
+
+- **v0.23(当前)** — 线性内存统一语义(Vec 构造/拷贝/返回全走内存)
+- **v0.24** — 契约与轻量验证探索、str 元素 Vec 内存化
+- **更远** — 原生后端(需 C 编译器验证途径)、自举
+
+## 设计原则(全文见 design.md)
+
+1. **明确优于简洁** —— 写出来的就是全部含义。
+2. **安全是默认,不是选项** —— 危险操作要么被检查,要么 panic,绝不静默。
+3. **副作用可见** —— 效果签名说明一切:没标 `io` 的函数不可能打印,编译器保证。
+4. **确定性** —— 同样的代码永远产生同样的行为(包括迭代顺序)。
+5. **为验证循环优化** —— AI 的核心工作方式是"生成 → 检查 → 修正",工具链必须为这个循环服务。
+6. **没有第二种写法** —— 一种结构一个语法,`ming fmt` 是唯一风格。
+
+## 状态
+
+v0.23.0:字节码 VM + WASM 分层(线性内存统一语义)+ 结构化并发 + JSON + capability fs/net/sync + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。欢迎在 examples/ 基础上实验。

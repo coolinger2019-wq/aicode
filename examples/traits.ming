@@ -1,0 +1,88 @@
+// trait 与 impl:用户类型的方法(v0.2)
+// prelude 内置 Eq 与 ToStr 两个 trait;方法必须定义在 trait 的 impl 中
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+impl Eq for Point {
+    fn eq(self, other: Self) -> bool {
+        return self.x == other.x && self.y == other.y;
+    }
+}
+
+impl ToStr for Point {
+    fn to_str(self) -> str {
+        return "(\{self.x}, \{self.y})";
+    }
+}
+
+enum Status {
+    Draft,
+    Published(str),
+}
+
+impl Eq for Status {
+    fn eq(self, other: Self) -> bool {
+        match (self, other) {
+            (Status.Draft, Status.Draft) => true,
+            (Status.Published(a), Status.Published(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+// 自定义 trait:声明即可被泛型约束引用
+trait Area {
+    fn area(self) -> f64;
+}
+
+struct Circle {
+    r: f64,
+}
+
+impl Area for Circle {
+    fn area(self) -> f64 {
+        return std.math.pi() * self.r * self.r;
+    }
+}
+
+// bound:泛型函数要求 T 实现 Eq(原始类型内置实现)
+fn find_index[T: Eq](v: Vec[T], x: T) -> Option[i64] {
+    let mut i = 0;
+    for item in v {
+        if item.eq(x) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    return None;
+}
+
+test traits {
+    let a = Point { x: 1.0, y: 2.0 };
+    let b = Point { x: 1.0, y: 2.0 };
+    let c = Point { x: 9.0, y: 9.0 };
+    assert(a.eq(b));
+    assert(!a.eq(c));
+    assert_eq(a.to_str(), "(1.0, 2.0)");
+    assert(Status.Draft.eq(Status.Draft));
+    assert(!Status.Published("x").eq(Status.Draft));
+    assert_eq(find_index([1, 2, 3], 2), Some(1));
+    assert_eq(find_index(["a", "b"], "z"), None);
+}
+
+fn main() with io {
+    let p = Point { x: 1.5, y: -2.0 };
+    print("p = \{p.to_str()}");
+    print("p.eq((1.5, -2.0)) = \{str(p.eq(Point { x: 1.5, y: -2.0 }))}");
+
+    let idx = find_index([10, 20, 30], 20);
+    match idx {
+        Some(i) => print("找到,下标 \{i}"),
+        None => print("没找到"),
+    }
+
+    let c = Circle { r: 2.0 };
+    print("圆面积 = \{c.area()}");
+}

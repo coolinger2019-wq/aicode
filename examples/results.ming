@@ -1,0 +1,43 @@
+// Result / Option / "?" 错误传播
+fn parse_pair(s: str) -> Result[(i64, i64), str] {
+    let parts = s.split(",");
+    if parts.len() != 2 {
+        return Err("需要恰好两个数字,逗号分隔");
+    }
+    let x = parts[0].trim().parse_i64()?;
+    let y = parts[1].trim().parse_i64()?;
+    Ok((x, y))
+}
+
+fn safe_div(a: i64, b: i64) -> Option[i64] {
+    if b == 0 {
+        return None;
+    }
+    Some(a / b)
+}
+
+test errors {
+    assert_eq(parse_pair("3,4"), Ok((3, 4)));
+    assert_eq(safe_div(10, 2), Some(5));
+    assert_eq(safe_div(1, 0), None);
+}
+
+fn show(s: str) with io {
+    match parse_pair(s) {
+        Ok((x, y)) => print("\{s} → x=\{x}, y=\{y}"),
+        Err(msg) => print("\{s} → 错误: \{msg}"),
+    }
+}
+
+fn main() with io {
+    show("10, 20");
+    show("1,2,3");
+    show("abc");
+
+    for (a, b) in [(10, 2), (7, 0)] {
+        match safe_div(a, b) {
+            Some(v) => print("\{a} / \{b} = \{v}"),
+            None => print("\{a} / \{b} = 除零"),
+        }
+    }
+}

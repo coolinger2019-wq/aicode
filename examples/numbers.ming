@@ -1,0 +1,24 @@
+// 数值边界:整数溢出是检查错误,类型级常量,安全转换
+fn main() with io {
+    print("i64.max = \{i64.max_value()}");
+    print("u8.max  = \{u8.max_value()}");
+
+    // 安全转换返回 Option
+    let big = 300;
+    print("300.to_u8() = \{debug(big.to_u8())}");
+    let small = 200;
+    print("200.to_u8() = \{debug(small.to_u8())}");
+
+    // 字符串解析是显式的 Result
+    match "42".parse_i64() {
+        Ok(n) => print("解析成功: \{n}"),
+        Err(e) => print("解析失败: \{e}"),
+    }
+
+    match "4x2".parse_i64() {
+        Ok(n) => print("解析成功: \{n}"),
+        Err(e) => print("解析失败: \{e}"),
+    }
+}
+// 300u8 会溢出 → 下一行打开会 panic(M4002):
+// let boom: u8 = 300;

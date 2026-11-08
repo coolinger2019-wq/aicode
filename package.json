@@ -1,0 +1,16 @@
+{
+  "name": "ming-lang",
+  "version": "0.23.0",
+  "description": "Ming(明)— 为 AI 与人类协作设计的编程语言:明确、安全、确定、机器友好。",
+  "type": "module",
+  "bin": {
+    "ming": "bin/ming.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node tests/run.mjs"
+  }
+}

@@ -1,0 +1,15 @@
+// FizzBuzz:match、元组模式、区间、函数
+fn classify(n: i64) -> str {
+    match (n % 3, n % 5) {
+        (0, 0) => "FizzBuzz",
+        (0, _) => "Fizz",
+        (_, 0) => "Buzz",
+        _ => str(n),
+    }
+}
+
+fn main() with io {
+    for i in 1..16 {
+        print(classify(i));
+    }
+}

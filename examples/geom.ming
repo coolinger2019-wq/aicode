@@ -1,0 +1,35 @@
+// geom.ming — 二维几何小模块(pub 才对外可见)
+pub struct Point {
+    x: f64,
+    y: f64,
+}
+
+pub struct Line {
+    from: Point,
+    to: Point,
+}
+
+// 内部辅助函数(没有 pub,外部不可见)
+fn sq(x: f64) -> f64 {
+    x * x
+}
+
+pub fn dist(a: Point, b: Point) -> f64 {
+    std.math.sqrt(sq(a.x - b.x) + sq(a.y - b.y))
+}
+
+pub fn midpoint(a: Point, b: Point) -> Point {
+    Point { x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0 }
+}
+
+pub fn line_len(l: Line) -> f64 {
+    dist(l.from, l.to)
+}
+
+test geom_basics {
+    let a = Point { x: 0.0, y: 0.0 };
+    let b = Point { x: 3.0, y: 4.0 };
+    assert_eq(dist(a, b), 5.0);
+    let m = midpoint(a, b);
+    assert_eq(m.x, 1.5);
+}

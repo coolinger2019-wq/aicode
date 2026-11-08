@@ -1,0 +1,32 @@
+// 字符串与 Map:统计词频(Map 保持插入序,输出确定)
+fn count_words(text: str) -> Map[str, i64] {
+    let mut counts: Map[str, i64] = {};
+    for word in text.to_lower().split(" ") {
+        let w = word.trim();
+        if w == "" {
+            continue;
+        }
+        counts.set(w, counts.get(w).unwrap_or(0) + 1);
+    }
+    counts
+}
+
+test word_count {
+    let c = count_words("a b a");
+    assert_eq(c.get("a"), Some(2));
+    assert_eq(c.get("b"), Some(1));
+    assert_eq(c.get("c"), None);
+    assert_eq(c.len(), 2);
+}
+
+fn main() with io {
+    let text = "the quick brown fox jumps over the lazy dog the fox";
+    let counts = count_words(text);
+
+    for (word, n) in counts {
+        print("\{word}: \{n}");
+    }
+
+    let total: i64 = counts.values().fold(0, (acc, n) => acc + n);
+    print("共 \{total} 个词, \{counts.len()} 个不同");
+}

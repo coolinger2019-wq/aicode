@@ -1,0 +1,77 @@
+// 泛型类型的 impl(v0.5):为泛型结构体实现 trait,用类型参数 bound 约束成员
+struct Pair[A, B] {
+    left: A,
+    right: B,
+}
+
+impl[A: Eq, B: Eq] Eq for Pair[A, B] {
+    fn eq(self, other: Self) -> bool {
+        return self.left.eq(other.left) && self.right.eq(other.right);
+    }
+}
+
+impl[A: ToStr, B: ToStr] ToStr for Pair[A, B] {
+    fn to_str(self) -> str {
+        return "(\{self.left.to_str()}, \{self.right.to_str()})";
+    }
+}
+
+// 自定义泛型 trait + 实现
+trait Summarize {
+    fn summary(self) -> str;
+}
+
+struct Inventory {
+    item: str,
+    count: i64,
+}
+
+impl Summarize for Inventory {
+    fn summary(self) -> str {
+        return "\{self.item} x\{self.count}";
+    }
+}
+
+impl[A: Summarize, B: Summarize] Summarize for Pair[A, B] {
+    fn summary(self) -> str {
+        return "\{self.left.summary()} | \{self.right.summary()}";
+    }
+}
+
+// Compare trait + 泛型函数(bound 引用 Eq)
+fn find_index[T: Eq](v: Vec[T], x: T) -> Option[i64] {
+    let mut i = 0;
+    for item in v {
+        if item.eq(x) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    return None;
+}
+
+fn main() with io {
+    let p = Pair { left: 1, right: "one" };
+    let q = Pair { left: 1, right: "one" };
+    let r = Pair { left: 2, right: "two" };
+
+    print(str(p.eq(q)));
+    print(str(p.eq(r)));
+    print(p.to_str());
+
+    let idx = find_index([p, q], Pair { left: 1, right: "one" });
+    print(str(idx.unwrap()));
+
+    let nums: Vec[i64] = [5, 3, 9, 1];
+    print(str(nums.min().unwrap()));
+    print(str(nums.max().unwrap()));
+
+    let words: Vec[str] = ["pear", "apple", "fig"];
+    print(words.min().unwrap());
+
+    let inv = Pair {
+        left: Inventory { item: "apple", count: 3 },
+        right: Inventory { item: "pear", count: 7 },
+    };
+    print(inv.summary());
+}

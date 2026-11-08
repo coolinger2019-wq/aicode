@@ -1,0 +1,41 @@
+// 结构化并发(v0.14):spawn 并行 + join 取结果,值语义保证确定性
+use std.sync;
+
+fn fib(n: i64) -> i64 {
+    if n < 2 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn check_fib(n: i64) -> i64 {
+    if n < 0 { panic("fib 不接受负数"); }
+    return fib(n);
+}
+
+fn word_count(text: str) -> i64 {
+    let mut n = 0;
+    for part in text.split(" ") {
+        if part != "" { n += 1; }
+    }
+    return n;
+}
+
+fn main() with io, sync {
+    // 两个 CPU 密集任务真正并行(worker 线程)
+    let h1 = std.sync.spawn(fib, 27);
+    let h2 = std.sync.spawn(fib, 24);
+
+    // 字符串跨任务
+    let h3 = std.sync.spawn(word_count, "the quick brown fox jumps over the lazy dog");
+
+    // 子任务 panic → Err(join 不 panic,与 ? 传播无缝衔接)
+    let h4 = std.sync.spawn(check_fib, -1);
+
+    let total = std.sync.join(h1).unwrap() + std.sync.join(h2).unwrap();
+    print("fib(27)+fib(24) = \{total}");
+    print("词数 = \{std.sync.join(h3).unwrap()}");
+
+    match std.sync.join(h4) {
+        Ok(v)  => print("不该到这: \{v}"),
+        Err(e) => print("子任务失败: \{e}"),
+    }
+}

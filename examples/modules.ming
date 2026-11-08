@@ -1,0 +1,13 @@
+// 多文件模块:use 本地模块 + pub 可见性 + 结构体
+use geom;
+
+fn main() with io {
+    let a = geom.Point { x: 0.0, y: 0.0 };
+    let b = geom.Point { x: 3.0, y: 4.0 };
+
+    print("a 到 b 的距离 = \{geom.dist(a, b)}");
+    print("中点 = \{debug(geom.midpoint(a, b))}");
+
+    let line = geom.Line { from: a, to: b };
+    print("线段长度 = \{geom.line_len(line)}");
+}

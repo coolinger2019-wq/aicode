@@ -1,0 +1,11 @@
+// 第一个 Ming 程序:字符串插值、循环、区间
+fn main() with io {
+    let name = "世界";
+    print("你好, \{name}!");
+
+    let mut total = 0;
+    for i in 1..11 {
+        total += i;
+    }
+    print("1..11 的和是 \{total}");
+}

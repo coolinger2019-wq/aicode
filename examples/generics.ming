@@ -1,0 +1,32 @@
+// 泛型函数:参数化类型(v0.1 泛型不承载运算)
+fn first[T](v: Vec[T]) -> Option[T] {
+    return v.first();
+}
+
+fn pair_of[T](x: T) -> Vec[T] {
+    return [x, x];
+}
+
+struct Pair[A, B] {
+    left: A,
+    right: B,
+}
+
+fn swap_pair[A, B](p: Pair[A, B]) -> Pair[B, A] {
+    return Pair { left: p.right, right: p.left };
+}
+
+test generics {
+    assert_eq(first([1, 2, 3]), Some(1));
+    assert_eq(first([]), None);
+    assert_eq(pair_of("hi"), ["hi", "hi"]);
+}
+
+fn main() with io {
+    print(debug(first(["a", "b"])));
+    print(debug(pair_of(42)));
+
+    let p = Pair { left: 1, right: "one" };
+    let q = swap_pair(p);
+    print("q.left = \{debug(q.left)}, q.right = \{debug(q.right)}");
+}

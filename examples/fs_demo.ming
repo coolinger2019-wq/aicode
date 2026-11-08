@@ -1,0 +1,36 @@
+// std.fs:capability 文件系统(v0.6)——所有 fs 操作必须声明效果
+use std.fs;
+use std.path;
+
+fn main() with io, fs {
+    // 写入:write_file 返回 Result[bool, str]
+    match std.fs.write_file("demo.txt", "第一行\n第二行\n") {
+        Ok(_)   => print("写入成功"),
+        Err(e)  => { print("写入失败: \{e}"); return; }
+    }
+
+    // 读取:read_file 返回 Result[str, str]
+    match std.fs.read_file("demo.txt") {
+        Ok(content) => print("读回 \{content.char_len()} 个字符"),
+        Err(e)      => print("读取失败: \{e}"),
+    }
+
+    // 列目录
+    match std.fs.list_dir(".") {
+        Ok(entries) => {
+            for name in entries {
+                print("  - \{name}");
+            }
+        }
+        Err(e) => print("列目录失败: \{e}"),
+    }
+
+    // 路径工具(纯函数,无需效果)
+    print(std.path.join("dir", "file.txt"));
+    print(std.path.base_name("/tmp/demo.txt"));
+    print(std.path.extension("a.tar.gz"));
+
+    // 清理
+    let _ = std.fs.remove_file("demo.txt");
+    print("存在吗? \{str(std.fs.exists("demo.txt"))}");
+}

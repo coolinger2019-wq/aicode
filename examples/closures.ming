@@ -1,0 +1,27 @@
+// 闭包与高阶内置方法:map / filter / fold / sort_by
+fn main() with io {
+    let nums: Vec[i64] = [5, 3, 8, 1, 9, 2];
+
+    let doubled = nums.map((x) => x * 2);
+    print("翻倍: \{debug(doubled)}");
+
+    let evens = nums.filter((x) => x % 2 == 0);
+    print("偶数: \{debug(evens)}");
+
+    let sum = nums.fold(0, (acc, x) => acc + x);
+    print("求和: \{sum}");
+
+    let mut desc = nums.clone();
+    desc.sort_by((a, b) => b - a);
+    print("降序: \{debug(desc)}");
+
+    let words = ["banana", "apple", "cherry"];
+    let mut sorted = words.clone();
+    sorted.sort();
+    print("字典序: \{sorted.join(", ")}");
+
+    // 闭包捕获是值拷贝:创建之后与外部变量脱钩
+    let base = 100;
+    let add_base = (x: i64) => x + base;
+    print("add_base(5) = \{add_base(5)}");
+}

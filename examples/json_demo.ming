@@ -1,0 +1,49 @@
+// std.json:动态 JSON 值(v0.10)——parse 产生 Json,访问器按需取用
+use std.json;
+
+fn main() with io {
+    // 解析:Result[Json, str],语法错误带位置
+    let text = "{\"name\": \"ming\", \"version\": 10, \"tags\": [\"fast\", \"safe\"], \"meta\": {\"ok\": true}}";
+    let doc = match std.json.parse(text) {
+        Ok(j)   => j,
+        Err(e)  => { print("解析失败: \{e}"); return; }
+    };
+
+    // 对象访问:get 返回 Option[Json]
+    let name = doc.get("name");
+    print("name = \{debug(name)}");
+
+    // 类型判定 + as_* 访问器
+    let version = doc.get("version").unwrap();
+    print("version = \{str(version.as_num().unwrap())}");
+
+    // 数组访问:Vec.get
+    let tags = doc.get("tags").unwrap().as_arr().unwrap();
+    print("tags[0] = \{debug(tags.get(0).unwrap())}");
+
+    // 嵌套
+    let ok = doc.get("meta").unwrap().get("ok").unwrap();
+    print("meta.ok = \{str(ok.as_bool().unwrap())}");
+
+    // 缺失键 → None
+    print("missing = \{debug(doc.get("nope"))}");
+
+    // stringify:静态检查 JSON 兼容类型(结构体/枚举会在编译期报 M3033)
+    let config: Map[str, str] = {"host": "127.0.0.1", "port": "8080"};
+    print(std.json.stringify(config));
+
+    let scores: Vec[f64] = [1.5, 2.5];
+    print(std.json.stringify(scores));
+
+    let maybe: Option[i64] = None;
+    print(std.json.stringify(maybe));
+
+    // Json 值本身可再序列化(往返)
+    print(std.json.stringify(doc));
+
+    // 语法错误带位置
+    match std.json.parse("{\"a\": }") {
+        Ok(_)   => print("不该到这"),
+        Err(e)  => print("错误: \{e}"),
+    }
+}
