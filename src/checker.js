@@ -1864,7 +1864,8 @@ export class Checker {
     if (e.args.length < min || e.args.length > max) {
       this.diags.push(err('M3005', `${name} 需要 ${min}${max !== min ? '-' + max : ''} 个参数,得到 ${e.args.length}`, e.span));
     }
-    const argTs = e.args.map(a => this.checkExpr(a, ctx));
+    // v0.40 修复:内建调用参数是值位置(此前缺 valuePos → if 表达式实参返回 unit)
+    const argTs = e.args.map(a => this.checkExpr(a, ctx, undefined, true));
     const binds = new Map();
     for (let i = 0; i < Math.min(argTs.length, spec.params.length); i++) {
       const p = spec.params[i];

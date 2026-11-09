@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.40.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2(ming cc:str/Vec[i64]/match/for-in)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.41.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -883,7 +883,7 @@ fn main() with io {
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
 | `ming build`(项目模式,v0.38) | 项目检查通过后产出 **dist 可移植产物**:app.ming + runtime 8 模块拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑 |
-| `ming cc f.ming [--emit-c] [--out 目录]`(v0.39 C1 / v0.40 C2) | **C 后端**:eligible 函数(数值 + str + Vec[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐);`--emit-c` 只产出 .c;编译器探测 MING_CC → PATH → 已知便携位置;Map/f64 打印/Option 形态属 C3(显式拒绝) |
+| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;插值串/Result 属 C4(显式拒绝) |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
@@ -993,12 +993,26 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.37(已完成) | AES-256-GCM 带认证(篡改检出)+ 模糊器 str/for-in 扩展 + ming build 预研(dist 目录决策,v0.38 实现) |
 | v0.38(已完成) | `ming build` dist 可移植产物(launcher/args/panic 全路径)+ **原生后端(C)预研**(资格分析复用路线)+ 模糊器 if/else |
 | v0.39(已完成) | **C 后端 C1**(ming cc:eligible 数值函数 → C + GCC -O2,资格分析复用;顺带修复 wasm 四项休眠 bug 使端到端真正复活)+ 模糊器加深(f64/match/loop/Option/方法面 + C 第 4 腿)+ `with ffi` 设计定稿(design.md §6.9,不实现) |
-| v0.40 方向 | C3:Map 形态、str for-in/trim 族、f64 打印对齐(Ryū 最短往返)、交叉编译 -static |
+| v0.40(已完成) | **C2:str/Vec[i64] 入 C**(cat/eq/char_len/pad/slice/replace,下标 OOB,push/for-in/mut 传参值语义,match 含 guard)+ engdiff 自举工具 + 模糊器 cc 族拓宽 |
+| v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;**cc 差分腿 = 解释引擎全形态**,四种子 100%)|
 | 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.41.0(2026-11-10)
+
+- **C 后端 C3:Map/Option/f64 打印进入 C 面**(`ming cc`,src/cbackend.js)——**cc 差分腿覆盖 = 解释引擎全形态**:
+  - Map[str,i64] = `ming_map{d,n,cap}`(插入序线性表;set 已有键原位更新;值语义 = let/赋值/mut 传参 ming_map_copy);下标缺键 M4007 消息逐字对齐(键经 debugStr 引号);set/has/get(→Option)/delete/clear/len/is_empty;for-in `(k, v)` 元组模式。
+  - Option[i64] = `ming_opt{some,v}`;Some/None 构造(裸 `None` 标识符与 `Some(x)` 调用两种形态);unwrap(M4006 `对 None 调用 unwrap()` 逐字)/unwrap_or/is_some/is_none;Vec.pop/get → Option。
+  - float→int 截断:`ming_f2i_sat/ming_f2u_sat`(向零截断 + 饱和;NaN → min/0,与 interp castValue 逐字对齐)。
+  - f64 打印:`ming_float_str`(interp floatStr 语义:NaN/±Inf/整值 toFixed(1)/JS Number::toString 最短往返重排;修复 `%.0e` 单位尾数无小数点导致数字收集越界的段错误)。
+  - str:trim/trim_start/trim_end(JS 空白集 UTF-8 实现)/starts_with/ends_with。
+  - 方法 base 统一为"非 Ident 求值一次入临时"(修复链式 `m.get(k).unwrap_or(0)` 的 oi64 base 无发射路径 + 双求值);`ming cc --no-run`(只构建不运行——运行退出码 = 程序退出码,差分工具据此分离构建与运行)。
+- **检查器第六处 valuePos 缺位**:内建调用实参(`str(if …)` 实参返回 unit)——checkExpr 值位置清单补齐内建 args。
+- **模糊器 cc 族 = wide 全形态**:新增 mapx 形态(set 覆盖/has/get/len/for-in(k,v)/delete);option/f64 解锁进 cc 族;f64 形态直接 `print(str(f))`(floatStr 差分);生成器 `fabs` → `abs` 修正。四种子(20261109/39039/35035/40040/40041)全 100% 一致,C 腿 11-24 条/轮。
+- 测试:401 项全绿(§36 新增:C3 综合四方一致/unwrap None/M4007 缺键 panic 对齐/C3 全形态模糊档)。
 
 ### v0.40.0(2026-11-10)
 

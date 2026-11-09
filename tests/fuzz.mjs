@@ -83,12 +83,11 @@ function genCond(vars, depth) {
   return `(${genExpr(vars, Math.max(1, depth - 1))} ${pick(['<', '<=', '>', '>='])} ${genExpr(vars, Math.max(1, depth - 1))})`;
 }
 
-// ---- 语句生成。mode='cc' 的程序限 C2 面(数值/str/Vec[i64]):option(pop)/f64 不入 ----
+// ---- 语句生成。v0.41:cc 族 = wide 全形态(C3 起 Option/f64/Map 全部入 C 面)----
 function genStmt(s, vars, strVar, mode, lines) {
   const v = pick(vars);
-  let kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64', 'forrange']);
-  // C2 面外:Option 形态(pop/unwrap)与 f64 打印 → 回退到数值形态
-  if (mode === 'cc' && (kind === 'option' || kind === 'f64')) kind = 'assign';
+  const kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64', 'mapx', 'forrange']);
+  void mode;
   if (kind === 'ifelse') {
     // v0.38:if/else 语句(含字符串分支,多后端分支求值差分)
     const other = vars.find(x => x !== v) ?? v;
@@ -151,19 +150,25 @@ function genStmt(s, vars, strVar, mode, lines) {
       lines.push(`    ${v} = ${v} + o${s}.unwrap_or(${int(-9, 9)});`);
     }
   } else if (kind === 'vecm') {
-    // v0.39:Vec 方法面(push/pop/contains/reverse)
+    // v0.39:Vec 方法面(push/pop/get/contains/reverse)
     lines.push(`    let mut vm${s}: Vec[i64] = [${int(-5, 5)}, ${int(-5, 5)}, ${int(-5, 5)}];`);
     lines.push(`    vm${s}.push(${int(-9, 9)});`);
     if (rng() < 0.4) {
       lines.push(`    vm${s}.reverse();`);
     }
     lines.push(`    if vm${s}.contains(${int(-5, 5)}) { ${v} = ${v} + 1; }`);
-    if (mode === 'cc') {
-      // C2 无 Option(pop 属 C3):用下标读替代
-      lines.push(`    ${v} = ${v} + vm${s}[0];`);
-    } else {
-      lines.push(`    ${v} = ${v} + vm${s}.pop().unwrap_or(0) + vm${s}[0];`);
+    lines.push(`    ${v} = ${v} + vm${s}.pop().unwrap_or(0) + vm${s}[0];`);
+  } else if (kind === 'mapx') {
+    // v0.41:Map[str,i64](插入序/set 覆盖/has/get/delete/for-in(k,v))
+    lines.push(`    let mut mp${s}: Map[str, i64] = {"${pick(['a', 'bb'])}": ${int(-9, 9)}, "${pick(['c', 'dd'])}": ${int(-9, 9)}};`);
+    lines.push(`    mp${s}.set("k${s}", ${int(-9, 9)});`);
+    lines.push(`    mp${s}.set("${pick(['a', 'bb'])}", ${int(-9, 9)});`);
+    lines.push(`    if mp${s}.has("a") { ${v} = ${v} + 1; }`);
+    lines.push(`    ${v} = ${v} + mp${s}.get("c").unwrap_or(0) + mp${s}.len() as i64;`);
+    if (rng() < 0.3) {
+      lines.push(`    mp${s}.delete("bb");`);
     }
+    lines.push(`    for (mk, mv) in mp${s} { ${v} = ${v} + mv; }`);
   } else if (kind === 'strm') {
     // v0.39:str 方法面(pad_left/slice_chars/contains/replace;slice 上界 1,恒安全)
     const m = pick(['pad', 'contains', 'replace', 'slice']);
@@ -177,13 +182,14 @@ function genStmt(s, vars, strVar, mode, lines) {
       lines.push(`    ${v} = ${v} + ${strVar}.slice_chars(0, 1).char_len() as i64;`);
     }
   } else if (kind === 'f64') {
-    // v0.39:f64 + std.math 精确子集(经 as i64 消费,饱和截断语义差分)
+    // v0.39:f64 + std.math 精确子集;v0.41:直接打印(f64 floatStr 对齐差分)
     const f = pick(['f0', 'f1']);
-    const mf = pick(['', 'std.math.sqrt', 'std.math.fabs']);
+    const mf = pick(['', 'std.math.sqrt', 'std.math.abs']);
     lines.push(`    ${f} = ${mf ? mf + '(' : ''}${f} * ${pick(['1.5', '0.5', '2.0', '-1.25'])} + ${pick(['0.5', '1.0', '-2.25'])}${mf ? ')' : ''};`);
     lines.push(`    ${v} = ${v} + (${f} as i64);`);
+    lines.push(`    print(str(${f}));`);
   } else if (kind === 'forrange') {
-    // v0.39:区间 for(hi 排他;cc 族可用的控制流)
+    // v0.39:区间 for(hi 排他)
     const lo = int(-3, 3);
     const hi = lo + int(0, 5);
     lines.push(`    for r${s} in ${lo}..${hi} { ${v} = ${v} + ${int(1, 3)}; }`);
@@ -200,23 +206,16 @@ function genProgram(mode) {
     lines.push(`    let mut ${v} = ${int(-50, 200)};`);
   }
   const sv = `s${int(0, 9)}`;
-  // v0.40:str 变量双模式都需要(cc 族含 str/strm 形态)
+  // v0.41:cc 族 = wide 全形态 —— str/f0/f1 双模式都需要
   lines.push(`    let mut ${sv} = "${pick(['abc', 'ming', 'hello world', 'a'])}";`);
-  if (mode === 'wide') {
-    // v0.39:f64 变量(wide 族;as i64 饱和截断消费)
-    lines.push(`    let mut f0 = ${pick(['1.5', '2.0', '-3.5', '7.25'])};`);
-    lines.push(`    let mut f1 = ${pick(['0.5', '-1.0', '4.75', '2.5'])};`);
-  }
+  lines.push(`    let mut f0 = ${pick(['1.5', '2.0', '-3.5', '7.25'])};`);
+  lines.push(`    let mut f1 = ${pick(['0.5', '-1.0', '4.75', '2.5'])};`);
   const nStmt = int(2, 5);
   for (let s = 0; s < nStmt; s++) {
     genStmt(s, vars, sv, mode, lines);
   }
-  if (mode === 'wide') {
-    lines.push(`    print(str(${vars[0]}));`);
-    lines.push(`    print(str(${sv}.char_len()));`);
-  } else {
-    lines.push(`    print(str(${vars[0]}));`);
-  }
+  lines.push(`    print(str(${vars[0]}));`);
+  lines.push(`    print(str(${sv}.char_len()));`);
   lines.push('}');
   return lines.join('\n');
 }
@@ -244,7 +243,8 @@ for (let i = 0; i < COUNT; i++) {
   // C 第 4 腿:cc 族必可编译;发射器拒绝 = cbackend 回归 → 记为分歧
   if (mode === 'cc') {
     fs.writeFileSync(ccSrc, src);
-    const b = spawnSync(process.execPath, [MING, 'cc', ccSrc, '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 30000 });
+    // v0.41:--no-run 分离构建与运行 —— cc 的运行退出码 = 程序退出码(panic → 101),此前被误判为编译失败
+    const b = spawnSync(process.execPath, [MING, 'cc', ccSrc, '--no-run', '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 30000 });
     const exe = path.join(ccDir, 'ccfuzz' + (process.platform === 'win32' ? '.exe' : ''));
     if (b.status !== 0 || !fs.existsSync(exe)) {
       if ((b.stderr ?? '').includes('C1 不支持')) {

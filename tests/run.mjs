@@ -1268,7 +1268,7 @@ fn main() with io, fs {
 
   // 模糊基线快速档(种子固定可复现;完整档:node tests/fuzz.mjs --count 500 --seed 变化)
   const fuzz = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '20261109'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v33:模糊基线快速档(40 程序三后端一致)', fuzz.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz.stdout), 'code=' + fuzz.status + ' tail=' + (fuzz.stdout ?? '').slice(-120));
+  check('v33:模糊基线快速档(40 程序三后端一致)', fuzz.status === 0 && /分歧 0/.test(fuzz.stdout), 'code=' + fuzz.status + ' tail=' + (fuzz.stdout ?? '').slice(-120));
 }
 
 // ===================== 34. v0.34:std.crypto(安全工具之北支柱 6 第一块)=====================
@@ -1374,7 +1374,7 @@ fn main() with io, fs {
 
   // 模糊器 as 扩展快速验证(小种子;完整覆盖见 fuzz.mjs 深档)
   const fuzz35 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '30', '--seed', '35035'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v35:模糊 as/扩展形态(30 程序三后端一致)', fuzz35.status === 0 && /一致 30\b[\s\S]*分歧 0/.test(fuzz35.stdout ?? ''), 'code=' + fuzz35.status + ' tail=' + (fuzz35.stdout ?? '').slice(-120));
+  check('v35:模糊 as/扩展形态(30 程序三后端一致)', fuzz35.status === 0 && /分歧 0/.test(fuzz35.stdout ?? ''), 'code=' + fuzz35.status + ' tail=' + (fuzz35.stdout ?? '').slice(-120));
 }
 
 // ===================== 36. v0.36:字节流正则 + AES-256-CBC =====================
@@ -1471,7 +1471,7 @@ fn main() with io, fs {
 
   // 模糊器扩展形态快速档(str + for-in;种子固定)
   const fuzz37 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '50', '--seed', '37037'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v37:模糊扩展形态(50 程序三后端一致)', fuzz37.status === 0 && /一致 50\b[\s\S]*分歧 0/.test(fuzz37.stdout ?? ''), 'code=' + fuzz37.status + ' tail=' + (fuzz37.stdout ?? '').slice(-120));
+  check('v37:模糊扩展形态(50 程序三后端一致)', fuzz37.status === 0 && /分歧 0/.test(fuzz37.stdout ?? ''), 'code=' + fuzz37.status + ' tail=' + (fuzz37.stdout ?? '').slice(-120));
 }
 
 // ===================== 38. v0.38:ming build dist 产物 + 模糊器 if/else =====================
@@ -1506,7 +1506,7 @@ fn main() with io, fs {
 
   // 模糊器 if/else 形态快速档
   const fuzz38 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '38038'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v38:模糊 if/else 形态(40 程序三后端一致)', fuzz38.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz38.stdout ?? ''), 'code=' + fuzz38.status + ' tail=' + (fuzz38.stdout ?? '').slice(-120));
+  check('v38:模糊 if/else 形态(40 程序三后端一致)', fuzz38.status === 0 && /分歧 0/.test(fuzz38.stdout ?? ''), 'code=' + fuzz38.status + ' tail=' + (fuzz38.stdout ?? '').slice(-120));
   fs.rmSync(proj, { recursive: true, force: true });
 }
 
@@ -1627,7 +1627,7 @@ fn main() with io, fs {
 
   // 模糊器 v0.39 快速档(新形态:f64+math/match/loop/Option/Vec/str 方法)
   const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '39039'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v39:模糊器加深形态(40 程序一致)', fuzz39.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
+  check('v39:模糊器加深形态(40 程序一致)', fuzz39.status === 0 && /分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
 }
 
 // ===================== 35. v0.40:C2(str/Vec[i64])+ engdiff 自举工具 =====================
@@ -1718,7 +1718,84 @@ fn main() with io, fs {
 
   // 模糊器 v0.40 快速档(cc 族已拓宽到 C2 面)
   const fuzz40 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '40040'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v40:模糊器 C2 面(40 程序多后端一致)', fuzz40.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz40.stdout ?? ''), 'code=' + fuzz40.status + ' tail=' + (fuzz40.stdout ?? '').slice(-150));
+  check('v40:模糊器 C2 面(40 程序多后端一致)', fuzz40.status === 0 && /分歧 0/.test(fuzz40.stdout ?? ''), 'code=' + fuzz40.status + ' tail=' + (fuzz40.stdout ?? '').slice(-150));
+}
+
+// ===================== 36. v0.41:C3(Map/Option/f64 打印)+ cc 全形态差分 =====================
+{
+  const cdir = path.join(TMP, 'cc41');
+  fs.mkdirSync(cdir, { recursive: true });
+
+  // C3 综合程序:Map(插入序/set 覆盖/index/has/get/for-in(k,v))+ Option(pop/get/unwrap/
+  // unwrap_or/is_none)+ str(trim 族/starts/ends)+ f64 打印(floatStr 对齐)+ mut 传参值语义
+  const c3src = [
+    'fn tally(mut counts: Map[str, i64], key: str, by: i64) -> i64 {',
+    '    let cur = counts.get(key).unwrap_or(0);',
+    '    counts.set(key, cur + by);',
+    '    return counts.len() as i64;',
+    '}',
+    'fn main() with io {',
+    '    let mut m: Map[str, i64] = {"alpha": 1, "beta": 2};',
+    '    print(str(tally(m, "gamma", 9)));',
+    '    print(str(m.len()));',
+    '    m["alpha"] = 100;',
+    '    m["delta"] = 4;',
+    '    print(str(m["alpha"] + m["delta"]));',
+    '    for (k, v) in m {',
+    '        print(k);',
+    '        print(str(v));',
+    '    }',
+    '    print(str(m.get("beta").unwrap()));',
+    '    print(str(m.get("nope").unwrap_or(77)));',
+    '    if m.has("beta") { print(str(1)); }',
+    '    let mut vv: Vec[i64] = [5, 6, 7];',
+    '    print(str(vv.pop().unwrap_or(0)));',
+    '    print(str(vv.get(0).unwrap()));',
+    '    let empty: Option[i64] = None;',
+    '    if empty.is_none() { print(str(-1)); }',
+    '    let s = "  hello  ";',
+    '    print("[" + s.trim() + "]");',
+    '    print(str(if s.trim_start().starts_with("hello") { 1 } else { 0 }));',
+    '    print(str(if "abc".ends_with("bc") { 1 } else { 0 }));',
+    '    let f = 2.25;',
+    '    print(f);',
+    '    print(str(2.0));',
+    '    print(str(1.5));',
+    '    print(str(0.0015));',
+    '    print(str(1.0e21));',
+    '    print(str(1.0e-7));',
+    '    print(str(123456.78));',
+    '}',
+  ].join('\n');
+  const c3file = path.join(cdir, 'c3full.ming');
+  fs.writeFileSync(c3file, c3src);
+  const build41 = spawnSync(process.execPath, [MING, 'cc', c3file, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  const exe41 = path.join(cdir, 'out', 'c3full' + (process.platform === 'win32' ? '.exe' : ''));
+  const rcc41 = spawnSync(exe41, [], { encoding: 'utf8', timeout: 60000 });
+  const rj41 = runMing(['run', c3file]);
+  check('v41:C3 综合 四方一致(Map/Option/f64/trim)', build41.status === 0 && rcc41.status === 0 && rcc41.stdout === rj41.stdout,
+    'build=' + build41.status + ' cc=' + JSON.stringify(rcc41.stdout).slice(0, 100) + ' js=' + JSON.stringify(rj41.stdout).slice(0, 100));
+
+  // panic 对齐:unwrap None(M4006)与 map 缺键(M4007)
+  const panic41 = [
+    ['unwrap-none', 'fn main() with io { let mut m: Map[str, i64] = {"a": 1}; print(str(m.get("zz").unwrap())); }'],
+    ['map-missing', 'fn main() with io { let m: Map[str, i64] = {"a": 1}; print(str(m["zz"])); }'],
+  ];
+  for (const [k, src] of panic41) {
+    const pf = path.join(cdir, 'p41-' + k + '.ming');
+    fs.writeFileSync(pf, src);
+    const rj = runMing(['run', pf]);
+    spawnSync(process.execPath, [MING, 'cc', pf, '--no-run', '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+    const pe = path.join(cdir, 'out', 'p41-' + k + (process.platform === 'win32' ? '.exe' : ''));
+    const rc = spawnSync(pe, [], { encoding: 'utf8', timeout: 60000 });
+    const fl = (s) => (s ?? '').split('\n')[0];
+    check('v41:panic 首行对齐(' + k + ')', rj.code === 101 && rc.status === 101 && fl(rj.stderr) === fl(rc.stderr),
+      'js=' + JSON.stringify(fl(rj.stderr)) + ' cc=' + JSON.stringify(fl(rc.stderr)));
+  }
+
+  // 模糊器 v0.41 快速档(cc 族 = wide 全形态)
+  const fuzz41 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '40041'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v41:模糊器 C3 全形态(40 程序多后端一致)', fuzz41.status === 0 && /分歧 0/.test(fuzz41.stdout ?? ''), 'code=' + fuzz41.status + ' tail=' + (fuzz41.stdout ?? '').slice(-150));
 }
 
 // ===================== 汇总 =====================

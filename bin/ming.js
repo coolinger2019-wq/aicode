@@ -21,7 +21,7 @@ import { Unsupported } from '../src/wasm.js';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.40.0';
+export const VERSION = '0.41.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -543,6 +543,12 @@ function cmdCC(file, flags, opts, programArgs) {
   if (build.status !== 0) {
     process.stderr.write((build.stderr || build.stdout || 'C 编译失败') + '\n');
     return 1;
+  }
+  if (flags.has('no-run')) {
+    // v0.41:只构建不运行 —— cc 的运行退出码 = 程序退出码(panic → 101),差分工具据此分离构建与运行
+    if (json) process.stdout.write(JSON.stringify({ ok: true, c_file: cFile, exe: exeFile, eligible: emitted.eligible.size }, null, 2) + '\n');
+    else process.stdout.write(`已构建:${exeFile}(--no-run 不运行)\n`);
+    return 0;
   }
   const run = spawnSync(exeFile, programArgs, { stdio: 'inherit', timeout: 600000 });
   return run.status ?? 1;

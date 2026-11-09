@@ -24,7 +24,7 @@ function cstr(text) {
     .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 }
 
-const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', str: 'ming_str', vi64: 'ming_vec' };
+const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', str: 'ming_str', vi64: 'ming_vec', mi64: 'ming_map', oi64: 'ming_opt' };
 const CSUF = { i64: 'LL', u64: 'ULL', f64: '' };
 const FMT = { i64: '%lld', u64: '%llu' };
 
@@ -40,14 +40,15 @@ function diagHead(span, code, name, msg) {
   return `${f}:${span?.line ?? 0}:${span?.col ?? 0}: error ${code}[${name}]: ${msg}`;
 }
 
-// Ming 类型节点 → 载体类型('i64'|'u64'|'f64'|'str'|'vi64'|null)。
-// C2 起:str 与 Vec[i64] 进入 C 面(资格分析 sigExt 已把关,这里直接放行)。
+// Ming 类型节点 → 载体类型(C3 起:str/Vec[i64]/Map[str,i64]/Option[i64] 全消费面)
 function mingTyNum(t) {
   if (!t) return null;
   if (t.k === 'int' && t.bits === 64) return t.signed ? 'i64' : 'u64';
   if (t.k === 'float' && t.bits === 64) return 'f64';
   if (t.k === 'str') return 'str';
   if (t.k === 'vec' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return 'vi64';
+  if (t.k === 'map' && t.kt?.k === 'str' && t.vt?.k === 'int' && t.vt?.bits === 64 && t.vt?.signed) return 'mi64';
+  if (t.k === 'opt' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return 'oi64';
   return null;
 }
 
@@ -71,6 +72,17 @@ function annoTarget(t) {
       if (el && el.k === 'int' && el.bits === 64 && el.signed) return { k: 'vec', el };
       return null;
     }
+    if ((n === 'Map') && t.args?.length === 2) {
+      const kt = annoTarget(t.args[0]);
+      const vt = annoTarget(t.args[1]);
+      if (kt?.k === 'str' && vt?.k === 'int' && vt.bits === 64 && vt.signed) return { k: 'map', vt };
+      return null;
+    }
+    if ((n === 'Option') && t.args?.length === 1) {
+      const el = annoTarget(t.args[0]);
+      if (el && el.k === 'int' && el.bits === 64 && el.signed) return { k: 'opt', el };
+      return null;
+    }
     return ANNO_PRIM[n] ?? null;
   }
   if (t.k === 'int' || t.k === 'float') return { k: t.k, bits: t.bits, signed: !!t.signed };
@@ -79,12 +91,14 @@ function annoTarget(t) {
   return null;
 }
 
-// 标注 → 载体类型(let 标注用;str/Vec[i64] → 'str'/'vi64')
+// 标注 → 载体类型(let 标注用)
 function annoTy(t) {
   const a = annoTarget(t);
   if (!a) return null;
   if (a.k === 'str') return 'str';
   if (a.k === 'vec') return 'vi64';
+  if (a.k === 'map') return 'mi64';
+  if (a.k === 'opt') return 'oi64';
   return mingTyNum(a);
 }
 
@@ -100,9 +114,9 @@ class CEmit {
     this.tmpSeq = 0;
   }
 
-  newTmp(ctx, ty) {
+  newTmp(ctx, ty, init) {
     const name = `__t${++this.tmpSeq}`;
-    ctx.line(`${CTYPE[ty]} ${name};`);
+    ctx.line(init !== undefined ? `${CTYPE[ty]} ${name} = ${init};` : `${CTYPE[ty]} ${name};`);
     return name;
   }
 
@@ -140,6 +154,7 @@ class CEmit {
         return ok ? 'vi64' : null;
       }
       case 'Ident': {
+        if (e.name === 'None') return 'oi64';
         const local = ctx.typeOf(e.name);
         if (local) return local;
         const c = this.resolveConst(ctx, e.name);
@@ -163,13 +178,26 @@ class CEmit {
           else bt = this.inferTy(e.callee.base, ctx);
           if (bt === 'str') {
             if (m === 'char_len' || m === 'byte_len') return 'i64';
-            if (m === 'contains' || m === 'is_empty') return 'bool';
-            if (['replace', 'pad_left', 'pad_right', 'slice_chars'].includes(m)) return 'str';
+            if (m === 'contains' || m === 'is_empty' || m === 'starts_with' || m === 'ends_with') return 'bool';
+            if (['replace', 'pad_left', 'pad_right', 'slice_chars', 'trim', 'trim_start', 'trim_end'].includes(m)) return 'str';
             return null;
           }
           if (bt === 'vi64') {
             if (m === 'len') return 'i64';
             if (m === 'contains') return 'bool';
+            if (m === 'pop' || m === 'get') return 'oi64';
+            return null;
+          }
+          if (bt === 'mi64') {
+            if (m === 'len') return 'i64';
+            if (m === 'is_empty' || m === 'has') return 'bool';
+            if (m === 'get') return 'oi64';
+            if (m === 'set' || m === 'delete' || m === 'clear') return null;
+            return null;
+          }
+          if (bt === 'oi64') {
+            if (m === 'is_some' || m === 'is_none') return 'bool';
+            if (m === 'unwrap' || m === 'unwrap_or') return 'i64';
             return null;
           }
           if (e.callee.base.nt === 'Ident') {
@@ -180,9 +208,19 @@ class CEmit {
           return null;
         }
         if (e.callee.nt !== 'Ident') return null;
+        // 裸枚举构造器:Option[i64] 的 Some/None(C3)
+        if (e.callee.name === 'Some' && e.args?.length === 1 && this.inferTy(e.args[0], ctx) === 'i64') return 'oi64';
+        if (e.callee.name === 'None' && (!e.args || e.args.length === 0)) return 'oi64';
         const entry = this.resolveEntry(ctx, e.callee.name);
         if (entry?.kind !== 'fn') return null;
         return mingTyNum(entry.sig?.ret);
+      }
+      case 'MapLit': {
+        // Map[str, i64](C3)
+        for (const en of e.entries) {
+          if (this.inferTy(en.k, ctx) !== 'str' || this.inferTy(en.v, ctx) !== 'i64') return null;
+        }
+        return 'mi64';
       }
       case 'Match': {
         // 推导取第一个臂的值型(检查器已保证各臂同型)
@@ -192,8 +230,8 @@ class CEmit {
         return this.inferTy(a0, ctx);
       }
       case 'Index': {
-        // 下标读:Vec[i64] → i64
-        if (e.base.nt === 'Ident' && ctx.typeOf(e.base.name) === 'vi64') return 'i64';
+        // 下标读:Vec[i64]/Map[str,i64] → i64
+        if (e.base.nt === 'Ident' && (ctx.typeOf(e.base.name) === 'vi64' || ctx.typeOf(e.base.name) === 'mi64')) return 'i64';
         return null;
       }
       case 'As': {
@@ -256,17 +294,44 @@ class CEmit {
         ctx.line(`${t} = ming_vec_lit(${an}, ${n});`);
         return t;
       }
+      case 'MapLit': {
+        if (ty !== 'mi64') throw new Unsupported('Map 字面量位置');
+        const n = e.entries.length;
+        const an = `__k${++this.tmpSeq}`;
+        ctx.line(`ming_kv ${an}[${n}];`);
+        for (let i = 0; i < n; i++) {
+          const k = this.emitExpr(e.entries[i].k, 'str', ctx);
+          const kv = this.emitExpr(e.entries[i].v, 'i64', ctx);
+          ctx.line(`${an}[${i}].k = ${k}.p; ${an}[${i}].kn = ${k}.n; ${an}[${i}].v = ${kv};`);
+        }
+        const t = this.newTmp(ctx, 'mi64');
+        ctx.line(`${t} = ming_map_lit(${an}, ${n});`);
+        return t;
+      }
       case 'Index': {
-        // 下标读:Vec[i64](OOB → M4003,与 VM 逐字对齐)
+        // 下标读:Vec[i64](OOB M4003)/ Map[str,i64](缺键 M4007)
         if (e.base.nt !== 'Ident') throw new Unsupported('下标目标非局部');
         const bt = ctx.typeOf(e.base.name);
-        if (bt !== 'vi64') throw new Unsupported('下标类型 ' + bt);
-        if (ty !== 'i64') throw new Unsupported('下标结果位置 ' + ty);
-        const base = ctx.nameOf(e.base.name);
-        const idx = this.emitExpr(e.index, 'i64', ctx);
-        return `ming_vec_get(${base}, ${idx}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`;
+        if (bt === 'vi64') {
+          if (ty !== 'i64') throw new Unsupported('下标结果位置 ' + ty);
+          const base = ctx.nameOf(e.base.name);
+          const idx = this.emitExpr(e.index, 'i64', ctx);
+          return `ming_vec_get(${base}, ${idx}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`;
+        }
+        if (bt === 'mi64') {
+          if (ty !== 'i64') throw new Unsupported('下标结果位置 ' + ty);
+          const base = ctx.nameOf(e.base.name);
+          const k = this.emitExpr(e.index, 'str', ctx);
+          return `ming_map_index(${base}, ${k}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`;
+        }
+        throw new Unsupported('下标类型 ' + bt);
       }
       case 'Ident': {
+        // prelude 裸变体:None(无括号形式)
+        if (e.name === 'None') {
+          if (ty !== 'oi64') throw new Unsupported('None 位置 ' + ty);
+          return 'ming_opt_none()';
+        }
         const local = ctx.nameOf(e.name);
         if (local) return local;
         const c = this.resolveConst(ctx, e.name);
@@ -516,14 +581,19 @@ class CEmit {
     const srcTy = this.inferTy(e.expr, ctx);
     if (!srcTy) throw new Unsupported('as 源类型');
     if (target?.k === 'float') {
-      if (target.bits !== 64) throw new Unsupported('as f32(C2)');
+      if (target.bits !== 64) throw new Unsupported('as f32(C4)');
       if (ty !== 'f64') throw new Unsupported('as f64 位置');
       if (srcTy === 'f64') return this.emitExpr(e.expr, 'f64', ctx);
       if (srcTy === 'bool') throw new Unsupported('bool→f64');
       return `(double)(${this.emitExpr(e.expr, srcTy, ctx)})`;
     }
     if (target?.k !== 'int') throw new Unsupported('as 目标 ' + (target?.k ?? '?'));
-    if (srcTy === 'f64') throw new Unsupported('float→int 截断(C2)');
+    if (srcTy === 'f64') {
+      // v0.41:float→int 截断 + 饱和(ming_f2i_sat/ming_f2u_sat,与 interp castValue 对齐)
+      if (ty !== 'i64' && ty !== 'u64') throw new Unsupported('float→int 位置');
+      const x = this.emitExpr(e.expr, 'f64', ctx);
+      return ty === 'u64' ? `ming_f2u_sat(${x})` : `ming_f2i_sat(${x})`;
+    }
     if (target.bits === 64) {
       if (ty !== 'i64' && ty !== 'u64') throw new Unsupported('as 位置');
       if (srcTy === 'bool') {
@@ -570,8 +640,11 @@ class CEmit {
         baseIsIdent = true;
       } else {
         bt = this.inferTy(e.callee.base, ctx);
-        if (bt === 'str') baseText = this.emitExpr(e.callee.base, 'str', ctx);
-        else if (bt === 'vi64') baseText = this.emitExpr(e.callee.base, 'vi64', ctx);
+        if (bt === 'str' || bt === 'vi64' || bt === 'mi64' || bt === 'oi64') {
+          // 非 Ident base:求值一次入临时(方法体可能引用 baseText 两次,如 unwrap_or)
+          const txt = this.emitExpr(e.callee.base, bt, ctx);
+          baseText = this.newTmp(ctx, bt, txt);
+        }
       }
       const SP = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
       if (bt === 'str') {
@@ -583,15 +656,42 @@ class CEmit {
         if (m === 'pad_left' && e.args.length === 1) return { call: `ming_str_pad_left(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'str' };
         if (m === 'pad_right' && e.args.length === 1) return { call: `ming_str_pad_right(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'str' };
         if (m === 'slice_chars' && e.args.length === 2) return { call: `ming_str_slice(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)}, ${this.emitExpr(e.args[1], 'i64', ctx)}, ${SP})`, retTy: 'str' };
-        throw new Unsupported('str.' + m + '(C3:trim/to_upper/to_lower/chars/split/parse_* 等)');
+        if ((m === 'trim' || m === 'trim_start' || m === 'trim_end') && e.args.length === 0) {
+          const mode = m === 'trim' ? '1, 1' : (m === 'trim_start' ? '1, 0' : '0, 1');
+          return { call: `ming_str_trim_impl(${baseText}, ${mode})`, retTy: 'str' };
+        }
+        if (m === 'starts_with' && e.args.length === 1) return { call: `ming_str_starts(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
+        if (m === 'ends_with' && e.args.length === 1) return { call: `ming_str_ends(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
+        throw new Unsupported('str.' + m + '(C4:to_upper/to_lower/chars/split/parse_* 等)');
       }
       if (bt === 'vi64') {
+        const gvSP = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
         if (m === 'len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
         if (m === 'contains' && e.args.length === 1) return { call: `ming_vec_contains(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'bool' };
+        if (m === 'pop' && e.args.length === 0) return { call: `ming_vec_pop(&${baseText})`, retTy: 'oi64' };
+        if (m === 'get' && e.args.length === 1) return { call: `ming_vec_get_opt(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
         if (!baseIsIdent) throw new Unsupported('Vec.' + m + '(变异方法要求局部变量接收者)');
         if (m === 'push' && e.args.length === 1) return { call: `ming_vec_push(&${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: null };
         if (m === 'reverse' && e.args.length === 0) return { call: `ming_vec_reverse(&${baseText})`, retTy: null };
-        throw new Unsupported('Vec.' + m + '(C3:pop/get 等 Option 形态)');
+        throw new Unsupported('Vec.' + m + '(C3 面:pop/get 已入)');
+      }
+      if (bt === 'mi64') {
+        const SPm = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
+        if (m === 'len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
+        if (m === 'is_empty' && e.args.length === 0) return { call: `(${baseText}.n == 0)`, retTy: 'bool' };
+        if (m === 'has' && e.args.length === 1) return { call: `(ming_map_find(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)}) >= 0)`, retTy: 'bool' };
+        if (m === 'get' && e.args.length === 1) return { call: `ming_map_get(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'oi64' };
+        if (m === 'set' && e.args.length === 2 && baseIsIdent) return { call: `ming_map_set(&${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)}, ${this.emitExpr(e.args[1], 'i64', ctx)})`, retTy: null };
+        if (m === 'delete' && e.args.length === 1 && baseIsIdent) return { call: `ming_map_delete(&${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
+        if (m === 'clear' && e.args.length === 0 && baseIsIdent) return { call: `(${baseText}.n = 0)`, retTy: null };
+        throw new Unsupported('Map.' + m + '(keys/values/items 属 C4)');
+      }
+      if (bt === 'oi64') {
+        if (m === 'is_some' && e.args.length === 0) return { call: `(${baseText}.some)`, retTy: 'bool' };
+        if (m === 'is_none' && e.args.length === 0) return { call: `(!${baseText}.some)`, retTy: 'bool' };
+        if (m === 'unwrap' && e.args.length === 0) return { call: `ming_opt_unwrap(${baseText}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`, retTy: 'i64' };
+        if (m === 'unwrap_or' && e.args.length === 1) return { call: `(${baseText}.some ? ${baseText}.v : ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'i64' };
+        throw new Unsupported('Option.' + m + '(C3 面:unwrap/unwrap_or/is_some/is_none)');
       }
     }
     // 类型级数值函数:i64.max_value() / u64.min_value() / f64.infinity() 等
@@ -616,6 +716,15 @@ class CEmit {
       }
       throw new Unsupported('类型级 ' + prim + '.' + tlf);
     }
+    // 裸枚举构造器:Option[i64] 的 Some/None(C3;Ok/Err 属 Result,C4)
+    if (e.callee.nt === 'Ident' && (e.callee.name === 'Some' || e.callee.name === 'None')) {
+      if (e.callee.name === 'None') {
+        if (e.args?.length) throw new Unsupported('None 带参数');
+        return { call: 'ming_opt_none()', retTy: 'oi64' };
+      }
+      if (e.args?.length !== 1) throw new Unsupported('Some 参数数');
+      return { call: `ming_opt_some(${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
+    }
     if (e.callee.nt !== 'Ident') throw new Unsupported('调用目标 ' + e.callee.nt);
     const entry = this.resolveEntry(ctx, e.callee.name);
     if (!entry || entry.kind !== 'fn') throw new Unsupported('调用 ' + e.callee.name);
@@ -626,8 +735,9 @@ class CEmit {
       const pt = mingTyNum(sig.params[i]?.type);
       if (!pt) throw new Unsupported('参数类型 ' + i);
       const txt = this.emitExpr(ar, pt, ctx);
-      // 值语义:mut Vec 实参在调用边界深拷贝(被调 push/set 不影响调用方,同 wasm ming_copy_vec)
+      // 值语义:mut Vec/Map 实参在调用边界深拷贝(同 wasm ming_copy_vec 边界)
       if (pt === 'vi64' && sig.params[i]?.mut) return `ming_vec_copy(${txt})`;
+      if (pt === 'mi64' && sig.params[i]?.mut) return `ming_map_copy(${txt})`;
       return txt;
     });
     const retTy = sig.ret?.k === 'unit' ? null : mingTyNum(sig.ret);
@@ -691,12 +801,13 @@ class CEmit {
         }
         const v = this.emitExpr(s.init, ty, ctx);
         const name = ctx.declare(s.pat.name, ty);
-        // 值语义:Vec 绑定即深拷贝(str 缓冲不可变,头部拷贝即可)
-        ctx.line(`${CTYPE[ty]} ${name} = ${ty === 'vi64' ? `ming_vec_copy(${v})` : v};`);
+        // 值语义:Vec/Map 绑定即深拷贝(str 缓冲不可变,头部拷贝即可)
+        const cpy = ty === 'vi64' ? `ming_vec_copy(${v})` : ty === 'mi64' ? `ming_map_copy(${v})` : v;
+        ctx.line(`${CTYPE[ty]} ${name} = ${cpy};`);
         return;
       }
       case 'Assign': {
-        // 下标赋值:v[i] = x(OOB → M4003)
+        // 下标赋值:v[i] = x / m[k] = v
         if (s.target.nt === 'Index' && s.op === '=' && s.target.base.nt === 'Ident') {
           const bt = ctx.typeOf(s.target.base.name);
           if (bt === 'vi64') {
@@ -704,6 +815,13 @@ class CEmit {
             const idx = this.emitExpr(s.target.index, 'i64', ctx);
             const val = this.emitExpr(s.value, 'i64', ctx);
             ctx.line(`ming_vec_set(&${base}, ${idx}, ${val}, "${cstr(s.span?.file ?? '?')}", ${s.span?.line ?? 0}, ${s.span?.col ?? 0});`);
+            return;
+          }
+          if (bt === 'mi64') {
+            const base = ctx.nameOf(s.target.base.name);
+            const k = this.emitExpr(s.target.index, 'str', ctx);
+            const val = this.emitExpr(s.value, 'i64', ctx);
+            ctx.line(`ming_map_set(&${base}, ${k}, ${val});`);
             return;
           }
           throw new Unsupported('下标赋值目标 ' + bt);
@@ -714,7 +832,8 @@ class CEmit {
         const dty = ctx.typeOf(s.target.name);
         if (s.op === '=') {
           const v = this.emitExpr(s.value, dty, ctx);
-          ctx.line(`${dst} = ${dty === 'vi64' ? `ming_vec_copy(${v})` : v};`);
+          const cpy = dty === 'vi64' ? `ming_vec_copy(${v})` : dty === 'mi64' ? `ming_map_copy(${v})` : v;
+          ctx.line(`${dst} = ${cpy};`);
           return;
         }
         if (!['+=', '-=', '*=', '/=', '%=', '<<=', '>>='].includes(s.op)) throw new Unsupported('复合 ' + s.op);
@@ -790,24 +909,43 @@ class CEmit {
       case 'Break': ctx.line('break;'); return;
       case 'Continue': ctx.line('continue;'); return;
       case 'For': {
-        // C1:区间 for(hi 排他,与 V.range 一致);C2:Vec[i64] 的 for-in
+        // C1:区间 for;C2:Vec[i64] for-in;C3:Map[str,i64] for-in(PTuple(k,v),插入序)
         if (s.iter.nt !== 'Range' && s.iter.nt !== 'Ident') throw new Unsupported('for 迭代 ' + s.iter.nt);
-        if (s.pat.nt !== 'PIdent') throw new Unsupported('for 模式');
         if (s.iter.nt === 'Ident') {
           const bt = ctx.typeOf(s.iter.name);
-          if (bt !== 'vi64') throw new Unsupported('for 容器 ' + bt + '(Map/str for-in 属 C3)');
-          const base = ctx.nameOf(s.iter.name);
-          const lenT = this.newTmp(ctx, 'i64');
-          ctx.line(`${lenT} = ${base}.n;`);
-          ctx.open('{');
-          const ivar = ctx.declare('__i' + s.pat.name, 'i64');
-          ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ${ivar}++) {`);
-          const ev = ctx.declare(s.pat.name, 'i64');
-          ctx.line(`long long ${ev} = ${base}.d[${ivar}];`);
-          this.emitBlock(s.body, ctx);
-          ctx.close('}');
-          ctx.close('}');
-          return;
+          if (bt === 'vi64') {
+            if (s.pat.nt !== 'PIdent') throw new Unsupported('for 模式');
+            const base = ctx.nameOf(s.iter.name);
+            const lenT = this.newTmp(ctx, 'i64');
+            ctx.line(`${lenT} = ${base}.n;`);
+            ctx.open('{');
+            const ivar = ctx.declare('__i' + s.pat.name, 'i64');
+            ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ${ivar}++) {`);
+            const ev = ctx.declare(s.pat.name, 'i64');
+            ctx.line(`long long ${ev} = ${base}.d[${ivar}];`);
+            this.emitBlock(s.body, ctx);
+            ctx.close('}');
+            ctx.close('}');
+            return;
+          }
+          if (bt === 'mi64') {
+            if (s.pat.nt !== 'PTuple' || s.pat.pats.length !== 2) throw new Unsupported('map for-in 模式(须 (k, v))');
+            const base = ctx.nameOf(s.iter.name);
+            const lenT = this.newTmp(ctx, 'i64');
+            ctx.line(`${lenT} = ${base}.n;`);
+            ctx.open('{');
+            const ivar = ctx.declare('__im' + s.pat.pats[0].name, 'i64');
+            ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ${ivar}++) {`);
+            const kv = ctx.declare(s.pat.pats[0].name, 'str');
+            ctx.line(`ming_str ${kv}; ${kv}.p = ${base}.d[${ivar}].k; ${kv}.n = ${base}.d[${ivar}].kn;`);
+            const vv = ctx.declare(s.pat.pats[1].name, 'i64');
+            ctx.line(`long long ${vv} = ${base}.d[${ivar}].v;`);
+            this.emitBlock(s.body, ctx);
+            ctx.close('}');
+            ctx.close('}');
+            return;
+          }
+          throw new Unsupported('for 容器 ' + bt);
         }
         if (this.inferTy(s.iter.lo, ctx) !== 'i64') throw new Unsupported('for 区间类型');
         // lo/hi 求值一次(Ming Range 语义);循环体可能突变来源变量
@@ -835,13 +973,12 @@ class CEmit {
     ctx.popScope();
   }
 
-  // print:整数(str(int)/直接数值)、str(直接或经 str())与字面量串;
-  // f64/插值/Vec → C3
+  // print:整数、str、f64(floatStr 对齐);插值/Vec/Map → C4
   emitPrint(e, ctx) {
     if (e.args.length !== 1) throw new Unsupported('print 参数数');
     const a = e.args[0];
     if (a.nt === 'StrLit') {
-      if (!(a.parts.length === 1 && 'lit' in a.parts[0])) throw new Unsupported('print 插值串(C3)');
+      if (!(a.parts.length === 1 && 'lit' in a.parts[0])) throw new Unsupported('print 插值串(C4)');
       const name = this.strLitName(a.parts[0].lit);
       const n = Buffer.byteLength(a.parts[0].lit, 'utf8');
       ctx.line(`printf("%.*s\\n", (int)${n}, ${name});`);
@@ -859,7 +996,12 @@ class CEmit {
         ctx.line(`printf("%.*s\\n", (int)${v}.n, ${v}.p);`);
         return;
       }
-      throw new Unsupported('str(打印 ' + it + ')(f64/Vec 形态属 C3)');
+      if (it === 'f64') {
+        const v = this.emitExpr(a.args[0], 'f64', ctx);
+        ctx.line(`{ unsigned char __fb[340]; printf("%.*s\\n", (int)ming_float_str(${v}, __fb), __fb); }`);
+        return;
+      }
+      throw new Unsupported('str(打印 ' + it + ')(Vec/Map 形态属 C4)@ 行 ' + (e.span?.line ?? '?'));
     }
     const t = this.inferTy(a, ctx);
     if (t === 'i64' || t === 'u64') {
@@ -872,7 +1014,12 @@ class CEmit {
       ctx.line(`printf("%.*s\\n", (int)${v}.n, ${v}.p);`);
       return;
     }
-    throw new Unsupported('print ' + (t ?? a.nt) + '(f64/Vec 形态属 C3)');
+    if (t === 'f64') {
+      const v = this.emitExpr(a, 'f64', ctx);
+      ctx.line(`{ unsigned char __fb[340]; printf("%.*s\\n", (int)ming_float_str(${v}, __fb), __fb); }`);
+      return;
+    }
+    throw new Unsupported('print ' + (t ?? a.nt) + '(Vec/Map 形态属 C4)');
   }
 
   // ---- 字面量收集(str → 全局静态字节数组;C 转义用八进制,避免 \x 的贪婪十六进制)----
@@ -922,8 +1069,8 @@ class CEmit {
   run() {
     // v0.39:eligible 为空也继续 —— 只有 main 的程序(main 本身带 io 不 eligible)
     // 只要 main 具备 AOT 形态就是合法的 C1 产物;main 形态不符由发射期报 Unsupported
-    // v0.40(C2):sigExt = str 与 Vec[i64] 进入 C 面
-    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true });
+    // v0.41(C3):sigExt2 = Map[str,i64] 与 Option[i64] 进入 C 面(全消费面)
+    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true });
     const fns = this.compiled.functions;
 
     // main(entry 模块的 main;无参)
@@ -994,11 +1141,32 @@ class CEmit {
       '/* ---- Ming C 运行时(C2:str + Vec[i64];分配不回收,与 wasm 线性内存同策略)---- */',
       'typedef struct { const unsigned char* p; long long n; } ming_str;',
       'typedef struct { long long* d; long long n; long long cap; } ming_vec;',
+      'typedef struct { const unsigned char* k; long long kn; long long v; } ming_kv;',
+      'typedef struct { ming_kv* d; long long n; long long cap; } ming_map;',
+      'typedef struct { long long some; long long v; } ming_opt;',
       '',
       'static void* ming_alloc(size_t n) {',
       '    void* p = malloc(n ? n : 1);',
       '    if (!p) { fputs("ming: 内存分配失败\\n", stderr); exit(101); }',
       '    return p;',
+      '}',
+      '',
+      'static ming_opt ming_opt_some(long long v) { ming_opt o; o.some = 1; o.v = v; return o; }',
+      'static ming_opt ming_opt_none(void) { ming_opt o; o.some = 0; o.v = 0; return o; }',
+      '',
+      'static long long ming_f2i_sat(double x) {',
+      '    /* as i64:向零截断 + 饱和(NaN → min;与 interp castValue 逐字对齐) */',
+      '    if (x != x) return LLONG_MIN;',
+      '    if (x >= 9223372036854775808.0) return LLONG_MAX;',
+      '    if (x <= -9223372036854775808.0) return LLONG_MIN;',
+      '    return (long long)x;',
+      '}',
+      '',
+      'static unsigned long long ming_f2u_sat(double x) {',
+      '    if (x != x) return 0ULL;',
+      '    if (x >= 18446744073709551615.0) return 18446744073709551615ULL;',
+      '    if (x <= 0.0) return 0ULL;',
+      '    return (unsigned long long)x;',
       '}',
       '',
       'static ming_str ming_str_lit(const unsigned char* p, long long n) { ming_str s; s.p = p; s.n = n; return s; }',
@@ -1142,6 +1310,167 @@ class CEmit {
       'static long long ming_vec_contains(ming_vec v, long long x) {',
       '    for (long long i = 0; i < v.n; i++) { if (v.d[i] == x) return 1; }',
       '    return 0;',
+      '}',
+      '',
+      'static ming_opt ming_vec_pop(ming_vec* v) {',
+      '    if (v->n == 0) return ming_opt_none();',
+      '    return ming_opt_some(v->d[--v->n]);',
+      '}',
+      '',
+      'static ming_opt ming_vec_get_opt(ming_vec v, long long i) {',
+      '    if (i < 0 || i >= v.n) return ming_opt_none();',
+      '    return ming_opt_some(v.d[i]);',
+      '}',
+      '',
+      '/* ---- C3:Map[str,i64](插入序线性表)/ Option[i64] / floatStr 对齐 ---- */',
+      'static ming_map ming_map_lit(ming_kv* src, long long n) {',
+      '    ming_map m; m.n = n; m.cap = n > 4 ? n : 4;',
+      '    m.d = (ming_kv*)ming_alloc((size_t)m.cap * sizeof(ming_kv));',
+      '    if (n) memcpy(m.d, src, (size_t)n * sizeof(ming_kv));',
+      '    return m;',
+      '}',
+      '',
+      'static ming_map ming_map_copy(ming_map m) {',
+      '    /* 值语义:赋值/传参深拷贝 */',
+      '    ming_map c; c.n = m.n; c.cap = m.n > 4 ? m.n : 4;',
+      '    c.d = (ming_kv*)ming_alloc((size_t)c.cap * sizeof(ming_kv));',
+      '    if (m.n) memcpy(c.d, m.d, (size_t)m.n * sizeof(ming_kv));',
+      '    return c;',
+      '}',
+      '',
+      'static void ming_map_set(ming_map* m, ming_str k, long long v) {',
+      '    /* 插入序保持:已有键原位更新,否则追加 */',
+      '    for (long long i = 0; i < m->n; i++) {',
+      '        if (m->d[i].kn == k.n && (k.n == 0 || memcmp(m->d[i].k, k.p, (size_t)k.n) == 0)) { m->d[i].v = v; return; }',
+      '    }',
+      '    if (m->n == m->cap) {',
+      '        long long nc = m->cap < 4 ? 4 : m->cap * 2;',
+      '        ming_kv* nd = (ming_kv*)ming_alloc((size_t)nc * sizeof(ming_kv));',
+      '        if (m->n) memcpy(nd, m->d, (size_t)m->n * sizeof(ming_kv));',
+      '        m->d = nd; m->cap = nc;',
+      '    }',
+      '    m->d[m->n].k = k.p; m->d[m->n].kn = k.n; m->d[m->n].v = v; m->n++;',
+      '}',
+      '',
+      'static long long ming_map_find(ming_map m, ming_str k) {',
+      '    for (long long i = 0; i < m.n; i++) {',
+      '        if (m.d[i].kn == k.n && (k.n == 0 || memcmp(m.d[i].k, k.p, (size_t)k.n) == 0)) return i;',
+      '    }',
+      '    return -1;',
+      '}',
+      '',
+      'static ming_opt ming_map_get(ming_map m, ming_str k) {',
+      '    ming_opt o; o.some = 0; o.v = 0;',
+      '    long long i = ming_map_find(m, k);',
+      '    if (i >= 0) { o.some = 1; o.v = m.d[i].v; }',
+      '    return o;',
+      '}',
+      '',
+      'static long long ming_map_index(ming_map m, ming_str k, const char* f, int l, int c) {',
+      '    /* m[k] 读:缺键 → M4007(消息与引擎逐字对齐,键经 debugStr 引号) */',
+      '    long long i = ming_map_find(m, k);',
+      '    if (i < 0) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4007[missing-key]: map 中不存在键 \\"%.*s\\"(用 .get(k) 返回 Option)\\n", f, l, c, (int)k.n, k.p);',
+      '        exit(101);',
+      '    }',
+      '    return m.d[i].v;',
+      '}',
+      '',
+      'static long long ming_map_delete(ming_map* m, ming_str k) {',
+      '    long long i = ming_map_find(*m, k);',
+      '    if (i < 0) return 0;',
+      '    for (long long j = i; j < m->n - 1; j++) m->d[j] = m->d[j + 1];',
+      '    m->n--;',
+      '    return 1;',
+      '}',
+      '',
+      'static long long ming_opt_unwrap(ming_opt o, const char* f, int l, int c) {',
+      '    if (!o.some) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4006[unwrap-failed]: 对 None 调用 unwrap()\\n", f, l, c);',
+      '        exit(101);',
+      '    }',
+      '    return o.v;',
+      '}',
+      '',
+      '/* ---- floatStr 对齐(interp floatStr 语义)+ JS Number::toString 格式化 ---- */',
+      'static long long ming_float_str(double x, unsigned char* out) {',
+      '    if (x != x) { memcpy(out, "NaN", 3); return 3; }',
+      '    if (x > 1.7976931348623157e308 || (x == 0.0 && 1.0 / x < 0)) { }',
+      '    if (x == INFINITY) { memcpy(out, "Infinity", 8); return 8; }',
+      '    if (x == -INFINITY) { memcpy(out, "-Infinity", 9); return 9; }',
+      '    long long w = 0;',
+      '    if (x < 0) { out[w++] = (unsigned char)\'-\'; x = -x; }',
+      '    if (x == floor(x) && x < 1e21) {',
+      '        /* toFixed(1):平局取较大者(与 JS toFixed 一致);-0 已在符号层归零 */',
+      '        long long n = (long long)(x * 10.0 + 0.5);',
+      '        w += sprintf((char*)out + w, "%lld.0", n / 10);',
+      '        return w;',
+      '    }',
+      '    char tmp[64];',
+      '    int p;',
+      '    for (p = 1; p <= 17; p++) {',
+      '        snprintf(tmp, sizeof tmp, "%.*e", p - 1, x);',
+      '        if (strtod(tmp, 0) == x) break;',
+      '    }',
+      '    if (p > 17) { p = 17; snprintf(tmp, sizeof tmp, "%.16e", x); }',
+      '    char digits[24]; int nd = 0, e10 = 0;',
+      '    digits[nd++] = tmp[0];',
+      '    for (int i = 1; tmp[i] != \'e\' && i < 32; i++) { if (tmp[i] != \'.\') digits[nd++] = tmp[i]; }',
+      '    e10 = atoi(strchr(tmp, \'e\') + 1);',
+      '    if (e10 >= 21 || e10 <= -7) {',
+      '        /* JS 指数形式:d[.ddd]e±X */',
+      '        out[w++] = (unsigned char)digits[0];',
+      '        if (nd > 1) { out[w++] = (unsigned char)\'.\'; memcpy(out + w, digits + 1, (size_t)(nd - 1)); w += nd - 1; }',
+      '        w += sprintf((char*)out + w, "e%+d", e10);',
+      '    } else if (e10 >= 0) {',
+      '        long long keep = e10 + 1;',
+      '        if (nd > keep) { memcpy(out + w, digits, (size_t)keep); w += keep; out[w++] = (unsigned char)\'.\'; memcpy(out + w, digits + keep, (size_t)(nd - keep)); w += nd - keep; }',
+      '        else { memcpy(out + w, digits, (size_t)nd); w += nd; for (int i = 0; i < keep - nd; i++) out[w++] = (unsigned char)\'0\'; }',
+      '    } else {',
+      '        out[w++] = (unsigned char)\'0\'; out[w++] = (unsigned char)\'.\';',
+      '        for (int i = 0; i < -e10 - 1; i++) out[w++] = (unsigned char)\'0\';',
+      '        memcpy(out + w, digits, (size_t)nd); w += nd;',
+      '    }',
+      '    return w;',
+      '}',
+      '',
+      'static long long ming_is_js_ws(const unsigned char* p, long long n, long long i) {',
+      '    /* JS trim 的空白集(UTF-8 码点) */',
+      '    unsigned char b = p[i];',
+      '    if (b == 0x09 || b == 0x0a || b == 0x0b || b == 0x0c || b == 0x0d || b == 0x20) return 1;',
+      '    if (b == 0xc2 && i + 1 < n && p[i + 1] == 0xa0) return 2;           /* U+00A0 */',
+      '    if (b == 0xe1 && i + 2 < n && p[i + 1] == 0x9a && p[i + 2] == 0x80) return 3; /* U+1680 */',
+      '    if (b == 0xe2 && i + 2 < n) {',
+      '        if (p[i + 1] == 0x80 && p[i + 2] >= 0x80 && p[i + 2] <= 0x8a) return 3; /* U+2000-200A */',
+      '        if (p[i + 1] == 0x80 && (p[i + 2] == 0xa8 || p[i + 2] == 0xa9)) return 3; /* U+2028/9 */',
+      '        if (p[i + 1] == 0x80 && p[i + 2] == 0xaf) return 3;             /* U+202F */',
+      '        if (p[i + 1] == 0x81 && p[i + 2] == 0x9f) return 3;             /* U+205F */',
+      '        if (p[i + 1] == 0x80 && p[i + 2] == 0x80) return 3;             /* U+3000 */',
+      '        if (p[i + 1] == 0x80 && p[i + 2] == 0x8b) return 2;             /* U+200B ZWSP */',
+      '    }',
+      '    if (b == 0xef && i + 2 < n && p[i + 1] == 0xbb && p[i + 2] == 0xbf) return 3; /* U+FEFF */',
+      '    return 0;',
+      '}',
+      '',
+      'static ming_str ming_str_trim_impl(ming_str a, int left, int right) {',
+      '    long long s = 0, e = a.n;',
+      '    if (left) { while (s < e) { long long w = ming_is_js_ws(a.p, a.n, s); if (!w) break; s += w; } }',
+      '    if (right) { while (e > s) { long long w = 0;',
+      '        /* 反向:检查以 e 结尾的码点宽度 */',
+      '        for (long long b = e - 1; b >= s && b >= e - 4; b--) {',
+      '            long long r = ming_is_js_ws(a.p, a.n, b);',
+      '            if (r && b + r == e) { w = r; break; }',
+      '        }',
+      '        if (!w) break; e -= w; } }',
+      '    ming_str r; r.p = a.p + s; r.n = e - s; return r;',
+      '}',
+      '',
+      'static long long ming_str_starts(ming_str a, ming_str b) {',
+      '    return a.n >= b.n && (b.n == 0 || memcmp(a.p, b.p, (size_t)b.n) == 0);',
+      '}',
+      '',
+      'static long long ming_str_ends(ming_str a, ming_str b) {',
+      '    return a.n >= b.n && (b.n == 0 || memcmp(a.p + a.n - b.n, b.p, (size_t)b.n) == 0);',
       '}',
       '',
       'static void ming_panic(const char *text) {',
