@@ -1456,7 +1456,8 @@ export class Checker {
         return null;
       }
       case 'Unary': {
-        const t = this.checkExpr(e.expr, ctx, e.op === '!' ? T_BOOL : (expected && resolveT(expected, binds)?.k === 'float' ? expected : undefined));
+        // v0.40 修复:操作数是值位置(此前缺 valuePos → if 表达式操作数返回 unit)
+        const t = this.checkExpr(e.expr, ctx, e.op === '!' ? T_BOOL : (expected && resolveT(expected, binds)?.k === 'float' ? expected : undefined), true);
         const r = resolveT(t, new Map());
         if (e.op === '!') {
           if (r?.k !== 'bool') this.diags.push(err('M3008', `"!" 要求 bool,实际是 ${typeStr(r)}`, e.expr.span));

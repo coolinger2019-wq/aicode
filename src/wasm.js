@@ -238,7 +238,7 @@ class WasmCompiler {
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
-      if (f && this.isEligibleShape(f) && (!numericOnly || this.isNumericSig(f))) {
+      if (f && this.isEligibleShape(f) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt))) {
         this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
       }
     }
@@ -261,14 +261,19 @@ class WasmCompiler {
     return this.eligible;
   }
 
-  // C1 数值签名:参数与返回只允许 i64/u64/f64(返回可为 unit)
-  isNumericSig(f) {
+  // 数值签名:C1 = 仅 i64/u64/f64(返回可为 unit);ext(C2)= 额外允许 str 与 Vec[i64]
+  isNumericSig(f, ext = false) {
     const sig = f.entry?.sig;
     if (!sig) return false;
-    const numOnly = (t) => (t?.k === 'int' && t.bits === 64) || (t?.k === 'float' && t.bits === 64);
-    if (sig.ret?.k !== 'unit' && !numOnly(sig.ret)) return false;
+    const numOk = (t) => {
+      if ((t?.k === 'int' && t.bits === 64) || (t?.k === 'float' && t.bits === 64)) return true;
+      if (ext && t?.k === 'str') return true;
+      if (ext && t?.k === 'vec' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return true;
+      return false;
+    };
+    if (sig.ret?.k !== 'unit' && !numOk(sig.ret)) return false;
     for (const p of sig.params) {
-      if (!numOnly(p.type)) return false;
+      if (!numOk(p.type)) return false;
     }
     return true;
   }

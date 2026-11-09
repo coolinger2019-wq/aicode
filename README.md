@@ -48,7 +48,7 @@ $ node bin/ming.js check examples/hello.ming --json
 | **指令融合** | 高频赋值单指令化(读-算-存),溢出检查逐点保留 |
 | **JSON** | 动态 `Json` 类型 + 编译期序列化兼容性检查;parse 错误带位置 |
 | **WASM 分层** | i64/u64/f64/str/Vec/Map 编译为 WebAssembly;线性内存统一语义(构造/拷贝/读写/返回);纯 sum ~4x |
-| **C 后端 C1** | `ming cc`:eligible 数值函数 → C(GCC/Clang -O2),资格分析与 wasm 同源;panic 逐字对齐;纯 sum/fib 场景比 wasm 再快 ~10x |
+| **C 后端 C1/C2** | `ming cc`:eligible 函数 → C(GCC/Clang -O2),资格分析与 wasm 同源;panic 逐字对齐;C2 起覆盖 str 与 Vec[i64](值语义/下标 OOB/方法面);纯 sum/fib 场景比 wasm 再快 ~10x |
 | **结构化并发** | `spawn`(多参数)/`spawn_all`(批量)/`join`/`sync scope`(作用域自动 join):确定性并行 |
 | **线性句柄** | Join 句柄禁入集合/struct(M3034);trait 方法调用点校验 impl bound |
 
@@ -76,9 +76,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.39(当前)** — **C 后端 C1 落地**(`ming cc`:eligible 数值函数 → C + GCC -O2,基准对标 wasm ~10x;顺带修复 wasm 层四项休眠 bug 使其真正复活)+ `with ffi` 设计定稿(design.md §6.9)+ 模糊器加深(f64+math/match/loop/Option/方法面 + C 第 4 差分腿)
-- **v0.40 方向** — C2 str/Vec 全形态(C 后端全语言面);模糊器持续加深
-- **更远(北星对齐)** — C3 交叉编译 -static;C4 ffi/unsafe;async 运行时;eval;RSA/国密
+- **v0.40(当前)** — **C 后端 C2**(`ming cc` 面 = 数值 + str + Vec[i64]:拼接/比较/char_len/pad/slice/replace、下标 OOB 逐字对齐、push/for-in/mut 传参值语义、match 含 guard;push/for-in 进 C 面)+ **engdiff 自举工具**(tools/engdiff.ming,多引擎差分一条命令)+ 模糊器 cc 族拓宽到 C2 面(挖出 3 个生成器隐患 + 1 个检查器 valuePos 缺位)
+- **v0.41 方向** — C3:Map 形态、str for-in/trim 族、f64 打印对齐(Ryū 最短往返)、交叉编译 -static
+- **更远(北星对齐)** — C4 ffi/unsafe;async 运行时;eval;RSA/国密
 
 ## 设计原则(全文见 design.md)
 
@@ -91,4 +91,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.39.0:字节码 VM + **WASM 分层(v0.39 真正复活:修复乘法检查缺 end/顶层调用永不分发/hypot·atan2 单参声明/u64 返回位型四项休眠 bug)** + **C 后端 C1(ming cc,资格分析复用)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM + ming build 可移植产物+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(49 行口径 ≈80%)。模糊基线:tests/fuzz.mjs(三后端差分 + C 第 4 腿)。`with ffi` 设计定稿(design.md §6.9,v0.39 不开放)。
+v0.40.0:字节码 VM + **WASM 分层(v0.39 真正复活)** + **C 后端 C1/C2(ming cc,资格分析复用;str/Vec[i64]/match/for-in)** + **自举工具 mingkit/engdiff(Ming 自写)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM + ming build 可移植产物+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈80%)。模糊基线:tests/fuzz.mjs(三后端差分 + C 第 4 腿,cc 族已覆盖 C2 面)。`with ffi` 设计定稿(design.md §6.9,v0.39 不开放)。

@@ -64,7 +64,7 @@
 | 字节序/位域解包 | ✅ | v0.35:std.bin pack/unpack × u16/u32/u64 × le/be(纯函数,显式端序);位域与 struct packing 判定不做(设计记录 GUIDE std.bin 节) |
 | 字节流正则 | ✅ | v0.36:std.re is_match_bytes/find_bytes/replace_bytes(latin1 无损桥接,\xNN 原始字节匹配) |
 | FFI(外部函数接口) | 🟡 | v0.39 设计定稿(design.md §6.9:效果即门禁、签名即文档、M4013/M4014 预留);C4 里程碑兑现(`with ffi` 不开放,M3030 仍拒绝) |
-| 原生 C 后端(C1) | 🟡 | v0.39:`ming cc` eligible 数值函数 → C + GCC -O2(资格分析复用 wasm;基准对标 wasm ~10x);main 限定 AOT 形态;str/Vec 待 C2 |
+| 原生 C 后端(C1/C2) | 🟡 | v0.39 C1(数值函数 → C + GCC -O2,资格分析复用;基准对标 wasm ~10x);v0.40 C2(str/Vec[i64]/match/for-in 值语义;Map/f64 打印/交叉编译待 C3) |
 | 内联汇编/直接 syscall | ❌ | 北星支柱 2:原生后端之后;经 `with unsafe` 门禁(效果系统即泛化 unsafe 块) |
 | 海量并发网络(10 万级连接) | ❌ | 北星支柱 3:需 async/green-thread 运行时(与确定性语义的调和待设计) |
 | L2/L3 原始包构造/嗅探 | ❌ | 北星支柱 3:原生后端之后;std.net 扩展 |

@@ -1,0 +1,85 @@
+// tools/engdiff.ming — 多引擎差分运行器(用 Ming 自写,v0.40;仓库第二个自举工具)
+//
+// 动机:分层验证是 Ming 的核心工作流——同一程序必须在多后端产出一致结果。
+// 手工跑 --tree / 默认 / --no-wasm 再对输出太繁琐,engdiff 把它变成一条命令。
+//
+// 用法:node bin/ming.js run tools/engdiff.ming -- <file.ming>
+// 同一程序在 默认(VM+wasm) / --tree / --no-wasm 三引擎下运行;
+// stdout 与退出码完全一致 → 打印"一致"退出 0;否则逐引擎列差异退出 1。
+
+use std.proc;
+
+const NODE: str = "node";
+const MING: str = "bin/ming.js";
+
+// 跑一个引擎;flag 为 "" 表示默认引擎。返回 (退出码, stdout)。
+fn run_engine(file: str, flag: str) -> Result[(i64, str), str] with proc, io {
+    // exec(NODE, args) 的 args 不含命令名本身
+    let mut args: Vec[str] = [MING, "run", file];
+    if flag != "" {
+        args.push(flag);
+    }
+    match std.proc.exec(NODE, args) {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code < 0 {
+                return Err("引擎进程异常: " + err);
+            }
+            return Ok((code, out));
+        }
+        Err(e) => { return Err("exec 失败: " + e); }
+    }
+}
+
+fn main(args: Vec[str]) -> i64 with io, proc {
+    // args 即程序参数(不含程序名;v0.27.1 语义核对,mingkit 同款)
+    if args.len() < 1 {
+        eprint("engdiff — 多引擎差分运行器(用 Ming 自写)");
+        eprint("用法: node bin/ming.js run tools/engdiff.ming -- <file.ming>");
+        return 1;
+    }
+    let file = args[0];
+    let engines: Vec[str] = ["", "--tree", "--no-wasm"];
+    let names: Vec[str] = ["vm+wasm", "tree", "vm-only"];
+    let mut results: Vec[(i64, str)] = [];
+    let mut i = 0;
+    while i < engines.len() {
+        match run_engine(file, engines[i]) {
+            Ok(t) => {
+                results.push(t);
+            }
+            Err(e) => {
+                eprint("engdiff: " + names[i] + " 运行失败: " + e);
+                return 1;
+            }
+        }
+        i = i + 1;
+    }
+    // 对比:退出码 + stdout 全等
+    let base = results[0];
+    let mut diverged = false;
+    let mut j = 1;
+    while j < results.len() {
+        let (cj, oj) = results[j];
+        let (c0, o0) = base;
+        if cj != c0 || oj != o0 {
+            diverged = true;
+        }
+        j = j + 1;
+    }
+    if !diverged {
+        let (c0, o0) = base;
+        print("engdiff: 一致(退出码 " + str(c0) + ")");
+        print(o0);
+        return 0;
+    }
+    eprint("engdiff: 分歧!");
+    let mut k = 0;
+    while k < results.len() {
+        let (ck, ok) = results[k];
+        eprint("  " + names[k] + ": 退出码 " + str(ck) + " stdout " + str(ok.char_len()) + " 字符");
+        eprint("    " + ok);
+        k = k + 1;
+    }
+    return 1;
+}

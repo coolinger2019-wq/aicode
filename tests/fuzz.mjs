@@ -83,13 +83,12 @@ function genCond(vars, depth) {
   return `(${genExpr(vars, Math.max(1, depth - 1))} ${pick(['<', '<=', '>', '>='])} ${genExpr(vars, Math.max(1, depth - 1))})`;
 }
 
-// ---- 语句生成。mode='cc' 的程序只含 C1 面(纯 i64):assign/while/loop/ifelse/for-range/match 不入池 ----
+// ---- 语句生成。mode='cc' 的程序限 C2 面(数值/str/Vec[i64]):option(pop)/f64 不入 ----
 function genStmt(s, vars, strVar, mode, lines) {
   const v = pick(vars);
-  const pool = mode === 'cc'
-    ? ['assign', 'assign', 'while', 'ifelse', 'loop', 'forrange', 'forrange']
-    : ['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64'];
-  const kind = pick(pool);
+  let kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64', 'forrange']);
+  // C2 面外:Option 形态(pop/unwrap)与 f64 打印 → 回退到数值形态
+  if (mode === 'cc' && (kind === 'option' || kind === 'f64')) kind = 'assign';
   if (kind === 'ifelse') {
     // v0.38:if/else 语句(含字符串分支,多后端分支求值差分)
     const other = vars.find(x => x !== v) ?? v;
@@ -102,13 +101,15 @@ function genStmt(s, vars, strVar, mode, lines) {
     lines.push(`    let mut i${s} = 0;`);
     lines.push(`    while i${s} < ${k} { ${v} = ${v} + ${int(1, 9)}; i${s} = i${s} + 1; }`);
   } else if (kind === 'vec') {
-    lines.push('    let mut vv: Vec[i64] = [3, 1, 2];');
-    lines.push(`    ${v} = ${v} + vv[0] + vv.len() as i64;`);
+    // v0.40 修复:变量名带序号(vv${s})——固定名 "vv" 两条 vec 语句同名 → M3016
+    // (wide 族三后端一致拒绝 → 假通过,被 cc 族的编译失败揭穿)
+    lines.push(`    let mut vv${s}: Vec[i64] = [3, 1, 2];`);
+    lines.push(`    ${v} = ${v} + vv${s}[0] + vv${s}.len() as i64;`);
   } else if (kind === 'forin') {
-    // v0.37:for-in 深形态(wasm 直跑差分——v0.33 步长修复的常驻防线)
-    lines.push('    let vv2: Vec[i64] = [10, 20, 30, 40];');
+    // v0.37:for-in 深形态(v0.40:变量名带序号,同 vec 修复)
+    lines.push(`    let vv2${s}: Vec[i64] = [10, 20, 30, 40];`);
     lines.push(`    let mut acc${s} = 0;`);
-    lines.push(`    for e in vv2 { acc${s} = acc${s} + e; }`);
+    lines.push(`    for e in vv2${s} { acc${s} = acc${s} + e; }`);
     lines.push(`    ${v} = ${v} + acc${s};`);
   } else if (kind === 'str') {
     lines.push(`    ${strVar} = ${strVar} + "${pick(['x', 'yy', '!'])}";`);
@@ -133,7 +134,9 @@ function genStmt(s, vars, strVar, mode, lines) {
       if (used.has(p)) continue;
       used.add(p);
       const guard = rng() < 0.3 ? ` if ${pick(vars)} > ${int(-5, 5)}` : '';
-      arms.push(`${p} => ${int(-20, 40)}${guard}`);
+      // v0.40 修复:guard 语法是 Rust 风格 "模式 if 条件 => 表达式"(guard 在 => 前);
+      // 此前写成 "模式 => 表达式 if 条件"(非法),wide 族三后端一致拒绝 → 假通过
+      arms.push(`${p}${guard} => ${int(-20, 40)}`);
     }
     arms.push(`_ => ${int(-10, 10)}`);
     lines.push(`    ${v} = ${v} + match ${subj} { ${arms.join(', ')} };`);
@@ -155,7 +158,12 @@ function genStmt(s, vars, strVar, mode, lines) {
       lines.push(`    vm${s}.reverse();`);
     }
     lines.push(`    if vm${s}.contains(${int(-5, 5)}) { ${v} = ${v} + 1; }`);
-    lines.push(`    ${v} = ${v} + vm${s}.pop().unwrap_or(0) + vm${s}[0];`);
+    if (mode === 'cc') {
+      // C2 无 Option(pop 属 C3):用下标读替代
+      lines.push(`    ${v} = ${v} + vm${s}[0];`);
+    } else {
+      lines.push(`    ${v} = ${v} + vm${s}.pop().unwrap_or(0) + vm${s}[0];`);
+    }
   } else if (kind === 'strm') {
     // v0.39:str 方法面(pad_left/slice_chars/contains/replace;slice 上界 1,恒安全)
     const m = pick(['pad', 'contains', 'replace', 'slice']);
@@ -192,8 +200,9 @@ function genProgram(mode) {
     lines.push(`    let mut ${v} = ${int(-50, 200)};`);
   }
   const sv = `s${int(0, 9)}`;
+  // v0.40:str 变量双模式都需要(cc 族含 str/strm 形态)
+  lines.push(`    let mut ${sv} = "${pick(['abc', 'ming', 'hello world', 'a'])}";`);
   if (mode === 'wide') {
-    lines.push(`    let mut ${sv} = "${pick(['abc', 'ming', 'hello world', 'a'])}";`);
     // v0.39:f64 变量(wide 族;as i64 饱和截断消费)
     lines.push(`    let mut f0 = ${pick(['1.5', '2.0', '-3.5', '7.25'])};`);
     lines.push(`    let mut f1 = ${pick(['0.5', '-1.0', '4.75', '2.5'])};`);

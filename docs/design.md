@@ -156,6 +156,7 @@ AI 参与编写的代码,质量门禁设在三个时点,各司其职:
 - **门禁不变**:C 路径产出的程序仍受效果系统约束(签名不变);`with unsafe`/`with ffi` 是 C 后端之后的扩展面(指针运算/内联汇编/syscall)。
 - **里程碑草案**:C1 = eligible 数值函数 → C + GCC -O2 基准(对标 wasm 提速);C2 = str/Vec 全形态;C3 = 交叉编译(-static,-target 交叉工具链);C4 = `with ffi`(dlopen)/`with unsafe`(受限指针块)。
 - **C1 落地(v0.39)**:`ming cc <file> [--emit-c] [--out 目录]`——numericOnly 资格分析(`analyzeEligibility`,与 wasm 单一事实来源)+ 整程序 AOT(main 限定"AOT 形态":数值语句 + 对 eligible 函数的调用 + `print(str(整数))`/字面量串)。panic 逐字对齐:eligible 函数内用 wasm 层通用消息,main 内用 binopValues 具体消息(含操作数);诊断首行 = formatDiag 非 TTY 格式,退出码 101;stdout/stderr 二进制模式(关 CRLF)。基准:纯 sum/fib 场景 cc 比 wasm 提速约 10x。**C1 明确不做(C2)**:str/Vec/Map 传参、容器 for-in、float→int 截断、f64 的 print/diag(JS 最短往返格式与 printf 无法逐字保证)、std.math 仅位级精确子集(sqrt/fabs/floor/ceil/fmin/fmax;round 按 JS 语义 = floor(x+0.5) 单独实现)。C 产物无 --max-steps/--max-ms 熔断。
+- **C2 落地(v0.40)**:str(`ming_str{p,n}`,UTF-8 字节不可变缓冲;cat/eq/cmp/char_len/contains/replace/slice_chars/pad;字面量八进制转义数组)与 Vec[i64](`ming_vec{d,n,cap}`,malloc 增长;**值语义 = let/赋值/mut 传参一律深拷贝**,下标 OOB M4003 逐字对齐;push/reverse/contains/len;for-in)+ match(整数字面量臂 ± guard → if/else 链)。**C3 剩余**:Map、str for-in/trim/to_upper 族(Unicode 语义)、f64 打印(Ryū 最短往返)、float→int 截断、Option 形态(pop/unwrap)、交叉编译。
 
 ### 6.9 `with ffi` 设计(v0.39 定稿,C4 兑现)
 - **效果即门禁**:`ffi` 为预留效果名——v0.39 不开放(M3030 仍拒绝,避免半开状态)。未来任何外部符号调用都必须带 `with ffi` 并沿调用链显式传播;无 ffi 效果的函数在类型层不可能触达 FFI,与 io/fs/net 同一套门禁语义。effectful 函数永不进 wasm/C eligible(资格分析在 `sig.effects` 处拒绝)——FFI 与原生后端天然互斥,不会出现"被 AOT 编译的函数偷偷调用外部符号"。

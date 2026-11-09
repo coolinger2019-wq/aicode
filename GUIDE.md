@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.39.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1(ming cc)** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.40.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2(ming cc:str/Vec[i64]/match/for-in)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -883,7 +883,8 @@ fn main() with io {
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
 | `ming build`(项目模式,v0.38) | 项目检查通过后产出 **dist 可移植产物**:app.ming + runtime 8 模块拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑 |
-| `ming cc f.ming [--emit-c] [--out 目录]`(v0.39) | **C 后端 C1**:eligible 数值函数 + AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐);`--emit-c` 只产出 .c;编译器探测 MING_CC → PATH → 已知便携位置;str/Vec 形态属 C2(显式拒绝) |
+| `ming cc f.ming [--emit-c] [--out 目录]`(v0.39 C1 / v0.40 C2) | **C 后端**:eligible 函数(数值 + str + Vec[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐);`--emit-c` 只产出 .c;编译器探测 MING_CC → PATH → 已知便携位置;Map/f64 打印/Option 形态属 C3(显式拒绝) |
+| 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -992,12 +993,28 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.37(已完成) | AES-256-GCM 带认证(篡改检出)+ 模糊器 str/for-in 扩展 + ming build 预研(dist 目录决策,v0.38 实现) |
 | v0.38(已完成) | `ming build` dist 可移植产物(launcher/args/panic 全路径)+ **原生后端(C)预研**(资格分析复用路线)+ 模糊器 if/else |
 | v0.39(已完成) | **C 后端 C1**(ming cc:eligible 数值函数 → C + GCC -O2,资格分析复用;顺带修复 wasm 四项休眠 bug 使端到端真正复活)+ 模糊器加深(f64/match/loop/Option/方法面 + C 第 4 腿)+ `with ffi` 设计定稿(design.md §6.9,不实现) |
-| v0.40 方向 | C2:str/Vec 全形态(C 后端全语言面)、模糊器持续加深 |
+| v0.40 方向 | C3:Map 形态、str for-in/trim 族、f64 打印对齐(Ryū 最短往返)、交叉编译 -static |
 | 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.40.0(2026-11-10)
+
+- **C 后端 C2: str/Vec[i64] 进入 C 面**(`ming cc`,src/cbackend.js):
+  - 资格分析 sigExt(wasm.js `isNumericSig(f, ext)` 单一事实来源扩展):str 与 Vec[i64] 签名放行。
+  - str = `ming_str{p,n}`(UTF-8 字节,不可变缓冲 + 头部拷贝);cat/eq/cmp(字节序,UTF-8 保序)/char_len(码点计数)/contains/replace/slice_chars(码点索引,M4003 逐字对齐)/pad_left/right(空格,与 interp padStart 同源)。字面量经八进制转义全局数组(`\xNN` 的贪婪十六进制陷阱规避)。
+  - Vec[i64] = `ming_vec{d,n,cap}` + malloc 增长;**值语义**:let 绑定/赋值/mut 传参一律 `ming_vec_copy`(同 wasm ming_copy_vec 边界);下标读/写 M4003(消息含 `(用 .get(i) 返回 Option)` 后缀,与引擎逐字对齐);push/reverse/contains/len;for-in 下标展开。
+  - match 表达式(整数字面量臂 + 通配 + guard,AST 实测:PLit 值在 `pat.lit.val`(字符串),通配解析后是 `PIdent` 无 name)→ if/else 链;防御分支与 VM 同构(M4001)。
+  - 方法面允许任意 base 表达式(纯方法);变异方法(push/reverse)要求局部接收者。print 支持直接 str 与 `str(str)`(`%.*s`)。str 返回函数的防御零值用复合字面量。
+- **engdiff 自举工具**(tools/engdiff.ming,仓库第二个 Ming 自写工具):`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令跑三引擎(vm+wasm/tree/vm-only)对比 stdout+退出码,分歧逐引擎列差异退出 1。自举过程即抓到两个使用层错误(main 参数是显式形参;`proc.exec` 的 args 不含命令名)。
+- **模糊器 cc 族拓宽到 C2 面** + 实际使用揭穿三处生成器假通过(v0.33 起潜伏):
+  1. vec 形态固定名 `vv`/`vv2` 重复声明 → M3016(三后端一致拒绝 = 假通过);
+  2. match guard 语法错:写成 `模式 => 表达式 if 条件`(非法),Ming 的 guard 是 Rust 风格 `模式 if 条件 => 表达式`;
+  3. 连带揭出检查器第五处 valuePos 缺位:一元负号操作数(if 表达式作 `-` 的操作数返回 unit)。
+  四种子(20261109/35035/39039/40040)全 100% 一致,C 腿 14-24 条/轮,0 跳过。
+- 测试:397 项全绿(§35 新增:C2 综合四方一致/vec OOB/slice OOB panic 对齐/engdiff/str main 正向化 + 插值串拒绝)。
 
 ### v0.39.0(2026-11-10)
 

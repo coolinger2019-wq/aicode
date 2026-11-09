@@ -1557,9 +1557,16 @@ fn main() with io, fs {
   check('v39:emit-c 含 AOT main 与 _setmode', cCode.includes('ming_main') && cCode.includes('_O_BINARY'), '');
 
   // AOT 形态外拒绝(str main)
+  // v0.40(C2):str/Vec 形态已入 C 面 —— 原"str main 拒绝"改为正向用例;插值串仍属 C3
   fs.writeFileSync(path.join(cdir, 'strmain.ming'), 'fn main() with io { print("hello"); print(str("abc".char_len())); }');
   const rs = spawnSync(process.execPath, [MING, 'cc', path.join(cdir, 'strmain.ming'), '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
-  check('v39:AOT 形态外拒绝(str main)', rs.status === 1 && (rs.stderr ?? '').includes('C1 不支持'), 'status=' + rs.status + ' stderr=' + (rs.stderr ?? '').slice(0, 120));
+  const exeS = path.join(cdir, 'out', 'strmain' + (process.platform === 'win32' ? '.exe' : ''));
+  const rccS = spawnSync(exeS, [], { encoding: 'utf8', timeout: 60000 });
+  const rjS = runMing(['run', path.join(cdir, 'strmain.ming')]);
+  check('v40:str main 正向(cc = run)', rccS.status === 0 && rccS.stdout === rjS.stdout, 'cc=' + JSON.stringify(rccS.stdout) + ' js=' + JSON.stringify(rjS.stdout) + ' build=' + rs.status);
+  fs.writeFileSync(path.join(cdir, 'interp.ming'), 'fn main() with io { print("x=\\{1}"); }');
+  const ri = spawnSync(process.execPath, [MING, 'cc', path.join(cdir, 'interp.ming'), '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+  check('v40:AOT 形态外拒绝(插值串属 C3)', ri.status === 1 && (ri.stderr ?? '').includes('不支持'), 'status=' + ri.status + ' stderr=' + (ri.stderr ?? '').slice(0, 120));
 
   const ccBin = detectCC39();
   if (ccBin) {
@@ -1621,6 +1628,97 @@ fn main() with io, fs {
   // 模糊器 v0.39 快速档(新形态:f64+math/match/loop/Option/Vec/str 方法)
   const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '39039'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
   check('v39:模糊器加深形态(40 程序一致)', fuzz39.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
+}
+
+// ===================== 35. v0.40:C2(str/Vec[i64])+ engdiff 自举工具 =====================
+{
+  const cdir = path.join(TMP, 'cc40');
+  fs.mkdirSync(cdir, { recursive: true });
+
+  // C2 综合程序:字符串(拼接/相等/char_len/pad_left/slice_chars/replace/中文)+ Vec[i64]
+  // (字面量/下标/len/push/for-in/mut 传参值语义)+ match(含 guard)+ 类型级
+  const c2src = [
+    'fn join_count(items: Vec[i64]) -> i64 {',
+    '    let mut acc = 0;',
+    '    for e in items { acc += e; }',
+    '    return acc;',
+    '}',
+    'fn shout(s: str, times: i64) -> str {',
+    '    let mut out = "";',
+    '    let mut i = 0;',
+    '    while i < times { out = out + s + "!"; i = i + 1; }',
+    '    return out;',
+    '}',
+    'fn bump(mut v: Vec[i64], x: i64) -> i64 {',
+    '    v.push(x);',
+    '    return v.len() as i64;',
+    '}',
+    'fn main() with io {',
+    '    let greeting = "你好, ming";',
+    '    print(greeting);',
+    '    print(str(greeting.char_len()));',
+    '    let loud = shout("go", 3);',
+    '    print(loud);',
+    '    if loud == "go!go!go!" { print(str(1)); } else { print(str(0)); }',
+    '    let nums: Vec[i64] = [10, 20, 30];',
+    '    print(str(nums.len()));',
+    '    print(str(nums[1]));',
+    '    print(str(join_count(nums)));',
+    '    print(str(bump(nums, 40)));',
+    '    print(str(nums.len()));',
+    '    let mut flags: Vec[i64] = [1, 0, 1];',
+    '    flags[1] = 7;',
+    '    flags.push(-5);',
+    '    if flags.contains(7) { print(str(100)); }',
+    '    let m = match 3 { 1 => 100, 3 => 300, _ => 0 };',
+    '    let g = match 5 { 1 if x > 9 => 1, _ => 42 };',
+    '    print(str(m + g));',
+    '    let padded = "ab".pad_left(5);',
+    '    print(padded);',
+    '    print(str(padded.char_len()));',
+    '    let cut = "hello ming".slice_chars(0, 5);',
+    '    print(cut);',
+    '    let replaced = "aXbXc".replace("X", "--");',
+    '    print(replaced);',
+    '    let s2 = "中文abc";',
+    '    print(str(s2.char_len()));',
+    '}',
+  ].join('\n');
+  // g 的 guard 引用未定义变量 x → 换成字面 guard
+  const c2srcFixed = c2src.replace('1 if x > 9 => 1', '1 if 2 > 9 => 1');
+  const c2file = path.join(cdir, 'c2full.ming');
+  fs.writeFileSync(c2file, c2srcFixed);
+  const build40 = spawnSync(process.execPath, [MING, 'cc', c2file, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  const exe40 = path.join(cdir, 'out', 'c2full' + (process.platform === 'win32' ? '.exe' : ''));
+  const rcc40 = spawnSync(exe40, [], { encoding: 'utf8', timeout: 60000 });
+  const rj40 = runMing(['run', c2file]);
+  check('v40:C2 综合 四方一致(str/Vec/match/值语义)', build40.status === 0 && rcc40.status === 0 && rcc40.stdout === rj40.stdout,
+    'build=' + build40.status + ' cc=' + JSON.stringify(rcc40.stdout).slice(0, 120) + ' js=' + JSON.stringify(rj40.stdout).slice(0, 120));
+
+  // panic 对齐:vec OOB 与 slice OOB(消息含 "(用 .get(i) 返回 Option)" 后缀)
+  const panic40 = [
+    ['vec-oob', 'fn main() with io { let v: Vec[i64] = [1, 2, 3]; print(str(v[9])); }'],
+    ['slice-oob', 'fn main() with io { let s = "hello"; print(s.slice_chars(0, 9)); }'],
+  ];
+  for (const [k, src] of panic40) {
+    const pf = path.join(cdir, 'p40-' + k + '.ming');
+    fs.writeFileSync(pf, src);
+    const rj = runMing(['run', pf]);
+    spawnSync(process.execPath, [MING, 'cc', pf, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+    const pe = path.join(cdir, 'out', 'p40-' + k + (process.platform === 'win32' ? '.exe' : ''));
+    const rc = spawnSync(pe, [], { encoding: 'utf8', timeout: 60000 });
+    const fl = (s) => (s ?? '').split('\n')[0];
+    check('v40:panic 首行对齐(' + k + ')', rj.code === 101 && rc.status === 101 && fl(rj.stderr) === fl(rc.stderr),
+      'js=' + JSON.stringify(fl(rj.stderr)) + ' cc=' + JSON.stringify(fl(rc.stderr)));
+  }
+
+  // engdiff 自举工具:多引擎一致路径(退出码 0 + 一致标记)
+  const red = spawnSync(process.execPath, [MING, 'run', path.join(ROOT, 'tools', 'engdiff.ming'), '--', path.join(ROOT, 'examples', 'fib.ming')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  check('v40:engdiff 自举工具(三引擎一致)', red.status === 0 && (red.stdout ?? '').includes('engdiff: 一致'), 'code=' + red.status + ' tail=' + (red.stdout ?? '').slice(-80));
+
+  // 模糊器 v0.40 快速档(cc 族已拓宽到 C2 面)
+  const fuzz40 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '40040'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v40:模糊器 C2 面(40 程序多后端一致)', fuzz40.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz40.stdout ?? ''), 'code=' + fuzz40.status + ' tail=' + (fuzz40.stdout ?? '').slice(-150));
 }
 
 // ===================== 汇总 =====================

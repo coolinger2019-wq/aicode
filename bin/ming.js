@@ -21,7 +21,7 @@ import { Unsupported } from '../src/wasm.js';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.39.0';
+export const VERSION = '0.40.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言

@@ -24,7 +24,7 @@ function cstr(text) {
     .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 }
 
-const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double' };
+const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', str: 'ming_str', vi64: 'ming_vec' };
 const CSUF = { i64: 'LL', u64: 'ULL', f64: '' };
 const FMT = { i64: '%lld', u64: '%llu' };
 
@@ -40,16 +40,19 @@ function diagHead(span, code, name, msg) {
   return `${f}:${span?.line ?? 0}:${span?.col ?? 0}: error ${code}[${name}]: ${msg}`;
 }
 
-// Ming 类型节点 → 'i64'|'u64'|'f64'|null(仅 64 位数值)
+// Ming 类型节点 → 载体类型('i64'|'u64'|'f64'|'str'|'vi64'|null)。
+// C2 起:str 与 Vec[i64] 进入 C 面(资格分析 sigExt 已把关,这里直接放行)。
 function mingTyNum(t) {
   if (!t) return null;
   if (t.k === 'int' && t.bits === 64) return t.signed ? 'i64' : 'u64';
   if (t.k === 'float' && t.bits === 64) return 'f64';
+  if (t.k === 'str') return 'str';
+  if (t.k === 'vec' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return 'vi64';
   return null;
 }
 
 // 类型标注节点:解析器形状是 nt:'TName'(let 标注 / as 目标);签名里是已解析的 k+bits 形状。
-// 返回 {k,bits,signed} | null(与 interp castValue 的 PRIM_TYPES 口径一致)
+// 返回 {k,bits,signed} | null(与 interp castValue 的 PRIM_TYPES 口径一致);str/Vec 用扩展形状
 const ANNO_PRIM = {
   i8: { k: 'int', bits: 8, signed: true }, u8: { k: 'int', bits: 8, signed: false },
   i16: { k: 'int', bits: 16, signed: true }, u16: { k: 'int', bits: 16, signed: false },
@@ -60,9 +63,29 @@ const ANNO_PRIM = {
 
 function annoTarget(t) {
   if (!t) return null;
-  if (t.nt === 'TName') return ANNO_PRIM[t.name.split('.').pop()] ?? null;
+  if (t.nt === 'TName') {
+    const n = t.name.split('.').pop();
+    if (n === 'str') return { k: 'str' };
+    if ((n === 'Vec') && t.args?.length === 1) {
+      const el = annoTarget(t.args[0]);
+      if (el && el.k === 'int' && el.bits === 64 && el.signed) return { k: 'vec', el };
+      return null;
+    }
+    return ANNO_PRIM[n] ?? null;
+  }
   if (t.k === 'int' || t.k === 'float') return { k: t.k, bits: t.bits, signed: !!t.signed };
+  if (t.k === 'str') return { k: 'str' };
+  if (t.k === 'vec') return { k: 'vec', el: t.el };
   return null;
+}
+
+// 标注 → 载体类型(let 标注用;str/Vec[i64] → 'str'/'vi64')
+function annoTy(t) {
+  const a = annoTarget(t);
+  if (!a) return null;
+  if (a.k === 'str') return 'str';
+  if (a.k === 'vec') return 'vi64';
+  return mingTyNum(a);
 }
 
 // ---------- 发射器 ----------
@@ -72,7 +95,8 @@ class CEmit {
     this.check = check;
     this.compiled = compiled;
     this.modulesByFile = new Map(check.modules.map(m => [m.file, m]));
-    this.usedConsts = new Map(); // const 名 → 'i64'|'u64'|'f64'(发射期收集,顶部统一定义)
+    this.usedConsts = new Map(); // const 名 → 'i64'|'u64'|'f64'|'str'(发射期收集,顶部统一定义)
+    this.strLits = new Map();    // str 字面量 → 全局数组名
     this.tmpSeq = 0;
   }
 
@@ -95,6 +119,7 @@ class CEmit {
     if (!val) return null;
     if (val.t === 'int') return { ty: 'i64', v: val.v };
     if (val.t === 'float') return { ty: 'f64', v: val.v };
+    if (val.t === 'str') return { ty: 'str', v: val.v };
     return null;
   }
 
@@ -107,6 +132,13 @@ class CEmit {
         return e.signed ? 'i64' : 'u64';
       case 'FloatLit': return e.bits === 64 ? 'f64' : null;
       case 'BoolLit': return 'bool';
+      case 'StrLit': return 'str';
+      case 'VecLit': {
+        if (e.elems.length === 0) return null; // 空 Vec 需标注
+        let ok = true;
+        for (const el of e.elems) { if (this.inferTy(el, ctx) !== 'i64') { ok = false; break; } }
+        return ok ? 'vi64' : null;
+      }
       case 'Ident': {
         const local = ctx.typeOf(e.name);
         if (local) return local;
@@ -123,16 +155,46 @@ class CEmit {
       case 'Call': {
         const mn = this.mathNameOf(e.callee, ctx);
         if (mn) return 'f64';
-        if (e.callee.nt === 'Field' && e.callee.base.nt === 'Ident') {
-          const t = ANNO_PRIM[e.callee.base.name];
-          if (t && (e.callee.name === 'max_value' || e.callee.name === 'min_value')) return t.signed ? 'i64' : 'u64';
-          if (e.callee.base.name === 'f64' && ['infinity', 'neg_infinity', 'nan'].includes(e.callee.name)) return 'f64';
+        if (e.callee.nt === 'Field') {
+          // 方法调用类型推断(C2 方法面;base 可为任意 str/Vec[i64] 表达式)
+          const m = e.callee.name;
+          let bt = null;
+          if (e.callee.base.nt === 'Ident' && ctx.nameOf(e.callee.base.name)) bt = ctx.typeOf(e.callee.base.name);
+          else bt = this.inferTy(e.callee.base, ctx);
+          if (bt === 'str') {
+            if (m === 'char_len' || m === 'byte_len') return 'i64';
+            if (m === 'contains' || m === 'is_empty') return 'bool';
+            if (['replace', 'pad_left', 'pad_right', 'slice_chars'].includes(m)) return 'str';
+            return null;
+          }
+          if (bt === 'vi64') {
+            if (m === 'len') return 'i64';
+            if (m === 'contains') return 'bool';
+            return null;
+          }
+          if (e.callee.base.nt === 'Ident') {
+            const t = ANNO_PRIM[e.callee.base.name];
+            if (t && (m === 'max_value' || m === 'min_value')) return t.signed ? 'i64' : 'u64';
+            if (e.callee.base.name === 'f64' && ['infinity', 'neg_infinity', 'nan'].includes(m)) return 'f64';
+          }
           return null;
         }
         if (e.callee.nt !== 'Ident') return null;
         const entry = this.resolveEntry(ctx, e.callee.name);
         if (entry?.kind !== 'fn') return null;
         return mingTyNum(entry.sig?.ret);
+      }
+      case 'Match': {
+        // 推导取第一个臂的值型(检查器已保证各臂同型)
+        const a0 = e.arms?.[0]?.expr;
+        if (!a0) return null;
+        if (a0.nt === 'BlockExpr') return a0.block?.tail ? this.inferTy(a0.block.tail, ctx) : null;
+        return this.inferTy(a0, ctx);
+      }
+      case 'Index': {
+        // 下标读:Vec[i64] → i64
+        if (e.base.nt === 'Ident' && ctx.typeOf(e.base.name) === 'vi64') return 'i64';
+        return null;
       }
       case 'As': {
         const t = annoTarget(e.type);
@@ -176,6 +238,34 @@ class CEmit {
         if (ty !== 'bool') throw new Unsupported('bool 字面量位置');
         return e.v ? '1' : '0';
       }
+      case 'StrLit': {
+        if (ty !== 'str') throw new Unsupported('str 字面量位置');
+        if (!(e.parts.length === 1 && 'lit' in e.parts[0])) throw new Unsupported('字符串插值(C3)');
+        const name = this.strLitName(e.parts[0].lit);
+        const n = Buffer.byteLength(e.parts[0].lit, 'utf8');
+        return `ming_str_lit(${name}, ${n})`;
+      }
+      case 'VecLit': {
+        if (ty !== 'vi64') throw new Unsupported('Vec 字面量位置');
+        const n = e.elems.length;
+        if (n === 0) throw new Unsupported('空 Vec 字面量(需标注,先赋非空再用)');
+        const an = `__a${++this.tmpSeq}`;
+        ctx.line(`long long ${an}[${n}];`);
+        for (let i = 0; i < n; i++) ctx.line(`${an}[${i}] = ${this.emitExpr(e.elems[i], 'i64', ctx)};`);
+        const t = this.newTmp(ctx, 'vi64');
+        ctx.line(`${t} = ming_vec_lit(${an}, ${n});`);
+        return t;
+      }
+      case 'Index': {
+        // 下标读:Vec[i64](OOB → M4003,与 VM 逐字对齐)
+        if (e.base.nt !== 'Ident') throw new Unsupported('下标目标非局部');
+        const bt = ctx.typeOf(e.base.name);
+        if (bt !== 'vi64') throw new Unsupported('下标类型 ' + bt);
+        if (ty !== 'i64') throw new Unsupported('下标结果位置 ' + ty);
+        const base = ctx.nameOf(e.base.name);
+        const idx = this.emitExpr(e.index, 'i64', ctx);
+        return `ming_vec_get(${base}, ${idx}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`;
+      }
       case 'Ident': {
         const local = ctx.nameOf(e.name);
         if (local) return local;
@@ -198,6 +288,7 @@ class CEmit {
       case 'Binary': return this.emitBin(e, ty, ctx);
       case 'As': return this.emitAs(e, ty, ctx);
       case 'Call': return this.emitCallValue(e, ty, ctx);
+      case 'Match': return this.emitMatch(e, ty, ctx);
       case 'If': {
         // 表达式形式(必须带 else,分支块为纯尾表达式)
         if (!e.els) throw new Unsupported('无 else 的 if 表达式');
@@ -213,6 +304,51 @@ class CEmit {
       default:
         throw new Unsupported('表达式 ' + e.nt);
     }
+  }
+
+  // match 表达式(C2:整数字面量臂 + 通配 + 可选 guard → if/else 链;穷尽由检查器保证)
+  emitMatch(e, ty, ctx) {
+    const st = this.inferTy(e.scrutinee, ctx);
+    if (st !== 'i64' && st !== 'u64') throw new Unsupported('match 宗量 ' + st + '(C2 仅整数)');
+    const svT = this.newTmp(ctx, st);
+    ctx.line(`${svT} = ${this.emitExpr(e.scrutinee, st, ctx)};`);
+    const t = this.newTmp(ctx, ty === 'bool' ? 'i64' : ty);
+    // 臂分类:条件臂(字面量 ± guard,含带 guard 的通配)与无 guard 兜底
+    // (AST 实测:PLit 的值在 pat.val(字符串数字);通配在解析后是 PIdent 无 name)
+    const conds = [];
+    let wildArm = null;
+    for (const arm of e.arms) {
+      const p = arm.pat;
+      const isWild = p.nt === 'PWild' || (p.nt === 'PIdent' && (p.name === undefined || p.name === '_'));
+      if (isWild && !arm.guard) { wildArm = arm; continue; }
+      let cond;
+      if (isWild) {
+        cond = this.emitCond(arm.guard, ctx);
+      } else if (p.nt === 'PLit' && p.lit && typeof p.lit.val !== 'object') {
+        const pv = BigInt(p.lit.val) * (p.neg ? -1n : 1n);
+        cond = `${svT} == ${pv}${CSUF[st]}`;
+        if (arm.guard) cond = `(${cond}) && ${this.emitCond(arm.guard, ctx)}`;
+      } else {
+        throw new Unsupported('match 模式(C2 仅整数字面量)');
+      }
+      conds.push({ cond, arm });
+    }
+    let first = true;
+    for (const { cond, arm } of conds) {
+      ctx.line(`${first ? 'if (' : '} else if ('}${cond}) {`);
+      ctx.line(`    ${t} = ${this.emitValue(arm.expr, ty, ctx)};`);
+      first = false;
+    }
+    ctx.line(`${first ? '{' : '} else {'}`);
+    if (wildArm) {
+      ctx.line(`    ${t} = ${this.emitValue(wildArm.expr, ty, ctx)};`);
+    } else {
+      // 检查器保证穷尽;防御分支与 VM 一致(内部错误 panic)
+      ctx.line('    ming_panic("内部错误:match 未命中\\n");');
+      ctx.line('    exit(101);');
+    }
+    ctx.line('}');
+    return t;
   }
 
   // 值位置(If 表达式的分支块:取块尾表达式)
@@ -237,11 +373,24 @@ class CEmit {
       const lt = this.inferTy(e.l, ctx);
       const rt = this.inferTy(e.r, ctx);
       if (!lt || !rt || lt !== rt) throw new Unsupported('比较两侧类型');
-      const text = `(${this.emitExpr(e.l, lt, ctx)} ${op} ${this.emitExpr(e.r, rt, ctx)})`;
+      let text;
+      if (lt === 'str') {
+        // str 比较:字节序(UTF-8 保序;与 JS 的 UTF-16 序仅在非 BMP 与 U+E000..U+FFFF 交叉处可能不同)
+        if (op === '==' || op === '!=') text = `(ming_str_eq(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)}))`;
+        else text = `(ming_str_cmp(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)}) ${op} 0)`;
+        if (op === '!=') text = `(!${text})`;
+      } else {
+        text = `(${this.emitExpr(e.l, lt, ctx)} ${op} ${this.emitExpr(e.r, rt, ctx)})`;
+      }
       return ty === 'bool' ? text : `((long long)(${text}))`;
     }
     // 算术
     const lt = this.inferTy(e.l, ctx);
+    if (lt === 'str') {
+      if (op !== '+' || ty !== 'str') throw new Unsupported('str 运算 ' + op);
+      return `ming_str_cat(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)})`;
+    }
+    if (lt === 'vi64') throw new Unsupported('Vec 运算 ' + op);
     if (lt === 'f64') {
       if (ty !== 'f64') throw new Unsupported('f64 运算位置');
       if (!['+', '-', '*', '/'].includes(op)) throw new Unsupported('f64 运算 ' + op);
@@ -409,6 +558,42 @@ class CEmit {
       const args = e.args.map(ar => this.emitExpr(ar, 'f64', ctx));
       return { call: `${MATH_CNAME[mn]}(${args.join(', ')})`, retTy: 'f64' };
     }
+    // 方法调用:str / Vec[i64] 的 C2 方法面(纯方法允许任意 base 表达式;变异方法须局部)
+    if (e.callee.nt === 'Field') {
+      const m = e.callee.name;
+      let baseText = null;
+      let bt = null;
+      let baseIsIdent = false;
+      if (e.callee.base.nt === 'Ident' && ctx.nameOf(e.callee.base.name)) {
+        baseText = ctx.nameOf(e.callee.base.name);
+        bt = ctx.typeOf(e.callee.base.name);
+        baseIsIdent = true;
+      } else {
+        bt = this.inferTy(e.callee.base, ctx);
+        if (bt === 'str') baseText = this.emitExpr(e.callee.base, 'str', ctx);
+        else if (bt === 'vi64') baseText = this.emitExpr(e.callee.base, 'vi64', ctx);
+      }
+      const SP = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
+      if (bt === 'str') {
+        if (m === 'char_len' && e.args.length === 0) return { call: `ming_str_chars(${baseText})`, retTy: 'i64' };
+        if (m === 'byte_len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
+        if (m === 'is_empty' && e.args.length === 0) return { call: `(${baseText}.n == 0)`, retTy: 'bool' };
+        if (m === 'contains' && e.args.length === 1) return { call: `ming_str_contains(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
+        if (m === 'replace' && e.args.length === 2) return { call: `ming_str_replace(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)}, ${this.emitExpr(e.args[1], 'str', ctx)})`, retTy: 'str' };
+        if (m === 'pad_left' && e.args.length === 1) return { call: `ming_str_pad_left(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'str' };
+        if (m === 'pad_right' && e.args.length === 1) return { call: `ming_str_pad_right(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'str' };
+        if (m === 'slice_chars' && e.args.length === 2) return { call: `ming_str_slice(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)}, ${this.emitExpr(e.args[1], 'i64', ctx)}, ${SP})`, retTy: 'str' };
+        throw new Unsupported('str.' + m + '(C3:trim/to_upper/to_lower/chars/split/parse_* 等)');
+      }
+      if (bt === 'vi64') {
+        if (m === 'len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
+        if (m === 'contains' && e.args.length === 1) return { call: `ming_vec_contains(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'bool' };
+        if (!baseIsIdent) throw new Unsupported('Vec.' + m + '(变异方法要求局部变量接收者)');
+        if (m === 'push' && e.args.length === 1) return { call: `ming_vec_push(&${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: null };
+        if (m === 'reverse' && e.args.length === 0) return { call: `ming_vec_reverse(&${baseText})`, retTy: null };
+        throw new Unsupported('Vec.' + m + '(C3:pop/get 等 Option 形态)');
+      }
+    }
     // 类型级数值函数:i64.max_value() / u64.min_value() / f64.infinity() 等
     if (e.callee.nt === 'Field' && e.callee.base.nt === 'Ident') {
       const prim = e.callee.base.name;
@@ -440,7 +625,10 @@ class CEmit {
     const args = e.args.map((ar, i) => {
       const pt = mingTyNum(sig.params[i]?.type);
       if (!pt) throw new Unsupported('参数类型 ' + i);
-      return this.emitExpr(ar, pt, ctx);
+      const txt = this.emitExpr(ar, pt, ctx);
+      // 值语义:mut Vec 实参在调用边界深拷贝(被调 push/set 不影响调用方,同 wasm ming_copy_vec)
+      if (pt === 'vi64' && sig.params[i]?.mut) return `ming_vec_copy(${txt})`;
+      return txt;
     });
     const retTy = sig.ret?.k === 'unit' ? null : mingTyNum(sig.ret);
     if (sig.ret?.k !== 'unit' && !retTy) throw new Unsupported('返回类型 ' + e.callee.name);
@@ -469,10 +657,22 @@ class CEmit {
         const lt = this.inferTy(e.l, ctx);
         const rt = this.inferTy(e.r, ctx);
         if (!lt || !rt || lt !== rt) throw new Unsupported('条件两侧类型');
+        if (lt === 'bool') return `(${this.emitExpr(e.l, 'bool', ctx)} ${e.op} ${this.emitExpr(e.r, 'bool', ctx)})`;
+        if (lt === 'str') {
+          if (e.op === '==' || e.op === '!=') {
+            const t2 = `ming_str_eq(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)})`;
+            return e.op === '==' ? `(${t2})` : `(!(${t2}))`;
+          }
+          return `(ming_str_cmp(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)}) ${e.op} 0)`;
+        }
         return `(${this.emitExpr(e.l, lt, ctx)} ${e.op} ${this.emitExpr(e.r, rt, ctx)})`;
       }
-      default:
+      default: {
+        // bool 型调用作条件(is_empty / contains 等)
+        const t = this.inferTy(e, ctx);
+        if (t === 'bool') return this.emitExpr(e, 'bool', ctx);
         throw new Unsupported('条件 ' + e.nt);
+      }
     }
   }
 
@@ -483,30 +683,48 @@ class CEmit {
         if (!s.init || s.pat.nt !== 'PIdent') throw new Unsupported('let 形式');
         let ty;
         if (s.type) {
-          const t = annoTarget(s.type);
-          ty = t ? mingTyNum(t) : null;
-          if (!ty) throw new Unsupported('let 标注 ' + (s.type?.name ?? s.type?.k ?? '?') + '(C1 仅数值)');
+          ty = annoTy(s.type);
+          if (!ty) throw new Unsupported('let 标注 ' + (s.type?.name ?? s.type?.k ?? '?') + '(C2 仅数值/str/Vec[i64])');
         } else {
           ty = this.inferTy(s.init, ctx);
           if (!ty || ty === 'bool') throw new Unsupported('let 推导 ' + ty);
         }
         const v = this.emitExpr(s.init, ty, ctx);
         const name = ctx.declare(s.pat.name, ty);
-        ctx.line(`${CTYPE[ty]} ${name} = ${v};`);
+        // 值语义:Vec 绑定即深拷贝(str 缓冲不可变,头部拷贝即可)
+        ctx.line(`${CTYPE[ty]} ${name} = ${ty === 'vi64' ? `ming_vec_copy(${v})` : v};`);
         return;
       }
       case 'Assign': {
+        // 下标赋值:v[i] = x(OOB → M4003)
+        if (s.target.nt === 'Index' && s.op === '=' && s.target.base.nt === 'Ident') {
+          const bt = ctx.typeOf(s.target.base.name);
+          if (bt === 'vi64') {
+            const base = ctx.nameOf(s.target.base.name);
+            const idx = this.emitExpr(s.target.index, 'i64', ctx);
+            const val = this.emitExpr(s.value, 'i64', ctx);
+            ctx.line(`ming_vec_set(&${base}, ${idx}, ${val}, "${cstr(s.span?.file ?? '?')}", ${s.span?.line ?? 0}, ${s.span?.col ?? 0});`);
+            return;
+          }
+          throw new Unsupported('下标赋值目标 ' + bt);
+        }
         if (s.target.nt !== 'Ident') throw new Unsupported('赋值目标 ' + s.target.nt);
         const dst = ctx.nameOf(s.target.name);
         if (!dst) throw new Unsupported('赋值目标非局部');
         const dty = ctx.typeOf(s.target.name);
         if (s.op === '=') {
           const v = this.emitExpr(s.value, dty, ctx);
-          ctx.line(`${dst} = ${v};`);
+          ctx.line(`${dst} = ${dty === 'vi64' ? `ming_vec_copy(${v})` : v};`);
           return;
         }
         if (!['+=', '-=', '*=', '/=', '%=', '<<=', '>>='].includes(s.op)) throw new Unsupported('复合 ' + s.op);
         const op = s.op[0];
+        if (dty === 'str') {
+          if (op !== '+') throw new Unsupported('str 复合 ' + s.op);
+          const b2 = this.emitExpr(s.value, 'str', ctx);
+          ctx.line(`${dst} = ming_str_cat(${dst}, ${b2});`);
+          return;
+        }
         const b = this.emitExpr(s.value, dty, ctx);
         const bt = this.newTmp(ctx, dty);
         ctx.line(`${bt} = ${b};`);
@@ -572,9 +790,25 @@ class CEmit {
       case 'Break': ctx.line('break;'); return;
       case 'Continue': ctx.line('continue;'); return;
       case 'For': {
-        // C1 仅区间 for(lo..hi;hi 排他,与 V.range 一致);容器 for-in 属 C2
-        if (s.iter.nt !== 'Range') throw new Unsupported('for 迭代 ' + s.iter.nt + '(容器 for-in 属 C2)');
+        // C1:区间 for(hi 排他,与 V.range 一致);C2:Vec[i64] 的 for-in
+        if (s.iter.nt !== 'Range' && s.iter.nt !== 'Ident') throw new Unsupported('for 迭代 ' + s.iter.nt);
         if (s.pat.nt !== 'PIdent') throw new Unsupported('for 模式');
+        if (s.iter.nt === 'Ident') {
+          const bt = ctx.typeOf(s.iter.name);
+          if (bt !== 'vi64') throw new Unsupported('for 容器 ' + bt + '(Map/str for-in 属 C3)');
+          const base = ctx.nameOf(s.iter.name);
+          const lenT = this.newTmp(ctx, 'i64');
+          ctx.line(`${lenT} = ${base}.n;`);
+          ctx.open('{');
+          const ivar = ctx.declare('__i' + s.pat.name, 'i64');
+          ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ${ivar}++) {`);
+          const ev = ctx.declare(s.pat.name, 'i64');
+          ctx.line(`long long ${ev} = ${base}.d[${ivar}];`);
+          this.emitBlock(s.body, ctx);
+          ctx.close('}');
+          ctx.close('}');
+          return;
+        }
         if (this.inferTy(s.iter.lo, ctx) !== 'i64') throw new Unsupported('for 区间类型');
         // lo/hi 求值一次(Ming Range 语义);循环体可能突变来源变量
         const loV = this.newTmp(ctx, 'i64');
@@ -601,21 +835,31 @@ class CEmit {
     ctx.popScope();
   }
 
-  // print:仅 i64/u64 整数(str(int) 或直接数值)与纯字面量串;f64/插值/拼接 → C2
+  // print:整数(str(int)/直接数值)、str(直接或经 str())与字面量串;
+  // f64/插值/Vec → C3
   emitPrint(e, ctx) {
     if (e.args.length !== 1) throw new Unsupported('print 参数数');
     const a = e.args[0];
     if (a.nt === 'StrLit') {
-      if (!(a.parts.length === 1 && 'lit' in a.parts[0])) throw new Unsupported('print 插值串(C2)');
-      ctx.line(`printf("%s\\n", "${cstr(a.parts[0].lit)}");`);
+      if (!(a.parts.length === 1 && 'lit' in a.parts[0])) throw new Unsupported('print 插值串(C3)');
+      const name = this.strLitName(a.parts[0].lit);
+      const n = Buffer.byteLength(a.parts[0].lit, 'utf8');
+      ctx.line(`printf("%.*s\\n", (int)${n}, ${name});`);
       return;
     }
     if (a.nt === 'Call' && a.callee.nt === 'Ident' && a.callee.name === 'str' && a.args.length === 1) {
       const it = this.inferTy(a.args[0], ctx);
-      if (it !== 'i64' && it !== 'u64') throw new Unsupported('str(打印 ' + it + ')(f64/str 形态属 C2)');
-      const v = this.emitExpr(a.args[0], it, ctx);
-      ctx.line(`printf("${FMT[it]}\\n", ${v});`);
-      return;
+      if (it === 'i64' || it === 'u64') {
+        const v = this.emitExpr(a.args[0], it, ctx);
+        ctx.line(`printf("${FMT[it]}\\n", ${v});`);
+        return;
+      }
+      if (it === 'str') {
+        const v = this.emitExpr(a.args[0], 'str', ctx);
+        ctx.line(`printf("%.*s\\n", (int)${v}.n, ${v}.p);`);
+        return;
+      }
+      throw new Unsupported('str(打印 ' + it + ')(f64/Vec 形态属 C3)');
     }
     const t = this.inferTy(a, ctx);
     if (t === 'i64' || t === 'u64') {
@@ -623,7 +867,20 @@ class CEmit {
       ctx.line(`printf("${FMT[t]}\\n", ${v});`);
       return;
     }
-    throw new Unsupported('print ' + (t ?? a.nt) + '(f64/str 形态属 C2)');
+    if (t === 'str') {
+      const v = this.emitExpr(a, 'str', ctx);
+      ctx.line(`printf("%.*s\\n", (int)${v}.n, ${v}.p);`);
+      return;
+    }
+    throw new Unsupported('print ' + (t ?? a.nt) + '(f64/Vec 形态属 C3)');
+  }
+
+  // ---- 字面量收集(str → 全局静态字节数组;C 转义用八进制,避免 \x 的贪婪十六进制)----
+  strLitName(text) {
+    if (this.strLits.has(text)) return this.strLits.get(text);
+    const name = `L${this.strLits.size}`;
+    this.strLits.set(text, name);
+    return name;
   }
 
   // ---- 常量定义(发射期收集;f64 用 17 位有效数字往返)----
@@ -634,7 +891,29 @@ class CEmit {
       if (!c) throw new Unsupported('常量 ' + name);
       if (ty === 'f64') lines.push(`static const double g_${name} = ${Number(c.v).toExponential(16)};`);
       else if (ty === 'u64') lines.push(`static const unsigned long long g_${name} = ${c.v}ULL;`);
-      else lines.push(`static const long long g_${name} = ${c.v}LL;`);
+      else if (ty === 'i64') lines.push(`static const long long g_${name} = ${c.v}LL;`);
+      else if (ty === 'str') {
+        const bytes = Buffer.from(c.v, 'utf8');
+        const lname = this.strLitName(c.v);
+        lines.push(`static const ming_str g_${name} = { ${lname}, ${bytes.length} };`);
+      } else throw new Unsupported('常量类型 ' + ty);
+    }
+    return lines;
+  }
+
+  // str 字面量数组定义(发射期收集,顶层统一定义)
+  emitStrLits() {
+    const lines = [];
+    for (const [text, name] of this.strLits) {
+      const bytes = Buffer.from(text, 'utf8');
+      let esc = '';
+      for (const b of bytes) {
+        if (b === 0x5c) esc += '\\\\';        // 反斜杠
+        else if (b === 0x22) esc += '\\"';    // 双引号
+        else if (b >= 0x20 && b <= 0x7e) esc += String.fromCharCode(b);
+        else esc += '\\' + b.toString(8).padStart(3, '0');
+      }
+      lines.push(`static const unsigned char ${name}[] = "${esc}"; /* ${bytes.length} 字节 */`);
     }
     return lines;
   }
@@ -643,7 +922,8 @@ class CEmit {
   run() {
     // v0.39:eligible 为空也继续 —— 只有 main 的程序(main 本身带 io 不 eligible)
     // 只要 main 具备 AOT 形态就是合法的 C1 产物;main 形态不符由发射期报 Unsupported
-    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true });
+    // v0.40(C2):sigExt = str 与 Vec[i64] 进入 C 面
+    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true });
     const fns = this.compiled.functions;
 
     // main(entry 模块的 main;无参)
@@ -672,7 +952,12 @@ class CEmit {
       });
       ctx.open(`${retTy ? CTYPE[retTy] : 'void'} m${fi}(${params.join(', ')}) {`);
       this.emitBlock(f.entry.decl.body, ctx);
-      if (retTy) ctx.line('return 0;');
+      // 检查器保证必然 return;此处为 C 需要的防御零值
+      if (retTy) {
+        ctx.line(retTy === 'str' ? 'return (ming_str){0, 0};'
+          : retTy === 'vi64' ? 'return (ming_vec){0, 0, 0};'
+          : 'return 0;');
+      }
       ctx.close('}');
       bodies.push(ctx.lines.join('\n'));
     }
@@ -693,16 +978,171 @@ class CEmit {
       return `static ${rt} m${fi}(${ps});`;
     });
     const constDefs = this.emitConstDefs();
+    const strLits = this.emitStrLits();
     const parts = [
-      '/* 由 ming cc 生成(Ming C 后端 C1)— 请勿手改 */',
+      '/* 由 ming cc 生成(Ming C 后端 C2)— 请勿手改 */',
       '#include <stdio.h>',
       '#include <stdlib.h>',
+      '#include <string.h>',
       '#include <limits.h>',
       '#include <math.h>',
       '#ifdef _WIN32',
       '#include <io.h>',
       '#include <fcntl.h>',
       '#endif',
+      '',
+      '/* ---- Ming C 运行时(C2:str + Vec[i64];分配不回收,与 wasm 线性内存同策略)---- */',
+      'typedef struct { const unsigned char* p; long long n; } ming_str;',
+      'typedef struct { long long* d; long long n; long long cap; } ming_vec;',
+      '',
+      'static void* ming_alloc(size_t n) {',
+      '    void* p = malloc(n ? n : 1);',
+      '    if (!p) { fputs("ming: 内存分配失败\\n", stderr); exit(101); }',
+      '    return p;',
+      '}',
+      '',
+      'static ming_str ming_str_lit(const unsigned char* p, long long n) { ming_str s; s.p = p; s.n = n; return s; }',
+      '',
+      'static ming_str ming_str_cat(ming_str a, ming_str b) {',
+      '    unsigned char* d = (unsigned char*)ming_alloc((size_t)(a.n + b.n));',
+      '    if (a.n) memcpy(d, a.p, (size_t)a.n);',
+      '    if (b.n) memcpy(d + a.n, b.p, (size_t)b.n);',
+      '    ming_str s; s.p = d; s.n = a.n + b.n; return s;',
+      '}',
+      '',
+      'static long long ming_str_eq(ming_str a, ming_str b) {',
+      '    return (a.n == b.n) && (a.n == 0 || memcmp(a.p, b.p, (size_t)a.n) == 0);',
+      '}',
+      '',
+      'static long long ming_str_cmp(ming_str a, ming_str b) {',
+      '    long long n = a.n < b.n ? a.n : b.n;',
+      '    for (long long i = 0; i < n; i++) { if (a.p[i] != b.p[i]) return a.p[i] < b.p[i] ? -1 : 1; }',
+      '    return a.n < b.n ? -1 : (a.n > b.n ? 1 : 0);',
+      '}',
+      '',
+      'static long long ming_str_chars(ming_str s) {',
+      '    long long c = 0, i = 0;',
+      '    while (i < s.n) { unsigned char b = s.p[i]; i += (b < 0x80) ? 1 : ((b & 0xE0) == 0xC0) ? 2 : ((b & 0xF0) == 0xE0) ? 3 : 4; c++; }',
+      '    return c;',
+      '}',
+      '',
+      'static long long ming_str_contains(ming_str a, ming_str b) {',
+      '    if (b.n == 0) return 1;',
+      '    for (long long i = 0; i + b.n <= a.n; i++) {',
+      '        long long j = 0;',
+      '        while (j < b.n && a.p[i + j] == b.p[j]) j++;',
+      '        if (j == b.n) return 1;',
+      '    }',
+      '    return 0;',
+      '}',
+      '',
+      'static ming_str ming_str_replace(ming_str a, ming_str from, ming_str to) {',
+      '    if (from.n == 0) return a;',
+      '    long long cnt = 0, i = 0;',
+      '    while (i + from.n <= a.n) {',
+      '        long long j = 0;',
+      '        while (j < from.n && a.p[i + j] == from.p[j]) j++;',
+      '        if (j == from.n) { cnt++; i += from.n; } else i++;',
+      '    }',
+      '    if (cnt == 0) return a;',
+      '    unsigned char* d = (unsigned char*)ming_alloc((size_t)(a.n + cnt * (to.n > from.n ? to.n - from.n : 0)) + 1);',
+      '    long long w = 0; i = 0;',
+      '    while (i < a.n) {',
+      '        long long j = 0;',
+      '        while (j < from.n && i + j < a.n && a.p[i + j] == from.p[j]) j++;',
+      '        if (j == from.n) { if (to.n) memcpy(d + w, to.p, (size_t)to.n); w += to.n; i += from.n; }',
+      '        else d[w++] = a.p[i++];',
+      '    }',
+      '    ming_str s; s.p = d; s.n = w; return s;',
+      '}',
+      '',
+      'static ming_str ming_str_slice(ming_str a, long long from, long long to, const char* f, int l, int c) {',
+      '    /* slice_chars:码点索引 [from, to),越界 → M4003(与 interp 逐字对齐) */',
+      '    long long chars = ming_str_chars(a);',
+      '    if (from < 0 || to < from || to > chars) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4003[index-out-of-bounds]: slice_chars 越界:请求 [%lld, %lld),字符数 %lld\\n", f, l, c, from, to, chars);',
+      '        exit(101);',
+      '    }',
+      '    long long bi = 0, bo = 0, ci = 0;',
+      '    long long sb = -1, eb = -1;',
+      '    while (bi < a.n) {',
+      '        if (ci == from) sb = bi;',
+      '        if (ci == to) { eb = bi; break; }',
+      '        unsigned char b = a.p[bi];',
+      '        bi += (b < 0x80) ? 1 : ((b & 0xE0) == 0xC0) ? 2 : ((b & 0xF0) == 0xE0) ? 3 : 4;',
+      '        ci++;',
+      '    }',
+      '    if (sb < 0) sb = a.n;',
+      '    if (eb < 0) eb = a.n;',
+      '    ming_str s; s.p = a.p + sb; s.n = eb - sb; return s;',
+      '}',
+      '',
+      'static ming_str ming_str_pad_left(ming_str a, long long n) {',
+      '    if (a.n >= n) return a;',
+      '    unsigned char* d = (unsigned char*)ming_alloc((size_t)n + 1);',
+      '    long long pad = n - a.n;',
+      '    memset(d, 0x20, (size_t)pad);',
+      '    if (a.n) memcpy(d + pad, a.p, (size_t)a.n);',
+      '    ming_str s; s.p = d; s.n = n; return s;',
+      '}',
+      '',
+      'static ming_str ming_str_pad_right(ming_str a, long long n) {',
+      '    if (a.n >= n) return a;',
+      '    unsigned char* d = (unsigned char*)ming_alloc((size_t)n + 1);',
+      '    if (a.n) memcpy(d, a.p, (size_t)a.n);',
+      '    memset(d + a.n, 0x20, (size_t)(n - a.n));',
+      '    ming_str s; s.p = d; s.n = n; return s;',
+      '}',
+      '',
+      'static ming_vec ming_vec_lit(const long long* src, long long n) {',
+      '    ming_vec v; v.n = n; v.cap = n > 4 ? n : 4;',
+      '    v.d = (long long*)ming_alloc((size_t)v.cap * sizeof(long long));',
+      '    if (n) memcpy(v.d, src, (size_t)n * sizeof(long long));',
+      '    return v;',
+      '}',
+      '',
+      'static ming_vec ming_vec_copy(ming_vec v) {',
+      '    /* 值语义:赋值/传参深拷贝 */',
+      '    ming_vec c; c.n = v.n; c.cap = v.n > 4 ? v.n : 4;',
+      '    c.d = (long long*)ming_alloc((size_t)c.cap * sizeof(long long));',
+      '    if (v.n) memcpy(c.d, v.d, (size_t)v.n * sizeof(long long));',
+      '    return c;',
+      '}',
+      '',
+      'static void ming_vec_push(ming_vec* v, long long x) {',
+      '    if (v->n == v->cap) {',
+      '        long long nc = v->cap < 4 ? 4 : v->cap * 2;',
+      '        long long* nd = (long long*)ming_alloc((size_t)nc * sizeof(long long));',
+      '        if (v->n) memcpy(nd, v->d, (size_t)v->n * sizeof(long long));',
+      '        v->d = nd; v->cap = nc;',
+      '    }',
+      '    v->d[v->n] = x; v->n++;',
+      '}',
+      '',
+      'static long long ming_vec_get(ming_vec v, long long i, const char* f, int l, int c) {',
+      '    if (i < 0 || i >= v.n) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4003[index-out-of-bounds]: 索引越界:长度 %lld,访问 %lld(用 .get(i) 返回 Option)\\n", f, l, c, v.n, i);',
+      '        exit(101);',
+      '    }',
+      '    return v.d[i];',
+      '}',
+      '',
+      'static void ming_vec_set(ming_vec* v, long long i, long long x, const char* f, int l, int c) {',
+      '    if (i < 0 || i >= v->n) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4003[index-out-of-bounds]: 索引越界:长度 %lld,访问 %lld(用 .get(i) 返回 Option)\\n", f, l, c, v->n, i);',
+      '        exit(101);',
+      '    }',
+      '    v->d[i] = x;',
+      '}',
+      '',
+      'static void ming_vec_reverse(ming_vec* v) {',
+      '    for (long long i = 0, j = v->n - 1; i < j; i++, j--) { long long t = v->d[i]; v->d[i] = v->d[j]; v->d[j] = t; }',
+      '}',
+      '',
+      'static long long ming_vec_contains(ming_vec v, long long x) {',
+      '    for (long long i = 0; i < v.n; i++) { if (v.d[i] == x) return 1; }',
+      '    return 0;',
+      '}',
       '',
       'static void ming_panic(const char *text) {',
       '    fputs(text, stderr);',
@@ -717,6 +1157,8 @@ class CEmit {
       '    return -a;',
       '}',
       '',
+      ...strLits,
+      ...(strLits.length ? [''] : []),
       ...constDefs,
       ...(constDefs.length ? [''] : []),
       ...decls,
