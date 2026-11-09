@@ -997,6 +997,12 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.38.1(2026-11-09)
+
+- **mingkit 边界校验补强**: read 空文件直接返回(不输出那个因 print 抵消而多出来的空行);行区间 start > end、delete-lines start < 1 / end < start / start > 文件实际行数 全部显式报错退出 1;delete-lines 的 end 截断至文件实际行数(与 count 行数口径一致:split 的尾部空元素不算行)。
+- **运行时 print_raw**(src/interp.js `BUILTIN_IMPLS`,与 VM 双引擎共用;compiler.js / checker.js 各注册一处):不分页输出,不附加换行。配合 read:有尾部换行用 print(剥一换行再输出,抵消 print 的换行),无尾部换行用 print_raw 精确输出,写出去什么读回来就是什么。
+- 测试:381 项(0 失败),mingkit 专项 23 项(上版 20 项)。
+
 ### v0.38.0(2026-11-09)
 
 - **`ming build` dist 产物落地**(v0.37 决策兑现):项目检查通过后产出 dist 目录——app.ming(源拷贝)+ runtime 8 模块(checker/compiler/interp/vm/wasm/lexer/parser/diag)+ **ming-app.mjs launcher**。launcher:参数透传、`--` 剥离、panic → 101、诊断 → 1;Node ≥ 18 零依赖,跨 cwd 运行(路径经 import.meta.url 解析)。`--no-dist` 可关。部署形态:拷贝 dist 目录即可。
@@ -1099,7 +1105,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ### v0.27.1(2026-11-09)
 
 - **tools/mingkit.ming——用 Ming 自写的文件工具箱**(仓库第一个自举工具):read(整文件/行区间)/ write / append(stdin 全量)/ replace(恰好 1 处,0/多处拒绝写入)/ replace-all / insert-after / insert-before / delete-lines / count。设计动机:AI 文件补丁的最大摩擦是跨 shell 转义层,mingkit 只保留一层转义(`\n` `\t` `\\`),歧义写入一律拒绝(退出码 1,不落盘)。
-- 过程中的语义核对:`new` 是 Ming 保留字(M1006 拦截,改用 repl);main 的 args 不含程序名;count 行数 = `split("\n")` 去掉末尾空元素(空文件 0 行);print 自带换行,read 原样输出需先剥一个尾部换行。
+- 过程中的语义核对:`new` 是 Ming 保留字(M1006 拦截,改用 repl);main 的 args 不含程序名;count 行数 = `split("\n")` 去掉末尾空元素(空文件 0 行);print 自带换行,read 原样输出:有尾部换行先剥一个再 print(抵消),无尾部换行用 print_raw(v0.38.1 运行时新增)精确输出,写出去什么读回来就是什么。
 - 测试:315 项(新增 mingkit 16 项:往返/区间/精确替换拒绝/转义/插入/删行/count 中文字节口径/append/双引擎一致/用法)。
 
 ### v0.26.0(2026-11-08)

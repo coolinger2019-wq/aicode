@@ -2748,6 +2748,11 @@ export const BUILTIN_IMPLS = {
     host.writeErr(displayStr(args[0]) + '\n');
     return UNIT;
   },
+  // 不分页:不附加换行(精确输出,与 print 互补)
+  print_raw(host, args) {
+    host.write(displayStr(args[0]));
+    return UNIT;
+  },
   str(host, args) {
     return V.str(displayStr(args[0]));
   },

@@ -204,6 +204,7 @@ export const BUILTIN_CMP_TYPES = new Set(['int', 'float', 'str']);
 export const BUILTIN_FNS = {
   print: { params: ['display'], ret: T_UNIT, effect: 'io' },
   eprint: { params: ['display'], ret: T_UNIT, effect: 'io' },
+  print_raw: { params: ['display'], ret: T_UNIT, effect: 'io' },
   str: { params: ['display'], ret: T_STR },
   debug: { params: ['any'], ret: T_STR, noFn: true },
   assert: { params: [T_BOOL, T_STR], min: 1, max: 2, ret: T_UNIT },

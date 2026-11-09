@@ -858,7 +858,7 @@ class BytecodeCompiler {
       return;
     }
     // 内置函数
-    if (['print', 'eprint', 'str', 'debug', 'assert', 'assert_eq', 'panic'].includes(name)) {
+    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic'].includes(name)) {
       this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__builtin:' + name }), 0, span);
       return;
     }

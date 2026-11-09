@@ -86,6 +86,12 @@ fn main(args: Vec[str]) -> i64 with io, fs {
                 Ok(n) => { end = n; }
                 Err(_) => { return fail("end 不是整数: " + args[3]); }
             }
+            if start > end {
+                return fail("start 不能大于 end");
+            }
+            if content == "" {
+                return 0;  // 空文件没有行
+            }
             let lines = content.split("\n");
             let mut i: i64 = 0;
             for ln in lines {
@@ -94,12 +100,18 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             }
             return 0;
         }
-        // 原样输出:剥掉一个尾部换行,抵消 print 自带的换行
+        // 原样输出:剥掉一个尾部换行,抵消 print 自带的换行;
+        // 无尾部换行的文件用 print_raw 精确输出,不附加换行
+        if content == "" {
+            return 0;  // 空文件:没有任何内容
+        }
         let mut body = content;
         if body.ends_with("\n") {
             body = body.slice_chars(0, body.char_len() - 1);
+            print(body);
+        } else {
+            print_raw(body);
         }
-        print(body);
         return 0;
     }
 
@@ -206,6 +218,19 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             }
         }
         let lines = content.split("\n");
+        let mut n = lines.len();
+        // 末尾换行产生的空元素不算一行;空文件算 0 行
+        if n > 0 && lines[n - 1] == "" { n = n - 1; }
+        if start < 1 {
+            return fail("start 必须从 1 开始");
+        }
+        if end < start {
+            return fail("end 不能小于 start");
+        }
+        if start > n {
+            return fail("start 超出文件范围(" + str(start) + " > " + str(n) + ")");
+        }
+        if end > n { end = n; }  // 截断至文件尾,与"删到文件尾"的默认语义一致
         let mut outv: Vec[str] = [];
         let mut i: i64 = 0;
         for ln in lines {

@@ -817,6 +817,30 @@ fn main() with io, fs {
   const rt = runMing(['run', KIT, '--tree', 'replace', f('k7.txt'), 'p', 'P']);
   check('kit:双引擎一致(tree)', rt.code === 0 && kitRun(['read', f('k7.txt')]).stdout === 'P\nq\n', rt.stderr.slice(0, 150));
 
+  // read:空文件无输出;区间 start>end 拒绝
+  fs.writeFileSync(f('k9.txt'), '');
+  r = kitRun(['read', f('k9.txt')]);
+  check('kit:read 空文件无输出', r.code === 0 && r.stdout === '', JSON.stringify(r.stdout));
+  r = kitRun(['read', f('k1.txt'), '3', '2']);
+  check('kit:read 区间 start>end', r.code === 1 && r.stderr.includes('start 不能大于 end'), r.stderr.slice(0, 100));
+
+  // delete-lines:start<1 / end<start / start>文件行数 拒绝
+  r = kitRun(['delete-lines', f('k1.txt'), '0', '2']);
+  check('kit:delete-lines start<1', r.code === 1 && r.stderr.includes('start 必须从 1 开始'), r.stderr.slice(0, 100));
+  r = kitRun(['delete-lines', f('k1.txt'), '2', '1']);
+  check('kit:delete-lines end<start', r.code === 1 && r.stderr.includes('end 不能小于 start'), r.stderr.slice(0, 100));
+  r = kitRun(['delete-lines', f('k5.txt'), '5', '6']);
+  check('kit:delete-lines start>文件行数', r.code === 1 && r.stderr.includes('start 超出文件范围'), r.stderr.slice(0, 100));
+
+  // read:无尾部换行原样往返(走 print_raw)
+  fs.writeFileSync(f('k10.txt'), 'no trailing newline');
+  r = kitRun(['write', f('k10.txt')], 'no trailing newline');
+  r = kitRun(['read', f('k10.txt')]);
+  check('kit:read 无尾换行往返', r.code === 0 && r.stdout === 'no trailing newline', JSON.stringify(r.stdout));
+  fs.writeFileSync(f('k11.txt'), 'two\nlines\n');
+  r = kitRun(['read', f('k11.txt')]);
+  check('kit:read 有尾换行往返', r.code === 0 && r.stdout === 'two\nlines\n', JSON.stringify(r.stdout));
+
   // 用法与未知子命令
   r = kitRun([]);
   check('kit:无参数出用法', r.code === 1 && r.stderr.includes('mingkit'), r.stderr.slice(0, 100));
