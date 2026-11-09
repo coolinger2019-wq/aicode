@@ -1109,7 +1109,7 @@ export class Checker {
   }
 
   // ---------- 语句 ----------
-  checkBlock(block, ctx, expected) {
+  checkBlock(block, ctx, expected, valuePos = false) {
     const scope = new Scope(ctx.scope, ctx.mod);
     ctx = { ...ctx, scope };
     for (const s of block.stmts) this.checkStmt(s, ctx);
@@ -1122,7 +1122,9 @@ export class Checker {
           break;
         }
       }
-      bt = this.checkExpr(block.tail, ctx, expected ?? undefined, expected != null);
+      // v0.39 修复:值上下文中的块尾也是值位置(此前 expected == null 时 valuePos
+      // 恒为 false → 块尾 if 表达式被当作语句形式返回 unit)
+      bt = this.checkExpr(block.tail, ctx, expected ?? undefined, expected != null || valuePos);
     } else {
       bt = T_UNIT;
     }
@@ -1315,7 +1317,8 @@ export class Checker {
 
   checkAssign(s, ctx) {
     const targetT = this.checkPlace(s.target, ctx);
-    const valueT = this.checkExpr(s.value, ctx, targetT ?? undefined);
+    // v0.39 修复:右值是值位置(此前缺 valuePos → if 表达式右值被当作语句形式返回 unit)
+    const valueT = this.checkExpr(s.value, ctx, targetT ?? undefined, true);
     const binds = new Map();
     if (s.op !== '=') {
       // 复合赋值:要求支持对应算术
@@ -1479,7 +1482,8 @@ export class Checker {
         return mkRange(lr);
       }
       case 'As': {
-        const t = this.checkExpr(e.expr, ctx);
+        // v0.39 修复:as 操作数是值位置(此前缺 valuePos → if 表达式操作数返回 unit)
+        const t = this.checkExpr(e.expr, ctx, undefined, true);
         const target = this.resolveTypeAst(e.type, ctx.mod);
         const r = resolveT(t, new Map()), tr = resolveT(target, new Map());
         const numOk = (x) => x?.k === 'int' || x?.k === 'float';
@@ -2601,8 +2605,9 @@ export class Checker {
   // ---- 复合节点 ----
   checkBinary(e, ctx, expected) {
     const op = e.op;
-    const lt = this.checkExpr(e.l, ctx);
-    const rt = this.checkExpr(e.r, ctx, ['==', '!=', '<', '<=', '>', '>='].includes(op) ? lt ?? undefined : undefined);
+    // v0.39 修复:操作数是值位置(此前缺 valuePos → if 表达式操作数被当作语句形式返回 unit)
+    const lt = this.checkExpr(e.l, ctx, undefined, true);
+    const rt = this.checkExpr(e.r, ctx, ['==', '!=', '<', '<=', '>', '>='].includes(op) ? lt ?? undefined : undefined, true);
     return this.checkBinaryOp(op, lt, rt, e.span, new Map(), e.l, e.r);
   }
 
@@ -2704,8 +2709,8 @@ export class Checker {
       this.checkBlock(e.then, ctx, expected);
       return null;
     }
-    const tt = this.checkBlock(e.then, ctx, expected);
-    const et = e.els.nt === 'If' ? this.checkIf(e.els, ctx, expected, true) : this.checkBlock(e.els, ctx, expected);
+    const tt = this.checkBlock(e.then, ctx, expected, true);
+    const et = e.els.nt === 'If' ? this.checkIf(e.els, ctx, expected, true) : this.checkBlock(e.els, ctx, expected, true);
     const binds = new Map();
     if (tt && et && !unify(tt, et, binds) && tt.k !== 'never' && et.k !== 'never') {
       this.diags.push(err('M3002', `if 两个分支类型不同:${typeStr(tt, binds)} 与 ${typeStr(et, binds)}`, e.span));

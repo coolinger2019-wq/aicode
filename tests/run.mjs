@@ -1268,7 +1268,7 @@ fn main() with io, fs {
 
   // 模糊基线快速档(种子固定可复现;完整档:node tests/fuzz.mjs --count 500 --seed 变化)
   const fuzz = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '20261109'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v33:模糊基线快速档(40 程序三后端一致)', fuzz.status === 0 && /一致 40,分歧 0/.test(fuzz.stdout), 'code=' + fuzz.status + ' tail=' + (fuzz.stdout ?? '').slice(-120));
+  check('v33:模糊基线快速档(40 程序三后端一致)', fuzz.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz.stdout), 'code=' + fuzz.status + ' tail=' + (fuzz.stdout ?? '').slice(-120));
 }
 
 // ===================== 34. v0.34:std.crypto(安全工具之北支柱 6 第一块)=====================
@@ -1374,7 +1374,7 @@ fn main() with io, fs {
 
   // 模糊器 as 扩展快速验证(小种子;完整覆盖见 fuzz.mjs 深档)
   const fuzz35 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '30', '--seed', '35035'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v35:模糊 as/扩展形态(30 程序三后端一致)', fuzz35.status === 0 && /一致 30,分歧 0/.test(fuzz35.stdout ?? ''), 'code=' + fuzz35.status + ' tail=' + (fuzz35.stdout ?? '').slice(-120));
+  check('v35:模糊 as/扩展形态(30 程序三后端一致)', fuzz35.status === 0 && /一致 30\b[\s\S]*分歧 0/.test(fuzz35.stdout ?? ''), 'code=' + fuzz35.status + ' tail=' + (fuzz35.stdout ?? '').slice(-120));
 }
 
 // ===================== 36. v0.36:字节流正则 + AES-256-CBC =====================
@@ -1471,7 +1471,7 @@ fn main() with io, fs {
 
   // 模糊器扩展形态快速档(str + for-in;种子固定)
   const fuzz37 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '50', '--seed', '37037'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v37:模糊扩展形态(50 程序三后端一致)', fuzz37.status === 0 && /一致 50,分歧 0/.test(fuzz37.stdout ?? ''), 'code=' + fuzz37.status + ' tail=' + (fuzz37.stdout ?? '').slice(-120));
+  check('v37:模糊扩展形态(50 程序三后端一致)', fuzz37.status === 0 && /一致 50\b[\s\S]*分歧 0/.test(fuzz37.stdout ?? ''), 'code=' + fuzz37.status + ' tail=' + (fuzz37.stdout ?? '').slice(-120));
 }
 
 // ===================== 38. v0.38:ming build dist 产物 + 模糊器 if/else =====================
@@ -1506,8 +1506,121 @@ fn main() with io, fs {
 
   // 模糊器 if/else 形态快速档
   const fuzz38 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '38038'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v38:模糊 if/else 形态(40 程序三后端一致)', fuzz38.status === 0 && /一致 40,分歧 0/.test(fuzz38.stdout ?? ''), 'code=' + fuzz38.status + ' tail=' + (fuzz38.stdout ?? '').slice(-120));
+  check('v38:模糊 if/else 形态(40 程序三后端一致)', fuzz38.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz38.stdout ?? ''), 'code=' + fuzz38.status + ' tail=' + (fuzz38.stdout ?? '').slice(-120));
   fs.rmSync(proj, { recursive: true, force: true });
+}
+
+// ===================== 34. v0.39:C 后端 C1(ming cc)=====================
+{
+  const cdir = path.join(TMP, 'cc39');
+  fs.mkdirSync(cdir, { recursive: true });
+  const detectCC39 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const firstLine = (s) => (s ?? '').split('\n')[0];
+
+  // --emit-c 快照(不依赖编译器,恒跑)
+  const c1src = [
+    'fn fib(n: i64) -> i64 {',
+    '    if n < 2 { return n; }',
+    '    return fib(n - 1) + fib(n - 2);',
+    '}',
+    '',
+    'fn sum_to(n: i64) -> i64 {',
+    '    let mut total: i64 = 0;',
+    '    for i in 1..n + 1 {',
+    '        total += i;',
+    '    }',
+    '    return total;',
+    '}',
+    '',
+    'fn main() with io {',
+    '    print(str(fib(15)));',
+    '    print(str(sum_to(100)));',
+    '}',
+  ].join('\n');
+  const c1file = path.join(cdir, 'c1.ming');
+  fs.writeFileSync(c1file, c1src);
+  const rc = spawnSync(process.execPath, [MING, 'cc', c1file, '--emit-c', '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+  const cPath = path.join(cdir, 'out', 'c1.c');
+  const cCode = fs.existsSync(cPath) ? fs.readFileSync(cPath, 'utf8') : '';
+  check('v39:emit-c 产出 C 源', rc.status === 0 && cCode.includes('__builtin_add_overflow') && cCode.includes('ming_panic') && cCode.includes('static long long m'), 'code=' + rc.status + ' stderr=' + (rc.stderr ?? '').slice(0, 150));
+  check('v39:emit-c 含 AOT main 与 _setmode', cCode.includes('ming_main') && cCode.includes('_O_BINARY'), '');
+
+  // AOT 形态外拒绝(str main)
+  fs.writeFileSync(path.join(cdir, 'strmain.ming'), 'fn main() with io { print("hello"); print(str("abc".char_len())); }');
+  const rs = spawnSync(process.execPath, [MING, 'cc', path.join(cdir, 'strmain.ming'), '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+  check('v39:AOT 形态外拒绝(str main)', rs.status === 1 && (rs.stderr ?? '').includes('C1 不支持'), 'status=' + rs.status + ' stderr=' + (rs.stderr ?? '').slice(0, 120));
+
+  const ccBin = detectCC39();
+  if (ccBin) {
+    // 四方一致:tree = vm(+wasm) = vm(--no-wasm) = cc 原生产物
+    const build = spawnSync(process.execPath, [MING, 'cc', c1file, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+    const exe = path.join(cdir, 'out', 'c1' + (process.platform === 'win32' ? '.exe' : ''));
+    const rcc = fs.existsSync(exe) ? spawnSync(exe, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+    const rvm = runMing(['run', c1file]);
+    const rtree = runMing(['run', c1file, '--tree']);
+    const rnow = runMing(['run', c1file, '--no-wasm']);
+    check('v39:cc 四方一致(fib+循环)', build.status === 0 && rcc.status === 0 && rcc.stdout === rvm.stdout && rvm.stdout === rtree.stdout && rvm.stdout === rnow.stdout,
+      'build=' + build.status + ' cc=' + JSON.stringify(rcc.stdout) + ' vm=' + JSON.stringify(rvm.stdout) + ' tree=' + JSON.stringify(rtree.stdout));
+
+    // panic 对齐:main 内具体消息(binopValues)与 fn 内 wasm 通用消息,首行 + 退出码 101
+    const panicSrcs = [
+      ['main-ovf', 'main 内溢出', 'fn main() with io { let x = 9223372036854775807; let y = x + 1; print(str(y)); }'],
+      ['fn-ovf', 'fn 内溢出', 'fn boom(a: i64, b: i64) -> i64 { return a * b; } fn main() with io { print(str(boom(3037000500, 3037000500))); }'],
+      ['div-zero', '除零', 'fn main() with io { print(str(10 / 0)); }'],
+    ];
+    for (const [fileKey, desc, src] of panicSrcs) {
+      const pf = path.join(cdir, 'panic-' + fileKey + '.ming');
+      fs.writeFileSync(pf, src);
+      const rj = runMing(['run', pf]);
+      spawnSync(process.execPath, [MING, 'cc', pf, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+      const pexe = path.join(cdir, 'out', 'panic-' + fileKey + (process.platform === 'win32' ? '.exe' : ''));
+      const rc2 = fs.existsSync(pexe) ? spawnSync(pexe, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stderr: '' };
+      check('v39:panic 首行对齐(' + desc + ')', rj.code === 101 && rc2.status === 101 && firstLine(rj.stderr) === firstLine(rc2.stderr),
+        'js=' + JSON.stringify(firstLine(rj.stderr)) + ' cc=' + JSON.stringify(firstLine(rc2.stderr)) + ' codes=' + rj.code + '/' + rc2.status);
+    }
+
+    // u64/类型级/as 截断 全字节一致
+    fs.writeFileSync(path.join(cdir, 'u64c.ming'), [
+      'fn umax(a: u64, b: u64) -> u64 {',
+      '    if a > b { return a; }',
+      '    return b;',
+      '}',
+      'fn narrow(x: i64) -> i64 {',
+      '    return x as u8 as i64;',
+      '}',
+      'fn main() with io {',
+      '    print(str(umax(u64.max_value(), 5u64)));',
+      '    print(str(narrow(300)));',
+      '    print(str(narrow(-1)));',
+      '    print(str(i64.min_value()));',
+      '}',
+    ].join('\n'));
+    const uf = path.join(cdir, 'u64c.ming');
+    const build2 = spawnSync(process.execPath, [MING, 'cc', uf, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+    const uexe = path.join(cdir, 'out', 'u64c' + (process.platform === 'win32' ? '.exe' : ''));
+    const ru = fs.existsSync(uexe) ? spawnSync(uexe, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+    const ruj = runMing(['run', uf]);
+    check('v39:cc u64/as/类型级 一致', build2.status === 0 && ru.status === 0 && ru.stdout === ruj.stdout,
+      'cc=' + JSON.stringify(ru.stdout) + ' js=' + JSON.stringify(ruj.stdout) + ' build=' + build2.status);
+    check('v39:编译器探测命中', typeof ccBin === 'string' && ccBin.length > 0, 'cc=' + ccBin);
+  } else {
+    check('v39:C 腿(无编译器,跳过运行时差分)', true);
+  }
+
+  // 模糊器 v0.39 快速档(新形态:f64+math/match/loop/Option/Vec/str 方法)
+  const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '39039'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v39:模糊器加深形态(40 程序一致)', fuzz39.status === 0 && /一致 40\b[\s\S]*分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
 }
 
 // ===================== 汇总 =====================

@@ -139,6 +139,13 @@ export function tryCompileWasm(check, compiled) {
   }
 }
 
+// 资格分析独立入口(C 后端复用;单一事实来源 = WasmCompiler.analyze)
+// 返回 Map<mingFnIdx, { exportName, nParams }>
+export function analyzeEligibility(check, compiled, opts = {}) {
+  const c = new WasmCompiler(check, compiled);
+  return c.analyze(opts);
+}
+
 class WasmCompiler {
   constructor(check, compiled) {
     this.check = check;
@@ -207,11 +214,33 @@ class WasmCompiler {
   run() {
     const fns = this.compiled.functions;
     if (process.env.MING_WASM_DEBUG) console.error('[wasm run] fns=' + fns.length);
-    
+    this.analyze();
+    if (this.eligible.size === 0) return null;
+
+    const order = [...this.eligible.keys()].sort((a, b) => a - b);
+    const wasmIdxOf = new Map(order.map((fi, ord) => [fi, ord]));
+    this.wasmOrder = order;
+    if (process.env.MING_WASM_DEBUG) {
+      for (const fi of order) {
+        try { this.emitBody(fns[fi], 3); console.error('[wasm] fn', fns[fi].name, 'OK'); }
+        catch (e) { console.error('[wasm] fn', fns[fi].name, e instanceof Unsupported ? ('REJECT: ' + e.message) : ('THROW: ' + e.message)); }
+      }
+    }
+    const bytes = this.emitModule(fns, order, wasmIdxOf);
+    return { bytes: new Uint8Array(bytes), eligible: this.eligible };
+  }
+
+  // 资格分析:形状 pass + 调用图不动点回退(单一事实来源,wasm 与 C 后端共用)。
+  // opts.numericOnly:额外拒绝 str/Vec/Map 形态 —— C 后端 C1 只收 i64/u64/f64 签名。
+  analyze(opts = {}) {
+    const fns = this.compiled.functions;
+    const numericOnly = !!opts.numericOnly;
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
-      if (f && this.isEligibleShape(f)) this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
+      if (f && this.isEligibleShape(f) && (!numericOnly || this.isNumericSig(f))) {
+        this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
+      }
     }
     // 资格不动点:被调方回落则调用方回落
     let changed = true;
@@ -229,19 +258,19 @@ class WasmCompiler {
         }
       }
     }
-    if (this.eligible.size === 0) return null;
+    return this.eligible;
+  }
 
-    const order = [...this.eligible.keys()].sort((a, b) => a - b);
-    const wasmIdxOf = new Map(order.map((fi, ord) => [fi, ord]));
-    this.wasmOrder = order;
-    if (process.env.MING_WASM_DEBUG) {
-      for (const fi of order) {
-        try { this.emitBody(fns[fi], 3); console.error('[wasm] fn', fns[fi].name, 'OK'); }
-        catch (e) { console.error('[wasm] fn', fns[fi].name, e instanceof Unsupported ? ('REJECT: ' + e.message) : ('THROW: ' + e.message)); }
-      }
+  // C1 数值签名:参数与返回只允许 i64/u64/f64(返回可为 unit)
+  isNumericSig(f) {
+    const sig = f.entry?.sig;
+    if (!sig) return false;
+    const numOnly = (t) => (t?.k === 'int' && t.bits === 64) || (t?.k === 'float' && t.bits === 64);
+    if (sig.ret?.k !== 'unit' && !numOnly(sig.ret)) return false;
+    for (const p of sig.params) {
+      if (!numOnly(p.type)) return false;
     }
-    const bytes = this.emitModule(fns, order, wasmIdxOf);
-    return { bytes: new Uint8Array(bytes), eligible: this.eligible };
+    return true;
   }
 
   isEligibleShape(f) {
@@ -306,7 +335,9 @@ class WasmCompiler {
       [...nameBytes('ming'), ...nameBytes('panic_m4002'), 0x00, ...ulebBytes(T_PANIC)],
       [...nameBytes('ming'), ...nameBytes('panic_m4004'), 0x00, ...ulebBytes(T_PANIC)],
       ...MATH_IMPORTS.map(([n]) => {
-        const two = ['pow', 'min', 'max'].includes(n);
+        // v0.39 修复:双参清单此前漏了 atan2/hypot(v0.29 补函数)——它们被声明为
+        // 单参导入,调用只消费栈顶一个实参,其余留在栈上参与后续运算 → 静默错值
+        const two = ['pow', 'min', 'max', 'atan2', 'hypot'].includes(n);
         return [...nameBytes('ming'), ...nameBytes('math_' + n), 0x00, ...ulebBytes(two ? T_MATH2 : T_MATH1)];
       }),
       ...STR_IMPORTS.map((n, i) => {
@@ -516,8 +547,11 @@ class WasmCompiler {
         this.localGet(ctx, s0); b.push(0x52);
         b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
-        b.push(0x0b);                    // end else
-        b.push(0x0b);                    // end block
+        b.push(0x0b);                    // end if D(else 分支内的除法检查)
+        b.push(0x0b);                    // end if B(b == -1 检查,if/else)
+        b.push(0x0b);                    // end block A(v0.39 修复:缺此 end——自 v0.23 起
+                                         // 任何含 * 的 eligible 函数都让整模块校验失败 →
+                                         // wasm 层静默失守,乘法程序全部回落 JS VM)
         return;
       }
       case '/': {

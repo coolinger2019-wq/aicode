@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.38.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.39.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1(ming cc)** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -883,6 +883,7 @@ fn main() with io {
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
 | `ming build`(项目模式,v0.38) | 项目检查通过后产出 **dist 可移植产物**:app.ming + runtime 8 模块拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑 |
+| `ming cc f.ming [--emit-c] [--out 目录]`(v0.39) | **C 后端 C1**:eligible 数值函数 + AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐);`--emit-c` 只产出 .c;编译器探测 MING_CC → PATH → 已知便携位置;str/Vec 形态属 C2(显式拒绝) |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -990,12 +991,28 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.36(已完成) | 字节流正则三函数(latin1 无损,支柱 4 落地)+ AES-256-CBC(支柱 6)+ 位域/packing 设计判断(不做) |
 | v0.37(已完成) | AES-256-GCM 带认证(篡改检出)+ 模糊器 str/for-in 扩展 + ming build 预研(dist 目录决策,v0.38 实现) |
 | v0.38(已完成) | `ming build` dist 可移植产物(launcher/args/panic 全路径)+ **原生后端(C)预研**(资格分析复用路线)+ 模糊器 if/else |
-| v0.39 方向 | C 后端 C1 里程碑(eligible 数值函数 → C + GCC 基准对标 wasm)、模糊器加深、`with ffi` 设计 |
+| v0.39(已完成) | **C 后端 C1**(ming cc:eligible 数值函数 → C + GCC -O2,资格分析复用;顺带修复 wasm 四项休眠 bug 使端到端真正复活)+ 模糊器加深(f64/match/loop/Option/方法面 + C 第 4 腿)+ `with ffi` 设计定稿(design.md §6.9,不实现) |
+| v0.40 方向 | C2:str/Vec 全形态(C 后端全语言面)、模糊器持续加深 |
 | 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.39.0(2026-11-10)
+
+- **C 后端 C1 落地**(`ming cc`,src/cbackend.js):`ming cc <file> [--emit-c] [--out 目录]`——numericOnly 资格分析(`analyzeEligibility`,与 wasm 单一事实来源,wasm.js `analyze(opts)` 提取)+ **整程序 AOT**(main 限定"AOT 形态":数值语句/对 eligible 函数的调用/`print(str(整数))`/字面量串)。映射:i64→long long、u64→unsigned long long、f64→double;checked 运算 → `__builtin_*_overflow`;除/模/移位显式守卫(LLONG_MIN/-1、UB 消除);panic 首行逐字对齐(eligible 函数内 = wasm 层通用消息,main 内 = binopValues 具体消息含操作数;退出码 101);stdout/stderr `_setmode` 二进制模式(关 CRLF);递归经 static 原型先行。编译器探测:MING_CC → PATH(gcc/clang/cc)→ 已知便携位置(w64devkit 等)。基准:纯 sum/fib 场景 cc 比 wasm 再快约 10x(fib(24) 9.7ms vs 99ms)。
+- **wasm 层四项休眠 bug 修复(v0.39 发现并修复——wasm 端到端首次真正复活)**:
+  1. signed 乘法溢出检查缺块闭合 `end`(v0.23 起)——任何含 `*` 的 eligible 函数都让整模块校验失败 → 静默回落;
+  2. `callCompiled` 的 wasm 快路径要求 `captures === null`,而 OP.CALL 路径的 LDFN 值是 `captures: []` 的 vclose——**字节码对模块函数的直接调用从未进过 wasm**(只有测试直调进过);
+  3. `atan2`/`hypot` 被声明为单参导入(双参清单漏项)——调用只消费栈顶实参,其余留栈参与后续运算 → 静默错值;
+  4. u64 返回缺 `asUintN` 位型还原(wasm i64 以有符号 BigInt 出栈)。
+- **解析器/检查器修复(模糊器加深逼出)**:
+  - M2005 链式比较检查误伤:`l.nt === 'Binary'` 把 "a + b <= c" 这类合法算术左操作数也拒绝 → 改为仅拦同级比较链;
+  - valuePos 四处缺位:二元操作数、赋值右值、as 操作数、块尾表达式——if 表达式在这些位置被当作语句形式返回 unit(合法程序被拒)→ checkBinary/checkAssign/As/checkBlock(值上下文链)补传 valuePos。
+- **模糊器加深**(tests/fuzz.mjs):形态池新增 f64+std.math(经 as i64 饱和截断消费)/match 表达式(字面量臂+guard)/loop+break+continue/Option(unwrap_or 常态、偶发 unwrap 触发 M4006)/Vec 方法(push/pop/contains/reverse)/str 方法(pad_left/slice_chars/contains/replace)/区间 for/逻辑作为值;**cmp 形态修复**——bool 不能 `as i64`(M3019),v0.33 起的比较转 i64 形态恒被检查器拒绝(三后端一致拒绝 → 假通过零覆盖),改用 if 表达式惯用法;**C 第 4 差分腿**:约 40% 程序生成"cc 族"(纯数值,C1 面内),检测到编译器时四方对比,C1 拒绝 cc 族程序 = 发射器回归(记分歧);新增 `--dump N`(复现第 N 个程序)。
+- **`with ffi` 设计定稿**(design.md §6.9,不实现):效果即门禁(`ffi` 为预留效果名,v0.39 不开放,M3030 仍拒绝)、签名即文档(std.ffi.load → Result[Lib] + lib.fn(名, 签名))、v1 类型面(i64/u64/f64/bool + Ptr 句柄)、错误模型(加载失败 = Err;段错误 = 进程级,Ming 不捕获——诚实声明)、诊断码 M4013/M4014 预留。能力矩阵 49 行口径 ≈80%(FFI ❌→🟡,新增 C1 行)。
+- 测试:391 项(新增 v0.39 §34 十项:emit-c 快照/AOT 形态外拒绝/四方一致/panic 首行对齐 ×3/u64+as+类型级一致/编译器探测/模糊快速档;模糊档断言适配 C 腿输出)。基准:bench.mjs 增 cc 腿(无编译器自动跳过)。
 
 ### v0.38.1(2026-11-09)
 

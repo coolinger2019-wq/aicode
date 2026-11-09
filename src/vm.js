@@ -322,7 +322,10 @@ export class VMInterp extends Interp {
       throw new Panic('M4005', `调用栈过深(>250 层递归);如需更深递归请改写为循环`, span);
     }
     // WASM 分层:纯数值函数走 wasm(参数/结果 i64 位型,i64/u64/f64;panic 经导入边界还原为 Ming Panic)
-    if (this.wasmExports && this.wasmEligible?.has(fnIdx) && captures === null) {
+    // captures:模块函数经 LDFN 是 captures=[] 的 vclose(空捕获,无需封送)——
+    // v0.39 修复:条件此前是 === null,而 OP.CALL 路径永远传 [],wasm 快路径
+    // 对字节码直接调用从未生效(只有 runMain/spawn/测试直调进过 wasm)。
+    if (this.wasmExports && this.wasmEligible?.has(fnIdx) && (captures === null || captures.length === 0)) {
       const info = this.wasmEligible.get(fnIdx);
       const sig = fn.entry.sig;
       const isVoid = sig.ret.k === 'unit';
@@ -390,7 +393,11 @@ export class VMInterp extends Interp {
             return V.vec(out);
           }
           if (sig.ret.k === 'map') return deepCopy(this.wasmObjTable[raw] ?? V.map(new Map()));
-          return sig.ret.k === 'float' ? V.float(raw, 64) : V.int(raw, 64, retSigned);
+          // v0.39 修复:u64 返回需 asUintN 还原位型——wasm i64 以有符号 BigInt 出栈,
+          // u64 位型(如 -1n = 2^64-1)此前原样入 V → str 打印 -1
+          return sig.ret.k === 'float'
+            ? V.float(raw, 64)
+            : V.int(retSigned ? raw : BigInt.asUintN(64, raw), 64, retSigned);
         } catch (e) {
           this.depth--;
           this.callStack.pop();

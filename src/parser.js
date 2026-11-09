@@ -650,7 +650,9 @@ export class Parser {
     for (;;) {
       const t = this.cur();
       if (t.kind === 'op' && ops.includes(t.val)) {
-        if (chainError && l.nt === 'Binary') {
+        // v0.39 修复:链式比较检查此前是 l.nt === 'Binary'(任何二元运算),
+        // 把 "a + b <= c" 这类合法的算术左操作数也误报;只拦同级比较链
+        if (chainError && l.nt === 'Binary' && ops.includes(l.op)) {
           this.fail('M2005', `比较运算符不能连续使用(如 a ${l.op} b ${t.val} c)`, this.spanFrom(t),
             `用 && 显式连接:${chainError.replace('%s', `${l.op} ${t.val}`)}`);
         }

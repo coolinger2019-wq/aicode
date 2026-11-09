@@ -150,8 +150,17 @@ AI 参与编写的代码,质量门禁设在三个时点,各司其职:
 ### 6.7 形态定位
 **Python 的皮**(解释执行/REPL/脚本化)+ **C 的骨**(经受控 unsafe 的内存与寄存器)+ **Go 的腿**(并发与部署)+ **Rust 的安全带**(效果系统即默认安全带,危险时显式解绑)。差异化主张:安全能力不牺牲明确性——**每个危险操作都是签名里的一行字**。
 
-### 6.8 原生后端(C)预研(v0.38)
+### 6.8 原生后端(C)
 - **关键洞察:wasm 资格分析可直接复用**——`isEligibleShape` + 不动点回退分析(纯数值/字符串函数、调用闭包内一致)已经解决了"哪些函数可原生编译"的判定;C 后端第一阶段 = 同一 eligible 集合,发射 C 而非 wasm 字节码。重复使用 = 零新判定逻辑。
 - **映射表(设计草案)**:Ming 函数 → C 函数(static;i64 = long long,checked 运算用 __builtin_add_overflow 系列);Vec 线性布局 [len][cap][elems](wasm 已定义,直接沿用);str → 结构体(指针 + 长度,UTF-8);panic → setjmp/longjmp 或错误码返回;效果(io/fs)→ C stdio;spawn → 暂不(wasm 同样不支持的形态)。
 - **门禁不变**:C 路径产出的程序仍受效果系统约束(签名不变);`with unsafe`/`with ffi` 是 C 后端之后的扩展面(指针运算/内联汇编/syscall)。
 - **里程碑草案**:C1 = eligible 数值函数 → C + GCC -O2 基准(对标 wasm 提速);C2 = str/Vec 全形态;C3 = 交叉编译(-static,-target 交叉工具链);C4 = `with ffi`(dlopen)/`with unsafe`(受限指针块)。
+- **C1 落地(v0.39)**:`ming cc <file> [--emit-c] [--out 目录]`——numericOnly 资格分析(`analyzeEligibility`,与 wasm 单一事实来源)+ 整程序 AOT(main 限定"AOT 形态":数值语句 + 对 eligible 函数的调用 + `print(str(整数))`/字面量串)。panic 逐字对齐:eligible 函数内用 wasm 层通用消息,main 内用 binopValues 具体消息(含操作数);诊断首行 = formatDiag 非 TTY 格式,退出码 101;stdout/stderr 二进制模式(关 CRLF)。基准:纯 sum/fib 场景 cc 比 wasm 提速约 10x。**C1 明确不做(C2)**:str/Vec/Map 传参、容器 for-in、float→int 截断、f64 的 print/diag(JS 最短往返格式与 printf 无法逐字保证)、std.math 仅位级精确子集(sqrt/fabs/floor/ceil/fmin/fmax;round 按 JS 语义 = floor(x+0.5) 单独实现)。C 产物无 --max-steps/--max-ms 熔断。
+
+### 6.9 `with ffi` 设计(v0.39 定稿,C4 兑现)
+- **效果即门禁**:`ffi` 为预留效果名——v0.39 不开放(M3030 仍拒绝,避免半开状态)。未来任何外部符号调用都必须带 `with ffi` 并沿调用链显式传播;无 ffi 效果的函数在类型层不可能触达 FFI,与 io/fs/net 同一套门禁语义。effectful 函数永不进 wasm/C eligible(资格分析在 `sig.effects` 处拒绝)——FFI 与原生后端天然互斥,不会出现"被 AOT 编译的函数偷偷调用外部符号"。
+- **声明形态(签名即文档)**:`use std.ffi;` + `std.ffi.load("名称") -> Result[Lib, str]`(加载失败 = 数据驱动的 Err,不是 panic)+ `lib.fn("符号", 签名) -> Result[Fn, str]`。签名用 Ming 函数类型书写(`fn(i64, f64) -> i64`),调用点一眼可见外部边界。不做隐式绑定、不做宏生成绑定。
+- **v1 类型面**:i64 / u64 / f64 / bool 按位宽直传;不透明指针 = `Ptr` 句柄类型(仅可与 `with unsafe` 的受限指针块互换,不可算术);str/Vec 待 C2(UTF-8 结构体/线性布局定稿后再映射)。
+- **错误模型**:加载/查找失败 → Err(显式处理);调用本身是纯外部效果——无 panic 语义、无捕获;**目标库段错误 = 进程级终止,Ming 不捕获**(诚实声明,与 C 同一底线);新诊断码 M4013(ffi-load-failed)/ M4014(ffi-signature-invalid)预留(v0.39 未启用)。
+- **后端策略(deferred)**:C 后端直接 dlopen/LoadLibrary + 按签名调用(零封送层);JS 后端经 N-API addon 或子进程桥(实现策略到 C4 再定)。
+- **安全立场**:拒绝 GC 化的自动生命周期管理与句柄注册表;谁加载谁释放(显式 `lib.close()`),泄漏在签名与代码里都可见。

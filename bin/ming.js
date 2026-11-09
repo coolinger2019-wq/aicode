@@ -15,9 +15,13 @@ import { Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY } from '.
 import { findManifest, initProject } from '../src/manifest.js';
 import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
+import { compile } from '../src/compiler.js';
+import { emitC } from '../src/cbackend.js';
+import { Unsupported } from '../src/wasm.js';
+import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.38.0';
+export const VERSION = '0.39.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -27,6 +31,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   ming check [file.ming...] [--json]
   ming test  [file.ming...] [--json] [--filter 名称]
   ming build [--json]
+  ming cc    <file.ming> [--emit-c] [--out 目录] [--json] [-- args...]
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
   ming doc   <file.ming> [--json]
@@ -46,7 +51,7 @@ function parseArgs(argv) {
   const opts = {};
   const rest = [];
   let afterDoubleDash = false;
-  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms']); // 空格分隔取值的参数(v0.32)
+  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out']); // 空格分隔取值的参数(v0.32;-o 见 ming cc)
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (afterDoubleDash) { rest.push(a); continue; }
@@ -484,6 +489,65 @@ function cmdBuild(flags) {
   return ok ? 0 : 1;
 }
 
+// ---------- cc:C 后端 C1(eligible 数值函数 → C + GCC/Clang -O2)----------
+// 探测顺序:MING_CC 环境变量 → PATH(gcc/clang/cc)→ 已知便携位置(w64devkit 等)
+function detectCCompiler(json) {
+  const candidates = [];
+  if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+  candidates.push('gcc', 'clang', 'cc');
+  for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+    if (fs.existsSync(p)) candidates.push(p);
+  }
+  for (const c of candidates) {
+    try {
+      const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 });
+      if (r.status === 0) return c;
+    } catch { /* ENOENT 等:试下一个 */ }
+  }
+  return null;
+}
+
+function cmdCC(file, flags, opts, programArgs) {
+  const json = flags.has('json');
+  if (!file) return fail('cc 需要一个 .ming 文件', json);
+  const c = loadAndCheck(file, { json, silent: true });
+  if (!c.ok) {
+    if (json) process.stdout.write(JSON.stringify({ ok: false, exit_code: 1, diagnostics: diagJson(c.diags) }, null, 2) + '\n');
+    return 1;
+  }
+  const result = c.result;
+  let emitted;
+  try {
+    const compiled = compile(result);
+    emitted = emitC(result, compiled);
+  } catch (e) {
+    if (e instanceof Unsupported) {
+      return fail('C1 不支持该程序形态:' + e.message, json);
+    }
+    throw e;
+  }
+  const outDir = opts['out'] ?? 'ming-cc-out';
+  fs.mkdirSync(outDir, { recursive: true });
+  const base = path.basename(file).replace(/\.ming$/i, '');
+  const cFile = path.join(outDir, base + '.c');
+  const exeFile = path.join(outDir, base + (process.platform === 'win32' ? '.exe' : ''));
+  fs.writeFileSync(cFile, emitted.code, 'utf8');
+  if (flags.has('emit-c')) {
+    if (json) process.stdout.write(JSON.stringify({ ok: true, c_file: cFile, eligible: emitted.eligible.size }, null, 2) + '\n');
+    else process.stdout.write(`已发射 C 源:${cFile}(eligible ${emitted.eligible.size} 个函数;--emit-c 不编译)\n`);
+    return 0;
+  }
+  const ccPath = detectCCompiler(json);
+  if (!ccPath) return fail('未找到 C 编译器(需要 gcc 或 clang;可设 MING_CC 指向编译器路径)', json);
+  const build = spawnSync(ccPath, ['-O2', cFile, '-o', exeFile], { encoding: 'utf8', timeout: 120000 });
+  if (build.status !== 0) {
+    process.stderr.write((build.stderr || build.stdout || 'C 编译失败') + '\n');
+    return 1;
+  }
+  const run = spawnSync(exeFile, programArgs, { stdio: 'inherit', timeout: 600000 });
+  return run.status ?? 1;
+}
+
 // ---------- main ----------
 function main() {
   const argv = process.argv.slice(2);
@@ -518,6 +582,12 @@ function main() {
       return cmdTest(files, flags, opts);
     }
     case 'build': return cmdBuild(flags);
+    case 'cc': {
+      const { files, error } = projectEntry('cc', rest, flags.has('json'));
+      if (error) return fail(error, flags.has('json'));
+      const programArgs = files.length > 1 ? files.slice(1) : [];
+      return cmdCC(files[0], flags, opts, programArgs);
+    }
     case 'init': return cmdInit(rest[0], flags);
     case 'lsp': startLsp(); return null; // 常驻:不退出进程
     case 'repl': startRepl(); return null; // 常驻:不退出进程

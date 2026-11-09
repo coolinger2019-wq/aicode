@@ -1,6 +1,9 @@
-// tests/fuzz.mjs — 最小模糊测试基线(v0.33):随机纯 i64 程序的差分测试。
-// 思路:不依赖预言(oracle)——同一程序必须在三后端(树引擎 / 字节码 VM+wasprint / VM--no-wasm)
-// 产出完全一致的结果(stdout + 退出码 + 错误码);任何分歧 = 分层 bug。
+// tests/fuzz.mjs — 差分模糊测试基线(v0.33 立项,v0.39 加深)。
+// 思路:不依赖预言(oracle)——同一随机程序必须在多后端产出完全一致的结果
+// (stdout + 退出码 + 错误码);任何分歧 = 分层 bug。
+//   v0.33-v0.38:三后端(树引擎 / 字节码 VM+wasm / VM --no-wasm),i64+str 形态逐步加深
+//   v0.39:形态池加深(f64+math / match / loop / Option / Vec 方法 / str 方法 / for-range)
+//         + "纯数值族"程序接入 C 后端第 4 腿(检测到 gcc/clang 时;C1 拒绝 = 发射器回归)
 // 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -15,6 +18,7 @@ const opt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? Number
 const SEED = opt('seed', 20261109);
 const COUNT = opt('count', 120);
 const TIMEOUT = opt('timeout', 8000);
+const DUMP = argv.indexOf('--dump') >= 0 ? Number(argv[argv.indexOf('--dump') + 1]) : -1; // 打印第 N 个程序并退出(复现用)
 
 // mulberry32:确定性 rng(与 std.rand 同款)
 function mulberry32(a) {
@@ -29,13 +33,28 @@ const rng = mulberry32(SEED);
 const pick = (arr) => arr[Math.floor(rng() * arr.length)];
 const int = (lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
 
-// ---- 程序生成器:纯 i64 表达式 + 有界控制流;允许 panic(三后端须一致地 panic)----
+// ---- C 编译器探测(与 bin/ming.js 同序:MING_CC → PATH → 已知便携位置)----
+function detectCC() {
+  const candidates = [];
+  if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+  candidates.push('gcc', 'clang', 'cc');
+  for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+    if (fs.existsSync(p)) candidates.push(p);
+  }
+  for (const c of candidates) {
+    try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+  }
+  return null;
+}
+const CCBIN = detectCC();
+
+// ---- 表达式生成:纯 i64;允许 panic(各后端须一致地 panic)----
 function genExpr(vars, depth) {
   if (depth <= 0 || rng() < 0.3) {
     if (vars.length && rng() < 0.6) return pick(vars);
     return String(int(-99, 999));
   }
-  const kind = pick(['bin', 'bin', 'bin', 'cmp', 'neg', 'if', 'cast']);
+  const kind = pick(['bin', 'bin', 'bin', 'cmp', 'neg', 'if', 'cast', 'logic']);
   const l = genExpr(vars, depth - 1);
   const r = genExpr(vars, depth - 1);
   if (kind === 'bin') {
@@ -45,17 +64,125 @@ function genExpr(vars, depth) {
     return `(${l} ${op} ${r})`;
   }
   if (kind === 'cast') {
-    // v0.35:as 随机转换(位截断/有符号回绕三后端必须一致——树引擎 asType 字段 bug 的回归防线)
+    // v0.35:as 随机转换(位截断/有符号回绕多后端必须一致)
     return `(${l} as ${pick(['u8', 'i8', 'u16', 'i16', 'u32', 'i32', 'i64'])} as i64)`;
   }
-  if (kind === 'cmp') return `(${l} ${pick(['<', '<=', '>', '>=', '==', '!='])} ${r} as i64)`;
+  if (kind === 'cmp') {
+    // v0.39 修复:bool 不能 as i64(M3019)——v0.33 起的比较转 i64 形态恒被检查器
+    // 拒绝(三后端一致拒绝 → 假通过零覆盖)。正规 bool→i64 惯用法是 if 表达式。
+    return `(if (${l} ${pick(['<', '<=', '>', '>=', '==', '!='])} ${r}) { 1 } else { 0 })`;
+  }
   if (kind === 'neg') return `(-(${l}))`;
+  if (kind === 'logic') {
+    // v0.39:逻辑作为值(短路语义差分;经 if 表达式转 i64)
+    return `(if ((${genCond(vars, depth - 1)}) ${pick(['&&', '||'])} (${genCond(vars, depth - 1)})) { 1 } else { 0 })`;
+  }
   return `(if ${genCond(vars, depth - 1)} { ${l} } else { ${r} })`;
 }
 function genCond(vars, depth) {
   return `(${genExpr(vars, Math.max(1, depth - 1))} ${pick(['<', '<=', '>', '>='])} ${genExpr(vars, Math.max(1, depth - 1))})`;
 }
-function genProgram() {
+
+// ---- 语句生成。mode='cc' 的程序只含 C1 面(纯 i64):assign/while/loop/ifelse/for-range/match 不入池 ----
+function genStmt(s, vars, strVar, mode, lines) {
+  const v = pick(vars);
+  const pool = mode === 'cc'
+    ? ['assign', 'assign', 'while', 'ifelse', 'loop', 'forrange', 'forrange']
+    : ['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64'];
+  const kind = pick(pool);
+  if (kind === 'ifelse') {
+    // v0.38:if/else 语句(含字符串分支,多后端分支求值差分)
+    const other = vars.find(x => x !== v) ?? v;
+    lines.push(`    if ${genCond(vars, 2)} { ${v} = ${v} + ${int(1, 9)}; ${other} = ${other} - 1; } else { ${v} = ${v} - ${int(1, 5)}; ${other} = ${other} + 2; }`);
+  } else if (kind === 'assign') {
+    lines.push(`    ${v} = ${v} + ${genExpr(vars, int(1, 3))};`);
+  } else if (kind === 'while') {
+    // 有界循环:计数器循环累加,必终止
+    const k = int(1, 6);
+    lines.push(`    let mut i${s} = 0;`);
+    lines.push(`    while i${s} < ${k} { ${v} = ${v} + ${int(1, 9)}; i${s} = i${s} + 1; }`);
+  } else if (kind === 'vec') {
+    lines.push('    let mut vv: Vec[i64] = [3, 1, 2];');
+    lines.push(`    ${v} = ${v} + vv[0] + vv.len() as i64;`);
+  } else if (kind === 'forin') {
+    // v0.37:for-in 深形态(wasm 直跑差分——v0.33 步长修复的常驻防线)
+    lines.push('    let vv2: Vec[i64] = [10, 20, 30, 40];');
+    lines.push(`    let mut acc${s} = 0;`);
+    lines.push(`    for e in vv2 { acc${s} = acc${s} + e; }`);
+    lines.push(`    ${v} = ${v} + acc${s};`);
+  } else if (kind === 'str') {
+    lines.push(`    ${strVar} = ${strVar} + "${pick(['x', 'yy', '!'])}";`);
+    lines.push(`    ${v} = ${v} + ${strVar}.char_len() as i64;`);
+  } else if (kind === 'loop') {
+    // v0.39:loop/break/continue(有界,必终止)
+    const k = int(2, 6);
+    if (rng() < 0.5) {
+      lines.push(`    let mut li${s} = 0;`);
+      lines.push(`    loop { if li${s} >= ${k} { break; } ${v} = ${v} + ${int(1, 9)}; li${s} = li${s} + 1; }`);
+    } else {
+      lines.push(`    let mut li${s} = 0;`);
+      lines.push(`    loop { li${s} = li${s} + 1; if li${s} % 2 == 0 { continue; } if li${s} > ${k} { break; } ${v} = ${v} + ${int(1, 9)}; }`);
+    }
+  } else if (kind === 'matchx') {
+    // v0.39:match 表达式(字面量臂 + 通配 + 偶发 guard;穷尽由检查器保证)
+    const subj = int(-3, 9);
+    const arms = [];
+    const used = new Set();
+    for (let a = 0; a < int(1, 2); a++) {
+      const p = int(-2, 5);
+      if (used.has(p)) continue;
+      used.add(p);
+      const guard = rng() < 0.3 ? ` if ${pick(vars)} > ${int(-5, 5)}` : '';
+      arms.push(`${p} => ${int(-20, 40)}${guard}`);
+    }
+    arms.push(`_ => ${int(-10, 10)}`);
+    lines.push(`    ${v} = ${v} + match ${subj} { ${arms.join(', ')} };`);
+  } else if (kind === 'option') {
+    // v0.39:Option(unwrap_or 常用;偶发 unwrap 触发 M4006 panic 路径差分)
+    const cond = genCond(vars, 2);
+    if (rng() < 0.12) {
+      lines.push(`    let p${s}: Option[i64] = if ${cond} { Some(${pick(vars)}) } else { None };`);
+      lines.push(`    ${v} = ${v} + p${s}.unwrap();`);
+    } else {
+      lines.push(`    let o${s}: Option[i64] = if ${cond} { Some(${int(-9, 9)}) } else { None };`);
+      lines.push(`    ${v} = ${v} + o${s}.unwrap_or(${int(-9, 9)});`);
+    }
+  } else if (kind === 'vecm') {
+    // v0.39:Vec 方法面(push/pop/contains/reverse)
+    lines.push(`    let mut vm${s}: Vec[i64] = [${int(-5, 5)}, ${int(-5, 5)}, ${int(-5, 5)}];`);
+    lines.push(`    vm${s}.push(${int(-9, 9)});`);
+    if (rng() < 0.4) {
+      lines.push(`    vm${s}.reverse();`);
+    }
+    lines.push(`    if vm${s}.contains(${int(-5, 5)}) { ${v} = ${v} + 1; }`);
+    lines.push(`    ${v} = ${v} + vm${s}.pop().unwrap_or(0) + vm${s}[0];`);
+  } else if (kind === 'strm') {
+    // v0.39:str 方法面(pad_left/slice_chars/contains/replace;slice 上界 1,恒安全)
+    const m = pick(['pad', 'contains', 'replace', 'slice']);
+    if (m === 'pad') {
+      lines.push(`    ${strVar} = ${strVar}.pad_left(${int(2, 6)});`);
+    } else if (m === 'contains') {
+      lines.push(`    if ${strVar}.contains("${pick(['a', 'x', 'g'])}") { ${v} = ${v} + 1; }`);
+    } else if (m === 'replace') {
+      lines.push(`    ${strVar} = ${strVar}.replace("${pick(['a', 'n', 'g'])}", "${pick(['', 'zz'])}");`);
+    } else {
+      lines.push(`    ${v} = ${v} + ${strVar}.slice_chars(0, 1).char_len() as i64;`);
+    }
+  } else if (kind === 'f64') {
+    // v0.39:f64 + std.math 精确子集(经 as i64 消费,饱和截断语义差分)
+    const f = pick(['f0', 'f1']);
+    const mf = pick(['', 'std.math.sqrt', 'std.math.fabs']);
+    lines.push(`    ${f} = ${mf ? mf + '(' : ''}${f} * ${pick(['1.5', '0.5', '2.0', '-1.25'])} + ${pick(['0.5', '1.0', '-2.25'])}${mf ? ')' : ''};`);
+    lines.push(`    ${v} = ${v} + (${f} as i64);`);
+  } else if (kind === 'forrange') {
+    // v0.39:区间 for(hi 排他;cc 族可用的控制流)
+    const lo = int(-3, 3);
+    const hi = lo + int(0, 5);
+    lines.push(`    for r${s} in ${lo}..${hi} { ${v} = ${v} + ${int(1, 3)}; }`);
+  }
+}
+
+function genProgram(mode) {
   const nVars = int(2, 3);
   const vars = [];
   const lines = ['fn main() with io {'];
@@ -64,40 +191,23 @@ function genProgram() {
     vars.push(v);
     lines.push(`    let mut ${v} = ${int(-50, 200)};`);
   }
-  // v0.37:str 形态(字符串拼接/长度/替换;三后端 str 语义差分)
   const sv = `s${int(0, 9)}`;
-  lines.push(`    let mut ${sv} = "${pick(['abc', 'ming', 'hello world', 'a'])}";`);
+  if (mode === 'wide') {
+    lines.push(`    let mut ${sv} = "${pick(['abc', 'ming', 'hello world', 'a'])}";`);
+    // v0.39:f64 变量(wide 族;as i64 饱和截断消费)
+    lines.push(`    let mut f0 = ${pick(['1.5', '2.0', '-3.5', '7.25'])};`);
+    lines.push(`    let mut f1 = ${pick(['0.5', '-1.0', '4.75', '2.5'])};`);
+  }
   const nStmt = int(2, 5);
   for (let s = 0; s < nStmt; s++) {
-    const v = pick(vars);
-    const kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse']);
-    if (kind === 'ifelse') {
-      // v0.38:if/else 语句(含字符串分支,三后端分支求值差分)
-      const other = vars.find(x => x !== v) ?? v;
-      lines.push(`    if ${genCond(vars, 2)} { ${v} = ${v} + ${int(1, 9)}; ${other} = ${other} - 1; } else { ${v} = ${v} - ${int(1, 5)}; ${other} = ${other} + 2; }`);
-    } else if (kind === 'assign') {
-      lines.push(`    ${v} = ${v} + ${genExpr(vars, int(1, 3))};`);
-    } else if (kind === 'while') {
-      // 有界循环:计数器循环累加,必终止
-      const k = int(1, 6);
-      lines.push(`    let mut i${s} = 0;`);
-      lines.push(`    while i${s} < ${k} { ${v} = ${v} + ${int(1, 9)}; i${s} = i${s} + 1; }`);
-    } else if (kind === 'vec') {
-      lines.push('    let mut vv: Vec[i64] = [3, 1, 2];');
-      lines.push(`    ${v} = ${v} + vv[0] + vv.len() as i64;`);
-    } else if (kind === 'forin') {
-      // v0.37:for-in 深形态(wasm 直跑差分——v0.33 步长修复的常驻防线)
-      lines.push('    let vv2: Vec[i64] = [10, 20, 30, 40];');
-      lines.push(`    let mut acc${s} = 0;`);
-      lines.push(`    for e in vv2 { acc${s} = acc${s} + e; }`);
-      lines.push(`    ${v} = ${v} + acc${s};`);
-    } else {
-      lines.push(`    ${sv} = ${sv} + "${pick(['x', 'yy', '!'])}";`);
-      lines.push(`    ${v} = ${v} + ${sv}.char_len() as i64;`);
-    }
+    genStmt(s, vars, sv, mode, lines);
   }
-  lines.push(`    print(str(${vars[0]}));`);
-  lines.push(`    print(str(${sv}.char_len()));`);
+  if (mode === 'wide') {
+    lines.push(`    print(str(${vars[0]}));`);
+    lines.push(`    print(str(${sv}.char_len()));`);
+  } else {
+    lines.push(`    print(str(${vars[0]}));`);
+  }
   lines.push('}');
   return lines.join('\n');
 }
@@ -105,26 +215,53 @@ function genProgram() {
 const norm = (r) => JSON.stringify([r.code, r.stdout, (r.stderr.match(/M\d{4}/) ?? [null])[0]]);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-fuzz-'));
 const prog = path.join(TMP, 'fuzz.ming');
+const ccDir = CCBIN ? path.join(TMP, 'ccout') : null;
+if (ccDir) fs.mkdirSync(ccDir, { recursive: true });
+const ccSrc = path.join(TMP, 'ccfuzz.ming');
 
-let passed = 0, diverged = 0, skipped = 0;
+let passed = 0, diverged = 0, skipped = 0, ccLegs = 0;
 for (let i = 0; i < COUNT; i++) {
-  const src = genProgram();
+  // v0.39:约 40% 生成 cc 族(纯数值,C 后端 C1 面内)——有编译器时跑第 4 腿
+  const mode = CCBIN && rng() < 0.4 ? 'cc' : 'wide';
+  const src = genProgram(mode);
+  if (i === DUMP) { console.log(src); process.exit(0); }
   fs.writeFileSync(prog, src);
   const run = (extra) => spawnSync(process.execPath, [MING, 'run', prog, ...extra], { encoding: 'utf8', cwd: ROOT, timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024 });
   const rt = run(['--tree']);
   const rw = run([]);
   const rj = run(['--no-wasm']);
   if (rt.status === null || rw.status === null || rj.status === null) { skipped++; continue; } // 超时=平台抖动,跳过
-  const a = norm(rt), b = norm(rw), c = norm(rj);
-  if (a === b && b === c) { passed++; continue; }
+  const norms = { tree: norm(rt), 'vm+wasm': norm(rw), 'vm-only': norm(rj) };
+  // C 第 4 腿:cc 族必可编译;发射器拒绝 = cbackend 回归 → 记为分歧
+  if (mode === 'cc') {
+    fs.writeFileSync(ccSrc, src);
+    const b = spawnSync(process.execPath, [MING, 'cc', ccSrc, '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 30000 });
+    const exe = path.join(ccDir, 'ccfuzz' + (process.platform === 'win32' ? '.exe' : ''));
+    if (b.status !== 0 || !fs.existsSync(exe)) {
+      if ((b.stderr ?? '').includes('C1 不支持')) {
+        diverged++;
+        console.error(`\n=== 分歧 #${i} (seed=${SEED}) —— C1 拒绝 cc 族程序(发射器回归)===`);
+        console.error(src);
+        console.error('cc stderr:', (b.stderr ?? '').slice(0, 300));
+        break;
+      }
+      skipped++; // 工具链噪声(编译器故障等):警告并跳过
+      console.error(`警告 #${i}:cc 编译失败(非 C1 拒绝),跳过该腿:${(b.stderr ?? '').slice(0, 120)}`);
+      continue;
+    }
+    const rc = spawnSync(exe, [], { encoding: 'utf8', timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024 });
+    if (rc.status === null) { skipped++; continue; }
+    norms.cc = norm(rc);
+    ccLegs++;
+  }
+  const vals = Object.values(norms);
+  if (vals.every(x => x === vals[0])) { passed++; continue; }
   diverged++;
-  console.error(`\n=== 分歧 #${i} (seed=${SEED}) ===`);
+  console.error(`\n=== 分歧 #${i} (seed=${SEED}, mode=${mode}) ===`);
   console.error(src);
-  console.error('tree   :', a);
-  console.error('vm+wasm:', b);
-  console.error('vm-only:', c);
+  for (const [k, v] of Object.entries(norms)) console.error(`${k.padEnd(8)}:`, v);
   break;
 }
 fs.rmSync(TMP, { recursive: true, force: true });
-console.log(`模糊基线:种子 ${SEED},${COUNT} 程序,一致 ${passed},分歧 ${diverged},跳过 ${skipped}`);
+console.log(`模糊基线:种子 ${SEED},${COUNT} 程序,一致 ${passed}${CCBIN ? `(其中 C 腿 ${ccLegs})` : '(无编译器,C 腿未启用)'},分歧 ${diverged},跳过 ${skipped}`);
 process.exit(diverged ? 1 : 0);
