@@ -17,7 +17,7 @@ import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.37.0';
+export const VERSION = '0.38.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -438,6 +438,48 @@ function cmdBuild(flags) {
     const errs = sorted.filter(d => d.severity === SEVERITY.ERROR).length;
     const warns = sorted.filter(d => d.severity === SEVERITY.WARNING).length;
     process.stdout.write(`${proj.project.name} v${proj.project.version}:${ok ? '构建通过' : '构建失败'}(${errs} 错误,${warns} 警告,${Date.now() - t0}ms)\n`);
+  }
+  // v0.38:dist 可移植产物(源 + 运行时 8 模块拷贝 + launcher;Node >= 18 零依赖)
+  if (ok && !flags.has('no-dist')) {
+    const distDir = path.join(path.dirname(files[0]), 'dist');
+    fs.rmSync(distDir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
+    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js']) {
+      fs.copyFileSync(path.join(__dirname, '..', 'src', m), path.join(distDir, 'runtime', m));
+    }
+    fs.copyFileSync(files[0], path.join(distDir, 'app.ming'));
+    const launcher = [
+      '#!/usr/bin/env node',
+      '// Ming 可移植产物(v0.38):Node >= 18,零依赖;用法:node ming-app.mjs [-- args]',
+      "import { Checker } from './runtime/checker.js';",
+      "import { VMInterp } from './runtime/vm.js';",
+      "import * as fs from 'node:fs';",
+      "import * as path from 'node:path';",
+      "import { fileURLToPath } from 'node:url';",
+      '',
+      'const here = path.dirname(fileURLToPath(import.meta.url));',
+      "const file = path.join(here, 'app.ming');",
+      'const src = fs.readFileSync(file, "utf8");',
+      'const checker = new Checker(file, () => src);',
+      'const result = checker.run();',
+      "const errs = result.diags.filter(d => d.severity === 'error');",
+      'if (errs.length) {',
+      "  process.stderr.write(errs.map(d => d.code + ': ' + d.message).join('\\n') + '\\n');",
+      '  process.exit(1);',
+      '}',
+      'const vm = new VMInterp(result, {});',
+      'try {',
+      "  const pargs = process.argv.slice(2);",
+      "  if (pargs[0] === '--') pargs.shift();",
+      '  const { exitCode } = vm.runMain(pargs);',
+      '  process.exit(exitCode);',
+      '} catch (e) {',
+      "  if (e && typeof e.code === 'string') { process.stderr.write(e.code + ': ' + e.message + '\\n'); process.exit(101); }",
+      '  throw e;',
+      '}',
+    ].join('\n');
+    fs.writeFileSync(path.join(distDir, 'ming-app.mjs'), launcher);
+    process.stdout.write('产物:dist/(app.ming + runtime 8 模块 + ming-app.mjs;用法:node dist/ming-app.mjs)\n');
   }
   return ok ? 0 : 1;
 }

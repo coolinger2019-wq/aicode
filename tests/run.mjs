@@ -1450,6 +1450,42 @@ fn main() with io, fs {
   check('v37:模糊扩展形态(50 程序三后端一致)', fuzz37.status === 0 && /一致 50,分歧 0/.test(fuzz37.stdout ?? ''), 'code=' + fuzz37.status + ' tail=' + (fuzz37.stdout ?? '').slice(-120));
 }
 
+// ===================== 38. v0.38:ming build dist 产物 + 模糊器 if/else =====================
+{
+  // dist 可移植产物:项目构建 → launcher 直跑(args 透传 / exit 0 / panic 101 / 跨 cwd)
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-dist-'));
+  fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "dist38"\nversion = "0.1.0"\nentry = "main.ming"\n');
+  fs.writeFileSync(path.join(proj, 'main.ming'), [
+    'fn greet(name: str) -> str {',
+    '    return "hi, " + name;',
+    '}',
+    '',
+    'fn main(args: Vec[str]) with io {',
+    '    let who = if args.len() > 0 { args[0] } else { "ming" };',
+    '    print(greet(who));',
+    '    print(str(args.len()));',
+    '}',
+  ].join('\n'));
+  const build = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+  const distOk = build.status === 0 && fs.existsSync(path.join(proj, 'dist', 'ming-app.mjs')) && fs.existsSync(path.join(proj, 'dist', 'runtime', 'vm.js')) && fs.existsSync(path.join(proj, 'dist', 'app.ming'));
+  check('v38:ming build 产出 dist', distOk, 'code=' + build.status + ' out=' + (build.stdout ?? '').slice(-100));
+  const run = (args2, cwd2) => spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs'), ...args2], { encoding: 'utf8', cwd: cwd2 ?? proj, timeout: 60000 });
+  const r1 = run(['--', 'alice']);
+  check('v38:launcher args 透传 + 跨 cwd', r1.status === 0 && r1.stdout === 'hi, alice\n1\n', 'stdout=' + JSON.stringify(r1.stdout) + ' stderr=' + (r1.stderr ?? '').slice(0, 150));
+  const r2 = run([]);
+  check('v38:launcher 无参默认', r2.status === 0 && r2.stdout === 'hi, ming\n0\n', JSON.stringify(r2.stdout));
+  fs.writeFileSync(path.join(proj, 'panicmain.ming'), 'fn main() with io { panic("dist panic 测试"); }');
+  fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "dist38"\nversion = "0.1.0"\nentry = "panicmain.ming"\n');
+  spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+  const r3 = run([]);
+  check('v38:launcher panic → 101', r3.status === 101 && (r3.stderr ?? '').includes('M4001'), 'status=' + r3.status + ' stderr=' + (r3.stderr ?? '').slice(0, 120));
+
+  // 模糊器 if/else 形态快速档
+  const fuzz38 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '38038'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v38:模糊 if/else 形态(40 程序三后端一致)', fuzz38.status === 0 && /一致 40,分歧 0/.test(fuzz38.stdout ?? ''), 'code=' + fuzz38.status + ' tail=' + (fuzz38.stdout ?? '').slice(-120));
+  fs.rmSync(proj, { recursive: true, force: true });
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

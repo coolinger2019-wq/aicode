@@ -1,4 +1,4 @@
-# Ming 设计文档(v0.37)
+# Ming 设计文档(v0.38)
 
 本文记录 Ming 的设计哲学、关键决定与语义规范要点。变更语言行为时必须同步更新本文件与 GUIDE.md 的修订记录。
 
@@ -149,3 +149,9 @@ AI 参与编写的代码,质量门禁设在三个时点,各司其职:
 
 ### 6.7 形态定位
 **Python 的皮**(解释执行/REPL/脚本化)+ **C 的骨**(经受控 unsafe 的内存与寄存器)+ **Go 的腿**(并发与部署)+ **Rust 的安全带**(效果系统即默认安全带,危险时显式解绑)。差异化主张:安全能力不牺牲明确性——**每个危险操作都是签名里的一行字**。
+
+### 6.8 原生后端(C)预研(v0.38)
+- **关键洞察:wasm 资格分析可直接复用**——`isEligibleShape` + 不动点回退分析(纯数值/字符串函数、调用闭包内一致)已经解决了"哪些函数可原生编译"的判定;C 后端第一阶段 = 同一 eligible 集合,发射 C 而非 wasm 字节码。重复使用 = 零新判定逻辑。
+- **映射表(设计草案)**:Ming 函数 → C 函数(static;i64 = long long,checked 运算用 __builtin_add_overflow 系列);Vec 线性布局 [len][cap][elems](wasm 已定义,直接沿用);str → 结构体(指针 + 长度,UTF-8);panic → setjmp/longjmp 或错误码返回;效果(io/fs)→ C stdio;spawn → 暂不(wasm 同样不支持的形态)。
+- **门禁不变**:C 路径产出的程序仍受效果系统约束(签名不变);`with unsafe`/`with ffi` 是 C 后端之后的扩展面(指针运算/内联汇编/syscall)。
+- **里程碑草案**:C1 = eligible 数值函数 → C + GCC -O2 基准(对标 wasm 提速);C2 = str/Vec 全形态;C3 = 交叉编译(-static,-target 交叉工具链);C4 = `with ffi`(dlopen)/`with unsafe`(受限指针块)。

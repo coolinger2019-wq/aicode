@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.37.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.38.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -882,6 +882,7 @@ fn main() with io {
 |------|------|
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
+| `ming build`(项目模式,v0.38) | 项目检查通过后产出 **dist 可移植产物**:app.ming + runtime 8 模块拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -988,12 +989,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.35(已完成) | std.bin 显式字节序 12 函数(支柱 1 落地)+ crypto HMAC 五件套 + 模糊器 as 扩展 |
 | v0.36(已完成) | 字节流正则三函数(latin1 无损,支柱 4 落地)+ AES-256-CBC(支柱 6)+ 位域/packing 设计判断(不做) |
 | v0.37(已完成) | AES-256-GCM 带认证(篡改检出)+ 模糊器 str/for-in 扩展 + ming build 预研(dist 目录决策,v0.38 实现) |
-| v0.38 方向 | `ming build` dist 产物落地、模糊器继续加深、原生后端(C)预研 |
-| 更远(北星对齐) | 原生后端(C)→ FFI/unsafe 块/内联汇编/syscall;async 运行时 → 海量并发;eval 能力;交叉编译部署;RSA/国密;动态权限收回;形式化验证 |
+| v0.38(已完成) | `ming build` dist 可移植产物(launcher/args/panic 全路径)+ **原生后端(C)预研**(资格分析复用路线)+ 模糊器 if/else |
+| v0.39 方向 | C 后端 C1 里程碑(eligible 数值函数 → C + GCC 基准对标 wasm)、模糊器加深、`with ffi` 设计 |
+| 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.38.0(2026-11-09)
+
+- **`ming build` dist 产物落地**(v0.37 决策兑现):项目检查通过后产出 dist 目录——app.ming(源拷贝)+ runtime 8 模块(checker/compiler/interp/vm/wasm/lexer/parser/diag)+ **ming-app.mjs launcher**。launcher:参数透传、`--` 剥离、panic → 101、诊断 → 1;Node ≥ 18 零依赖,跨 cwd 运行(路径经 import.meta.url 解析)。`--no-dist` 可关。部署形态:拷贝 dist 目录即可。
+- **原生后端(C)预研**(design.md §6.8):关键洞察 = **wasm 资格分析直接复用**(`isEligibleShape` + 不动点回退已解决"哪些函数可原生编译");映射草案(checked 运算 → __builtin_overflow 系列、Vec 线性布局沿用 [len][cap][elems]、panic → setjmp/longjmp、效果 → C stdio);里程碑 C1(数值函数对标 wasm)→ C2(str/Vec 全形态)→ C3(交叉编译 -static)→ C4(`with ffi`/`with unsafe`)。门禁不变:效果系统约束 C 产物。
+- **模糊器 if/else 语句形态**(含字符串分支):分支求值三后端差分;100 程序新种子零分歧。
+- 测试:374 项(新增 v0.38 5 项:build 产物完整性/args 透传跨 cwd/无参默认/panic 101/模糊 if-else 快速档)。
 
 ### v0.37.0(2026-11-09)
 

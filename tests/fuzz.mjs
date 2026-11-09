@@ -70,8 +70,12 @@ function genProgram() {
   const nStmt = int(2, 5);
   for (let s = 0; s < nStmt; s++) {
     const v = pick(vars);
-    const kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str']);
-    if (kind === 'assign') {
+    const kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse']);
+    if (kind === 'ifelse') {
+      // v0.38:if/else 语句(含字符串分支,三后端分支求值差分)
+      const other = vars.find(x => x !== v) ?? v;
+      lines.push(`    if ${genCond(vars, 2)} { ${v} = ${v} + ${int(1, 9)}; ${other} = ${other} - 1; } else { ${v} = ${v} - ${int(1, 5)}; ${other} = ${other} + 2; }`);
+    } else if (kind === 'assign') {
       lines.push(`    ${v} = ${v} + ${genExpr(vars, int(1, 3))};`);
     } else if (kind === 'while') {
       // 有界循环:计数器循环累加,必终止
