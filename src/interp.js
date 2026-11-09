@@ -1526,6 +1526,40 @@ export class Interp {
           return V.enumv('builtin-res', 'Err', [V.str('解密失败:密文损坏或密钥错误(padding 校验未通过)')]);
         }
       }
+      // AES-256-GCM(v0.37;带认证 AEAD):输出 = nonce(12B 随机)+ auth tag(16B)+ 密文;
+      // 解密时认证校验失败(tag 不符/密钥错误/密文被篡改)→ Err——弥补 CBC 无认证的缺口
+      case 'crypto.aes256_gcm_encrypt': {
+        const key = Buffer.from(args[0].v, 'utf8');
+        if (key.length !== 32) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_gcm_encrypt:key 必须恰好 32 字节(AES-256),得到 ${key.length}`)]);
+        }
+        const nonce = nodeCrypto.randomBytes(12);
+        const cipher = nodeCrypto.createCipheriv('aes-256-gcm', key, nonce);
+        const ct = Buffer.concat([cipher.update(args[1].v, 'utf8'), cipher.final()]);
+        const tag = cipher.getAuthTag();
+        const out = Buffer.concat([nonce, tag, ct]);
+        return V.enumv('builtin-res', 'Ok', [V.vec([...out].map(b => V.int(BigInt(b), 8, false)))]);
+      }
+      case 'crypto.aes256_gcm_decrypt': {
+        const key = Buffer.from(args[0].v, 'utf8');
+        if (key.length !== 32) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_gcm_decrypt:key 必须恰好 32 字节(AES-256),得到 ${key.length}`)]);
+        }
+        const data = this.u8VecToBuf(args[1], span);
+        if (!data || data.length < 12 + 16 + 16) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_gcm_decrypt:密文长度非法(需 nonce 12B + tag 16B + 密文 ≥ 16B),得到 ${data ? data.length : '非 Vec[u8]'}`)]);
+        }
+        try {
+          const nonce = data.subarray(0, 12);
+          const tag = data.subarray(12, 28);
+          const decipher = nodeCrypto.createDecipheriv('aes-256-gcm', key, nonce);
+          decipher.setAuthTag(tag);
+          const pt = Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]);
+          return V.enumv('builtin-res', 'Ok', [V.str(pt.toString('utf8'))]);
+        } catch (e) {
+          return V.enumv('builtin-res', 'Err', [V.str('认证失败:密文被篡改、nonce 不符或密钥错误(GCM tag 校验未通过)')]);
+        }
+      }
       // 二进制显式字节序(v0.35;安全工具之北支柱 1):pack 值域超限 = 不变量破坏 → panic;
       // unpack 越界/短缓冲 = 数据驱动错误 → Err;u64 读数 ≥ 2^63 按补码位型转 i64(与 fmt.hex 对称)
       case 'bin.pack_u16_le': return this.binPack(args[0].v, 2, 'le', 16);

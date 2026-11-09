@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.36.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
+**版本:v0.37.0** · 字节码 VM + WASM 分层(线性内存)+ JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -762,6 +762,8 @@ fn main() with io, sync {
 | `hmac_md5` / `hmac_sha1` / `hmac_sha256` / `hmac_sha384` / `hmac_sha512` | `(key: str, msg: str) -> str` · 效果 `crypto` | HMAC(v0.35) |
 | `aes256_encrypt` | `(key: str, plaintext: str) -> Result[Vec[u8], str]` · 效果 `crypto` | AES-256-CBC(v0.36):key 恰好 32 字节;输出 = IV(16B 随机)+ 密文;**无认证**,防篡改组合 hmac_sha256 |
 | `aes256_decrypt` | `(key: str, data: Vec[u8]) -> Result[str, str]` · 效果 `crypto` | 解密;长度非法/密钥错误(padding 校验失败)→ Err |
+| `aes256_gcm_encrypt` | `(key: str, plaintext: str) -> Result[Vec[u8], str]` · 效果 `crypto` | AES-256-GCM(v0.37,**带认证 AEAD**):key 恰 32 字节;输出 = nonce(12B 随机)+ tag(16B)+ 密文;无填充,密文长度 = 明文长度 |
+| `aes256_gcm_decrypt` | `(key: str, data: Vec[u8]) -> Result[str, str]` · 效果 `crypto` | 解密;认证校验失败(篡改/nonce 不符/密钥错误)→ Err |
 
 ```ming
 use std.crypto;
@@ -985,12 +987,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.34(已完成) | **北星立项**(design.md §6 安全工具之北)+ std.crypto 哈希五件套(新能力 crypto) |
 | v0.35(已完成) | std.bin 显式字节序 12 函数(支柱 1 落地)+ crypto HMAC 五件套 + 模糊器 as 扩展 |
 | v0.36(已完成) | 字节流正则三函数(latin1 无损,支柱 4 落地)+ AES-256-CBC(支柱 6)+ 位域/packing 设计判断(不做) |
-| v0.37 方向 | 模糊器 str/深形态扩展、AES-GCM(带认证)、ming build 单文件产物预研(wasm 部署形态) |
+| v0.37(已完成) | AES-256-GCM 带认证(篡改检出)+ 模糊器 str/for-in 扩展 + ming build 预研(dist 目录决策,v0.38 实现) |
+| v0.38 方向 | `ming build` dist 产物落地、模糊器继续加深、原生后端(C)预研 |
 | 更远(北星对齐) | 原生后端(C)→ FFI/unsafe 块/内联汇编/syscall;async 运行时 → 海量并发;eval 能力;交叉编译部署;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.37.0(2026-11-09)
+
+- **AES-256-GCM(带认证 AEAD)**(std.crypto,能力 crypto):输出 = nonce(12B 随机)+ tag(16B)+ 密文(无填充,密文 = 明文长度);解密时 GCM tag 校验失败(篡改/nonce 不符/密钥错误)→ Err。测试含**主动篡改检出**(异或翻转一个密文字节 → 认证必失败)——弥补 v0.36 CBC 无认证的缺口。
+- **模糊器扩展**(tests/fuzz.mjs):str 形态(拼接/char_len)+ **for-in 深形态**进入程序池——for-in 求和现在经 wasm 直跑(v0.33 修复的常驻差分防线);100 程序新种子零分歧。
+- **ming build 预研结论**(design.md §6.5):运行时闭包实测 8 模块 467 KB;v0.38 决策 = `ming build` 产物为 **dist 目录**(字节码 JSON + 运行时拷贝 + launcher),零打包器风险;单文件 bundle 推迟至需求驱动。
+- 测试:369 项(新增 v0.37 3 项:GCM 往返/篡改检出双引擎、模糊扩展形态快速档)。
 
 ### v0.36.0(2026-11-09)
 

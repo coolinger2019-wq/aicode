@@ -1412,6 +1412,44 @@ fn main() with io, fs {
   }
 }
 
+// ===================== 37. v0.37:AES-256-GCM(带认证)+ 模糊器 str/for-in 扩展 =====================
+{
+  // GCM:往返 + 篡改检出(异或翻转一个密文字节,tag 校验必失败;双引擎)
+  const gm = mingFile('v37-gcm.ming', [
+    'use std.crypto;',
+    '',
+    'fn main() with io, crypto {',
+    '    let key = "0123456789abcdef0123456789abcdef";',
+    '    match std.crypto.aes256_gcm_encrypt(key, "authenticated 数据") {',
+    '        Ok(data) => {',
+    '            print(str(data.len()));',
+    '            match std.crypto.aes256_gcm_decrypt(key, data) {',
+    '                Ok(pt) => print(pt),',
+    '                Err(e) => print("D-ERR: " + e),',
+    '            }',
+    '            let mut tampered = data.clone();',
+    '            tampered[40] = tampered[40] ^ (1 as u8);',
+    '            match std.crypto.aes256_gcm_decrypt(key, tampered) {',
+    '                Ok(_)  => print("篡改未检出!"),',
+    '                Err(e) => print("T-ERR ok"),',
+    '            }',
+    '        }',
+    '        Err(e) => print("E-ERR: " + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const wantGm = ['48', 'authenticated 数据', 'T-ERR ok'].join('\n') + '\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', gm, ...eng]);
+    check('v37:GCM 往返/篡改检出' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantGm,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+
+  // 模糊器扩展形态快速档(str + for-in;种子固定)
+  const fuzz37 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '50', '--seed', '37037'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v37:模糊扩展形态(50 程序三后端一致)', fuzz37.status === 0 && /一致 50,分歧 0/.test(fuzz37.stdout ?? ''), 'code=' + fuzz37.status + ' tail=' + (fuzz37.stdout ?? '').slice(-120));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

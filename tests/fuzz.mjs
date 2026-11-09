@@ -64,10 +64,13 @@ function genProgram() {
     vars.push(v);
     lines.push(`    let mut ${v} = ${int(-50, 200)};`);
   }
+  // v0.37:str 形态(字符串拼接/长度/替换;三后端 str 语义差分)
+  const sv = `s${int(0, 9)}`;
+  lines.push(`    let mut ${sv} = "${pick(['abc', 'ming', 'hello world', 'a'])}";`);
   const nStmt = int(2, 5);
   for (let s = 0; s < nStmt; s++) {
     const v = pick(vars);
-    const kind = pick(['assign', 'assign', 'while', 'vec']);
+    const kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str']);
     if (kind === 'assign') {
       lines.push(`    ${v} = ${v} + ${genExpr(vars, int(1, 3))};`);
     } else if (kind === 'while') {
@@ -75,12 +78,22 @@ function genProgram() {
       const k = int(1, 6);
       lines.push(`    let mut i${s} = 0;`);
       lines.push(`    while i${s} < ${k} { ${v} = ${v} + ${int(1, 9)}; i${s} = i${s} + 1; }`);
-    } else {
+    } else if (kind === 'vec') {
       lines.push('    let mut vv: Vec[i64] = [3, 1, 2];');
       lines.push(`    ${v} = ${v} + vv[0] + vv.len() as i64;`);
+    } else if (kind === 'forin') {
+      // v0.37:for-in 深形态(wasm 直跑差分——v0.33 步长修复的常驻防线)
+      lines.push('    let vv2: Vec[i64] = [10, 20, 30, 40];');
+      lines.push(`    let mut acc${s} = 0;`);
+      lines.push(`    for e in vv2 { acc${s} = acc${s} + e; }`);
+      lines.push(`    ${v} = ${v} + acc${s};`);
+    } else {
+      lines.push(`    ${sv} = ${sv} + "${pick(['x', 'yy', '!'])}";`);
+      lines.push(`    ${v} = ${v} + ${sv}.char_len() as i64;`);
     }
   }
   lines.push(`    print(str(${vars[0]}));`);
+  lines.push(`    print(str(${sv}.char_len()));`);
   lines.push('}');
   return lines.join('\n');
 }

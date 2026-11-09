@@ -17,7 +17,7 @@ import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.36.0';
+export const VERSION = '0.37.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言

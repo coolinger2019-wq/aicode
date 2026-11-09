@@ -1,4 +1,4 @@
-# Ming 设计文档(v0.36)
+# Ming 设计文档(v0.37)
 
 本文记录 Ming 的设计哲学、关键决定与语义规范要点。变更语言行为时必须同步更新本文件与 GUIDE.md 的修订记录。
 
@@ -138,8 +138,10 @@ AI 参与编写的代码,质量门禁设在三个时点,各司其职:
 - **eval/热重载**:Ming 有独特优势——解释器/VM 即 JS 库,`eval` 可作为显式能力(`with eval`)落地,成本远低于多数语言。正则作用于字节流(Vec[u8] 版 std.re):近中期。
 - 模式匹配已有(match 穷尽);字节流模式匹配随后。
 
-### 6.5 交叉编译与部署
-- 中期:ming build 产物 = 单文件可执行 JS bundle + 内嵌 wasm(零依赖);远期:C 后端 → 交叉编译静态二进制(Go 式部署)。
+### 6.5 交叉编译与部署(v0.37 预研结论)
+- **实测**:运行时闭包 = 8 个模块(checker/compiler/interp/vm/wasm/lexer/parser/diag)共 **467 KB**(12,116 行);`.ming` 程序编译产物为字节码 JSON(轻量)。
+- **决策(v0.38 实现)**:`ming build app.ming` 产物 = **dist 目录**(app.bytecode.json + 8 个运行时模块拷贝 + launcher.mjs)——目录形式零打包器风险,Node ≥ 18 即跑,零依赖。单文件 bundle(手写 ESM 拼接器,把 8 个文件的相对导入封闭集转换为注册表)推迟到有真实需求时——467 KB 单文件技术可行,但拼接器是新的维护面。
+- **远期**:C 后端 → 交叉编译静态二进制(Go 式部署);wasm 产物(浏览器/wasmtime)作为中间形态已具备(编译器已有 wasm 后端)。
 
 ### 6.6 密码学与对抗
 - **密码学原语(v0.34 起)**:std.crypto 经 node:crypto 桥接(Hash 先行,AES/RSA/国密随后),capability `crypto` 门禁。

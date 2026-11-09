@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.36)
+## 核心特性(v0.37)
 
 | 特性 | 说明 |
 |------|------|
@@ -74,8 +74,8 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.36(当前)** — 字节流正则三函数(latin1 无损,支柱 4 落地)+ AES-256-CBC 加解密 + 位域/packing 设计判断
-- **v0.37 方向** — 模糊器 str/深形态扩展、AES-GCM(带认证)、ming build 单文件产物预研
+- **v0.37(当前)** — AES-256-GCM 带认证(篡改检出)+ 模糊器 str/for-in 扩展 + ming build 预研(dist 目录决策)
+- **v0.38 方向** — `ming build` dist 产物落地、原生后端(C)预研
 - **更远(北星对齐)** — 原生后端 → FFI/unsafe/内联汇编/syscall;async 运行时;eval 能力;交叉编译;RSA/国密
 
 ## 设计原则(全文见 design.md)
@@ -89,4 +89,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.36.0:字节码 VM + **WASM 分层(v0.32 复活,存活断言制度化)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-256-CBC+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈90%)。模糊基线:tests/fuzz.mjs(三后端差分)。
+v0.37.0:字节码 VM + **WASM 分层(v0.32 复活,存活断言制度化)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP + **mingkit 自举文件工具**(tools/mingkit.ming,Ming 自写)。能力矩阵见 docs/capabilities.md(≈90%)。模糊基线:tests/fuzz.mjs(三后端差分)。

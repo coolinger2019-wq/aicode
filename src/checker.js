@@ -316,6 +316,8 @@ export const STD_MODULES = {
       mF('hmac_sha512', [T_STR, T_STR], T_STR, { effect: 'crypto' }),
       mF('aes256_encrypt', [T_STR, T_STR], mkRes(mkVec(INT_TYPES.u8), T_STR), { effect: 'crypto' }),
       mF('aes256_decrypt', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_STR, T_STR), { effect: 'crypto' }),
+      mF('aes256_gcm_encrypt', [T_STR, T_STR], mkRes(mkVec(INT_TYPES.u8), T_STR), { effect: 'crypto' }),
+      mF('aes256_gcm_decrypt', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_STR, T_STR), { effect: 'crypto' }),
     ],
   },
   // 二进制显式字节序打包/解包(纯函数;安全工具之北支柱 1:拒绝隐式端序,be/le 显式枚举;v0.35)
