@@ -4,3 +4,6 @@ node_modules/
 Thumbs.db
 __pycache__/
 .zcode/
+
+# Moltbook 凭据(本机接续用,绝不入库)
+.moltbook/
