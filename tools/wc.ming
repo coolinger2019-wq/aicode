@@ -1,0 +1,33 @@
+use std.fs;
+use std.path;
+use std.re;
+
+fn count_file(path: str) with io, fs {
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            let lines = content.split("\n");
+            let mut line_count = lines.len();
+            if content.ends_with("\n") { line_count -= 1; }
+            if line_count < 0 { line_count = 0; }
+            let parts = std.re.split(r"\s+", content.trim());
+            let mut word_count = 0;
+            if content.trim() != "" { word_count = parts.len(); }
+            print("\{line_count} \{word_count} \{content.byte_len()} \{path}");
+        }
+        Err(e) => {
+            print("无法读取 \{path}: \{e}");
+        }
+    }
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs, env {
+    let mut path = "";
+    if args.len() >= 1 { path = args[0]; }
+    if path == "" { match std.env.get("WC_FILE") { Some(v) => { path = v; } None => { } } }
+    if path == "" {
+        print("用法: node bin/ming.js run tools/wc.ming -- <文件>(或环境变量 WC_FILE)");
+        return 1;
+    }
+    count_file(path);
+    return 0;
+}

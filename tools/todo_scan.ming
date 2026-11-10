@@ -1,0 +1,68 @@
+use std.fs;
+use std.path;
+use std.re;
+
+fn scan_dir(dir: str, mut count: i64) -> i64 with io, fs {
+    match std.fs.list_dir(dir) {
+        Ok(entries) => {
+            for name in entries {
+                let full = std.path.join(dir, name);
+                if std.fs.is_dir(full) {
+                    // 跳过隐藏目录与 node_modules
+                    if name.starts_with(".") { continue; }
+                    if name == "node_modules" { continue; }
+                    if name == "dist" { continue; }
+                    count = scan_dir(full, count);
+                } else {
+                    // 只扫描文本源文件
+                    let ext = std.path.extension(name);
+                    if ext == ".ming" || ext == ".js" || ext == ".ts" || ext == ".md" || ext == ".py" || ext == ".go" || ext == ".rs" {
+                        count = scan_file(full, count);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            print("无法读取目录 \{dir}: \{e}");
+        }
+    }
+    return count;
+}
+
+fn scan_file(path: str, mut count: i64) -> i64 with io, fs {
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            let lines = content.split("\n");
+            let mut i = 0;
+            let n = lines.len();
+            while i < n {
+                let line = lines[i];
+                if std.re.is_match(r"(TODO|FIXME|XXX|HACK)", line) {
+                    print("\{path}:\{i + 1}: \{line.trim()}");
+                    count += 1;
+                }
+                i += 1;
+            }
+        }
+        Err(e) => {
+            print("无法读取 \{path}: \{e}");
+        }
+    }
+    return count;
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs, env {
+    let mut root = ".";
+    // args 优先,环境变量 TODO_SCAN_ROOT 回退
+    if args.len() >= 1 { root = args[0]; }
+    if root == "" {
+        match std.env.get("TODO_SCAN_ROOT") {
+            Some(v) => { root = v; }
+            None => { }
+        }
+    }
+    print("扫描目录: \{root}");
+    let total = scan_dir(root, 0);
+    print("共发现 \{total} 处待办标记");
+    return 0;
+}

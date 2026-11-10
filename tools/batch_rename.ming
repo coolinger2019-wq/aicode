@@ -1,0 +1,53 @@
+use std.fs;
+use std.path;
+
+fn batch_rename(dir: str, prefix: str, ext: str, mut count: i64) -> i64 with io, fs {
+    match std.fs.list_dir(dir) {
+        Ok(entries) => {
+            for name in entries {
+                if std.fs.is_dir(std.path.join(dir, name)) { continue; }
+                let file_ext = std.path.extension(name);
+                if ext != "" && file_ext != ext { continue; }
+                let new_name = prefix + name;
+                let old_path = std.path.join(dir, name);
+                let new_path = std.path.join(dir, new_name);
+                match std.fs.rename(old_path, new_path) {
+                    Ok(_) => {
+                        print("重命名: \{name} -> \{new_name}");
+                        count += 1;
+                    }
+                    Err(e) => {
+                        print("失败: \{name}: \{e}");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            print("无法读取目录 \{dir}: \{e}");
+        }
+    }
+    return count;
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs, env {
+    // v0.45.1 检视修正:批量重命名是破坏性操作——目录必须显式给出(args 优先,env 回退),
+    // 不再默认 "."(此前在仓库误运行会把当前目录文件全部改名)
+    let mut dir = "";
+    let mut prefix = "";
+    let mut ext = "";
+    if args.len() >= 1 { dir = args[0]; }
+    if args.len() >= 2 { prefix = args[1]; }
+    if args.len() >= 3 { ext = args[2]; }
+    if dir == "" { match std.env.get("RENAME_DIR") { Some(v) => { dir = v; } None => { } } }
+    if prefix == "" { match std.env.get("RENAME_PREFIX") { Some(v) => { prefix = v; } None => { } } }
+    if ext == "" { match std.env.get("RENAME_EXT") { Some(v) => { ext = v; } None => { } } }
+    if dir == "" || prefix == "" {
+        print("用法: node bin/ming.js run tools/batch_rename.ming -- <目录> <前缀> [扩展名]");
+        print("  (也可用环境变量 RENAME_DIR / RENAME_PREFIX / RENAME_EXT)");
+        return 1;
+    }
+    print("目录: \{dir}, 前缀: \{prefix}, 扩展名过滤: \{ext}");
+    let total = batch_rename(dir, prefix, ext, 0);
+    print("共重命名 \{total} 个文件");
+    return 0;
+}

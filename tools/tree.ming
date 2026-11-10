@@ -1,0 +1,40 @@
+use std.fs;
+use std.path;
+
+fn print_tree(dir: str, prefix: str, mut count: i64) -> i64 with io, fs {
+    match std.fs.list_dir(dir) {
+        Ok(entries) => {
+            let mut i = 0;
+            let n = entries.len();
+            while i < n {
+                let name = entries[i];
+                let full = std.path.join(dir, name);
+                let is_last = (i == n - 1);
+                let branch = if is_last { "└── " } else { "├── " };
+                print("\{prefix}\{branch}\{name}");
+                count += 1;
+                if std.fs.is_dir(full) {
+                    if !name.starts_with(".") && name != "node_modules" && name != "dist" {
+                        let next_prefix = if is_last { prefix + "    " } else { prefix + "│   " };
+                        count = print_tree(full, next_prefix, count);
+                    }
+                }
+                i += 1;
+            }
+        }
+        Err(e) => {
+            print("\{prefix}[错误: \{e}]");
+        }
+    }
+    return count;
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs, env {
+    let mut root = ".";
+    if args.len() >= 1 { root = args[0]; }
+    if root == "" { match std.env.get("TREE_ROOT") { Some(v) => { root = v; } None => { } } }
+    print(root);
+    let total = print_tree(root, "", 0);
+    print("\n共 \{total} 个条目");
+    return 0;
+}

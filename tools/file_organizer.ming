@@ -1,0 +1,58 @@
+use std.fs;
+use std.path;
+
+fn organize(dir: str, mut moved: i64) -> i64 with io, fs {
+    match std.fs.list_dir(dir) {
+        Ok(entries) => {
+            for name in entries {
+                let full = std.path.join(dir, name);
+                if std.fs.is_dir(full) { continue; }
+                let mut ext = std.path.extension(name);
+                if ext == "" { ext = "noext"; }
+                // 去掉前导点
+                if ext.starts_with(".") { ext = ext.slice_chars(1, ext.char_len()); }
+                let target_dir = std.path.join(dir, ext);
+                match std.fs.make_dir(target_dir) {
+                    Ok(_) => { }
+                    Err(_) => { }
+                }
+                let target = std.path.join(target_dir, name);
+                match std.fs.rename(full, target) {
+                    Ok(_) => {
+                        print("移动: \{full} -> \{target}");
+                        moved += 1;
+                    }
+                    Err(e) => {
+                        print("失败: \{full}: \{e}");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            print("无法读取目录 \{dir}: \{e}");
+        }
+    }
+    return moved;
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs, env {
+    // v0.45.1 检视修正:按扩展名移动文件是破坏性操作——目录必须显式给出
+    // (args 优先,env 回退),不再默认 "."(此前误运行会把当前目录文件打散进扩展名子目录)
+    let mut root = "";
+    if args.len() >= 1 { root = args[0]; }
+    if root == "" {
+        match std.env.get("ORGANIZE_ROOT") {
+            Some(v) => { root = v; }
+            None => { }
+        }
+    }
+    if root == "" {
+        print("用法: node bin/ming.js run tools/file_organizer.ming -- <目录>");
+        print("  (也可用环境变量 ORGANIZE_ROOT)");
+        return 1;
+    }
+    print("整理目录: \{root}");
+    let total = organize(root, 0);
+    print("共移动 \{total} 个文件");
+    return 0;
+}

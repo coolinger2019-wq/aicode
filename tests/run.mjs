@@ -2017,7 +2017,6 @@ fn main() with io, fs {
   check('v44:模糊器快档(40 程序多后端一致)', fuzz44.status === 0 && /分歧 0/.test(fuzz44.stdout ?? ''), 'code=' + fuzz44.status + ' tail=' + (fuzz44.stdout ?? '').slice(-150));
 }
 
-// ===================== 汇总 =====================
 // ===================== §40 契约系统(v0.45 阶段 1) =====================
 {
   const okSrc = ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 1 {', '  return a + 1;', '}', 'fn main() with io { print(str(f(3))); }'].join('\n');
@@ -2053,9 +2052,90 @@ fn main() with io, fs {
   check('v45:invariant 违反消息双引擎一致', rinv.stderr.split('\n')[0] === rinvl.stderr.split('\n')[0]);
 }
 
+// ===================== 41. v0.45.1:自举工具检视(11 个工具全部实测)=====================
+{
+  const dir = path.join(TMP, 'v45tools');
+  fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+  const runTool = (tool, args, env = {}) => spawnSync(process.execPath, [MING, 'run', path.join(ROOT, 'tools', tool), ...args], {
+    encoding: 'utf8', cwd: ROOT, timeout: 60000,
+    env: { ...process.env, ...env },
+  });
+
+  // ---- edit.ming(行级编辑器)----
+  const ef = path.join(dir, 'f.txt');
+  fs.writeFileSync(ef, 'alpha\nbeta\ngamma\n');
+  let r = runTool('edit.ming', ['show', ef, '1', '3']);
+  check('v45.1:edit show 带行号', r.status === 0 && r.stdout === '1|alpha\n2|beta\n3|gamma\n', JSON.stringify(r.stdout));
+  r = runTool('edit.ming', ['count', ef]);
+  check('v45.1:edit count', r.status === 0 && r.stdout === '3\n', JSON.stringify(r.stdout));
+  r = runTool('edit.ming', ['set', ef, '2', 'BETA2']);
+  check('v45.1:edit set', r.status === 0 && fs.readFileSync(ef, 'utf8') === 'alpha\nBETA2\ngamma\n', fs.readFileSync(ef, 'utf8'));
+  r = runTool('edit.ming', ['ins', ef, '1', 'FIRST']);
+  check('v45.1:edit ins 首行前', r.status === 0 && fs.readFileSync(ef, 'utf8') === 'FIRST\nalpha\nBETA2\ngamma\n', fs.readFileSync(ef, 'utf8'));
+  r = runTool('edit.ming', ['del', ef, '2', '3']);
+  check('v45.1:edit del 区间', r.status === 0 && fs.readFileSync(ef, 'utf8') === 'FIRST\ngamma\n', fs.readFileSync(ef, 'utf8'));
+  r = runTool('edit.ming', ['sub', ef, '1', '1', 'X1\nX2']);
+  check('v45.1:edit sub 多行替换', r.status === 0 && fs.readFileSync(ef, 'utf8') === 'X1\nX2\ngamma\n', fs.readFileSync(ef, 'utf8'));
+  r = runTool('edit.ming', ['append', ef, 'TAIL']);
+  check('v45.1:edit append(保尾换行)', r.status === 0 && fs.readFileSync(ef, 'utf8') === 'X1\nX2\ngamma\nTAIL\n', fs.readFileSync(ef, 'utf8'));
+  r = runTool('edit.ming', ['set', ef, '99', 'x']);
+  check('v45.1:edit set 越界拒绝', r.status === 1 && (r.stderr ?? '').includes('行号超出范围'), 'code=' + r.status);
+  const ef2 = path.join(dir, 'nt.txt');
+  fs.writeFileSync(ef2, 'a\nb');  // 无尾部换行
+  r = runTool('edit.ming', ['set', ef2, '1', 'A']);
+  r = runTool('edit.ming', ['append', ef2, 'c']);
+  check('v45.1:edit 无尾换行保真', r.status === 0 && fs.readFileSync(ef2, 'utf8') === 'A\nb\nc', JSON.stringify(fs.readFileSync(ef2, 'utf8')));
+  const ef3 = path.join(dir, 'empty.txt');
+  fs.writeFileSync(ef3, '');
+  r = runTool('edit.ming', ['count', ef3]);
+  check('v45.1:edit 空文件 0 行', r.status === 0 && r.stdout === '0\n', JSON.stringify(r.stdout));
+  r = runTool('edit.ming', ['set', ef3, '1', 'x']);
+  check('v45.1:edit 空文件 set 拒绝', r.status === 1 && (r.stderr ?? '').includes('行号超出范围'), 'code=' + r.status);
+
+  // ---- wc / json_query / log_analyzer ----
+  fs.writeFileSync(path.join(dir, 'a.log'), 'line1\nline2 ERROR x\nline3 WARN y\nline4 INFO z\n');
+  r = runTool('wc.ming', [path.join(dir, 'a.log')]);
+  check('v45.1:wc 行/词/字节', r.status === 0 && r.stdout.trim() === '4 10 46 ' + path.join(dir, 'a.log'), JSON.stringify(r.stdout));
+  fs.writeFileSync(path.join(dir, 'cfg.json'), '{"name": "ming", "v": 44}');
+  r = runTool('json_query.ming', [path.join(dir, 'cfg.json'), 'name']);
+  check('v45.1:json_query 取字段', r.status === 0 && r.stdout.includes('ming'), JSON.stringify(r.stdout));
+  r = runTool('log_analyzer.ming', [path.join(dir, 'a.log')]);
+  check('v45.1:log_analyzer 计数(尾部空行不计)', r.status === 0 && r.stdout.includes('总行数: 4') && r.stdout.includes('ERROR: 1'), JSON.stringify(r.stdout));
+
+  // ---- find_files / tree / todo_scan ----
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'hello');
+  fs.writeFileSync(path.join(dir, 'sub', 'b.txt'), 'x');
+  fs.writeFileSync(path.join(dir, 'code.ming'), '// TODO: 实现缓存\nfn f() { return 1; }\n// FIXME: 边界\n');
+  r = runTool('find_files.ming', [dir, 'txt']);
+  check('v45.1:find_files 按名查找', r.status === 0 && (r.stdout ?? '').includes('notes.txt') && (r.stdout ?? '').includes('b.txt'), JSON.stringify(r.stdout).slice(0, 150));
+  r = runTool('tree.ming', [dir]);
+  check('v45.1:tree 目录树', r.status === 0 && (r.stdout ?? '').includes('├──') && (r.stdout ?? '').includes('sub'), JSON.stringify(r.stdout).slice(0, 150));
+  r = runTool('todo_scan.ming', [dir]);
+  check('v45.1:todo_scan 待办标记', r.status === 0 && (r.stdout ?? '').includes('TODO: 实现缓存') && (r.stdout ?? '').includes('共发现 2 处'), JSON.stringify(r.stdout).slice(0, 200));
+
+  // ---- batch_rename / file_organizer(args 模式 + 缺参拒绝)----
+  const rd = path.join(dir, 'rename');
+  fs.mkdirSync(rd);
+  fs.writeFileSync(path.join(rd, '1.txt'), 'a');
+  fs.writeFileSync(path.join(rd, '2.log'), 'b');
+  r = runTool('batch_rename.ming', [rd, 'pre_']);
+  check('v45.1:batch_rename 加前缀', r.status === 0 && fs.existsSync(path.join(rd, 'pre_1.txt')) && fs.existsSync(path.join(rd, 'pre_2.log')), r.stdout ?? '');
+  r = runTool('batch_rename.ming', []);
+  check('v45.1:batch_rename 缺参拒绝', r.status === 1 && (r.stdout ?? '').includes('用法'), 'code=' + r.status);
+  const od = path.join(dir, 'org');
+  fs.mkdirSync(od);
+  fs.writeFileSync(path.join(od, 'x.txt'), 'a');
+  fs.writeFileSync(path.join(od, 'y.md'), 'b');
+  r = runTool('file_organizer.ming', [od]);
+  check('v45.1:file_organizer 按扩展名归档', r.status === 0 && fs.existsSync(path.join(od, 'txt', 'x.txt')) && fs.existsSync(path.join(od, 'md', 'y.md')), r.stdout ?? '');
+  r = runTool('file_organizer.ming', []);
+  check('v45.1:file_organizer 缺参拒绝', r.status === 1 && (r.stdout ?? '').includes('用法'), 'code=' + r.status);
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');
   for (const f of failures) process.stdout.write(`  - ${f.name}\n`);
   process.exit(1);
 }
+

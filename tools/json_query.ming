@@ -1,0 +1,30 @@
+use std.json;
+use std.fs;
+
+fn main(args: Vec[str]) -> i64 with io, fs, env {
+    let mut path = "";
+    let mut field = "";
+    if args.len() >= 1 { path = args[0]; }
+    if args.len() >= 2 { field = args[1]; }
+    if path == "" { match std.env.get("JSON_FILE") { Some(v) => { path = v; } None => { } } }
+    if field == "" { match std.env.get("JSON_FIELD") { Some(v) => { field = v; } None => { } } }
+    if path == "" || field == "" {
+        print("用法: node bin/ming.js run tools/json_query.ming -- <文件> <字段>(或 JSON_FILE / JSON_FIELD)");
+        return 1;
+    }
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            match std.json.parse(content) {
+                Ok(doc) => {
+                    match doc.get(field) {
+                        Some(v) => { print(debug(v)); }
+                        None => { print("字段不存在: \{field}"); }
+                    }
+                }
+                Err(e) => { print("JSON 解析失败: \{e}"); }
+            }
+        }
+        Err(e) => { print("无法读取文件: \{e}"); }
+    }
+    return 0;
+}

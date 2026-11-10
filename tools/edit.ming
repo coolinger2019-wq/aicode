@@ -1,0 +1,293 @@
+// tools/edit.ming — 行级编辑器(用 Ming 自写,v0.44.2;与 mingkit 互补)
+//
+// 定位:mingkit 按**模式**操作(replace/insert-after),edit 按**行号**精确操作——
+// 配合 `mingkit read`/`edit show` 的带行号输出,AI 可以"看到行号 → 改那一行"。
+//
+// 设计承袭 mingkit:只认一层转义(\n \t \\,未知转义原样保留)、错误显式化
+// (行号越界/区间非法一律拒绝落盘,退出码 1)、尾部换行保真(文件以 \n 结尾与否
+// 在编辑后保持不变;空文件视为 0 行)。
+//
+// 用法:node bin/ming.js run tools/edit.ming -- <子命令> ...
+//   show <file> <start> [end]        带行号输出区间(1-based,含端点;缺 end=到尾)
+//   get  <file> <lineno>             输出第 N 行原文(不带行号)
+//   set  <file> <lineno> <text>      替换第 N 行内容
+//   ins  <file> <lineno> <text>      在第 N 行之前插入一行(允许 N=行数+1)
+//   del  <file> <start> [end]        删除行区间(含端点;缺 end=删一行)
+//   sub  <file> <start> <end> <text> 用 text(可含 \n)整段替换区间
+//   append <file> <text>             在文件末尾追加一行(可含 \n)
+//   count <file>                     实际行数(尾部换行不计)
+
+use std.fs;
+
+// 转义解释:与 mingkit 完全一致
+fn esc(s: str) -> str {
+    let mut out = "";
+    let mut bs = false;
+    for c in s.chars() {
+        if bs {
+            if c == "n" { out = out + "\n"; }
+            else if c == "t" { out = out + "\t"; }
+            else if c == "\\" { out = out + "\\"; }
+            else { out = out + "\\" + c; }
+            bs = false;
+        } else if c == "\\" {
+            bs = true;
+        } else {
+            out = out + c;
+        }
+    }
+    if bs { out = out + "\\"; }
+    return out;
+}
+
+fn join_lines(lines: Vec[str]) -> str {
+    let mut out = "";
+    let mut first = true;
+    for ln in lines {
+        if !first { out = out + "\n"; }
+        out = out + ln;
+        first = false;
+    }
+    return out;
+}
+
+// 读文件 → 规范化行数组:空文件 → [];文件以 \n 结尾时,末尾的 "" 是换行标记,
+// 保留在数组尾部(所有操作不得移动或删除它)。
+// 值语义注意:必须返回向量(mut 参数回填对调用方不可见——传参是深拷贝)。
+fn load(file: str) -> Result[Vec[str], str] with fs {
+    match std.fs.read_file(file) {
+        Ok(content) => {
+            let parts = content.split("\n");
+            if parts.len() == 1 && parts[0] == "" {
+                let empty: Vec[str] = [];
+                return Ok(empty);
+            }
+            return Ok(parts);
+        }
+        Err(e) => {
+            return Err("无法读取 " + file + ": " + e);
+        }
+    }
+}
+
+fn save(file: str, lines: Vec[str]) -> i64 with io, fs {
+    match std.fs.write_file(file, join_lines(lines)) {
+        Ok(_) => { return 0; }
+        Err(e) => {
+            eprint("edit: 写入失败: " + e);
+            return 1;
+        }
+    }
+}
+
+// 实际行数(末尾 "" 换行标记不计)
+fn real_count(lines: Vec[str]) -> i64 {
+    let n = lines.len();
+    if n > 0 && lines[n - 1] == "" { return n - 1; }
+    return n;
+}
+
+fn fail(msg: str) -> i64 with io {
+    eprint("edit: " + msg);
+    return 1;
+}
+
+fn usage() -> i64 with io {
+    eprint("edit — 行级编辑器(用 Ming 自写;与 mingkit 互补)");
+    eprint("用法: node bin/ming.js run tools/edit.ming -- <子命令> ...");
+    eprint("  show  <file> <start> [end]        带行号输出区间");
+    eprint("  get   <file> <lineno>             输出第 N 行原文");
+    eprint("  set   <file> <lineno> <text>      替换第 N 行");
+    eprint("  ins   <file> <lineno> <text>      在第 N 行前插入(允许 N=行数+1)");
+    eprint("  del   <file> <start> [end]        删除行区间(缺 end=删一行)");
+    eprint("  sub   <file> <start> <end> <text> 整段替换区间(text 可含 \\n)");
+    eprint("  append <file> <text>              末尾追加一行");
+    eprint("  count <file>                      实际行数");
+    eprint("text 支持 \\n \\t \\\\ 转义。退出码:0 成功,1 错误。");
+    return 1;
+}
+
+// 区间参数解析:返回 Ok((s, e)) 或 Err;e 缺省 = s
+fn parse_range(a: str, b: str, limit: i64) -> Result[(i64, i64), str] {
+    let s = match a.parse_i64() {
+        Ok(n) => n,
+        Err(_) => { return Err("start 不是整数: " + a); }
+    };
+    let mut e = match b.parse_i64() {
+        Ok(n) => n,
+        Err(_) => { return Err("end 不是整数: " + b); }
+    };
+    if s < 1 { return Err("start 必须从 1 开始"); }
+    if e < s { return Err("end 不能小于 start"); }
+    if s > limit { return Err("start 超出文件范围(" + str(s) + " > " + str(limit) + ")"); }
+    if e > limit { e = limit; }  // 截断至文件尾(与 mingkit delete-lines 口径一致)
+    return Ok((s, e));
+}
+
+fn main(args: Vec[str]) -> i64 with io, fs {
+    if args.len() < 1 { return usage(); }
+    let cmd = args[0];
+
+    // ---- show:带行号输出 ----
+    if cmd == "show" {
+        if args.len() < 3 { return fail("show 需要 <file> <start> [end]"); }
+        let mut lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        let rc = real_count(lines);
+        let se = match parse_range(args[2], if args.len() >= 4 { args[3] } else { args[2] }, rc) {
+            Ok(t) => t,
+            Err(m) => { return fail(m); }
+        };
+        let (s, e) = se;
+        let mut i = s;
+        while i <= e {
+            print(str(i) + "|" + lines[i - 1]);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // ---- get:单行原文 ----
+    if cmd == "get" {
+        if args.len() < 3 { return fail("get 需要 <file> <lineno>"); }
+        let mut lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        let rc = real_count(lines);
+        let n = match args[2].parse_i64() {
+            Ok(v) => v,
+            Err(_) => { return fail("lineno 不是整数: " + args[2]); }
+        };
+        if n < 1 || n > rc { return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)"); }
+        print(lines[n - 1]);
+        return 0;
+    }
+
+    // ---- set:替换第 N 行 ----
+    if cmd == "set" {
+        if args.len() < 4 { return fail("set 需要 <file> <lineno> <text>"); }
+        let mut lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        let rc = real_count(lines);
+        let n = match args[2].parse_i64() {
+            Ok(v) => v,
+            Err(_) => { return fail("lineno 不是整数: " + args[2]); }
+        };
+        if n < 1 || n > rc { return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)"); }
+        lines[n - 1] = esc(args[3]);
+        return save(args[1], lines);
+    }
+
+    // ---- ins:在第 N 行前插入 ----
+    if cmd == "ins" {
+        if args.len() < 4 { return fail("ins 需要 <file> <lineno> <text>"); }
+        let mut lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        let rc = real_count(lines);
+        let n = match args[2].parse_i64() {
+            Ok(v) => v,
+            Err(_) => { return fail("lineno 不是整数: " + args[2]); }
+        };
+        if n < 1 || n > rc + 1 { return fail("行号超出范围(允许 1.." + str(rc + 1) + ")"); }
+        let text = esc(args[3]);
+        let mut out: Vec[str] = [];
+        let mut done = false;
+        let mut i = 0;
+        while i < lines.len() {
+            if i == n - 1 {
+                out.push(text);
+                done = true;
+            }
+            out.push(lines[i]);
+            i = i + 1;
+        }
+        if !done { out.push(text); }  // 插入位置在末尾之后(含无换行标记的文件)
+        return save(args[1], out);
+    }
+
+    // ---- del / sub:区间删除与整段替换 ----
+    if cmd == "del" || cmd == "sub" {
+        let need = if cmd == "del" { "del 需要 <file> <start> [end]" } else { "sub 需要 <file> <start> <end> <text>" };
+        let minArgs = if cmd == "del" { 3 } else { 5 };
+        if args.len() < minArgs { return fail(need); }
+        let mut lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        let rc = real_count(lines);
+        let endArg = if cmd == "del" && args.len() < 4 { args[2] } else { args[3] };
+        let se = match parse_range(args[2], endArg, rc) {
+            Ok(t) => t,
+            Err(m) => { return fail(m); }
+        };
+        let (s, e) = se;
+        let mut repl: Vec[str] = [];
+        if cmd == "sub" {
+            let text = esc(args[4]);
+            if text != "" {
+                for ln in text.split("\n") {
+                    repl.push(ln);
+                }
+            }
+        }
+        let mut out: Vec[str] = [];
+        let mut i = 0;
+        while i < lines.len() {
+            if i < s - 1 || i > e - 1 {
+                out.push(lines[i]);
+            } else if i == s - 1 {
+                for r in repl {
+                    out.push(r);
+                }
+            }
+            i = i + 1;
+        }
+        return save(args[1], out);
+    }
+
+    // ---- append:末尾追加 ----
+    if cmd == "append" {
+        if args.len() < 3 { return fail("append 需要 <file> <text>"); }
+        let lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        let text = esc(args[2]);
+        let n = lines.len();
+        let hadMarker = n > 0 && lines[n - 1] == "";
+        let bodyEnd = if hadMarker { n - 1 } else { n };
+        let mut out: Vec[str] = [];
+        let mut i = 0;
+        while i < bodyEnd {
+            out.push(lines[i]);
+            i = i + 1;
+        }
+        for ln in text.split("\n") {
+            out.push(ln);
+        }
+        if hadMarker {
+            out.push("");
+        }
+        return save(args[1], out);
+    }
+
+    // ---- count ----
+    if cmd == "count" {
+        if args.len() < 2 { return fail("count 需要 <file>"); }
+        let lines = match load(args[1]) {
+            Ok(v) => v,
+            Err(m) => { return fail(m); }
+        };
+        print(str(real_count(lines)));
+        return 0;
+    }
+
+    return fail("未知子命令: " + cmd + "(无参数查看用法)");
+}
