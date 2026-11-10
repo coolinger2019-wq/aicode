@@ -104,7 +104,7 @@
 | M4010 | task-timeout | 子任务超时/已取消(join_detailed 超时参数、cancel 后 join;以 Err 值的 code 字段出现,非 panic;v0.30 起) |
 | M4011 | alloc-quota-exceeded | 内存配额超限:累计分配(元素/字符口径)超过 --max-alloc(v0.32) |
 | M4012 | time-quota-exceeded | 执行时间超过 --max-ms 墙钟上限(v0.32) |
-| M4013 | ffi-load-failed | v0.39 预留(未启用):`with ffi` 库加载/符号查找失败 → Err 载体码 |
+| M4013 | ffi-load-failed | v0.42 启用:extern fn 库加载/符号查找失败(C 后端启动绑定阶段,退出码 101) |
 | M4014 | ffi-signature-invalid | v0.39 预留(未启用):ffi 签名与目标符号不符 |
 
 ## 约定

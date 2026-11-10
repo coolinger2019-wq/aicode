@@ -123,6 +123,7 @@ export class Parser {
       this.bail('M2002', `"pub" 之后必须是 fn/struct/enum/const`, this.cur().span);
     } }
     if (this.atKw('fn')) return this.parseFn(pub);
+    if (this.atKw('extern')) return this.parseExternFn();
     if (this.atKw('struct')) return this.parseStruct(pub);
     if (this.atKw('enum')) return this.parseEnum(pub);
     if (this.atKw('use')) return this.parseUse();
@@ -132,6 +133,31 @@ export class Parser {
     if (this.atKw('impl')) return this.parseImpl();
     this.bail('M2001', `顶层只能是 fn / struct / enum / use / test / const / trait / impl 声明(可加 pub),实际是 ${tokDesc(this.cur())}`, this.cur().span,
       '顶层不能写 let 或可执行语句;把逻辑放进 fn main() 里。');
+  }
+
+  // extern [lib] fn 名(参数) -> 返回;(v0.42 FFI 声明:隐含 ffi 效果,调用方须 with ffi;
+  // C 后端 dlsym 兑现,JS 引擎运行时以 M4001 拒绝)
+  parseExternFn() {
+    const start = this.expectKw('extern');
+    let lib = null;
+    if (this.cur().kind === 'str') { lib = this.cur().val; this.next(); }
+    this.expectKw('fn');
+    const nameTok = this.expectId('extern 函数名');
+    this.expectOp('(');
+    const params = [];
+    while (!this.atOp(')')) {
+      const pName = this.expectId('参数名');
+      this.expectOp(':', '参数名');
+      const type = this.parseType();
+      params.push({ name: pName.val, type, mut: false, span: this.spanFrom(pName) });
+      if (this.atOp(',')) { this.next(); continue; }
+      break;
+    }
+    this.expectOp(')');
+    let ret = null;
+    if (this.atOp('->')) { this.next(); ret = this.parseType(); }
+    this.expectOp(';', 'extern fn 声明以 ";" 结束');
+    return { nt: 'ExternFnDecl', name: nameTok.val, lib, params, ret, effects: [{ name: 'ffi', span: start }], tparams: [], bounds: [], span: this.spanFrom(start) };
   }
 
   parseTrait(pub) {

@@ -1798,6 +1798,51 @@ fn main() with io, fs {
   check('v41:模糊器 C3 全形态(40 程序多后端一致)', fuzz41.status === 0 && /分歧 0/.test(fuzz41.stdout ?? ''), 'code=' + fuzz41.status + ' tail=' + (fuzz41.stdout ?? '').slice(-150));
 }
 
+// ===================== 37. v0.42:C4 extern fn FFI(效果即门禁 + C 后端 dlsym)=====================
+{
+  const cdir = path.join(TMP, 'cc42');
+  fs.mkdirSync(cdir, { recursive: true });
+
+  // 效果即门禁:无 with ffi 的调用 → M3029(引擎无关)
+  const ffiSrc = [
+    'extern "msvcrt" fn _abs64(x: i64) -> i64;',
+    'fn main() with io, ffi {',
+    '    print(str(_abs64(-42)));',
+    '    print(str(_abs64(123456789)));',
+    '}',
+  ].join('\n');
+  const gateSrc = 'extern "msvcrt" fn _abs64(x: i64) -> i64;\nfn main() with io { print(str(_abs64(-1))); }';
+  const gateFile = path.join(cdir, 'gate.ming');
+  fs.writeFileSync(gateFile, gateSrc);
+  const rg = runMing(['check', gateFile]);
+  check('v42:ffi 效果门禁(无 with ffi → M3029)', rg.code === 1 && (rg.stderr ?? '').includes('M3029') && (rg.stderr ?? '').includes('ffi'), 'code=' + rg.code + ' stderr=' + (rg.stderr ?? '').slice(0, 150));
+
+  // JS 引擎:M4001 诚实拒绝(合成桩体);C 后端:dlsym 真调用(Windows;其他平台跳过)
+  if (process.platform === 'win32') {
+    const ffiFile = path.join(cdir, 'ffi42.ming');
+    fs.writeFileSync(ffiFile, ffiSrc);
+    const rj = runMing(['run', ffiFile]);
+    check('v42:JS 引擎 ffi → M4001 拒绝', rj.code === 101 && (rj.stderr ?? '').includes('ffi 调用需要 C 后端'), 'code=' + rj.code + ' stderr=' + (rj.stderr ?? '').slice(0, 120));
+    const build42 = spawnSync(process.execPath, [MING, 'cc', ffiFile, '--no-run', '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+    const exe42 = path.join(cdir, 'out', 'ffi42.exe');
+    const rc42 = fs.existsSync(exe42) ? spawnSync(exe42, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+    check('v42:C 后端 extern dlsym 调用', build42.status === 0 && rc42.status === 0 && rc42.stdout === '42\n123456789\n',
+      'build=' + build42.status + ' out=' + JSON.stringify(rc42.stdout));
+    // --static:静态链接产物可运行
+    const buildS = spawnSync(process.execPath, [MING, 'cc', ffiFile, '--no-run', '--static', '--out', path.join(cdir, 'out2')], { encoding: 'utf8', cwd: ROOT, timeout: 180000 });
+    const exeS = path.join(cdir, 'out2', 'ffi42.exe');
+    const rcS = fs.existsSync(exeS) ? spawnSync(exeS, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+    check('v42:--static 静态链接产物', buildS.status === 0 && rcS.status === 0 && rcS.stdout === '42\n123456789\n',
+      'build=' + buildS.status + ' out=' + JSON.stringify(rcS.stdout));
+  } else {
+    check('v42:extern dlsym(非 Windows 跳过)', true);
+  }
+
+  // 模糊器 v0.42 快速档
+  const fuzz42 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '40042'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v42:模糊器快档(40 程序多后端一致)', fuzz42.status === 0 && /分歧 0/.test(fuzz42.stdout ?? ''), 'code=' + fuzz42.status + ' tail=' + (fuzz42.stdout ?? '').slice(-150));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

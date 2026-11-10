@@ -620,8 +620,7 @@ class CEmit {
 
   // 调用:发射参数(语句),返回 { call, retTy }('i64'|'u64'|'f64'|null=unit)
   emitCallRef(e, ctx) {
-    const mn = this.mathNameOf(e.callee, ctx);
-    if (mn) {
+    const mn = this.mathNameOf(e.callee, ctx);    if (mn) {
       if (!MATH_SAFE.has(mn)) throw new Unsupported('std.math ' + mn + '(JS/库位级一致性未证,C2)');
       const wantArity = (mn === 'min' || mn === 'max') ? 2 : 1;
       if (e.args.length !== wantArity) throw new Unsupported('math ' + mn + ' 参数数');
@@ -728,9 +727,21 @@ class CEmit {
     if (e.callee.nt !== 'Ident') throw new Unsupported('调用目标 ' + e.callee.nt);
     const entry = this.resolveEntry(ctx, e.callee.name);
     if (!entry || entry.kind !== 'fn') throw new Unsupported('调用 ' + e.callee.name);
+    const sig = entry.sig;
+    // v0.42:extern fn(C4 FFI)—— dlsym 槽直调;仅数值签名
+    if (entry.extern) {
+      const args = e.args.map((ar, i) => {
+        const pt = mingTyNum(sig.params[i]?.type);
+        if (!pt || pt === 'str' || pt === 'vi64' || pt === 'mi64' || pt === 'oi64') throw new Unsupported('extern 参数类型 ' + i + '(C4 仅数值)');
+        return this.emitExpr(ar, pt, ctx);
+      });
+      const rt = sig.ret?.k === 'unit' ? null : mingTyNum(sig.ret);
+      if (rt === null && sig.ret?.k !== 'unit') throw new Unsupported('extern 返回类型');
+      if (rt && (rt === 'str' || rt === 'vi64' || rt === 'mi64' || rt === 'oi64')) throw new Unsupported('extern 返回类型(C4 仅数值)');
+      return { call: `ming_ffi_${e.callee.name}(${args.join(', ')})`, retTy: rt };
+    }
     const idx = this.compiled.entryFnIdx?.get(entry);
     if (idx === undefined || !this.eligible.has(idx)) throw new Unsupported('被调方不 eligible: ' + e.callee.name);
-    const sig = entry.sig;
     const args = e.args.map((ar, i) => {
       const pt = mingTyNum(sig.params[i]?.type);
       if (!pt) throw new Unsupported('参数类型 ' + i);
@@ -1126,6 +1137,19 @@ class CEmit {
     });
     const constDefs = this.emitConstDefs();
     const strLits = this.emitStrLits();
+    // v0.42:extern fn(C4 FFI)—— 槽位声明 + 启动绑定
+    const externs = [];
+    for (const [, entry] of this.check.entry.items) {
+      if (entry.kind === 'fn' && entry.extern) externs.push(entry);
+    }
+    const ffiSlots = externs.map((entry) => {
+      const sig = entry.sig;
+      const rt = sig.ret?.k === 'unit' ? 'void' : CTYPE[mingTyNum(sig.ret)];
+      const ps = sig.params.map((p) => CTYPE[mingTyNum(p.type)]).join(', ');
+      return `static ${rt} (*ming_ffi_${entry.decl.name})(${ps}) = 0; /* extern ${entry.extern.lib ?? '<进程>'}.${entry.decl.name} */`;
+    });
+    const ffiBinds = externs.map((entry) =>
+      `    ming_ffi_bind("${cstr(entry.extern.lib ?? '')}", "${cstr(entry.decl.name)}", (void**)&ming_ffi_${entry.decl.name});`);
     const parts = [
       '/* 由 ming cc 生成(Ming C 后端 C2)— 请勿手改 */',
       '#include <stdio.h>',
@@ -1136,6 +1160,9 @@ class CEmit {
       '#ifdef _WIN32',
       '#include <io.h>',
       '#include <fcntl.h>',
+      '#include <windows.h>',
+      '#else',
+      '#include <dlfcn.h>',
       '#endif',
       '',
       '/* ---- Ming C 运行时(C2:str + Vec[i64];分配不回收,与 wasm 线性内存同策略)---- */',
@@ -1478,6 +1505,23 @@ class CEmit {
       '    exit(101);',
       '}',
       '',
+      '/* ---- C4:extern fn(dlopen/LoadLibrary + dlsym/GetProcAddress;M4013 逐字对齐设计)---- */',
+      'static void ming_ffi_bind(const char* lib, const char* sym, void** slot) {',
+      '#ifdef _WIN32',
+      '    void* h = lib[0] ? (void*)LoadLibraryA(lib) : (void*)GetModuleHandleA(0);',
+      '#else',
+      '    void* h = dlopen(lib[0] ? lib : 0, RTLD_NOW | RTLD_GLOBAL);',
+      '#endif',
+      '    if (!h) { fprintf(stderr, "error M4013[ffi-load-failed]: ffi 库加载失败: %s\\n", lib); exit(101); }',
+      '#ifdef _WIN32',
+      '    void* s = (void*)GetProcAddress((HMODULE)h, sym);',
+      '#else',
+      '    void* s = dlsym(h, sym);',
+      '#endif',
+      '    if (!s) { fprintf(stderr, "error M4013[ffi-load-failed]: ffi 符号未找到: %s\\n", sym); exit(101); }',
+      '    *slot = s;',
+      '}',
+      '',
       'static long long ming_neg_i64(long long a, const char *f, int l, int c) {',
       '    if (a == LLONG_MIN) {',
       '        fprintf(stderr, "%s:%d:%d: error M4002[integer-overflow]: 整数取负溢出:-%lld 超出范围\\n", f, l, c, a);',
@@ -1490,6 +1534,8 @@ class CEmit {
       ...(strLits.length ? [''] : []),
       ...constDefs,
       ...(constDefs.length ? [''] : []),
+      ...ffiSlots,
+      ...(ffiSlots.length ? [''] : []),
       ...decls,
       '',
       ...bodies.flatMap(b => [b, '']),
@@ -1501,6 +1547,7 @@ class CEmit {
       '    _setmode(_fileno(stdout), _O_BINARY);',
       '    _setmode(_fileno(stderr), _O_BINARY);',
       '#endif',
+      ...ffiBinds,
       '    ming_main();',
       '    return 0;',
       '}',

@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.41.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.42.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -994,12 +994,24 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.38(已完成) | `ming build` dist 可移植产物(launcher/args/panic 全路径)+ **原生后端(C)预研**(资格分析复用路线)+ 模糊器 if/else |
 | v0.39(已完成) | **C 后端 C1**(ming cc:eligible 数值函数 → C + GCC -O2,资格分析复用;顺带修复 wasm 四项休眠 bug 使端到端真正复活)+ 模糊器加深(f64/match/loop/Option/方法面 + C 第 4 腿)+ `with ffi` 设计定稿(design.md §6.9,不实现) |
 | v0.40(已完成) | **C2:str/Vec[i64] 入 C**(cat/eq/char_len/pad/slice/replace,下标 OOB,push/for-in/mut 传参值语义,match 含 guard)+ engdiff 自举工具 + 模糊器 cc 族拓宽 |
-| v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;**cc 差分腿 = 解释引擎全形态**,四种子 100%)|
+| v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;**cc 差分腿 = 解释引擎全形态**,四种子 100%) |
+| v0.42(已完成) | **C4:with ffi 兑现**(extern "库" fn 声明,隐含 ffi 效果,调用方须 with ffi;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym 真调用,M4013 失败路径;ming cc --static)|
 | 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.42.0(2026-11-10)
+
+- **C4 `with ffi` 兑现(extern fn 声明形态)**:
+  - 语法:`extern "库" fn 符号(参数) -> 返回;`(库可省略 = 当前进程;无 effect 子句 —— extern 隐含 ffi 效果)。`extern` 从保留字升级为关键字(RESERVED 移除,KEYWORDS 加入)。
+  - **效果即门禁兑现**:extern 符号调用要求调用方声明 `with ffi`(M3029 逐层传播,与 io/fs/net 同一机制);无门禁的代码在类型层不可能触达 FFI —— design.md §6.9 的核心主张落地。
+  - JS 引擎:合成桩体(panic 调用)→ 运行时 M4001 `ffi 调用需要 C 后端(ming cc);JS 引擎不执行 FFI`(诚实拒绝;桩体不参与类型检查)。
+  - C 后端:dlopen/LoadLibrary + dlsym/GetProcAddress 启动绑定(`ming_ffi_bind`),调用点直调函数指针;库/符号缺失 → **M4013[ffi-load-failed]** 退出 101(诊断码启用)。签名限数值(i64/u64/f64),str/结构参数属后续扩展。
+  - 设计取舍记录:§6.9 的运行时 `lib.fn(名, 签名)` API 延后 —— extern 声明形态符号编译期已知,AOT 友好且无需 Lib/Fn 句柄类型;`extern fn` 不进 wasm/C eligible(效果自动拒绝),与差分腿无交集。
+- **`ming cc --static`**:静态链接产物(gcc -static;工具链不支持时报错透传)。
+- 测试:406 项全绿(§37 新增五项:效果门禁 M3029/JS M4001 拒绝/C 后端 dlsym 调用/--static 产物/模糊快档)。
 
 ### v0.41.0(2026-11-10)
 

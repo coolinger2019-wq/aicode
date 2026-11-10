@@ -166,3 +166,4 @@ AI 参与编写的代码,质量门禁设在三个时点,各司其职:
 - **错误模型**:加载/查找失败 → Err(显式处理);调用本身是纯外部效果——无 panic 语义、无捕获;**目标库段错误 = 进程级终止,Ming 不捕获**(诚实声明,与 C 同一底线);新诊断码 M4013(ffi-load-failed)/ M4014(ffi-signature-invalid)预留(v0.39 未启用)。
 - **后端策略(deferred)**:C 后端直接 dlopen/LoadLibrary + 按签名调用(零封送层);JS 后端经 N-API addon 或子进程桥(实现策略到 C4 再定)。
 - **安全立场**:拒绝 GC 化的自动生命周期管理与句柄注册表;谁加载谁释放(显式 `lib.close()`),泄漏在签名与代码里都可见。
+- **C4 兑现(v0.42,extern 声明形态)**:语法定为 `extern "库" fn 符号(参数) -> 返回;`(库可省略 = 当前进程)——符号编译期已知,AOT 友好,无需 Lib/Fn 句柄类型;运行时 `lib.fn(名, 签名)` API 延后到 ffi 面扩大时再评估。效果即门禁落地:extern 隐含 ffi 效果,调用方须声明 `with ffi`(M3029 逐层传播);extern fn 不进 wasm/C eligible(效果自动拒绝)。JS 引擎以合成桩体在运行时 M4001 诚实拒绝;C 后端 dlopen/LoadLibrary + dlsym/GetProcAddress 启动绑定,调用点直调,库/符号缺失 → M4013 退出 101(诊断码启用)。v1 签名面 = i64/u64/f64;`extern` 升级为关键字(自保留字表移出)。`ming cc --static` 同版交付(静态链接产物)。

@@ -7,7 +7,7 @@ import { err, MingError } from './diag.js';
 export const KEYWORDS = new Set([
   'let', 'mut', 'fn', 'return', 'if', 'else', 'while', 'for', 'in', 'loop',
   'break', 'continue', 'match', 'use', 'pub', 'struct', 'enum', 'test',
-  'true', 'false', 'as', 'const', 'with', 'trait', 'impl', 'self',
+  'true', 'false', 'as', 'const', 'with', 'trait', 'impl', 'self', 'extern',
 ]);
 
 // 保留字:v0.2 不使用,但禁止作为标识符,避免 AI 生成与未来版本冲突的代码。
@@ -15,7 +15,7 @@ export const RESERVED = new Set([
   'super', 'static', 'where', 'unsafe',
   'async', 'await', 'yield', 'defer', 'null', 'nil', 'var', 'class', 'interface',
   'try', 'catch', 'throw', 'switch', 'case', 'default', 'do', 'type', 'new',
-  'extern', 'macro', 'then', 'elif', 'foreach',
+  'macro', 'then', 'elif', 'foreach',
 ]);
 
 export const INT_SUFFIXES = new Set(['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64']);

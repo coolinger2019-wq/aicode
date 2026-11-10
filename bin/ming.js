@@ -21,7 +21,7 @@ import { Unsupported } from '../src/wasm.js';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.41.0';
+export const VERSION = '0.42.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -539,7 +539,8 @@ function cmdCC(file, flags, opts, programArgs) {
   }
   const ccPath = detectCCompiler(json);
   if (!ccPath) return fail('未找到 C 编译器(需要 gcc 或 clang;可设 MING_CC 指向编译器路径)', json);
-  const build = spawnSync(ccPath, ['-O2', cFile, '-o', exeFile], { encoding: 'utf8', timeout: 120000 });
+  // v0.42:--static 静态链接(部署形态;工具链不支持时 gcc 报错透传)
+  const build = spawnSync(ccPath, ['-O2', ...(flags.has('static') ? ['-static'] : []), cFile, '-o', exeFile], { encoding: 'utf8', timeout: 120000 });
   if (build.status !== 0) {
     process.stderr.write((build.stderr || build.stdout || 'C 编译失败') + '\n');
     return 1;

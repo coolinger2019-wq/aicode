@@ -172,7 +172,7 @@ export function isPrimitiveDisplay(t, binds) {
 // ===================== 效果系统 =====================
 // v0.2 已开放:io(stdout/stderr/stdin)、time(时钟)。
 // 副作用必须显式声明并逐层传播;声明为纯函数的代码在编译期即可证明无副作用。
-export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto']);
+export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi']);
 
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
@@ -530,6 +530,15 @@ export class Checker {
           if (!mod.add(item.name, { kind: 'fn', decl: item, pub: item.pub }))
             this.dupDiag(mod, item.name, item.span);
           break;
+        case 'ExternFnDecl': {
+          // v0.42:extern fn —— FFI 声明(隐含 ffi 效果,调用方须 with ffi)。
+          // 合成桩体让 JS 引擎在运行时以 M4001 明确拒绝;C 后端经 dlsym 兑现真实现。
+          const stubCall = { nt: 'Call', callee: { nt: 'Ident', name: 'panic', span: item.span }, args: [{ nt: 'StrLit', parts: [{ lit: 'ffi 调用需要 C 后端(ming cc);JS 引擎不执行 FFI' }], span: item.span }], span: item.span };
+          const shaped = { ...item, body: { stmts: [{ nt: 'ExprStmt', expr: stubCall, span: item.span }], tail: null, span: item.span }, span: item.span };
+          if (!mod.add(item.name, { kind: 'fn', decl: shaped, pub: false, extern: { lib: item.lib } }))
+            this.dupDiag(mod, item.name, item.span);
+          break;
+        }
         case 'TestDecl':
           if (!mod.add('test:' + item.name, { kind: 'test', decl: item, pub: false }))
             this.dupDiag(mod, 'test ' + item.name, item.span);
@@ -1052,6 +1061,7 @@ export class Checker {
 
   checkFnBody(entry, mod) {
     const d = entry.decl;
+    if (d.nt === 'ExternFnDecl') return; // v0.42:外部函数,体为合成桩,不做类型检查
     const scope = new Scope(null, mod);
     for (const p of entry.sig.params) {
       scope.bind(p.name, p.type, p.mut, p.span, true);

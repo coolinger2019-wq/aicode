@@ -46,6 +46,7 @@ $ node bin/ming.js check examples/hello.ming --json
 | **capability net** | `std.net.http_get` / `http_request` 以 net 效果开放;同步 HTTP(worker + Atomics 桥接) |
 | **REPL** | `ming repl`:表达式回显、声明持久化、失败回滚、多行续行 |
 | **指令融合** | 高频赋值单指令化(读-算-存),溢出检查逐点保留 |
+| **FFI(extern fn,`with ffi`)** | `extern "库" fn 符号(...) -> T;` 声明;调用方必须声明 ffi 效果(M3029 门禁);JS 引擎 M4001 诚实拒绝,C 后端 dlopen/dlsym 真调用(失败 M4013);`ming cc --static` 静态链接 |
 | **JSON** | 动态 `Json` 类型 + 编译期序列化兼容性检查;parse 错误带位置 |
 | **WASM 分层** | i64/u64/f64/str/Vec/Map 编译为 WebAssembly;线性内存统一语义(构造/拷贝/读写/返回);纯 sum ~4x |
 | **C 后端 C1/C2/C3** | `ming cc`:eligible 函数 → C(GCC/Clang -O2),资格分析与 wasm 同源;panic 逐字对齐;C2 str/Vec[i64] 值语义;C3 Map/Option/f64 打印(floatStr 对齐);**cc 差分腿覆盖 = 解释引擎全形态**;纯 sum/fib 场景比 wasm 再快 ~10x |
@@ -76,8 +77,8 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.41(当前)** — **C 后端 C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印(floatStr 对齐 + JS 最短往返)**——**cc 差分腿覆盖 = wide 腿全形态**(四种子 100%,含 panic 消息逐字对齐);挖出检查器第六处 valuePos 缺位(内建调用实参)与 float→int 饱和截断缺口
-- **v0.42 方向** — C4:`with ffi` 兑现(dlopen)、Result 形态、交叉编译 -static(需交叉工具链)
+- **v0.42(当前)** — **C4 `with ffi` 兑现**:`extern "库" fn 符号(...) -> T;` 声明(隐含 ffi 效果,调用方须 with ffi——效果即门禁);JS 引擎 M4001 诚实拒绝,C 后端 dlopen/dlsym 真调用(失败 M4013);`ming cc --static`;Result 形态入库预留
+- **v0.43 方向** — ffi 面扩大(字符串/结构参数)、Result 进 C 面、`with unsafe` 受限指针块设计
 - **更远(北星对齐)** — async 运行时;eval;RSA/国密
 
 ## 设计原则(全文见 design.md)
@@ -91,4 +92,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.41.0:字节码 VM + **WASM 分层(v0.39 真正复活)** + **C 后端 C1/C2/C3(ming cc:数值/str/Vec/Map/Option/f64 打印,cc 差分腿 = 解释引擎全形态)** + **自举工具 mingkit/engdiff(Ming 自写)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM + ming build 可移植产物+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈80%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。`with ffi` 设计定稿(design.md §6.9,C4 兑现)。
+v0.42.0:字节码 VM + **WASM 分层(v0.39 真正复活)** + **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)** + **`with ffi` 兑现(extern fn 声明 + 效果门禁 + dlopen/dlsym)** + **自举工具 mingkit/engdiff(Ming 自写)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM + ming build 可移植产物+ 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈80%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。
