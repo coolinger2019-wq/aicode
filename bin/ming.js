@@ -16,12 +16,13 @@ import { findManifest, initProject } from '../src/manifest.js';
 import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
 import { compile } from '../src/compiler.js';
+import { serializeArtifact } from '../src/artifact.js';
 import { emitC } from '../src/cbackend.js';
 import { Unsupported } from '../src/wasm.js';
 import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.42.0';
+export const VERSION = '0.43.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -420,11 +421,12 @@ function cmdBuild(flags) {
   const t0 = Date.now();
   const checker = new Checker(files[0]);
   let ok = true;
+  let checkResult = null;
   const diags = [];
   try {
-    const result = checker.run();
-    for (const m of result.modules) cacheSourceLines(m.file, m.src);
-    diags.push(...result.diags);
+    checkResult = checker.run();
+    for (const m of checkResult.modules) cacheSourceLines(m.file, m.src);
+    diags.push(...checkResult.diags);
   } catch (e) {
     if (e instanceof MingError) { diags.push(...e.diags); ok = false; }
     else throw e;
@@ -444,35 +446,58 @@ function cmdBuild(flags) {
     const warns = sorted.filter(d => d.severity === SEVERITY.WARNING).length;
     process.stdout.write(`${proj.project.name} v${proj.project.version}:${ok ? '构建通过' : '构建失败'}(${errs} 错误,${warns} 警告,${Date.now() - t0}ms)\n`);
   }
-  // v0.38:dist 可移植产物(源 + 运行时 8 模块拷贝 + launcher;Node >= 18 零依赖)
+  // v0.39 真 AOT:字节码 JSON 产物(加载端跳过 Checker 与编译器);受限形态回退源码模式
   if (ok && !flags.has('no-dist')) {
     const distDir = path.join(path.dirname(files[0]), 'dist');
     fs.rmSync(distDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
-    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js']) {
+    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js']) {
       fs.copyFileSync(path.join(__dirname, '..', 'src', m), path.join(distDir, 'runtime', m));
     }
-    fs.copyFileSync(files[0], path.join(distDir, 'app.ming'));
+    // AOT 资格:无 sync(spawn 子任务需源码编译)、无用户 trait/impl 方法分发
+    let aotErr = null;
+    try {
+      // v0.43 修复:效果在 entry.sig.effects(entry 本身无 effects 字段)——此前恒 false,
+      // spawn 程序误进 AOT,运行期 worker 读 '<artifact>' 源路径 → ENOENT
+      const usesSync = checkResult.modules.some(m => [...m.items.values()].some(e => {
+        const eff = e.sig?.effects ?? e.effects;
+        return eff instanceof Set && eff.has('sync');
+      }));
+      if (usesSync) throw new Error('程序使用 sync 并发(spawn 子任务由源码编译)');
+      const compiled = compile(checkResult);
+      const artifact = serializeArtifact(compiled);
+      artifact.builtBy = VERSION;
+      fs.writeFileSync(path.join(distDir, 'app.bytecode.json'), JSON.stringify(artifact));
+    } catch (e) {
+      aotErr = e.message;
+    }
     const launcher = [
       '#!/usr/bin/env node',
-      '// Ming 可移植产物(v0.38):Node >= 18,零依赖;用法:node ming-app.mjs [-- args]',
-      "import { Checker } from './runtime/checker.js';",
+      '// Ming 可移植产物(v0.39):Node >= 18,零依赖;用法:node ming-app.mjs [-- args]',
       "import { VMInterp } from './runtime/vm.js';",
       "import * as fs from 'node:fs';",
       "import * as path from 'node:path';",
       "import { fileURLToPath } from 'node:url';",
       '',
       'const here = path.dirname(fileURLToPath(import.meta.url));',
-      "const file = path.join(here, 'app.ming');",
-      'const src = fs.readFileSync(file, "utf8");',
-      'const checker = new Checker(file, () => src);',
-      'const result = checker.run();',
-      "const errs = result.diags.filter(d => d.severity === 'error');",
-      'if (errs.length) {',
-      "  process.stderr.write(errs.map(d => d.code + ': ' + d.message).join('\\n') + '\\n');",
-      '  process.exit(1);',
+      "const bjson = path.join(here, 'app.bytecode.json');",
+      "const mingFile = path.join(here, 'app.ming');",
+      'let vm;',
+      'if (fs.existsSync(bjson)) {',
+      '  const artifact = JSON.parse(fs.readFileSync(bjson, "utf8"));',
+      '  vm = VMInterp.fromArtifact(artifact, {});',
+      '} else {',
+      "  const { Checker } = await import('./runtime/checker.js');",
+      '  const src = fs.readFileSync(mingFile, "utf8");',
+      '  const checker = new Checker(mingFile, () => src);',
+      '  const result = checker.run();',
+      "  const errs = result.diags.filter(d => d.severity === 'error');",
+      '  if (errs.length) {',
+      "    process.stderr.write(errs.map(d => d.code + ': ' + d.message).join('\\n') + '\\n');",
+      '    process.exit(1);',
+      '  }',
+      '  vm = new VMInterp(result, {});',
       '}',
-      'const vm = new VMInterp(result, {});',
       'try {',
       "  const pargs = process.argv.slice(2);",
       "  if (pargs[0] === '--') pargs.shift();",
@@ -484,7 +509,18 @@ function cmdBuild(flags) {
       '}',
     ].join('\n');
     fs.writeFileSync(path.join(distDir, 'ming-app.mjs'), launcher);
-    process.stdout.write('产物:dist/(app.ming + runtime 8 模块 + ming-app.mjs;用法:node dist/ming-app.mjs)\n');
+    if (aotErr) {
+      fs.copyFileSync(files[0], path.join(distDir, 'app.ming'));
+      process.stderr.write(`AOT 不可用:${aotErr};已回退源码模式(产物含明文源)\n`);
+      process.stdout.write('产物:dist/(app.ming 源码模式 + runtime + ming-app.mjs)\n');
+    } else {
+      if (flags.has('with-source')) {
+        fs.copyFileSync(files[0], path.join(distDir, 'app.ming'));
+        process.stdout.write('产物:dist/(app.bytecode.json 字节码 + runtime + ming-app.mjs;--with-source 附源码)\n');
+      } else {
+        process.stdout.write('产物:dist/(app.bytecode.json 字节码,无明文源 + runtime + ming-app.mjs;用法:node dist/ming-app.mjs)\n');
+      }
+    }
   }
   return ok ? 0 : 1;
 }

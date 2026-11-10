@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.42.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.43.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -995,12 +995,27 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.39(已完成) | **C 后端 C1**(ming cc:eligible 数值函数 → C + GCC -O2,资格分析复用;顺带修复 wasm 四项休眠 bug 使端到端真正复活)+ 模糊器加深(f64/match/loop/Option/方法面 + C 第 4 腿)+ `with ffi` 设计定稿(design.md §6.9,不实现) |
 | v0.40(已完成) | **C2:str/Vec[i64] 入 C**(cat/eq/char_len/pad/slice/replace,下标 OOB,push/for-in/mut 传参值语义,match 含 guard)+ engdiff 自举工具 + 模糊器 cc 族拓宽 |
 | v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;**cc 差分腿 = 解释引擎全形态**,四种子 100%) |
-| v0.42(已完成) | **C4:with ffi 兑现**(extern "库" fn 声明,隐含 ffi 效果,调用方须 with ffi;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym 真调用,M4013 失败路径;ming cc --static)|
+| v0.42(已完成) | **C4:with ffi 兑现**(extern "库" fn 声明,隐含 ffi 效果,调用方须 with ffi;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym 真调用,M4013 失败路径;ming cc --static) |
+| v0.43(已完成) | **ffi 字符串桥 + Result[i64,str] 进 C 面 + with unsafe 设计定稿**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点) |
 | 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.43.0(2026-11-10)
+
+- **ffi 字符串桥**:extern 声明支持 str 参数/返回(ming_str ↔ NUL 结尾 C 串:ming_cstr/ming_str_from_c;C ABI 槽签名 const char*)。实测 msvcrt strlen("hello ming")=10、"中文"=6(UTF-8 字节口径)。
+- **Result[i64, str] 进 C 面**:Ok/Err 构造、is_ok/is_err/unwrap(M4006 `对 Err(...) 调用 unwrap()` 逐字)/unwrap_err(M4006 `对 Ok(...) 调用 unwrap_err()`)/unwrap_or;值语义 = 头部拷贝(错误串缓冲不可变)。
+- **with ffi 的用户函数参与 C 编译**:资格分析新增 opts.ffi(效果 ⊆ {ffi} 放行;wasm 路径不受影响)+ extern fn 预标记(dlsym 槽替代桩体)。
+- **资格基线修正(连带修复)**:
+  1. isEligibleShape 的 numOk 基线恢复 wasm 既有形状(str/Vec/Map 无条件;opt/res 由 ext2/ext3 控制)——此前误将 str/vec 条件化,导致 §33 的 wasm 直调测试失去实例化;
+  2. prelude 构造器(Some/None/Ok/Err)不再被 walkCalls 当作未解析调用 —— 此前带构造器的函数在不动点被整批降级(C 后端 ffi 函数即此遭遇);
+  3. ri64 进方法 base 临时求值与防御零值清单。
+- **`with unsafe` 设计定稿**(design.md §6.10,不实现):块形态优先于函数形态;Ptr[mut u8]/Ptr[u8] 不透明指针;块内 load/store/offset/is_null 四操作;空指针 UB 诚实声明(--checked-ptr 调试模式);unsafe 函数永不进 wasm/C 快路径(效果门禁一致)。
+- 测试:411 项全绿(§38 新增五项:Result 四方一致/M4006 Err 首行对齐/ffi str 桥/JS M4001 拒绝/模糊快档)。
+
+- **真 AOT 第一块(字节码产物,并入本版)**:新增 src/artifact.js——编译产物(函数指令流/常量池/span 表/wasm 分层)序列化为 app.bytecode.json(池内 `__tag` 包装值单列编码);`VMInterp.fromArtifact` 加载端跳过 Checker 与编译器直接执行(树引擎不支持产物);`ming build` 默认产出纯字节码 dist(无明文 .ming),`--with-source` 附源码;用户 trait/impl 方法分发由 serializeArtifact 显式拒绝并回退源码模式。修复:sync 回退检测此前查错字段(entry.effects 不存在,效果在 entry.sig.effects)——含 spawn 程序误进 AOT 后运行期 worker 读占位源路径 ENOENT。测试:413 项全绿(新增 AOT 无明文源/--with-source/sync 回退三项)。
 
 ### v0.42.0(2026-11-10)
 

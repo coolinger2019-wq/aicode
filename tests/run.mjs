@@ -1491,8 +1491,11 @@ fn main() with io, fs {
     '}',
   ].join('\n'));
   const build = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 60000 });
-  const distOk = build.status === 0 && fs.existsSync(path.join(proj, 'dist', 'ming-app.mjs')) && fs.existsSync(path.join(proj, 'dist', 'runtime', 'vm.js')) && fs.existsSync(path.join(proj, 'dist', 'app.ming'));
-  check('v38:ming build 产出 dist', distOk, 'code=' + build.status + ' out=' + (build.stdout ?? '').slice(-100));
+  const distOk = build.status === 0 && fs.existsSync(path.join(proj, 'dist', 'ming-app.mjs')) && fs.existsSync(path.join(proj, 'dist', 'runtime', 'vm.js')) && fs.existsSync(path.join(proj, 'dist', 'app.bytecode.json'));
+  check('v38/v39:ming build 产出 dist(字节码)', distOk, 'code=' + build.status + ' out=' + (build.stdout ?? '').slice(-100));
+  check('v39:AOT 产物无明文源', !fs.existsSync(path.join(proj, 'dist', 'app.ming')), 'dist 含 app.ming');
+  const withSrc = spawnSync(process.execPath, [MING, 'build', '--with-source'], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+  check('v39:--with-source 附源码', withSrc.status === 0 && fs.existsSync(path.join(proj, 'dist', 'app.ming')), 'code=' + withSrc.status);
   const run = (args2, cwd2) => spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs'), ...args2], { encoding: 'utf8', cwd: cwd2 ?? proj, timeout: 60000 });
   const r1 = run(['--', 'alice']);
   check('v38:launcher args 透传 + 跨 cwd', r1.status === 0 && r1.stdout === 'hi, alice\n1\n', 'stdout=' + JSON.stringify(r1.stdout) + ' stderr=' + (r1.stderr ?? '').slice(0, 150));
@@ -1841,6 +1844,89 @@ fn main() with io, fs {
   // 模糊器 v0.42 快速档
   const fuzz42 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '40042'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
   check('v42:模糊器快档(40 程序多后端一致)', fuzz42.status === 0 && /分歧 0/.test(fuzz42.stdout ?? ''), 'code=' + fuzz42.status + ' tail=' + (fuzz42.stdout ?? '').slice(-150));
+}
+
+// ===================== 38. v0.43:ffi str 桥 + Result 进 C 面 =====================
+{
+  const cdir = path.join(TMP, 'cc43');
+  fs.mkdirSync(cdir, { recursive: true });
+
+  // Result[i64,str] 纯程序(无 ffi):JS 三引擎与 C 全字节一致 + M4006 Err 消息对齐
+  const resSrc = [
+    'fn parse_pos(n: i64) -> Result[i64, str] {',
+    '    if n < 0 { return Err("负数"); }',
+    '    if n > 100 { return Err("过大"); }',
+    '    return Ok(n);',
+    '}',
+    'fn main() with io {',
+    '    print(str(parse_pos(42).unwrap()));',
+    '    print(parse_pos(-1).unwrap_err());',
+    '    print(str(parse_pos(200).unwrap_or(-2)));',
+    '    if parse_pos(7).is_ok() { print(str(1)); }',
+    '    if parse_pos(-1).is_err() { print(str(2)); }',
+    '    let r: Result[i64, str] = Err("boom");',
+    '    print(r.unwrap_err());',
+    '}',
+  ].join('\n');
+  const resFile = path.join(cdir, 'res43.ming');
+  fs.writeFileSync(resFile, resSrc);
+  const buildR = spawnSync(process.execPath, [MING, 'cc', resFile, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  const exeR = path.join(cdir, 'out', 'res43' + (process.platform === 'win32' ? '.exe' : ''));
+  const rcR = spawnSync(exeR, [], { encoding: 'utf8', timeout: 60000 });
+  const rjR = runMing(['run', resFile]);
+  check('v43:Result 四方一致(Ok/Err/unwrap/unwrap_err/unwrap_or)', buildR.status === 0 && rcR.status === 0 && rcR.stdout === rjR.stdout && rjR.code === 0,
+    'build=' + buildR.status + ' cc=' + JSON.stringify(rcR.stdout) + ' js=' + JSON.stringify(rjR.stdout));
+
+  // M4006:对 Err(...) 调用 unwrap() —— 首行逐字对齐
+  const pu = path.join(cdir, 'punwrap.ming');
+  fs.writeFileSync(pu, 'fn main() with io { let r: Result[i64, str] = Err("bad"); print(str(r.unwrap())); }');
+  const rju = runMing(['run', pu]);
+  spawnSync(process.execPath, [MING, 'cc', pu, '--no-run', '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  const exeU = path.join(cdir, 'out', 'punwrap' + (process.platform === 'win32' ? '.exe' : ''));
+  const rcu = fs.existsSync(exeU) ? spawnSync(exeU, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stderr: '' };
+  const fl = (s) => (s ?? '').split('\n')[0];
+  check('v43:M4006 Err unwrap 首行对齐', rju.code === 101 && rcu.status === 101 && fl(rju.stderr) === fl(rcu.stderr),
+    'js=' + JSON.stringify(fl(rju.stderr)) + ' cc=' + JSON.stringify(fl(rcu.stderr)));
+
+  // ffi str 桥:extern strlen + with ffi 的用户函数参与 C 编译(Windows;其他平台跳过)
+  if (process.platform === 'win32') {
+    const ffiSrc43 = [
+      'extern "msvcrt" fn strlen(s: str) -> i64;',
+      'fn slen(s: str) -> i64 with ffi {',
+      '    return strlen(s);',
+      '}',
+      'fn main() with io, ffi {',
+      '    print(str(slen("hello ming")));',
+      '    print(str(slen("中文")));',
+      '}',
+    ].join('\n');
+    const ff = path.join(cdir, 'ffi43.ming');
+    fs.writeFileSync(ff, ffiSrc43);
+    const rjf = runMing(['run', ff]);
+    check('v43:ffi 程序 JS 引擎 M4001 拒绝', rjf.code === 101 && (rjf.stderr ?? '').includes('ffi 调用需要 C 后端'), 'code=' + rjf.code);
+    const buildF = spawnSync(process.execPath, [MING, 'cc', ff, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+    const exeF = path.join(cdir, 'out', 'ffi43.exe');
+    const rcF = fs.existsSync(exeF) ? spawnSync(exeF, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+    // strlen 按字节:"hello ming"=10,"中文"=6(UTF-8);with ffi 的用户函数 slen 参与 C 编译
+    check('v43:ffi str 桥(strlen + with ffi 用户函数)', buildF.status === 0 && rcF.status === 0 && rcF.stdout === '10\n6\n',
+      'build=' + buildF.status + ' out=' + JSON.stringify(rcF.stdout));
+  } else {
+    check('v43:ffi str 桥(非 Windows 跳过)', true);
+  }
+
+  // v0.43 修复:sync 程序自动回退源码模式(此前效果检测查错字段 → 误进 AOT → 运行期 worker ENOENT)
+  const syncProj = path.join(cdir, 'syncproj');
+  fs.mkdirSync(syncProj, { recursive: true });
+  fs.writeFileSync(path.join(syncProj, 'app.ming'), ['fn fib(n: i64) -> i64 {', '    if n < 2 { return n; }', '    return fib(n - 1) + fib(n - 2);', '}', 'fn main() with io, sync {', '    let h = std.sync.spawn(fib, 10);', '    print(str(std.sync.join(h).unwrap()));', '}', ''].join('\n'));
+  fs.writeFileSync(path.join(syncProj, 'ming.toml'), ['[project]', 'name = "syncfallback"', 'version = "0.1.0"', 'entry = "app.ming"', ''].join('\n'));
+  const bs = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: syncProj, timeout: 60000 });
+  const fellBack = bs.status === 0 && fs.existsSync(path.join(syncProj, 'dist', 'app.ming')) && !fs.existsSync(path.join(syncProj, 'dist', 'app.bytecode.json'));
+  const rs2 = fellBack ? spawnSync(process.execPath, [path.join(syncProj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+  check('v43:sync 程序回退源码模式', fellBack && rs2.status === 0 && rs2.stdout === '55\n', 'build=' + bs.status + ' out=' + JSON.stringify(rs2.stdout) + ' stderr=' + (bs.stderr ?? '').slice(0, 100));
+
+  // 模糊器快档
+  const fuzz43 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '40043'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v43:模糊器快档(40 程序多后端一致)', fuzz43.status === 0 && /分歧 0/.test(fuzz43.stdout ?? ''), 'code=' + fuzz43.status + ' tail=' + (fuzz43.stdout ?? '').slice(-150));
 }
 
 // ===================== 汇总 =====================

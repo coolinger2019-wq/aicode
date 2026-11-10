@@ -10,6 +10,7 @@ import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEq
 import { compile, OP, BIN } from './compiler.js';
 import { tint, tfloat, T_STR, T_BOOL, INT_TYPES, typeStr, resolveT } from './checker.js';
 import { MATH_IMPORTS } from './wasm.js';
+import * as artifactMod from './artifact.js';
 
 export function resolveConst(c) {
   if (c && c.__tag === 'str') {
@@ -29,12 +30,19 @@ const ITER_VAL = { done: false, value: null }; // 迭代器复用的结果对象
 const ITER_DONE = { done: true }; // 启动时读一次:每指令访问 process.env 是性能陷阱
 
 export class VMInterp extends Interp {
+  // v0.39 真 AOT:从字节码产物加载,跳过 Checker 与编译器(树引擎不可用:需要完整 AST)
+  static fromArtifact(artifact, opts = {}) {
+    const { deserializeArtifact, makeCheckLike } = artifactMod;
+    const compiled = deserializeArtifact(artifact);
+    return new VMInterp(makeCheckLike(compiled), { ...opts, precompiled: compiled });
+  }
+
   constructor(checkResult, opts = {}) {
     super(checkResult, opts);
     this.tree = opts.tree ?? false; // 对照模式:仍用树引擎
     this.noWasm = opts.noWasm ?? false;
     if (this.tree) { this.compiled = null; return; }
-    this.compiled = compile(checkResult);
+    this.compiled = opts.precompiled ?? compile(checkResult);
     // 预解析常量池:避免每条 CONST 都做 __tag 解包
     this.resolvedPool = this.compiled.pool.map(resolveConst);
     this.valueStack = [];

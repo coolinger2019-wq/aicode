@@ -77,8 +77,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 路线图
 
-- **v0.42(当前)** — **C4 `with ffi` 兑现**:`extern "库" fn 符号(...) -> T;` 声明(隐含 ffi 效果,调用方须 with ffi——效果即门禁);JS 引擎 M4001 诚实拒绝,C 后端 dlopen/dlsym 真调用(失败 M4013);`ming cc --static`;Result 形态入库预留
-- **v0.43 方向** — ffi 面扩大(字符串/结构参数)、Result 进 C 面、`with unsafe` 受限指针块设计
+- **v0.43(当前)** — **ffi 字符串桥(str ↔ C 串)+ Result[i64,str] 进 C 面 + ffi 效果函数参与 C 编译**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点)+ `with unsafe` 受限指针块设计定稿(design.md §6.10)
+*（本版同时并入另一窗口成果:真 AOT 字节码产物——ming build 默认纯字节码 dist,无明文源;--with-source 附源码;spawn/trait 自动回退源码模式）*
+- **v0.44 方向** — unsafe 块实现(Ptr 类型/load/store/offset)、ffi Ptr 交集、--checked-ptr
 - **更远(北星对齐)** — async 运行时;eval;RSA/国密
 
 ## 设计原则(全文见 design.md)

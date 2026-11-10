@@ -24,7 +24,7 @@ function cstr(text) {
     .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 }
 
-const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', str: 'ming_str', vi64: 'ming_vec', mi64: 'ming_map', oi64: 'ming_opt' };
+const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', str: 'ming_str', vi64: 'ming_vec', mi64: 'ming_map', oi64: 'ming_opt', ri64: 'ming_res' };
 const CSUF = { i64: 'LL', u64: 'ULL', f64: '' };
 const FMT = { i64: '%lld', u64: '%llu' };
 
@@ -49,6 +49,7 @@ function mingTyNum(t) {
   if (t.k === 'vec' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return 'vi64';
   if (t.k === 'map' && t.kt?.k === 'str' && t.vt?.k === 'int' && t.vt?.bits === 64 && t.vt?.signed) return 'mi64';
   if (t.k === 'opt' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return 'oi64';
+  if (t.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str') return 'ri64';
   return null;
 }
 
@@ -83,6 +84,12 @@ function annoTarget(t) {
       if (el && el.k === 'int' && el.bits === 64 && el.signed) return { k: 'opt', el };
       return null;
     }
+    if ((n === 'Result') && t.args?.length === 2) {
+      const ok = annoTarget(t.args[0]);
+      const er = annoTarget(t.args[1]);
+      if (ok?.k === 'int' && ok.bits === 64 && ok.signed && er?.k === 'str') return { k: 'res' };
+      return null;
+    }
     return ANNO_PRIM[n] ?? null;
   }
   if (t.k === 'int' || t.k === 'float') return { k: t.k, bits: t.bits, signed: !!t.signed };
@@ -99,6 +106,7 @@ function annoTy(t) {
   if (a.k === 'vec') return 'vi64';
   if (a.k === 'map') return 'mi64';
   if (a.k === 'opt') return 'oi64';
+  if (a.k === 'res') return 'ri64';
   return mingTyNum(a);
 }
 
@@ -200,6 +208,12 @@ class CEmit {
             if (m === 'unwrap' || m === 'unwrap_or') return 'i64';
             return null;
           }
+          if (bt === 'ri64') {
+            if (m === 'is_ok' || m === 'is_err') return 'bool';
+            if (m === 'unwrap' || m === 'unwrap_or') return 'i64';
+            if (m === 'unwrap_err') return 'str';
+            return null;
+          }
           if (e.callee.base.nt === 'Ident') {
             const t = ANNO_PRIM[e.callee.base.name];
             if (t && (m === 'max_value' || m === 'min_value')) return t.signed ? 'i64' : 'u64';
@@ -208,9 +222,11 @@ class CEmit {
           return null;
         }
         if (e.callee.nt !== 'Ident') return null;
-        // 裸枚举构造器:Option[i64] 的 Some/None(C3)
+        // 裸枚举构造器:Option[i64] 的 Some/None 与 Result[i64,str] 的 Ok/Err(C3/C3.5)
         if (e.callee.name === 'Some' && e.args?.length === 1 && this.inferTy(e.args[0], ctx) === 'i64') return 'oi64';
         if (e.callee.name === 'None' && (!e.args || e.args.length === 0)) return 'oi64';
+        if (e.callee.name === 'Ok' && e.args?.length === 1 && this.inferTy(e.args[0], ctx) === 'i64') return 'ri64';
+        if (e.callee.name === 'Err' && e.args?.length === 1 && this.inferTy(e.args[0], ctx) === 'str') return 'ri64';
         const entry = this.resolveEntry(ctx, e.callee.name);
         if (entry?.kind !== 'fn') return null;
         return mingTyNum(entry.sig?.ret);
@@ -639,7 +655,7 @@ class CEmit {
         baseIsIdent = true;
       } else {
         bt = this.inferTy(e.callee.base, ctx);
-        if (bt === 'str' || bt === 'vi64' || bt === 'mi64' || bt === 'oi64') {
+        if (bt === 'str' || bt === 'vi64' || bt === 'mi64' || bt === 'oi64' || bt === 'ri64') {
           // 非 Ident base:求值一次入临时(方法体可能引用 baseText 两次,如 unwrap_or)
           const txt = this.emitExpr(e.callee.base, bt, ctx);
           baseText = this.newTmp(ctx, bt, txt);
@@ -692,6 +708,15 @@ class CEmit {
         if (m === 'unwrap_or' && e.args.length === 1) return { call: `(${baseText}.some ? ${baseText}.v : ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'i64' };
         throw new Unsupported('Option.' + m + '(C3 面:unwrap/unwrap_or/is_some/is_none)');
       }
+      if (bt === 'ri64') {
+        const SPm = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
+        if (m === 'is_ok' && e.args.length === 0) return { call: `(${baseText}.ok)`, retTy: 'bool' };
+        if (m === 'is_err' && e.args.length === 0) return { call: `(!${baseText}.ok)`, retTy: 'bool' };
+        if (m === 'unwrap' && e.args.length === 0) return { call: `ming_res_unwrap(${baseText}, ${SPm})`, retTy: 'i64' };
+        if (m === 'unwrap_err' && e.args.length === 0) return { call: `ming_res_unwrap_err(${baseText}, ${SPm})`, retTy: 'str' };
+        if (m === 'unwrap_or' && e.args.length === 1) return { call: `(${baseText}.ok ? ${baseText}.v : ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'i64' };
+        throw new Unsupported('Result.' + m + '(C3.5 面:unwrap/unwrap_err/unwrap_or/is_ok/is_err)');
+      }
     }
     // 类型级数值函数:i64.max_value() / u64.min_value() / f64.infinity() 等
     if (e.callee.nt === 'Field' && e.callee.base.nt === 'Ident') {
@@ -715,14 +740,22 @@ class CEmit {
       }
       throw new Unsupported('类型级 ' + prim + '.' + tlf);
     }
-    // 裸枚举构造器:Option[i64] 的 Some/None(C3;Ok/Err 属 Result,C4)
-    if (e.callee.nt === 'Ident' && (e.callee.name === 'Some' || e.callee.name === 'None')) {
+    // 裸枚举构造器:Option[i64] 的 Some/None 与 Result[i64,str] 的 Ok/Err(C3/C3.5)
+    if (e.callee.nt === 'Ident' && ['Some', 'None', 'Ok', 'Err'].includes(e.callee.name)) {
       if (e.callee.name === 'None') {
         if (e.args?.length) throw new Unsupported('None 带参数');
         return { call: 'ming_opt_none()', retTy: 'oi64' };
       }
-      if (e.args?.length !== 1) throw new Unsupported('Some 参数数');
-      return { call: `ming_opt_some(${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
+      if (e.callee.name === 'Some') {
+        if (e.args?.length !== 1) throw new Unsupported('Some 参数数');
+        return { call: `ming_opt_some(${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
+      }
+      if (e.callee.name === 'Ok') {
+        if (e.args?.length !== 1) throw new Unsupported('Ok 参数数');
+        return { call: `ming_res_ok(${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'ri64' };
+      }
+      if (e.args?.length !== 1) throw new Unsupported('Err 参数数');
+      return { call: `ming_res_err(${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'ri64' };
     }
     if (e.callee.nt !== 'Ident') throw new Unsupported('调用目标 ' + e.callee.nt);
     const entry = this.resolveEntry(ctx, e.callee.name);
@@ -730,15 +763,18 @@ class CEmit {
     const sig = entry.sig;
     // v0.42:extern fn(C4 FFI)—— dlsym 槽直调;仅数值签名
     if (entry.extern) {
+      // v0.43:str 参数/返回进 ffi 面(ming_str ↔ NUL 结尾 C 串)
       const args = e.args.map((ar, i) => {
         const pt = mingTyNum(sig.params[i]?.type);
-        if (!pt || pt === 'str' || pt === 'vi64' || pt === 'mi64' || pt === 'oi64') throw new Unsupported('extern 参数类型 ' + i + '(C4 仅数值)');
-        return this.emitExpr(ar, pt, ctx);
+        if (!pt || pt === 'vi64' || pt === 'mi64' || pt === 'oi64' || pt === 'ri64') throw new Unsupported('extern 参数类型 ' + i + '(v1 面仅数值/str)');
+        const txt = this.emitExpr(ar, pt, ctx);
+        return pt === 'str' ? `ming_cstr(${txt})` : txt;
       });
       const rt = sig.ret?.k === 'unit' ? null : mingTyNum(sig.ret);
       if (rt === null && sig.ret?.k !== 'unit') throw new Unsupported('extern 返回类型');
-      if (rt && (rt === 'str' || rt === 'vi64' || rt === 'mi64' || rt === 'oi64')) throw new Unsupported('extern 返回类型(C4 仅数值)');
-      return { call: `ming_ffi_${e.callee.name}(${args.join(', ')})`, retTy: rt };
+      if (rt && (rt === 'vi64' || rt === 'mi64' || rt === 'oi64' || rt === 'ri64')) throw new Unsupported('extern 返回类型(v1 面仅数值/str)');
+      const call = `ming_ffi_${e.callee.name}(${args.join(', ')})`;
+      return { call: rt === 'str' ? `ming_str_from_c(${call})` : call, retTy: rt };
     }
     const idx = this.compiled.entryFnIdx?.get(entry);
     if (idx === undefined || !this.eligible.has(idx)) throw new Unsupported('被调方不 eligible: ' + e.callee.name);
@@ -1080,8 +1116,8 @@ class CEmit {
   run() {
     // v0.39:eligible 为空也继续 —— 只有 main 的程序(main 本身带 io 不 eligible)
     // 只要 main 具备 AOT 形态就是合法的 C1 产物;main 形态不符由发射期报 Unsupported
-    // v0.41(C3):sigExt2 = Map[str,i64] 与 Option[i64] 进入 C 面(全消费面)
-    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true });
+    // v0.43(C3.5):sigExt3 = Result[i64,str] 进入 C 面;ffi = 效果 ⊆ {ffi} 的函数可编译
+    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true, sigExt3: true, ffi: true });
     const fns = this.compiled.functions;
 
     // main(entry 模块的 main;无参)
@@ -1094,9 +1130,9 @@ class CEmit {
     const mainRet = mainFn.entry.sig?.ret?.k === 'unit' ? null : mingTyNum(mainFn.entry.sig?.ret);
     if (mainFn.entry.sig?.ret?.k !== 'unit' && !mainRet) throw new Unsupported('main 返回类型');
 
-    // eligible 函数体(发射失败 → 整体回落)
+    // eligible 函数体(发射失败 → 整体回落);extern fn 跳过(体为桩,dlsym 槽替代)
     const bodies = [];
-    const order = [...this.eligible.keys()].sort((a, b) => a - b);
+    const order = [...this.eligible.keys()].sort((a, b) => a - b).filter(fi => fns[fi]?.entry?.decl?.nt !== 'ExternFnDecl');
     for (const fi of order) {
       const f = fns[fi];
       const sig = f.entry.sig;
@@ -1114,6 +1150,9 @@ class CEmit {
       if (retTy) {
         ctx.line(retTy === 'str' ? 'return (ming_str){0, 0};'
           : retTy === 'vi64' ? 'return (ming_vec){0, 0, 0};'
+          : retTy === 'mi64' ? 'return (ming_map){0, 0, 0};'
+          : retTy === 'oi64' ? 'return (ming_opt){0, 0};'
+          : retTy === 'ri64' ? 'return (ming_res){0, 0, {0, 0}};'
           : 'return 0;');
       }
       ctx.close('}');
@@ -1144,8 +1183,10 @@ class CEmit {
     }
     const ffiSlots = externs.map((entry) => {
       const sig = entry.sig;
-      const rt = sig.ret?.k === 'unit' ? 'void' : CTYPE[mingTyNum(sig.ret)];
-      const ps = sig.params.map((p) => CTYPE[mingTyNum(p.type)]).join(', ');
+      // v0.43:C ABI 槽签名(str → const char*)
+      const slotTy = (t) => (mingTyNum(t) === 'str' ? 'const char*' : CTYPE[mingTyNum(t)]);
+      const rt = sig.ret?.k === 'unit' ? 'void' : slotTy(sig.ret);
+      const ps = sig.params.map((p) => slotTy(p.type)).join(', ');
       return `static ${rt} (*ming_ffi_${entry.decl.name})(${ps}) = 0; /* extern ${entry.extern.lib ?? '<进程>'}.${entry.decl.name} */`;
     });
     const ffiBinds = externs.map((entry) =>
@@ -1171,6 +1212,7 @@ class CEmit {
       'typedef struct { const unsigned char* k; long long kn; long long v; } ming_kv;',
       'typedef struct { ming_kv* d; long long n; long long cap; } ming_map;',
       'typedef struct { long long some; long long v; } ming_opt;',
+      'typedef struct { long long ok; long long v; ming_str e; } ming_res;',
       '',
       'static void* ming_alloc(size_t n) {',
       '    void* p = malloc(n ? n : 1);',
@@ -1180,6 +1222,41 @@ class CEmit {
       '',
       'static ming_opt ming_opt_some(long long v) { ming_opt o; o.some = 1; o.v = v; return o; }',
       'static ming_opt ming_opt_none(void) { ming_opt o; o.some = 0; o.v = 0; return o; }',
+      '',
+      'static ming_res ming_res_ok(long long v) { ming_res r; r.ok = 1; r.v = v; r.e.n = 0; r.e.p = 0; return r; }',
+      'static ming_res ming_res_err(ming_str e) { ming_res r; r.ok = 0; r.v = 0; r.e = e; return r; }',
+      '',
+      'static long long ming_res_unwrap(ming_res r, const char* f, int l, int c) {',
+      '    if (!r.ok) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4006[unwrap-failed]: 对 Err(%.*s) 调用 unwrap()\\n", f, l, c, (int)r.e.n, r.e.p);',
+      '        exit(101);',
+      '    }',
+      '    return r.v;',
+      '}',
+      '',
+      'static ming_str ming_res_unwrap_err(ming_res r, const char* f, int l, int c) {',
+      '    if (r.ok) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4006[unwrap-failed]: 对 Ok(%lld) 调用 unwrap_err()\\n", f, l, c, r.v);',
+      '        exit(101);',
+      '    }',
+      '    return r.e;',
+      '}',
+      '',
+      '/* v0.43:ffi 字符串桥(ming_str ↔ NUL 结尾 C 串) */',
+      'static char* ming_cstr(ming_str s) {',
+      '    char* d = (char*)ming_alloc((size_t)s.n + 1);',
+      '    if (s.n) memcpy(d, s.p, (size_t)s.n);',
+      '    d[s.n] = 0;',
+      '    return d;',
+      '}',
+      '',
+      'static ming_str ming_str_from_c(const char* c) {',
+      '    long long n = c ? (long long)strlen(c) : 0;',
+      '    unsigned char* d = (unsigned char*)ming_alloc((size_t)n + 1);',
+      '    if (n) memcpy(d, c, (size_t)n);',
+      '    d[n] = 0;',
+      '    ming_str s; s.p = d; s.n = n; return s;',
+      '}',
       '',
       'static long long ming_f2i_sat(double x) {',
       '    /* as i64:向零截断 + 饱和(NaN → min;与 interp castValue 逐字对齐) */',

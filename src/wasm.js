@@ -146,7 +146,7 @@ export function analyzeEligibility(check, compiled, opts = {}) {
   return c.analyze(opts);
 }
 
-class WasmCompiler {
+export class WasmCompiler {
   constructor(check, compiled) {
     this.check = check;
     this.compiled = compiled;
@@ -235,20 +235,34 @@ class WasmCompiler {
   analyze(opts = {}) {
     const fns = this.compiled.functions;
     const numericOnly = !!opts.numericOnly;
+    this.ffiEffectsAllowed = !!opts.ffi; // v0.43:C 后端允许效果 ⊆ {ffi} 的函数
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
-      if (f && this.isEligibleShape(f) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2))) {
+      if (f && this.isEligibleShape(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3))) {
         this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
       }
     }
-    // 资格不动点:被调方回落则调用方回落
+    // v0.43:extern fn(FFI 声明)预标记为 eligible(体为合成桩,C 后端用 dlsym 槽替代)
+    if (this.ffiEffectsAllowed) {
+      for (let i = 0; i < fns.length; i++) {
+        const f = fns[i];
+        if (f?.entry?.decl?.nt === 'ExternFnDecl' && this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3)) {
+          this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
+        }
+      }
+    }
+    // 资格不动点:被调方回落则调用方回落(extern fn 跳过桩体遍历——其"调用"由 dlsym 承担)
     let changed = true;
     while (changed) {
       changed = false;
       for (const [idx] of [...this.eligible]) {
+        if (fns[idx]?.entry?.decl?.nt === 'ExternFnDecl') continue;
         try {
           this.walkCalls(fns[idx].entry.decl.body, (name) => {
+            // v0.43:prelude 变体构造器(Some/None/Ok/Err)不是函数调用——此前被当作
+            // 未解析调用,带构造器的函数在不动点被整批降级(C 后端 ffi 函数即此遭遇)
+            if (name === 'Some' || name === 'None' || name === 'Ok' || name === 'Err') return;
             const called = this.resolveMingFn(fns[idx], name);
             if (called === null || !this.eligible.has(called)) throw new Unsupported('call ' + name);
           });
@@ -262,8 +276,8 @@ class WasmCompiler {
   }
 
   // 数值签名:C1 = 仅 i64/u64/f64(返回可为 unit);ext(C2)= + str/Vec[i64];
-  // ext2(C3)= + Map[str,i64] 与 Option[i64](C 后端全消费面)
-  isNumericSig(f, ext = false, ext2 = false) {
+  // ext2(C3)= + Map[str,i64]/Option[i64];ext3(v0.43)= + Result[i64,str](C 后端全消费面)
+  isNumericSig(f, ext = false, ext2 = false, ext3 = false) {
     const sig = f.entry?.sig;
     if (!sig) return false;
     const numOk = (t) => {
@@ -272,6 +286,7 @@ class WasmCompiler {
       if (ext && t?.k === 'vec' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return true;
       if (ext2 && t?.k === 'map' && t.kt?.k === 'str' && t.vt?.k === 'int' && t.vt?.bits === 64 && t.vt?.signed) return true;
       if (ext2 && t?.k === 'opt' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return true;
+      if (ext3 && t?.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str') return true;
       return false;
     };
     if (sig.ret?.k !== 'unit' && !numOk(sig.ret)) return false;
@@ -281,20 +296,27 @@ class WasmCompiler {
     return true;
   }
 
-  isEligibleShape(f) {
+  // v0.43:ext/ext2/ext3 贯穿形状检查(wasm 不传 → 严格;C 后端按 opts 放行)
+  isEligibleShape(f, ext = false, ext2 = false, ext3 = false) {
     const sig = f.entry?.sig;
     if (!sig || !f.entry.decl.body) return false;
     if (f.entry.decl.name.startsWith('__repl_')) return false;
+    // 基线 = wasm 既有形状(数值/str/Vec/Map);opt(ext2)/Result(ext3)为 C 后端扩展面
     const numOk = (t) => (t?.k === 'int' && t.bits === 64) || (t?.k === 'float' && t.bits === 64) || t?.k === 'str' // u64/i64/f64/str(v0.15)
       || (t?.k === 'vec' && numOkElem(t.el))
-      || (t?.k === 'map' && t.kt?.k === 'str' && numOkElem(t.vt)); // v0.18
+      || (t?.k === 'map' && t.kt?.k === 'str' && numOkElem(t.vt)) // v0.18
+      || (ext2 && t?.k === 'opt' && numOkElem(t.el)) // v0.41(C 形参)
+      || (ext3 && t?.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str'); // v0.43(C 形参)
     for (const p of sig.params) {
       if (!numOk(p.type)) return false;
     }
     if (numOk(sig.ret)) { /* ok */ }
     else if (sig.ret?.k === 'unit') { /* ok */ }
     else return false;
-    if (sig.effects?.size) return false;
+    if (sig.effects?.size) {
+      // v0.43:C 后端 opts.ffi 允许效果 ⊆ {ffi}(extern 调用;wasm 路径仍严格拒绝)
+      if (!this.ffiEffectsAllowed || ![...sig.effects].every(e => e === 'ffi')) return false;
+    }
     return true;
   }
 
