@@ -423,7 +423,8 @@ export class VMInterp extends Interp {
     }
     this.depth++;
     this.callStack.push({ name: fn.name, span });
-    this.frames.push({ fn, ip: 0, locals, captures });
+    // v0.44 修复:帧记录操作数栈基址——RET/? 提前返回时截断本帧残留(match 降级的 DUP/SWAP/POP 清栈会被 return 跳过)
+    this.frames.push({ fn, ip: 0, locals, captures, stackBase: this.valueStack.length });
     try {
       const ret = this.execLoop();
       this.depth--;
@@ -588,6 +589,8 @@ export class VMInterp extends Interp {
           // 单帧语义:execLoop 只执行当前函数帧,RET 弹帧并返回值
           // (调用方由 CALL 的 callValue 返回后接住返回值)
           const v = stack.pop();
+          // v0.44:截断本帧残留值(return 在表达式降级中途发生时,清栈指令被跳过)
+          if (frame.stackBase !== undefined) stack.length = frame.stackBase;
           this.frames.pop();
           return v;
         }
@@ -595,10 +598,12 @@ export class VMInterp extends Interp {
           const v = stack.pop();
           if (v.t === 'enum') {
             if (v.def === 'builtin-opt' && v.tag === 'None') {
+              if (frame.stackBase !== undefined) stack.length = frame.stackBase; // v0.44:同 RET 截断
               this.frames.pop();
               return V.enumv('builtin-opt', 'None', []);
             }
             if (v.def === 'builtin-res' && v.tag === 'Err') {
+              if (frame.stackBase !== undefined) stack.length = frame.stackBase;
               this.frames.pop();
               return V.enumv('builtin-res', 'Err', v.vals);
             }

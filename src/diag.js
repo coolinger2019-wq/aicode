@@ -57,6 +57,7 @@ export const CODES = {
   W3101: 'unused-variable',
   W3102: 'float-equality',
   W3103: 'unreachable-code',
+  W3104: 'test-literal-overfit',
   // ---- 运行时 M4xxx ----
   M4001: 'panic',
   M4002: 'integer-overflow',
@@ -99,6 +100,7 @@ export class Diagnostic {
       endLine: this.span?.endLine ?? this.span?.line ?? 0, endCol: this.span?.endCol ?? this.span?.col ?? 0,
     };
     if (this.hint) j.hint = this.hint;
+    if (this.fix) j.fix = this.fix;
     if (this.notes.length) j.notes = this.notes.map(n => ({ message: n.message, file: n.span?.file, line: n.span?.line, col: n.span?.col }));
     return j;
   }

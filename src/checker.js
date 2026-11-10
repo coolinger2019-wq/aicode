@@ -95,7 +95,7 @@ export function unify(a, b, binds) {
   switch (a.k) {
     case 'int': return a.bits === b.bits && a.signed === b.signed;
     case 'float': return a.bits === b.bits;
-    case 'bool': case 'str': case 'unit': case 'never': return true;
+    case 'bool': case 'str': case 'unit': case 'never': case 'json': return true; // v0.44:json 缺失曾被误判为不兼容(Json 值无法传参/赋值)
     case 'vec': return unify(a.el, b.el, binds);
     case 'range': return unify(a.el, b.el, binds);
     case 'join': return unify(a.el, b.el, binds);
@@ -843,6 +843,83 @@ export class Checker {
     for (const entry of this.methodEntries) {
       if (entry.mod === mod) this.checkFnBody(entry, mod);
     }
+    // v0.44:测试字面量过拟合检查(实现分支条件中出现测试断言的字面量)
+    this.checkTestLiteralOverfit(mod);
+  }
+
+  // v0.44(Jenny E0905 的 Ming 版):收集本模块 test 块中的非常量字面量,
+  // 扫描非测试函数 if/while 条件中的等值比较 → W3104 告警(不阻断)。
+  checkTestLiteralOverfit(mod) {
+    // 1) 测试字面量集合(key: 'i:42' / 's:abc';排除通用值)
+    const lits = new Map();
+    const collect = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const x of node) collect(x); return; }
+      if (node.nt === 'IntLit' && typeof node.v === 'bigint') {
+        if (node.v !== 0n && node.v !== 1n && node.v !== -1n && node.v !== 2n) {
+          lits.set('i:' + node.v, { kind: 'int', v: node.v });
+        }
+      } else if (node.nt === 'StrLit' && node.parts?.length === 1 && 'lit' in node.parts[0]) {
+        if (node.parts[0].lit !== '') lits.set('s:' + node.parts[0].lit, { kind: 'str', v: node.parts[0].lit });
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'span' || k === 'docs') continue;
+        const v = node[k];
+        if (v && typeof v === 'object') collect(v);
+      }
+    };
+    for (const [, entry] of mod.items) {
+      if (entry.kind === 'test') collect(entry.decl.body);
+    }
+    if (lits.size === 0) return;
+    // 2) 实现体:if/while 条件内的比较,一侧是变量、另一侧是测试字面量 → 告警
+    const hit = (op, side, other, span) => {
+      if (!['==', '!=', '<', '<=', '>', '>='].includes(op)) return;
+      if (other?.nt !== 'Ident') return;
+      if (side?.nt === 'IntLit' && typeof side.v === 'bigint') {
+        const k = 'i:' + side.v;
+        if (lits.has(k)) this.diags.push(warn('W3104', `测试字面量 ${side.v} 出现在实现分支条件中(可能针对测试硬编码;若为业务常量,提为命名常量)`, span ?? side.span, '把该值提为命名常量,或让测试使用生成的数据。'));
+      } else if (side?.nt === 'StrLit' && side.parts?.length === 1 && 'lit' in side.parts[0]) {
+        const k = 's:' + side.parts[0].lit;
+        if (lits.has(k)) this.diags.push(warn('W3104', `测试字面量 "${side.parts[0].lit}" 出现在实现分支条件中(可能针对测试硬编码;若为业务常量,提为命名常量)`, span ?? side.span, '把该值提为命名常量,或让测试使用生成的数据。'));
+      }
+    };
+    const walkCond = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const x of node) walkCond(x); return; }
+      if (node.nt === 'Binary') {
+        hit(node.op, node.l, node.r, node.span);
+        hit(node.op, node.r, node.l, node.span);
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'span' || k === 'docs' || k === 'lit') continue;
+        const v = node[k];
+        if (v && typeof v === 'object') walkCond(v);
+      }
+    };
+    const walkBody = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const x of node) walkBody(x); return; }
+      if (node.nt === 'If' || node.nt === 'While') {
+        walkCond(node.cond);
+        if (node.then) walkBody(node.then);
+        if (node.els) walkBody(node.els);
+        if (node.body) walkBody(node.body);
+        return;
+      }
+      if (node.nt === 'Lambda' || node.nt === 'FnStmt') return;
+      for (const k of Object.keys(node)) {
+        if (k === 'span' || k === 'docs' || k === 'lit') continue;
+        const v = node[k];
+        if (v && typeof v === 'object') walkBody(v);
+      }
+    };
+    for (const [, entry] of mod.items) {
+      if (entry.kind === 'fn' && entry.decl.body) walkBody(entry.decl.body);
+    }
+    for (const entry of this.methodEntries) {
+      if (entry.mod === mod && entry.decl.body) walkBody(entry.decl.body);
+    }
   }
 
   // ---------- trait 实现 ----------
@@ -1069,6 +1146,7 @@ export class Checker {
     const ctx = {
       mod, scope, fnRet: entry.sig.ret, inLoop: false,
       fnName: d.name, warnings: this.diags,
+      fnDecl: d, // v0.44:效果修复处方需要函数体起点(函数签名尾部)
       genericNames: new Set(entry.sig.tparams),
       effects: entry.sig.effects,
       genericBounds: new Map((entry.sig.bounds ?? []).map(b => [b.name, b.trait])),
@@ -1111,11 +1189,18 @@ export class Checker {
   checkEffects(ctx, required, span) {
     if (!required || !required.size) return;
     const missing = [...required].filter(e => !ctx.effects?.has(e));
-    if (missing.length) {
-      this.diags.push(err('M3029',
-        `此调用需要效果 [${missing.join(', ')}],但函数 "${ctx.fnName ?? '?'}" 声明的是 [${[...(ctx.effects ?? [])].join(', ') || '纯函数'}]`,
-        span, CODE_HINTS.M3029));
+    if (!missing.length) return;
+    const d = err('M3029',
+      `此调用需要效果 [${missing.join(', ')}],但函数 "${ctx.fnName ?? '?'}" 声明的是 [${[...(ctx.effects ?? [])].join(', ') || '纯函数'}]`,
+      span, CODE_HINTS.M3029);
+    // v0.44:结构化修复处方——在函数体 "{" 前补声明缺失效果
+    const bodySpan = ctx.fnDecl?.body?.span;
+    if (bodySpan?.line) {
+      const declared = [...(ctx.effects ?? [])];
+      const repl = declared.length ? `, ${missing.join(', ')} ` : ` with ${missing.join(', ')} `;
+      d.fix = { start: { line: bodySpan.line, col: bodySpan.col }, end: { line: bodySpan.line, col: bodySpan.col }, replacement: repl };
     }
+    this.diags.push(d);
   }
 
   // ---------- 语句 ----------
@@ -1397,8 +1482,17 @@ export class Checker {
   cannotFindValue(name, span, ctx) {
     const avail = [...ctx.scope.allVisibleNames()];
     const near = nearest(name, avail);
-    this.diags.push(err('M3001', `找不到值 "${name}"`, span,
-      near ? `未定义;最接近的名字是 "${near}"` : (ctx.rootScopeOnly ? '本地函数内只能访问:参数、模块级函数/类型与内置项;不能捕获外层局部变量(v0.1)' : null)));
+    const d = err('M3001', `找不到值 "${name}"`, span,
+      near ? `未定义;最接近的名字是 "${near}"` : (ctx.rootScopeOnly ? '本地函数内只能访问:参数、模块级函数/类型与内置项;不能捕获外层局部变量(v0.1)' : null));
+    // v0.44:结构化修复处方——替换为最接近的可见名字
+    if (near && span?.line) {
+      d.fix = {
+        start: { line: span.line, col: span.col },
+        end: { line: span.endLine ?? span.line, col: span.endCol ?? span.col },
+        replacement: near,
+      };
+    }
+    this.diags.push(d);
   }
 
   // ---------- 表达式 ----------

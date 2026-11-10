@@ -79,7 +79,8 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 - **v0.43(当前)** — **ffi 字符串桥(str ↔ C 串)+ Result[i64,str] 进 C 面 + ffi 效果函数参与 C 编译**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点)+ `with unsafe` 受限指针块设计定稿(design.md §6.10)
 *（本版同时并入另一窗口成果:真 AOT 字节码产物——ming build 默认纯字节码 dist,无明文源;--with-source 附源码;spawn/trait 自动回退源码模式）*
-- **v0.44 方向** — unsafe 块实现(Ptr 类型/load/store/offset)、ffi Ptr 交集、--checked-ptr
+- **v0.44(当前)** — **AI 协作护栏**(W3104 测试字面量过拟合检查 + `--json` 结构化修复处方 fix + tools/diaghot.ming 诊断热力图)+ **mask 效果屏蔽设计定稿**(design.md §6.11)——受 Jenny/Blood 调研启发;连带修复 unify 缺 json 分支、VM match-return 栈残留两项真实 bug
+- **v0.45 方向** — 契约系统阶段 1(requires/ensures/invariant 运行时检查)、unsafe 块实现
 - **更远(北星对齐)** — async 运行时;eval;RSA/国密
 
 ## 设计原则(全文见 design.md)

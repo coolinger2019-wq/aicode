@@ -88,6 +88,7 @@
 | W3101 | unused-variable | 变量未使用(`_` 前缀或 `let _ =` 消除) |
 | W3102 | float-equality | 浮点 `==` 精度风险(常用 `abs(a-b) < eps`) |
 | W3103 | unreachable-code | 不可达代码 |
+| W3104 | test-literal-overfit | 测试断言中的字面量出现在实现函数的分支条件中(可能针对测试硬编码;W 级不阻断)(v0.44) |
 
 ## M4xxx — 运行时 panic(退出码 101)
 

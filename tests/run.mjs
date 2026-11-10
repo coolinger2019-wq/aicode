@@ -1929,6 +1929,94 @@ fn main() with io, fs {
   check('v43:模糊器快档(40 程序多后端一致)', fuzz43.status === 0 && /分歧 0/.test(fuzz43.stdout ?? ''), 'code=' + fuzz43.status + ' tail=' + (fuzz43.stdout ?? '').slice(-150));
 }
 
+// ===================== 39. v0.44:AI 协作护栏(过拟合检查/修复处方/热力图)+ VM 修复 =====================
+{
+  const cdir = path.join(TMP, 'v44');
+  fs.mkdirSync(cdir, { recursive: true });
+
+  // 1) 测试字面量过拟合检查(W3104)
+  const of1 = path.join(cdir, 'overfit.ming');
+  fs.writeFileSync(of1, [
+    'fn classify(n: i64) -> i64 {',
+    '    if n == 42 { return 100; }',
+    '    return n * 2;',
+    '}',
+    'test classify_bounds {',
+    '    assert_eq(classify(42), 100);',
+    '}',
+  ].join('\n'));
+  const ro1 = runMing(['check', of1]);
+  check('v44:W3104 过拟合告警', ro1.code === 0 && (ro1.stderr ?? '').includes('W3104'), 'code=' + ro1.code + ' stderr=' + (ro1.stderr ?? '').slice(0, 120));
+  const nf1 = path.join(cdir, 'nofit.ming');
+  fs.writeFileSync(nf1, [
+    'fn classify(n: i64) -> i64 {',
+    '    if n == 42 { return 100; }',
+    '    return n * 2;',
+    '}',
+    'test classify_bounds {',
+    '    assert_eq(classify(5), 10);',
+    '}',
+  ].join('\n'));
+  const rn1 = runMing(['check', nf1]);
+  check('v44:W3104 负例不告警', rn1.code === 0 && !(rn1.stderr ?? '').includes('W3104'), 'stderr=' + (rn1.stderr ?? '').slice(0, 120));
+
+  // 2) 结构化修复处方:--json 的 fix 应用后 → 复检无错误
+  const applyFix = (src, fix) => {
+    const lines = src.split('\n');
+    const off = (p) => { let o = 0; for (let i = 0; i < p.line - 1; i++) o += lines[i].length + 1; return o + p.col - 1; };
+    return src.slice(0, off(fix.start)) + fix.replacement + src.slice(off(fix.end));
+  };
+  const fixCases = [
+    ['fix-semicolon', 'M2002', ['fn main() with io {', '    let x = 1', '    print(str(x));', '}', ''].join('\n')],
+    ['fix-effect', 'M3029', ['fn f() {', '    print("hi");', '}', 'fn main() with io { f(); }', ''].join('\n')],
+    ['fix-name', 'M3001', ['fn main() with io {', '    let total = 1;', '    print(str(totl));', '}', ''].join('\n')],
+  ];
+  for (const [key, code, src] of fixCases) {
+    const f = path.join(cdir, key + '.ming');
+    fs.writeFileSync(f, src);
+    const rj = runMing(['check', f, '--json']);
+    let diag = null;
+    try { diag = (JSON.parse(rj.stdout).diagnostics ?? []).find(d => d.code === code && d.fix); } catch { /* 解析失败即 null */ }
+    if (!diag) { check('v44:' + key + ' 修复处方', false, '未找到带 fix 的 ' + code + ' stdout=' + (rj.stdout ?? '').slice(0, 150)); continue; }
+    const fixedSrc = applyFix(src, diag.fix);
+    const f2 = path.join(cdir, key + '-fixed.ming');
+    fs.writeFileSync(f2, fixedSrc);
+    const r2 = runMing(['check', f2]);
+    check('v44:' + key + ' 修复处方(应用后无错误)', r2.code === 0, 'code=' + r2.code + ' stderr=' + (r2.stderr ?? '').slice(0, 150));
+  }
+
+  // 3) diaghot 自举工具:聚合输出含预期码(样本分文件,避免 parse 错误中止类型检查)
+  const dhFile = path.join(cdir, 'dhname.ming');
+  fs.writeFileSync(dhFile, ['fn main() with io {', '    print(str(nope));', '}', ''].join('\n'));
+  const rdh = spawnSync(process.execPath, [MING, 'run', path.join(ROOT, 'tools', 'diaghot.ming'), '--', dhFile, of1], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+  check('v44:diaghot 自举工具聚合', rdh.status === 0 && (rdh.stdout ?? '').includes('M3001') && (rdh.stdout ?? '').includes('W3104'), 'code=' + rdh.status + ' out=' + (rdh.stdout ?? '').slice(0, 200));
+
+  // 4) VM 修复回归:match 内 return 后的操作数栈残留(method 调用 + 参数为带 match 的函数调用)
+  const vmFile = path.join(cdir, 'matchret.ming');
+  fs.writeFileSync(vmFile, [
+    'fn pick(j: i64) -> str {',
+    '    match j {',
+    '        0 => { return "a"; }',
+    '        _ => { return "b"; }',
+    '    }',
+    '}',
+    'fn main() with io {',
+    '    let mut m: Map[str, str] = [:];',
+    '    m.set("k", pick(0));',
+    '    print(str(m.len()));',
+    '    print(m["k"]);',
+    '}',
+  ].join('\n'));
+  const rvm = runMing(['run', vmFile]);
+  const rtree = runMing(['run', vmFile, '--tree']);
+  check('v44:VM match-return 栈残留修复', rvm.code === 0 && rvm.stdout === '1\na\n' && rvm.stdout === rtree.stdout,
+    'vm=' + JSON.stringify(rvm.stdout) + ' tree=' + JSON.stringify(rtree.stdout) + ' stderr=' + (rvm.stderr ?? '').slice(0, 120));
+
+  // 5) 模糊器快档
+  const fuzz44 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '44044'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v44:模糊器快档(40 程序多后端一致)', fuzz44.status === 0 && /分歧 0/.test(fuzz44.stdout ?? ''), 'code=' + fuzz44.status + ' tail=' + (fuzz44.stdout ?? '').slice(-150));
+}
+
 // ===================== 汇总 =====================
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

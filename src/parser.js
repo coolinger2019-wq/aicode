@@ -71,12 +71,19 @@ export class Parser {
 
   expectOp(v, what = null) {
     if (this.atOp(v)) return this.next();
-    this.bail('M2002', `期望 "${v}"${what ? `(在${what}之后)` : ''},实际是 ${tokDesc(this.cur())}`, this.cur().span,
+    const d = err('M2002', `期望 "${v}"${what ? `(在${what}之后)` : ''},实际是 ${tokDesc(this.cur())}`, this.cur().span,
       this.cur().kind === 'kw' ? `"${this.cur().val}" 是关键字,可能用错了位置` : null);
+    // v0.44:结构化修复处方——在当前位置插入期望的 token
+    const p = { line: this.cur().span.line, col: this.cur().span.col };
+    d.fix = { start: p, end: p, replacement: v };
+    throw { mingParse: true, diag: d };
   }
   expectKw(v) {
     if (this.atKw(v)) return this.next();
-    this.bail('M2002', `期望关键字 "${v}",实际是 ${tokDesc(this.cur())}`, this.cur().span);
+    const d = err('M2002', `期望关键字 "${v}",实际是 ${tokDesc(this.cur())}`, this.cur().span);
+    const p = { line: this.cur().span.line, col: this.cur().span.col };
+    d.fix = { start: p, end: p, replacement: v + ' ' };
+    throw { mingParse: true, diag: d };
   }
   expectId(what = '标识符') {
     if (this.at('id')) return this.next();

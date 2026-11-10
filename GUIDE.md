@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.43.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.44.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **自举工具 mingkit/engdiff** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -885,6 +885,7 @@ fn main() with io {
 | `ming build`(项目模式,v0.38) | 项目检查通过后产出 **dist 可移植产物**:app.ming + runtime 8 模块拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑 |
 | `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;插值串/Result 属 C4(显式拒绝) |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
+| 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:`node bin/ming.js run tools/diaghot.ming -- <file.ming...>` 聚合 `ming check --json` 的诊断码频次,Top-N 输出)——语法/检查改进的数据依据 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -1002,6 +1003,18 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.44.0(2026-11-10)
+
+- **v0.44 主题:AI 协作护栏(受 Jenny/Blood 调研启发)**:
+  - **W3104 测试字面量过拟合检查**:同文件 test 断言中的非常量字面量出现在实现函数 if/while 条件比较中 → 告警(不阻断;通用值 0/1/-1/2 与空串豁免)。对应 Jenny 的 `E0905_TEST_LITERAL_OVERFITTING` 思路。
+  - **结构化修复处方**:`ming check --json` 诊断新增可选 `fix: {start, end, replacement}`;首批三类——缺 token(M2002,expectOp/expectKw 插入)、效应未声明(M3029,函数体 "{" 前补 `with ...`)、名字拼错(M3001,最接近可见名替换)。每条 fix 经"应用→复检→错误消失"测试锁定。
+  - **tools/diaghot.ming 诊断热力图**(仓库第三个 Ming 自写工具):批量跑 `ming check --json` 聚合诊断码频次/文件数/样例消息,Top-N 输出——让语法与检查改进有数据依据。
+  - **效果屏蔽设计定稿**(design.md §6.11,mask 方向):块级 `mask [fs] { ... }` 语法草案;v1 健全性 = 效果承载值不逃逸 + 不改求值语义 + 无正式证明器(显式声明);与 §6.10 `with unsafe` 共用逃逸分析、互为门面。
+- **连带的真实修复(自举/自测暴露)**:
+  1. **检查器 unify 漏 `json` 分支**:任何 `Json` 值参与赋值/传参即报"Json 与 Json 不匹配"(既有测试只走方法调用,未覆盖统一化)——diaghot 编写时暴露;
+  2. **VM 操作数栈残留**:全帧共享 valueStack,match 降级的 DUP/…/SWAP/POP 清栈在 arm 内 `return` 提前 RET 时被跳过 → 调用方 CALLMETHOD 弹出错位 receiver(`内部错误:Option.set` 一类);修复 = 帧记录 stackBase,RET 与 `?` 提前返回时截断本帧残留;新增回归测试(方法调用 + 带 match 的函数实参,双引擎一致)。
+- 测试:422 项全绿(§39 新增八项:W3104 正/负例、三类 fix 应用复检、diaghot 聚合、VM match-return 回归、模糊快档)。
 
 ### v0.43.0(2026-11-10)
 
