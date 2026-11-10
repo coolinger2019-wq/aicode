@@ -561,7 +561,13 @@ export class Interp {
     this.callStack.push({ name: decl.name, span: callSpan });
     try {
       this.step();
-      const v = this.execBlock(decl.body, fenv, { fnRet: entry.sig?.ret ?? null });
+      if (decl.requires) {
+        const rv = this.evalExpr(decl.requires.expr, fenv);
+        if (!(rv.t === 'bool' && rv.v)) {
+          throw new Panic('M4015', decl.requires.msg ? `契约违反: ${decl.requires.msg} (实际: false)` : '契约违反: requires (实际: false)', decl.requires.span ?? callSpan);
+        }
+      }
+      const v = this.execBlock(decl.body, fenv, { fnRet: entry.sig?.ret ?? null, fnEnsures: decl.ensures ?? null });
       this.depth--;
       this.callStack.pop();
       return v ?? UNIT;
@@ -621,7 +627,17 @@ export class Interp {
   // ---------- 语句 ----------
   execBlock(block, env, ctx) {
     for (const s of block.stmts) this.execStmt(s, env, ctx);
-    if (block.tail) return this.evalExpr(block.tail, env);
+    if (block.tail) {
+      const tv = this.evalExpr(block.tail, env);
+      if (ctx?.fnEnsures) {
+        env.vars.set('result', deepCopy(tv ?? UNIT));
+        const rv = this.evalExpr(ctx.fnEnsures.expr, env);
+        if (!(rv.t === 'bool' && rv.v)) {
+          throw new Panic('M4015', ctx.fnEnsures.msg ? `契约违反: ${ctx.fnEnsures.msg} (实际: ${debugStr(tv ?? UNIT)})` : `契约违反: ensures (实际: ${debugStr(tv ?? UNIT)})`, ctx.fnEnsures.span);
+        }
+      }
+      return tv;
+    }
     return UNIT;
   }
 
@@ -641,6 +657,13 @@ export class Interp {
       }
       case 'Return': {
         const v = s.value ? deepCopy(this.evalExpr(s.value, env)) : UNIT;
+        if (ctx?.fnEnsures) {
+          env.vars.set('result', deepCopy(v));
+          const rv = this.evalExpr(ctx.fnEnsures.expr, env);
+          if (!(rv.t === 'bool' && rv.v)) {
+            throw new Panic('M4015', ctx.fnEnsures.msg ? `契约违反: ${ctx.fnEnsures.msg} (实际: ${debugStr(v)})` : `契约违反: ensures (实际: ${debugStr(v)})`, ctx.fnEnsures.span);
+          }
+        }
         throw new RetSig(v);
       }
       case 'Break': throw new BrkSig();
@@ -1075,6 +1098,15 @@ export class Interp {
     const fields = new Map();
     for (const f of e.fields) {
       fields.set(f.name, deepCopy(this.evalExpr(f.value, env)));
+    }
+    if (def.invariants && def.invariants.length) {
+      const invEnv = { vars: new Map(fields), parent: env, mod: env.mod };
+      for (const inv of def.invariants) {
+        const rv = this.evalExpr(inv.expr, invEnv);
+        if (!(rv.t === 'bool' && rv.v)) {
+          throw new Panic('M4015', '契约违反: invariant (实际: false)', inv.span ?? e.span);
+        }
+      }
     }
     return V.struct(def, fields);
   }
@@ -2773,6 +2805,11 @@ export const BUILTIN_IMPLS = {
   },
   panic(host, args, span) {
     throw new Panic('M4001', args[0].v, span);
+  },
+  contract_fail(host, args, span) {
+    const msg = args[0].v;
+    const actual = args.length > 1 ? debugStr(args[1]) : 'false';
+    throw new Panic('M4015', `${msg} (实际: ${actual})`, span);
   },
 };
 

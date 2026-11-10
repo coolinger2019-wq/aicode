@@ -239,7 +239,7 @@ export class WasmCompiler {
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
-      if (f && this.isEligibleShape(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3))) {
+      if (f && !(f.entry?.decl?.requires || f.entry?.decl?.ensures) && this.isEligibleShape(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3))) {
         this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
       }
     }

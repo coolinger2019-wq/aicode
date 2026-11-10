@@ -8,6 +8,7 @@ export const KEYWORDS = new Set([
   'let', 'mut', 'fn', 'return', 'if', 'else', 'while', 'for', 'in', 'loop',
   'break', 'continue', 'match', 'use', 'pub', 'struct', 'enum', 'test',
   'true', 'false', 'as', 'const', 'with', 'trait', 'impl', 'self', 'extern',
+  'requires', 'ensures', 'invariant',
 ]);
 
 // 保留字:v0.2 不使用,但禁止作为标识符,避免 AI 生成与未来版本冲突的代码。

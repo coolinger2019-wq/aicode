@@ -2018,6 +2018,41 @@ fn main() with io, fs {
 }
 
 // ===================== 汇总 =====================
+// ===================== §40 契约系统(v0.45 阶段 1) =====================
+{
+  const okSrc = ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 1 {', '  return a + 1;', '}', 'fn main() with io { print(str(f(3))); }'].join('\n');
+  const okFile = mingFile('contract_ok.ming', okSrc);
+  const rok = runMing(['run', okFile]);
+  const rokt = runMing(['run', okFile, '--tree']);
+  check('v45:契约正例运行成功', rok.code === 0 && rok.stdout === '4\n' && rok.stdout === rokt.stdout,
+    'vm=' + JSON.stringify(rok.stdout) + ' tree=' + JSON.stringify(rokt.stdout) + ' stderr=' + (rok.stderr ?? '').slice(0, 120));
+
+  const reqSrc = ['fn f(a: i64) -> i64 requires a > 0 { return a + 1; }', 'fn main() with io { print(str(f(0))); }'].join('\n');
+  const reqFile = mingFile('contract_req.ming', reqSrc);
+  const rreq = runMing(['run', reqFile]);
+  const rreqt = runMing(['run', reqFile, '--tree']);
+  check('v45:requires 违反 M4015(VM)', rreq.code === 101 && /M4015/.test(rreq.stderr));
+  check('v45:requires 违反 M4015(tree)', rreqt.code === 101 && /M4015/.test(rreqt.stderr));
+  check('v45:requires 违反消息双引擎一致', rreq.stderr.split('\n')[0] === rreqt.stderr.split('\n')[0],
+    'vm=' + JSON.stringify(rreq.stderr.split('\n')[0]) + ' tree=' + JSON.stringify(rreqt.stderr.split('\n')[0]));
+
+  const ensSrc = ['fn f(a: i64) -> i64 ensures result > a else "结果必须大于输入" { return a; }', 'fn main() with io { print(str(f(3))); }'].join('\n');
+  const ensFile = mingFile('contract_ens.ming', ensSrc);
+  const rens = runMing(['run', ensFile]);
+  const renst = runMing(['run', ensFile, '--tree']);
+  check('v45:ensures 违反 M4015(VM)', rens.code === 101 && /M4015/.test(rens.stderr));
+  check('v45:ensures 违反消息双引擎一致', rens.stderr.split('\n')[0] === renst.stderr.split('\n')[0],
+    'vm=' + JSON.stringify(rens.stderr.split('\n')[0]) + ' tree=' + JSON.stringify(renst.stderr.split('\n')[0]));
+
+  // invariant 违反
+  const invSrc = ['struct S { x: i64, invariant x >= 0 }', 'fn main() with io { let s = S { x: -1 }; print(str(s.x)); }'].join('\n');
+  const invFile = mingFile('contract_inv.ming', invSrc);
+  const rinv = runMing(['run', invFile]);
+  const rinvl = runMing(['run', invFile, '--tree']);
+  check('v45:invariant 违反 M4015(VM)', rinv.code === 101 && /M4015/.test(rinv.stderr));
+  check('v45:invariant 违反消息双引擎一致', rinv.stderr.split('\n')[0] === rinvl.stderr.split('\n')[0]);
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

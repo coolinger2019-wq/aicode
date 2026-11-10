@@ -219,14 +219,52 @@ class BytecodeCompiler {
     for (const p of entry.sig?.params ?? []) {
       st.scopes[0].set(p.name, st.nLocals++);
     }
+    // 契约:requires/ensures(v0.45)
+    let resultSlot = null;
+    if (decl.ensures) {
+      resultSlot = st.nLocals++;
+      st.scopes[0].set('result', resultSlot);
+    }
+    st.resultSlot = resultSlot;
+    // requires 入口检查
+    if (decl.requires) {
+      this.compileExpr(decl.requires.expr, st);
+      this.compileContractFail(st, decl.requires.msg ? `契约违反: ${decl.requires.msg}` : '契约违反: requires', decl.requires.span ?? decl.span, (st) => { this.emit(st, OP.CONST, this.poolAdd(V.bool(false)), 0, decl.requires.span ?? decl.span); });
+    }
     // 函数体的块值 = 返回值 → want=true
-    this.compileBlock(decl.body, st, true);
+    this.pushScope(st);
+    for (const s of decl.body.stmts) this.compileStmt(s, st);
+    let produced = false;
+    if (decl.body.tail) {
+      this.compileExpr(decl.body.tail, st);
+      produced = true;
+      if (decl.ensures && resultSlot !== null) {
+        this.emit(st, OP.DUP, 0, 0, decl.body.tail.span);
+        this.emit(st, OP.ST, 0, resultSlot, decl.body.tail.span);
+        this.compileExpr(decl.ensures.expr, st);
+        this.compileContractFail(st, decl.ensures.msg ? `契约违反: ${decl.ensures.msg}` : '契约违反: ensures', decl.ensures.span ?? decl.span, (st) => { this.emit(st, OP.LD, 0, resultSlot, decl.ensures.span ?? decl.span); });
+      }
+    }
+    this.popScope(st);
+    if (!produced) this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, decl.body.span);
     this.emit(st, OP.RET, 0, 0, decl.body.span ?? null);
     return { code, nLocals: st.nLocals };
   }
 
   emit(st, op, a, b, span, c = 0) {
     st.code.push([op, a, b, c, this.sp(span)]);
+  }
+  compileContractFail(st, msg, span, loadActual) {
+    const jFalse = st.code.length;
+    this.emit(st, OP.JUMPFALSE, 0, 0, span);
+    const jSkip = st.code.length;
+    this.emit(st, OP.JUMP, 0, 0, span);
+    this.patch(st, jFalse, st.code.length);
+    this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__builtin:contract_fail' }), 0, span);
+    this.emit(st, OP.CONST, this.pstr(msg), 0, span);
+    if (loadActual) loadActual(st); else this.emit(st, OP.CONST, this.poolAdd(V.bool(false)), 0, span);
+    this.emit(st, OP.CALL, 2, 0, span);
+    this.patch(st, jSkip, st.code.length);
   }
 
   here(st) { return st.code.length; }
@@ -365,6 +403,13 @@ class BytecodeCompiler {
       case 'Return': {
         if (s.value) this.compileExpr(s.value, st);
         else this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, s.span);
+        const ensures = st.entry?.decl?.ensures;
+        if (ensures && st.resultSlot !== null) {
+          this.emit(st, OP.DUP, 0, 0, s.span);
+          this.emit(st, OP.ST, 0, st.resultSlot, s.span);
+          this.compileExpr(ensures.expr, st);
+          this.compileContractFail(st, ensures.msg ? `契约违反: ${ensures.msg}` : '契约违反: ensures', ensures.span ?? s.span, (st) => { this.emit(st, OP.LD, 0, st.resultSlot, ensures.span ?? s.span); });
+        }
         this.emit(st, OP.RET, 0, 0, s.span);
         return;
       }
@@ -792,7 +837,7 @@ class BytecodeCompiler {
         }
         if (!def) throw new Error('编译错误:结构体未找到 ' + e.path.join('.'));
         const names = e.fields.map(f => f.name);
-        for (const f of e.fields) this.compileExpr(f.value, st);
+        if ((def.invariants ?? []).length === 0) { for (const f of e.fields) this.compileExpr(f.value, st); } else { this.pushScope(st); const slots = new Map(); for (const f of e.fields) { this.compileExpr(f.value, st); const slot = this.declareLocal(st, f.name); this.emit(st, OP.ST, 0, slot, f.span); slots.set(f.name, slot); } for (const inv of def.invariants) { this.compileExpr(inv.expr, st); this.compileContractFail(st, '契约违反: invariant', inv.span ?? e.span, (st) => { this.emit(st, OP.CONST, this.poolAdd(V.bool(false)), 0, inv.span ?? e.span); }); } this.popScope(st); for (const f of e.fields) this.emit(st, OP.LD, 0, slots.get(f.name), f.span); }
         this.emit(st, OP.MAKESTRUCT, this.poolAdd({ __tag: 'structspec', v: { names, def } }), e.fields.length, e.span);
         return;
       }
@@ -858,7 +903,7 @@ class BytecodeCompiler {
       return;
     }
     // 内置函数
-    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic'].includes(name)) {
+    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic', 'contract_fail'].includes(name)) {
       this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__builtin:' + name }), 0, span);
       return;
     }

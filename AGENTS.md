@@ -86,7 +86,7 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 ## 7. 提交规范
 
 - 消息：`Ming vX.Y.Z — <一句话摘要>`，正文用中文列要点（含测试数量与关键修复）。
-- 版本三处同步：`package.json`、`bin/ming.js` 的 `VERSION`、GUIDE 修订记录新增条目。
+- 版本三处同步：`package.json`、`bin/ming.js` 的 `VERSION`、GUIDE 修订记录新增条目；**每次版本发布必须同步更新 README.md 路线图与 docs/plan.md（已完成项移出、新版本条目登记）**，避免文档与实现漂移。
 - 提交前：`node tests/run.mjs` 全绿；模糊器抽查 0 分歧。
 - 已知环境事项：本机 Git 推送需 `GIT_CREDENTIAL_HELPER=false`（Windows 凭证管理器缓存了 gitee 凭证）；远程是 GitHub `coolinger2019-wq/aicode`。
 - 会话工件（`.zcode/`）不入库（已在 .gitignore）。

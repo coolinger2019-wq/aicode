@@ -1151,6 +1151,21 @@ export class Checker {
       effects: entry.sig.effects,
       genericBounds: new Map((entry.sig.bounds ?? []).map(b => [b.name, b.trait])),
     };
+    // 契约检查(v0.45):纯表达式 + bool;ensures 中 result 绑定返回值
+    if (d.requires) {
+      const pureCtx = { ...ctx, scope, effects: new Set(), fnDecl: d };
+      const t = this.checkExpr(d.requires.expr, pureCtx, T_BOOL);
+      const r = t ? resolveT(t, new Map()) : null;
+      if (r && r.k !== 'bool') this.diags.push(err('M3014', `requires 条件必须是 bool,实际是 ${typeStr(r)}`, d.requires.expr.span));
+    }
+    if (d.ensures) {
+      const resScope = new Scope(scope, mod);
+      resScope.bind('result', entry.sig.ret, false, d.ensures.expr.span, true);
+      const pureCtx = { ...ctx, scope: resScope, effects: new Set(), fnDecl: d };
+      const t = this.checkExpr(d.ensures.expr, pureCtx, T_BOOL);
+      const r = t ? resolveT(t, new Map()) : null;
+      if (r && r.k !== 'bool') this.diags.push(err('M3014', `ensures 条件必须是 bool,实际是 ${typeStr(r)}`, d.ensures.expr.span));
+    }
     // REPL 求值包装(按名字识别):块值即返回值(类型随块推断),不设期望
     const replMode = d.name.startsWith('__repl_');
     const bt = this.checkBlock(d.body, ctx, replMode ? null : (entry.sig.ret.k === 'unit' ? null : entry.sig.ret));
@@ -3106,6 +3121,21 @@ export class Checker {
     if (unresolved.length) {
       this.diags.push(err('M3003', `无法从字段推断 ${decl.name} 的全部类型参数`, e.span,
         '用 let 标注:`let p: ' + decl.name + '[' + '?, '.repeat(targs.length - 1) + '?] = ' + decl.name + ' { ... };` 或补足字段信息。'));
+    }
+    // 契约:invariant 类型检查(v0.45)
+    if (decl.invariants && decl.invariants.length) {
+      const invScope = new Scope(ctx.scope, ctx.mod);
+      const targsResolved = targs;
+      for (const fd of decl.fields) {
+        const ft = substTypes(fd.rtype, decl.tparams, new Map(decl.tparams.map((n, i) => [n, targsResolved[i]])));
+        invScope.bind(fd.name, ft, false, fd.span, true);
+      }
+      const pureCtx = { ...ctx, scope: invScope, effects: new Set(), fnDecl: ctx.fnDecl };
+      for (const inv of decl.invariants) {
+        const t = this.checkExpr(inv.expr, pureCtx, T_BOOL);
+        const r = t ? resolveT(t, new Map()) : null;
+        if (r && r.k !== 'bool') this.diags.push(err('M3014', `invariant 条件必须是 bool,实际是 ${typeStr(r)}`, inv.expr.span));
+      }
     }
     return { k: 'struct', name: decl.name, def: decl, mod: fromMod, targs };
   }

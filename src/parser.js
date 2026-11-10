@@ -311,8 +311,29 @@ export class Parser {
         break;
       }
     }
+    // 契约声明(v0.45):requires/ensures(可重复,后者覆盖;msg 为可选 else 字符串)
+    let requires = null;
+    let ensures = null;
+    while (this.atKw('requires') || this.atKw('ensures')) {
+      const kind = this.cur().val;
+      const cStart = this.next();
+      const expr = this.parseExpr();
+      let msg = null;
+      if (this.atKw('else')) {
+        this.next();
+        if (this.at('str')) {
+          const t = this.next();
+          // str token 可能是插值;这里只取字面量文本
+          msg = (t.extra && t.extra.parts) ? null : t.val;
+        } else {
+          this.bail('M2002', '契约 else 后期望字符串字面量', this.cur().span);
+        }
+      }
+      const c = { expr, msg, span: this.spanFrom(cStart) };
+      if (kind === 'requires') requires = c; else ensures = c;
+    }
     const body = this.parseBlock();
-    return { nt: 'FnDecl', name: nameTok.val, nameSpan: nameTok.span, tparams, bounds, params, ret, effects, body, pub, local: asLocal, span: this.spanFrom(start) };
+    return { nt: 'FnDecl', name: nameTok.val, nameSpan: nameTok.span, tparams, bounds, params, ret, effects, requires, ensures, body, pub, local: asLocal, span: this.spanFrom(start) };
   }
 
   parseStruct(pub) {
@@ -322,7 +343,15 @@ export class Parser {
     this.expectOp('{');
     const fields = [];
     const seen = new Set();
+    const invariants = [];
     while (!this.atOp('}')) {
+      if (this.atKw('invariant')) {
+        const iStart = this.next();
+        const expr = this.parseExpr();
+        invariants.push({ expr, span: this.spanFrom(iStart) });
+        if (this.atOp(',')) { this.next(); continue; }
+        break;
+      }
       const fTok = this.expectId('字段名');
       if (seen.has(fTok.val)) this.fail('M3009', `结构体 ${nameTok.val} 中重复的字段 "${fTok.val}"`, fTok.span);
       seen.add(fTok.val);
@@ -333,7 +362,7 @@ export class Parser {
       break;
     }
     this.expectOp('}');
-    return { nt: 'StructDecl', name: nameTok.val, tparams, fields, pub, span: this.spanFrom(start) };
+    return { nt: 'StructDecl', name: nameTok.val, tparams, fields, invariants, pub, span: this.spanFrom(start) };
   }
 
   parseEnum(pub) {
