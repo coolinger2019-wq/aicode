@@ -1004,6 +1004,11 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.44.1(2026-11-10)
+
+- **文档**:新增 `AGENTS.md`(AI 代理协作指南:硬规则/命令/提交规范/已知陷阱)、`docs/plan.md`(v0.45 起的实施计划与 Backlog)、`docs/references.md`(Jenny/Blood 参考语言地址、要点映射与进度查看方式);README 文档节挂链并修正路线图中 v0.43/v0.44 双"当前"标注。
+- 无代码变更;测试沿用 422 项全绿。
+
 ### v0.44.0(2026-11-10)
 
 - **v0.44 主题:AI 协作护栏(受 Jenny/Blood 调研启发)**:
