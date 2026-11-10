@@ -2366,7 +2366,20 @@ export class Interp {
       }
       case 'struct': {
         const mEntry = this.methodImpls?.get(recv.def)?.get(name);
-        if (mEntry) return this.callUser(mEntry.mod, mEntry, null, [recv, ...args], span, true);
+        if (mEntry) {
+          const ret = this.callUser(mEntry.mod, mEntry, null, [recv, ...args], span, true);
+          // v0.47:mut self 原地修改接收者 → 返回后重查 invariant(树/VM 一致)
+          if (recv.t === 'struct' && recv.def?.invariants?.length && mEntry.decl?.params?.[0]?.self && mEntry.decl.params[0].mut) {
+            const invEnv = { vars: new Map(recv.fields), parent: null, mod: mEntry.mod };
+            for (const inv of recv.def.invariants) {
+              const rv = this.evalExpr(inv.expr, invEnv);
+              if (!(rv.t === 'bool' && rv.v)) {
+                throw new Panic('M4015', '契约违反: invariant (实际: false)', inv.span ?? span);
+              }
+            }
+          }
+          return ret;
+        }
         throw new Panic('M4001', `内部错误:${recv.name} 没有方法 .${name}`, span);
       }
       case 'bool': return this.boolMethodImpl(recv, name, args, span);

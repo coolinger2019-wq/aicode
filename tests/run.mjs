@@ -2197,6 +2197,41 @@ fn main() with io, fs {
   fs.writeFileSync(csOkFile, csSrc.replace('print(str(pay(-5)));', 'let v = 0 - 5;\n    print(str(pay(v)));'));
   const rcsOk = runMing(['check', csOkFile]);
   check('v46:M3041 变量实参不误报', rcsOk.code === 0 && !(rcsOk.stderr ?? '').includes('M3041'), 'code=' + rcsOk.code + ' stderr=' + (rcsOk.stderr ?? '').slice(0, 120));
+
+  // v0.47:mut 方法退出时的 invariant 重查(双引擎一致;非法变异拦截,合法变异放行)
+  const invSrc = [
+    'trait SOps {',
+    '    fn break_it(mut self);',
+    '    fn fix(mut self);',
+    '}',
+    'struct S { x: i64, invariant x >= 0 }',
+    'impl SOps for S {',
+    '    fn break_it(mut self) {',
+    '        self.x = -5;',
+    '    }',
+    '    fn fix(mut self) {',
+    '        self.x = 5;',
+    '    }',
+    '}',
+    'fn main() with io {',
+    '    let mut s = S { x: 1 };',
+    '    print(str(s.x));',
+    '    s.fix();',
+    '    print(str(s.x));',
+    '    s.break_it();',
+    '    print(str(s.x));',
+    '}',
+  ].join('\n');
+  const invFile = path.join(dir, 'inv47.ming');
+  fs.writeFileSync(invFile, invSrc);
+  const rinv = runMing(['run', invFile]);
+  const rinvt = runMing(['run', invFile, '--tree']);
+  check('v47:mut 方法退出重查 M4015(VM)', rinv.code === 101 && (rinv.stdout ?? '') === '1\n5\n' && /M4015/.test(rinv.stderr), 'code=' + rinv.code + ' stdout=' + JSON.stringify(rinv.stdout) + ' stderr=' + (rinv.stderr ?? '').slice(0, 100));
+  check('v47:mut 方法退出重查 M4015(tree)', rinvt.code === 101 && rinvt.stdout === rinv.stdout && rinvt.stderr.split('\n')[0] === rinv.stderr.split('\n')[0], 'tree=' + JSON.stringify(rinvt.stdout) + ' stderr=' + (rinvt.stderr ?? '').slice(0, 100));
+  const invOkFile = path.join(dir, 'inv47ok.ming');
+  fs.writeFileSync(invOkFile, invSrc.replace('    s.break_it();\n    print(str(s.x));\n', ''));
+  const rinvOk = runMing(['run', invOkFile]);
+  check('v47:合法变异不误报', rinvOk.code === 0 && (rinvOk.stdout ?? '') === '1\n5\n', 'code=' + rinvOk.code + ' stdout=' + JSON.stringify(rinvOk.stdout));
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

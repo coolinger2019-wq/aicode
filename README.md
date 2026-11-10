@@ -84,7 +84,8 @@ Windows 下也可以用 `bin\ming.cmd`。
 *（本版同时并入另一窗口成果:真 AOT 字节码产物——ming build 默认纯字节码 dist,无明文源;--with-source 附源码;spawn/trait 自动回退源码模式）*
 - **v0.44** — **AI 协作护栏**(W3104 测试字面量过拟合检查 + `--json` 结构化修复处方 fix + tools/diaghot.ming 诊断热力图)+ **mask 效果屏蔽设计定稿**(design.md §6.11)——受 Jenny/Blood 调研启发;连带修复 unify 缺 json 分支、VM match-return 栈残留两项真实 bug
 - **v0.45** — **契约系统阶段 1**(requires/ensures 运行时检查,VM+树引擎一致,M4015;invariant 语法支持)
-- **v0.46(当前)** — **契约阶段 2 第一步**:M3040 invariant 字段封装 + M3041 调用点静态契约校验(字面量实参编译期反例)+ 修复 invariant struct + impl 的检查器崩溃;AGENTS.md 协作指南 + 12 个自举工具
+- **v0.46** — **契约阶段 2 第一步**:M3040 invariant 字段封装 + M3041 调用点静态契约校验(字面量实参编译期反例)+ 修复 invariant struct + impl 的检查器崩溃;AGENTS.md 协作指南 + 12 个自举工具
+- **v0.47(当前)** — **契约阶段 2 完成:mut 方法退出时的 invariant 重查**(树/VM 一致)——invariant 在每个可观测状态变更点都被检查(构造/外部写/方法退出)
 - **v0.46 方向** — QF_LIA 边界证明子集 / ABI 哈希构建缓存(见 docs/plan.md);unsafe 块实现
 - **更远(北星对齐)** — async 运行时;eval;RSA/国密
 

@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.46.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.47.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -1009,6 +1009,16 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 - **文档**:新增 `AGENTS.md`(AI 代理协作指南:硬规则/命令/提交规范/已知陷阱)、`docs/plan.md`(v0.45 起的实施计划与 Backlog)、`docs/references.md`(Jenny/Blood 参考语言地址、要点映射与进度查看方式);README 文档节挂链并修正路线图中 v0.43/v0.44 双"当前"标注。
 - 无代码变更;测试沿用 422 项全绿。
+
+### v0.47.0(2026-11-11)
+
+- **契约阶段 2 完成:mut 方法退出时的 invariant 重查**(树/VM 一致):
+  - 机制:impl 方法派发点(callMethod struct 分支)在 mut-self 方法返回后,以接收者字段为绑定重查 invariant → 违反 M4015(消息与构造期一致)。
+  - 语义确认:`mut self` 经 noCopySelf **原地修改接收者**——检查点必须在方法返回后;非 mut 方法受 M3004 约束不能写字段(检查器已有),不参与重查。
+  - 健全性链条闭合:构造期 M4015 ✓ + 外部字段写 M3004/M3040 ✓ + 非 mut self 写 M3004 ✓ + mut 方法退出 M4015 ✓——invariant 在每个可观测状态变更点都被检查。
+- 健全性边界(诚实声明):mut 方法中途 panic 时接收者可能处于违反态,但 panic 传播使该状态不可观测;跨 panic 的状态恢复不属于语言承诺。
+- 待办(移入 v0.48):QF_LIA 边界证明子集(编译期免检 + 反例)、ABI 哈希构建缓存。
+- 测试:460 项全绿(§42 新增三项:重查 VM/tree 一致、合法变异不误报)。
 
 ### v0.46.0(2026-11-11)
 

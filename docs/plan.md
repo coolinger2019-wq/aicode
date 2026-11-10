@@ -64,10 +64,10 @@
 - **M3041 调用点静态契约校验**：全部实参为整数字面量时，代入 requires 求值（线性子集：IntLit/Ident/一元 - !/+-*/%/比较/&& || 短路；除零与 i64 溢出放弃判定）；可判定为假 → 编译错误 M3041 + 反例（`amount = -5`）与 else 消息。字面量违反从运行时 M4015 前移到编译期。
 - **P0 修复**：invariant struct + 缺 for 的 impl → 解析恢复把 `fn (mut self)` 注册为顶层函数（裸 self type=null）→ 检查器崩溃；修复 = resolveSigs 标记 poisoned + checkBodies/compiler 跳过。
 
-## 4. v0.47 — 契约阶段 2 剩余 / 构建缓存（二选一）
+## 4. v0.47 — 契约阶段 2 完成（2026-11-11）✅ / v0.48 — 证明器或构建缓存（二选一）
 
 ### 4a. 契约阶段 2 剩余
-- **mut 方法退出时的 invariant 重查**：方案 = checker 为 invariant struct 合成隐藏 `__invariant_S(self) -> bool` 函数，mut 方法返回前调用（构造点已检查 ✓）；
+- **mut 方法退出时的 invariant 重查**：✅ 已完成（v0.47）——实现取派发点重查方案（callMethod struct 分支，mut-self 方法返回后以接收者字段重查；比合成隐藏函数更简单且树/VM 共用同一份代码）。
 - **QF_LIA 边界证明子集**：对 `requires offset >= 0 && offset + 4 <= buf.len` 形态的线性整数算术做编译期证明，
   证明成立时允许块内免检访问（配合未来 `with unsafe`）；证伪时给出**具体反例**（Jenny 风格）。
 - 交付：`src/prover.js`（限定子集）+ 新诊断码（证明失败/未证明）+ 示例 + 测试。
