@@ -703,10 +703,14 @@ export class Checker {
           }
           effects.add(e.name);
         }
+        // v0.46 修复:解析恢复产物——顶层 fn 带裸 self(type:null)只可能来自
+        // "impl 缺 for"的恢复路径(真实错误 M2002 已由解析器报告),此处不得崩溃;
+        // 标记 poisoned,函数体检查跳过(调用方类型检查必然失败,编译不会发生)
+        if (d.params.some(p => p.self && !p.type)) entry.poisoned = true;
         entry.sig = {
           tparams: d.tparams,
           bounds: d.bounds ?? [],
-          params: d.params.map(p => ({ name: p.name, mut: !!p.mut, type: this.resolveTypeAst(p.type, mod, tp), span: p.span })),
+          params: d.params.map(p => ({ name: p.name, mut: !!p.mut, type: p.type ? this.resolveTypeAst(p.type, mod, tp) : T_UNIT, span: p.span })),
           ret: d.ret ? this.resolveTypeAst(d.ret, mod, tp) : T_UNIT,
           effects,
         };
@@ -836,7 +840,10 @@ export class Checker {
 
   checkBodies(mod) {
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'fn' && entry.decl.body) this.checkFnBody(entry, mod);
+      if (entry.kind === 'fn' && entry.decl.body) {
+        if (entry.poisoned) continue; // v0.46:解析恢复产物(真实错误已在解析期报告)
+        this.checkFnBody(entry, mod);
+      }
       if (entry.kind === 'test') this.checkTest(entry, mod);
     }
     // impl 方法体(在 resolveImpls 中注册到 methodEntries)
@@ -1023,7 +1030,7 @@ export class Checker {
           ok = false;
         }
         if (!ok) continue;
-        const pseudoEntry = { kind: 'fn', decl: m, pub: false, sig, mod, methodName: m.name, traitName: traitDef.name };
+        const pseudoEntry = { kind: 'fn', decl: m, pub: false, sig, mod, methodName: m.name, traitName: traitDef.name, implTypeName: item.typeName };
         implsForDef.set(m.name, pseudoEntry);
         this.methodEntries.push(pseudoEntry);
       }
@@ -1146,6 +1153,7 @@ export class Checker {
     const ctx = {
       mod, scope, fnRet: entry.sig.ret, inLoop: false,
       fnName: d.name, warnings: this.diags,
+      implTypeName: entry.implTypeName ?? null, // v0.46:invariant 字段封装需要知道所在 impl 的目标类型
       fnDecl: d, // v0.44:效果修复处方需要函数体起点(函数签名尾部)
       genericNames: new Set(entry.sig.tparams),
       effects: entry.sig.effects,
@@ -1468,6 +1476,12 @@ export class Checker {
         const f = r.def.fields.find(x => x.name === e.name);
         if (!f) {
           this.diags.push(err('M3006', `结构体 ${r.name} 没有字段 "${e.name}"(有:${r.def.fields.map(x => x.name).join(', ') || '无'})`, e.span));
+          return null;
+        }
+        // v0.46(M3040):带 invariant 的 struct 字段封装——字段只能在自身 impl 方法内修改
+        if (r.def.invariants?.length && ctx.implTypeName !== r.name) {
+          this.diags.push(err('M3040', `结构体 ${r.name} 带有 invariant,字段 "${e.name}" 只能在它的 impl 方法内修改`, e.span,
+            '通过 impl 提供的(mut)方法修改字段,由方法负责维护不变量。'));
           return null;
         }
         return substTypes(f.rtype, r.def.tparams, r.targs);
@@ -1929,9 +1943,100 @@ export class Checker {
       const targ = resolveT(paramVars[idx], binds);
       if (targ) this.boundSatisfied(targ, b.trait, ctx, e.span);
     }
+    // v0.46(M3041):调用点静态契约校验——全部实参为整数字面量时,代入 requires 求值
+    if (sig.tparams.length === 0) this.checkRequiresAtCallSite(entry, e, sig);
     const ret = substTypes(sig.ret, sig.tparams, paramMap);
     const resolved = resolveT(ret, binds);
     return resolved ?? ret;
+  }
+
+  // v0.46(M3041,Jenny 反例风格):字面量实参代入 requires,静态可判定即编译期报错
+  checkRequiresAtCallSite(entry, e, sig) {
+    const req = entry.decl.requires;
+    if (!req?.expr) return;
+    const litOf = (a) => {
+      if (a?.nt === 'IntLit' && a.bits === 64 && typeof a.v === 'bigint') return a.v;
+      // 负字面量解析为 Unary(-IntLit)
+      if (a?.nt === 'Unary' && a.op === '-' && a.expr?.nt === 'IntLit' && a.expr.bits === 64 && typeof a.expr.v === 'bigint') return -a.expr.v;
+      return undefined;
+    };
+    const binds = new Map();
+    for (let i = 0; i < sig.params.length; i++) {
+      const v = litOf(e.args[i]);
+      if (v === undefined) return; // v1:全部实参都是整数字面量才判定;含变量/表达式交给运行时 M4015
+      binds.set(sig.params[i].name, v);
+    }
+    const r = this.evalContractExpr(req.expr, binds);
+    if (!r.ok || r.v !== false) return; // 可判定且为假 → 报错;其余放弃判定
+    const parts = [];
+    for (const [n, v] of binds) parts.push(`${n} = ${v}`);
+    this.diags.push(err('M3041',
+      `调用点静态违反契约:实参使 requires 不成立(反例:${parts.join(', ')})${req.msg ? ';' + req.msg : ''}`,
+      e.span, '调整实参以满足前置条件;该错误在运行时本会以 M4015 出现。'));
+  }
+
+  // 契约表达式线性子集求值(IntLit/Ident/一元 - !/算术 +-*/%/比较/&& ||)。
+  // 返回 {ok:true, v:BigInt|bool} 或 {ok:false}(子集之外、除零、i64 溢出均放弃判定)。
+  evalContractExpr(e, binds) {
+    switch (e.nt) {
+      case 'IntLit': {
+        if (e.bits !== 64 || typeof e.v !== 'bigint') return { ok: false };
+        return { ok: true, v: e.v };
+      }
+      case 'Ident': {
+        const b = binds.get(e.name);
+        return b !== undefined ? { ok: true, v: b } : { ok: false };
+      }
+      case 'Unary': {
+        const a = this.evalContractExpr(e.expr, binds);
+        if (!a.ok) return a;
+        if (e.op === '-' && typeof a.v === 'bigint') return { ok: true, v: -a.v };
+        if (e.op === '!' && typeof a.v === 'boolean') return { ok: true, v: !a.v };
+        return { ok: false };
+      }
+      case 'Binary': {
+        const op = e.op;
+        if (op === '&&' || op === '||') {
+          const l = this.evalContractExpr(e.l, binds);
+          if (!l.ok || typeof l.v !== 'boolean') return { ok: false };
+          if (op === '&&' && !l.v) return { ok: true, v: false };
+          if (op === '||' && l.v) return { ok: true, v: true };
+          const r = this.evalContractExpr(e.r, binds);
+          if (!r.ok || typeof r.v !== 'boolean') return { ok: false };
+          return { ok: true, v: r.v };
+        }
+        const l = this.evalContractExpr(e.l, binds);
+        const r = this.evalContractExpr(e.r, binds);
+        if (!l.ok || !r.ok) return { ok: false };
+        if (['==', '!=', '<', '<=', '>', '>='].includes(op)) {
+          if (typeof l.v !== typeof r.v) return { ok: false };
+          let b2;
+          switch (op) {
+            case '==': b2 = l.v === r.v; break;
+            case '!=': b2 = l.v !== r.v; break;
+            case '<': b2 = l.v < r.v; break;
+            case '<=': b2 = l.v <= r.v; break;
+            case '>': b2 = l.v > r.v; break;
+            default: b2 = l.v >= r.v; break;
+          }
+          return { ok: true, v: b2 };
+        }
+        if (typeof l.v !== 'bigint' || typeof r.v !== 'bigint') return { ok: false };
+        const I64_MIN = -(2n ** 63n), I64_MAX = (2n ** 63n) - 1n;
+        let v;
+        switch (op) {
+          case '+': v = l.v + r.v; break;
+          case '-': v = l.v - r.v; break;
+          case '*': v = l.v * r.v; break;
+          case '/': if (r.v === 0n || (r.v === -1n && l.v === I64_MIN)) return { ok: false }; v = l.v / r.v; break;
+          case '%': if (r.v === 0n) return { ok: false }; v = l.v % r.v; break;
+          default: return { ok: false }; // 位运算/移位 v1 不支持(放弃判定)
+        }
+        if (v < I64_MIN || v > I64_MAX) return { ok: false }; // 溢出语义无法镜像,放弃判定
+        return { ok: true, v };
+      }
+      default: return { ok: false };
+    }
   }
 
   callFnType(ft, e, ctx, expected) {

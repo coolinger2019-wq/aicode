@@ -143,7 +143,7 @@ class BytecodeCompiler {
     const fnEntries = [];
     for (const mod of this.check.modules) {
       for (const [, entry] of mod.items) {
-        if ((entry.kind === 'fn' || entry.kind === 'test') && entry.decl.body) fnEntries.push({ entry, mod });
+        if ((entry.kind === 'fn' || entry.kind === 'test') && entry.decl.body && !entry.poisoned) fnEntries.push({ entry, mod });
       }
       for (const mEntry of this.check.methodEntries ?? []) {
         if (mEntry.mod === mod) fnEntries.push({ entry: mEntry, mod });

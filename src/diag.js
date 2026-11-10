@@ -53,6 +53,10 @@ export const CODES = {
   M3030: 'unknown-effect',
   M3031: 'const-not-constant',
   M3032: 'trait-impl-mismatch',
+  M3033: 'not-json-serializable',
+  M3034: 'join-handle-escapes',
+  M3040: 'invariant-field-protected',
+  M3041: 'contract-violated-at-call',
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',

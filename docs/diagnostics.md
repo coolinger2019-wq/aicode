@@ -108,6 +108,8 @@
 | M4013 | ffi-load-failed | v0.42 启用:extern fn 库加载/符号查找失败(C 后端启动绑定阶段,退出码 101) |
 | M4014 | ffi-signature-invalid | v0.39 预留(未启用):ffi 签名与目标符号不符 |
 | M4015 | contract-violation | v0.45:契约违反(requires/ensures),退出码 101 |
+| M3040 | invariant-field-protected | 带 invariant 的 struct 字段只能在自身 impl 方法内修改(v0.46) |
+| M3041 | contract-violated-at-call | 调用点静态契约违反:整数字面量实参代入 requires 可判定为假(含反例)(v0.46) |
 
 ## 约定
 

@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.45.1** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.46.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -1009,6 +1009,16 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 - **文档**:新增 `AGENTS.md`(AI 代理协作指南:硬规则/命令/提交规范/已知陷阱)、`docs/plan.md`(v0.45 起的实施计划与 Backlog)、`docs/references.md`(Jenny/Blood 参考语言地址、要点映射与进度查看方式);README 文档节挂链并修正路线图中 v0.43/v0.44 双"当前"标注。
 - 无代码变更;测试沿用 422 项全绿。
+
+### v0.46.0(2026-11-11)
+
+- **契约阶段 2 第一步**:
+  - **M3040 invariant 字段封装**:带 invariant 的 struct,字段只能在自身 impl 方法内修改(外部字段写 → 编译错误);impl 内写放行(通过 implTypeName 比对)。无 impl 的 invariant struct 字段在构造后即封装——这是"安全是默认"的自然延伸。
+  - **M3041 调用点静态契约校验**(Jenny 反例风格):全部实参为整数字面量时,代入 requires 求值(线性子集:IntLit/Ident/一元 - !/+-*/%/比较/&& || 短路;除零与 i64 溢出放弃判定),可判定为假 → 编译错误 + 反例(如 `amount = -5`)与 else 消息;含变量实参放弃判定交给运行时 M4015。字面量违反从"运行时才炸"前移到"编译期拦截"。
+- **P0 修复:invariant struct + 缺 for 的 impl 导致检查器崩溃**:解析恢复(`recover(true)`)会把 impl 块内的 `fn (mut self)` 当成顶层函数注册(裸 self → param.type = null)→ resolveTypeAst(null) 崩溃;修复 = resolveSigs 标记 poisoned(真实错误 M2002 已由解析器报告)+ checkBodies/compiler 跳过。
+- **M4015 语义前移说明**:requires 的字面量违反现在在编译期报 M3041;运行时 M4015 保留给静态不可判定的实参(变量/表达式)。
+- 测试:457 项全绿(§42 新增六项:P0 回归/M3040 封装与放行/M3041 反例与变量不误报)。
+- 待办(v0.47):mut 方法退出时的 invariant 重查(需合成 invariant 函数);QF_LIA 证明器;跨调用点约束推导。
 
 ### v0.45.1(2026-11-11)
 

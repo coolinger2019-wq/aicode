@@ -2028,8 +2028,13 @@ fn main() with io, fs {
 
   const reqSrc = ['fn f(a: i64) -> i64 requires a > 0 { return a + 1; }', 'fn main() with io { print(str(f(0))); }'].join('\n');
   const reqFile = mingFile('contract_req.ming', reqSrc);
-  const rreq = runMing(['run', reqFile]);
-  const rreqt = runMing(['run', reqFile, '--tree']);
+  // v0.46:字面量实参违反 → 编译期 M3041(不再到运行时)
+  const rreqLit = runMing(['run', reqFile]);
+  check('v45:requires 字面量违反编译期 M3041', rreqLit.code === 1 && /M3041/.test(rreqLit.stderr), 'code=' + rreqLit.code + ' stderr=' + (rreqLit.stderr ?? '').slice(0, 120));
+  // 运行时 M4015 路径:变量实参(静态不可判定)
+  const reqVarFile = mingFile('contract_reqvar.ming', ['fn f(a: i64) -> i64 requires a > 0 { return a + 1; }', 'fn main() with io { let a = 0; print(str(f(a))); }'].join('\n'));
+  const rreq = runMing(['run', reqVarFile]);
+  const rreqt = runMing(['run', reqVarFile, '--tree']);
   check('v45:requires 违反 M4015(VM)', rreq.code === 101 && /M4015/.test(rreq.stderr));
   check('v45:requires 违反 M4015(tree)', rreqt.code === 101 && /M4015/.test(rreqt.stderr));
   check('v45:requires 违反消息双引擎一致', rreq.stderr.split('\n')[0] === rreqt.stderr.split('\n')[0],
@@ -2130,6 +2135,68 @@ fn main() with io, fs {
   check('v45.1:file_organizer 按扩展名归档', r.status === 0 && fs.existsSync(path.join(od, 'txt', 'x.txt')) && fs.existsSync(path.join(od, 'md', 'y.md')), r.stdout ?? '');
   r = runTool('file_organizer.ming', []);
   check('v45.1:file_organizer 缺参拒绝', r.status === 1 && (r.stdout ?? '').includes('用法'), 'code=' + r.status);
+}
+
+// ===================== 42. v0.46:契约阶段 2 第一步(invariant 封装 + 调用点静态校验)=====================
+{
+  const dir = path.join(TMP, 'v46');
+  fs.mkdirSync(dir, { recursive: true });
+
+  // P0 回归:invariant struct + 缺 for 的 impl(解析恢复产物)——不得崩溃检查器
+  const p0 = path.join(dir, 'p0.ming');
+  fs.writeFileSync(p0, ['struct S { x: i64, invariant x >= 0 }', 'impl S {', '    fn break_it(mut self) {', '        self.x = -5;', '    }', '}', 'fn main() with io { }', ''].join('\n'));
+  const rp0 = runMing(['check', p0]);
+  check('v46:P0 恢复产物不崩溃检查器', rp0.code === 1 && (rp0.stderr ?? '').includes('M2002') && !(rp0.stderr ?? '').includes('TypeError'), 'code=' + rp0.code + ' stderr=' + (rp0.stderr ?? '').slice(0, 120));
+
+  // M3040:带 invariant 的 struct 外部字段写被封装;impl 方法内写放行
+  const encSrc = [
+    'trait AccountOps {',
+    '    fn withdraw(mut self, amount: i64) -> i64;',
+    '}',
+    'struct Account { balance: i64, invariant balance >= 0 }',
+    'impl AccountOps for Account {',
+    '    fn withdraw(mut self, amount: i64) -> i64 {',
+    '        self.balance = self.balance - amount;',
+    '        return self.balance;',
+    '    }',
+    '}',
+    'fn main() with io {',
+    '    let mut acct = Account { balance: 100 };',
+    '    acct.balance = -50;',
+    '    print(str(acct.withdraw(30)));',
+    '}',
+  ].join('\n');
+  const encFile = path.join(dir, 'enc.ming');
+  fs.writeFileSync(encFile, encSrc);
+  const renc = runMing(['check', encFile]);
+  check('v46:M3040 invariant 字段封装', renc.code === 1 && (renc.stderr ?? '').includes('M3040') && (renc.stderr ?? '').includes('只能在它的 impl 方法内修改'), 'stderr=' + (renc.stderr ?? '').slice(0, 140));
+
+  // 同程序去掉外部写 → 编译干净(impl 内写放行 + 无误报)
+  const encOkFile = path.join(dir, 'encok.ming');
+  fs.writeFileSync(encOkFile, encSrc.replace('    acct.balance = -50;\n', ''));
+  const rok2 = runMing(['check', encOkFile]);
+  check('v46:M3040 impl 内写放行且无误报', rok2.code === 0, 'code=' + rok2.code + ' stderr=' + (rok2.stderr ?? '').slice(0, 140));
+
+  // M3041:字面量实参违反 requires → 编译期反例(含 else 消息)
+  const csSrc = [
+    'fn pay(amount: i64) -> i64 requires amount > 0 else "金额必须为正" {',
+    '    return amount * 2;',
+    '}',
+    'fn main() with io {',
+    '    print(str(pay(-5)));',
+    '    print(str(pay(3)));',
+    '}',
+  ].join('\n');
+  const csFile = path.join(dir, 'callsite.ming');
+  fs.writeFileSync(csFile, csSrc);
+  const rcs = runMing(['check', csFile]);
+  check('v46:M3041 调用点静态违反(反例 + else 消息)', rcs.code === 1 && (rcs.stderr ?? '').includes('M3041') && (rcs.stderr ?? '').includes('amount = -5') && (rcs.stderr ?? '').includes('金额必须为正'), 'stderr=' + (rcs.stderr ?? '').slice(0, 160));
+
+  // M3041 变量实参不误报(交给运行时 M4015)
+  const csOkFile = path.join(dir, 'callsiteok.ming');
+  fs.writeFileSync(csOkFile, csSrc.replace('print(str(pay(-5)));', 'let v = 0 - 5;\n    print(str(pay(v)));'));
+  const rcsOk = runMing(['check', csOkFile]);
+  check('v46:M3041 变量实参不误报', rcsOk.code === 0 && !(rcsOk.stderr ?? '').includes('M3041'), 'code=' + rcsOk.code + ' stderr=' + (rcsOk.stderr ?? '').slice(0, 120));
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
