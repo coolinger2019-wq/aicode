@@ -4,6 +4,7 @@
 //   v0.33-v0.38:三后端(树引擎 / 字节码 VM+wasm / VM --no-wasm),i64+str 形态逐步加深
 //   v0.39:形态池加深(f64+math / match / loop / Option / Vec 方法 / str 方法 / for-range)
 //         + "纯数值族"程序接入 C 后端第 4 腿(检测到 gcc/clang 时;C1 拒绝 = 发射器回归)
+//   v0.51.6:生成器补复合赋值形态(+=/-=/*=,含 while 循环内)——覆盖 VM 窥孔融合路径(#17 P0 bug 曾因从不生成 += 而漏网)
 // 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -86,7 +87,7 @@ function genCond(vars, depth) {
 // ---- 语句生成。v0.41:cc 族 = wide 全形态(C3 起 Option/f64/Map 全部入 C 面)----
 function genStmt(s, vars, strVar, mode, lines) {
   const v = pick(vars);
-  const kind = pick(['assign', 'assign', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64', 'mapx', 'forrange']);
+  const kind = pick(['assign', 'assign', 'compound', 'compound', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64', 'mapx', 'forrange']);
   void mode;
   if (kind === 'ifelse') {
     // v0.38:if/else 语句(含字符串分支,多后端分支求值差分)
@@ -94,11 +95,31 @@ function genStmt(s, vars, strVar, mode, lines) {
     lines.push(`    if ${genCond(vars, 2)} { ${v} = ${v} + ${int(1, 9)}; ${other} = ${other} - 1; } else { ${v} = ${v} - ${int(1, 5)}; ${other} = ${other} + 2; }`);
   } else if (kind === 'assign') {
     lines.push(`    ${v} = ${v} + ${genExpr(vars, int(1, 3))};`);
+  } else if (kind === 'compound') {
+    // v0.51.6:复合赋值——窥孔 (A) x±=1→ADDI±1 /(B) x OP= 字面量→BINSETI /(C) x+=局部→BINSET2
+    // (#17 P0 bug 曾因生成器从不生成 += 而长期漏网;字面量恒小值,避免溢出 panic 泛滥)
+    const other = vars.find(x => x !== v) ?? v;
+    const r = rng();
+    if (r < 0.45) {
+      // ±小字面量:恰为 1 走 (A) ADDI±1,其余走 (B) BINSETI
+      lines.push(`    ${v} ${pick(['+=', '+=', '-='])} ${rng() < 0.3 ? 1 : int(1, 9)};`);
+    } else if (r < 0.65) {
+      // *= 非零小字面量(正值走 (B);负值经 Unary 不融合,走 VM 通用复合路径)
+      lines.push(`    ${v} *= ${pick([-3, -2, -1, 1, 2, 3])};`);
+    } else if (r < 0.85) {
+      // x += 另一个局部走 (C) BINSET2;偶发 dst==src 同槽边界
+      lines.push(`    ${v} += ${rng() < 0.25 ? v : other};`);
+    } else {
+      // += 任意小表达式(不融合,VM 通用复合路径)
+      lines.push(`    ${v} += ${genExpr(vars, 1)};`);
+    }
   } else if (kind === 'while') {
-    // 有界循环:计数器循环累加,必终止
+    // 有界循环:计数器循环累加,必终止(v0.51.6:偶发复合赋值形态,覆盖循环内窥孔融合)
     const k = int(1, 6);
+    const bodyInc = rng() < 0.4 ? `${v} += ${int(1, 9)}` : `${v} = ${v} + ${int(1, 9)}`;
+    const cntInc = rng() < 0.5 ? `i${s} += 1` : `i${s} = i${s} + 1`;
     lines.push(`    let mut i${s} = 0;`);
-    lines.push(`    while i${s} < ${k} { ${v} = ${v} + ${int(1, 9)}; i${s} = i${s} + 1; }`);
+    lines.push(`    while i${s} < ${k} { ${bodyInc}; ${cntInc}; }`);
   } else if (kind === 'vec') {
     // v0.40 修复:变量名带序号(vv${s})——固定名 "vv" 两条 vec 语句同名 → M3016
     // (wide 族三后端一致拒绝 → 假通过,被 cc 族的编译失败揭穿)
