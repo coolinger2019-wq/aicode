@@ -2042,10 +2042,11 @@ fn main() with io, fs {
 
   const ensSrc = ['fn f(a: i64) -> i64 ensures result > a else "结果必须大于输入" { return a; }', 'fn main() with io { print(str(f(3))); }'].join('\n');
   const ensFile = mingFile('contract_ens.ming', ensSrc);
+  // v0.48:直线体 ensures 恒假 → 编译期 M3042(不再到运行时)
   const rens = runMing(['run', ensFile]);
   const renst = runMing(['run', ensFile, '--tree']);
-  check('v45:ensures 违反 M4015(VM)', rens.code === 101 && /M4015/.test(rens.stderr));
-  check('v45:ensures 违反消息双引擎一致', rens.stderr.split('\n')[0] === renst.stderr.split('\n')[0],
+  check('v45:ensures 恒假编译期 M3042', rens.code === 1 && /M3042/.test(rens.stderr) && (rens.stderr ?? '').includes('结果必须大于输入'));
+  check('v45:ensures 静态证伪双引擎一致', rens.stderr.split('\n')[0] === renst.stderr.split('\n')[0],
     'vm=' + JSON.stringify(rens.stderr.split('\n')[0]) + ' tree=' + JSON.stringify(renst.stderr.split('\n')[0]));
 
   // invariant 违反
@@ -2232,6 +2233,36 @@ fn main() with io, fs {
   fs.writeFileSync(invOkFile, invSrc.replace('    s.break_it();\n    print(str(s.x));\n', ''));
   const rinvOk = runMing(['run', invOkFile]);
   check('v47:合法变异不误报', rinvOk.code === 0 && (rinvOk.stdout ?? '') === '1\n5\n', 'code=' + rinvOk.code + ' stdout=' + JSON.stringify(rinvOk.stdout));
+}
+
+// ===================== 43. v0.48:QF_LIA 第一片(ensures 直线体静态验证)=====================
+{
+  const dir = path.join(TMP, 'v48');
+  fs.mkdirSync(dir, { recursive: true });
+  const mk = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+
+  // 可证真 → 无诊断
+  const okF = mk('ok.ming', ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 1 {', '    return a + 1;', '}', 'fn main() with io { print(str(f(3))); }', ''].join('\n'));
+  const rok = runMing(['check', okF]);
+  check('v48:M3042 可证真不误报', rok.code === 0 && !(rok.stderr ?? '').includes('M3042'), 'stderr=' + (rok.stderr ?? '').slice(0, 140));
+
+  // 等式可证假 → M3042 + requires 满足的反例
+  const eqF = mk('eq.ming', ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 2 {', '    return a + 1;', '}', 'fn main() with io { print(str(f(3))); }', ''].join('\n'));
+  const req = runMing(['check', eqF]);
+  check('v48:M3042 等式可证假(反例 a=1)', req.code === 1 && (req.stderr ?? '').includes('M3042') && (req.stderr ?? '').includes('a = 1'), 'stderr=' + (req.stderr ?? '').slice(0, 160));
+
+  // 不等式可证假 → 反例满足门控要求(a > 5 → a=10)
+  const inqF = mk('inq.ming', ['fn g(a: i64) -> i64 requires a > 5 ensures result > a + 5 {', '    return a + 1;', '}', 'fn main() with io { print(str(g(10))); }', ''].join('\n'));
+  const rinq = runMing(['check', inqF]);
+  check('v48:M3042 不等式可证假(门控反例 a=10)', rinq.code === 1 && (rinq.stderr ?? '').includes('M3042') && (rinq.stderr ?? '').includes('a = 10'), 'stderr=' + (rinq.stderr ?? '').slice(0, 160));
+
+  // 非直线体(循环)静默;调用表达式静默
+  const loopF = mk('loop.ming', ['fn h(n: i64) -> i64 requires n >= 0 ensures result == n * 2 {', '    let mut acc = 0;', '    for i in 0..n { acc += 2; }', '    return acc;', '}', 'fn main() with io { print(str(h(3))); }', ''].join('\n'));
+  const rloop = runMing(['check', loopF]);
+  check('v48:M3042 非直线体静默(循环)', rloop.code === 0 && !(rloop.stderr ?? '').includes('M3042'), 'stderr=' + (rloop.stderr ?? '').slice(0, 140));
+  const callF = mk('call.ming', ['fn twice(a: i64) -> i64 { return a * 2; }', 'fn h(a: i64) -> i64 requires a > 0 ensures result == a * 2 {', '    return twice(a);', '}', 'fn main() with io { print(str(h(3))); }', ''].join('\n'));
+  const rcall = runMing(['check', callF]);
+  check('v48:M3042 调用表达式静默', rcall.code === 0 && !(rcall.stderr ?? '').includes('M3042'), 'stderr=' + (rcall.stderr ?? '').slice(0, 140));
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

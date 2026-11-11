@@ -57,6 +57,7 @@ export const CODES = {
   M3034: 'join-handle-escapes',
   M3040: 'invariant-field-protected',
   M3041: 'contract-violated-at-call',
+  M3042: 'ensures-statically-false',
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',

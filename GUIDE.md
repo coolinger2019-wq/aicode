@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.47.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.48.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -1009,6 +1009,15 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 - **文档**:新增 `AGENTS.md`(AI 代理协作指南:硬规则/命令/提交规范/已知陷阱)、`docs/plan.md`(v0.45 起的实施计划与 Backlog)、`docs/references.md`(Jenny/Blood 参考语言地址、要点映射与进度查看方式);README 文档节挂链并修正路线图中 v0.43/v0.44 双"当前"标注。
 - 无代码变更;测试沿用 422 项全绿。
+
+### v0.48.0(2026-11-11)
+
+- **契约阶段 2 续:QF_LIA 证明子集第一片——ensures 直线体静态验证**(决策:bench 实测 cc/vm 6–11x 运行期健康、编译非瓶颈 → 3b 构建缓存延后,选 3a):
+  - **M3042[ensures-statically-false]**:对含 ensures 的函数做直线体符号执行(Let/Assign/ExprStmt(纯调用)/Return;遇 If/While/For/Match/调用结果依赖/非 i64 参数静默放弃),变量追踪为参数的**线性形式** {coeffs, c};返回点以 `result` 绑定返回值形式,对 ensures 求值:线性差为非零常量 → 可证明为假 → 编译错误 M3042 + **反例**(满足 requires 的小值搜索,复用 evalContractExpr);可证明为真/无法判定 → 静默(运行时 M4015 保留,语义不变)。
+  - 反例搜索:参数 ≤3 个时在小值候选集(0/1/2/3/5/-1/-2/10/100/-5)上笛卡尔搜索,要求满足 requires(如 requires a > 5 → 反例 a = 10);否则报无具体反例版本。
+  - 语义说明:直线体 ensures 恒假时**运行时 M4015 不可达**(编译期已拦);非直线体运行时 M4015 保留。
+- 决策记录:plan.md §4(3b 延后理由:当前规模 ming check 全程 126ms,编译非瓶颈)。
+- 测试:465 项全绿(§43 新增五项:可证真不误报/等式反例/门控不等式反例/循环静默/调用静默);v0.45 ensures 恒假测试同步为编译期语义。
 
 ### v0.47.0(2026-11-11)
 

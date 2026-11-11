@@ -852,6 +852,10 @@ export class Checker {
     }
     // v0.44:测试字面量过拟合检查(实现分支条件中出现测试断言的字面量)
     this.checkTestLiteralOverfit(mod);
+    // v0.48(M3042):ensures 直线体符号执行(QF_LIA 第一片)
+    for (const [, entry] of mod.items) {
+      if (entry.kind === 'fn' && !entry.poisoned) this.checkEnsuresStatically(entry);
+    }
   }
 
   // v0.44(Jenny E0905 的 Ming 版):收集本模块 test 块中的非常量字面量,
@@ -1973,6 +1977,212 @@ export class Checker {
     this.diags.push(err('M3041',
       `调用点静态违反契约:实参使 requires 不成立(反例:${parts.join(', ')})${req.msg ? ';' + req.msg : ''}`,
       e.span, '调整实参以满足前置条件;该错误在运行时本会以 M4015 出现。'));
+  }
+
+  // ---------- v0.48(M3042,QF_LIA 第一片):ensures 直线体符号执行 ----------
+  // 变量追踪为参数的线性形式 {coeffs: Map<param,BigInt>, c: BigInt};
+  // 遇非直线语句/非 i64 参数/非子集表达式 → 静默放弃(运行时 M4015 保留,语义不变);
+  // 返回点以 `result` 绑定返回值形式求值 ensures:可证明为假 → M3042 + 反例。
+
+  // 线性形式代数
+  linFromInt(n) { return { coeffs: new Map(), c: n }; }
+  linAdd(a, b, sign) {
+    const out = { coeffs: new Map(a.coeffs), c: a.c + sign * b.c };
+    for (const [k, v] of b.coeffs) {
+      const nv = (out.coeffs.get(k) ?? 0n) + sign * v;
+      if (nv === 0n) out.coeffs.delete(k); else out.coeffs.set(k, nv);
+    }
+    return out;
+  }
+  linMulConst(a, k) {
+    const out = { coeffs: new Map(), c: a.c * k };
+    for (const [kk, v] of a.coeffs) out.coeffs.set(kk, v * k);
+    return out;
+  }
+  linIsConst(f) { return f.coeffs.size === 0; }
+  // 在候选参数值下求线性形式的具体值(用于反例)
+  linEvalAt(f, vals) {
+    let v = f.c;
+    for (const [k, cf] of f.coeffs) v += cf * (vals.get(k) ?? 0n);
+    return v;
+  }
+
+  // 表达式 → 线性形式;子集之外返回 null(resultForm:`result` 绑定的形式)
+  linOfExpr(e, varForms, resultForm) {
+    switch (e.nt) {
+      case 'IntLit': {
+        if (e.bits !== 64 || typeof e.v !== 'bigint') return null;
+        return this.linFromInt(e.v);
+      }
+      case 'Ident': {
+        if (e.name === 'result' && resultForm) return { coeffs: new Map(resultForm.coeffs), c: resultForm.c };
+        const f = varForms.get(e.name);
+        if (!f) return null;
+        return { coeffs: new Map(f.coeffs), c: f.c };
+      }
+      case 'Unary': {
+        if (e.op !== '-') return null;
+        const a = this.linOfExpr(e.expr, varForms, resultForm);
+        return a ? this.linMulConst(a, -1n) : null;
+      }
+      case 'Binary': {
+        const op = e.op;
+        if (op === '+') {
+          const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+          return (l && r) ? this.linAdd(l, r, 1n) : null;
+        }
+        if (op === '-') {
+          const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+          return (l && r) ? this.linAdd(l, r, -1n) : null;
+        }
+        if (op === '*') {
+          const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+          if (l && r && this.linIsConst(r)) return this.linMulConst(l, r.c);
+          if (l && r && this.linIsConst(l)) return this.linMulConst(r, l.c);
+          return null;
+        }
+        return null; // / % 位运算移位 → 放弃
+      }
+      default: return null; // 调用/字段/浮点/字符串等 → 放弃
+    }
+  }
+
+  // ensures 表达式在(变量 → 线性形式)下的判定:'true' | 'false' | 'unknown'
+  // resultForm:返回值的线性形式(result 绑定)
+  decideEnsures(e, varForms, resultForm) {
+    switch (e.nt) {
+      case 'Ident': {
+        if (e.name === 'result') {
+          if (this.linIsConst(resultForm)) return resultForm.c !== 0n ? 'true' : 'false';
+          return 'unknown';
+        }
+        const f = varForms.get(e.name);
+        if (f && this.linIsConst(f)) return f.c !== 0n ? 'true' : 'false';
+        return 'unknown';
+      }
+      case 'Unary': {
+        if (e.op !== '!') return 'unknown';
+        const inner = this.decideEnsures(e.expr, varForms, resultForm);
+        return inner === 'true' ? 'false' : inner === 'false' ? 'true' : 'unknown';
+      }
+      case 'Binary': {
+        const op = e.op;
+        if (op === '&&' || op === '||') {
+          const l = this.decideEnsures(e.l, varForms, resultForm);
+          if (op === '&&' && l === 'false') return 'false';
+          if (op === '||' && l === 'true') return 'true';
+          const r = this.decideEnsures(e.r, varForms, resultForm);
+          if (l === r && l !== 'unknown') return l;
+          return 'unknown';
+        }
+        if (!['==', '!=', '<', '<=', '>', '>='].includes(op)) return 'unknown';
+        const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+        if (!l || !r) return 'unknown';
+        const diff = this.linAdd(l, r, -1n); // L - R
+        if (!this.linIsConst(diff)) return 'unknown'; // 含参数 → 需要区间推理(v2)
+        const c = diff.c;
+        switch (op) {
+          case '==': return c === 0n ? 'true' : 'false';
+          case '!=': return c === 0n ? 'false' : 'true';
+          case '<': return c < 0n ? 'true' : 'false';
+          case '<=': return c <= 0n ? 'true' : 'false';
+          case '>': return c > 0n ? 'true' : 'false';
+          default: return c >= 0n ? 'true' : 'false';
+        }
+      }
+      default: return 'unknown';
+    }
+  }
+
+  checkEnsuresStatically(entry) {
+    const d = entry.decl;
+    const ens = d.ensures;
+    if (!ens?.expr) return;
+    const sig = entry.sig;
+    // v1:全 i64 参数
+    for (const p of sig.params) {
+      if (p.type?.k !== 'int' || p.type.bits !== 64 || !p.type.signed) return;
+    }
+    const body = d.body;
+    // 直线体:语句仅 Let/Assign/ExprStmt
+    for (const st of body.stmts) {
+      if (!['Let', 'Assign', 'ExprStmt', 'Return'].includes(st.nt)) return;
+    }
+    // 变量 → 线性形式(参数初始化)
+    const varForms = new Map();
+    for (const p of sig.params) varForms.set(p.name, { coeffs: new Map([[p.name, 1n]]), c: 0n });
+    // 遍历语句;遇到 Return/块尾 → 以当前形式判定 ensures
+    const checkAtReturn = (retForm, span) => {
+      const verdict = this.decideEnsures(ens.expr, varForms, retForm);
+      if (verdict !== 'false') return;
+      // 反例:满足 requires 的小值搜索(线性 ensures 恒假 → 任意满足 requires 的值皆反例)
+      const names = sig.params.map(p => p.name);
+      const cands = [0n, 1n, 2n, 3n, 5n, -1n, -2n, 10n, 100n, -5n];
+      const vals = new Map();
+      let found = null;
+      const n = names.length;
+      if (n <= 3) {
+        const idx = new Array(n).fill(0);
+        const total = Math.pow(cands.length, n);
+        for (let t = 0; t < total && !found; t++) {
+          for (let i = 0; i < n; i++) vals.set(names[i], cands[idx[i]]);
+          const rr = this.evalContractExpr(d.requires?.expr ?? { nt: 'BoolLit', v: true }, vals);
+          const passR = !d.requires?.expr || (rr.ok && rr.v === true);
+          if (passR) {
+            // 用同一组值复核 ensures 数值(线性求值)
+            const resVal = this.linEvalAt(retForm, vals);
+            const v2 = new Map(vals);
+            v2.set('result', resVal);
+            const rr2 = this.evalContractExpr(ens.expr, v2);
+            if (rr2.ok && rr2.v === false) found = new Map(vals);
+          }
+          let carry = 0;
+          while (carry < n) {
+            idx[carry]++;
+            if (idx[carry] < cands.length) break;
+            idx[carry] = 0; carry++;
+          }
+          if (carry >= n) break;
+        }
+      }
+      if (found) {
+        const parts = [];
+        for (const [k, v] of found) parts.push(`${k} = ${v}`);
+        this.diags.push(err('M3042',
+          `函数 "${d.name}" 的 ensures 可静态证伪(反例:${parts.join(', ')})${ens.msg ? ';' + ens.msg : ''}`,
+          ens.span ?? d.span, '修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'));
+      } else {
+        this.diags.push(err('M3042',
+          `函数 "${d.name}" 的 ensures 可静态证伪${ens.msg ? ';' + ens.msg : ''}`,
+          ens.span ?? d.span, '修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'));
+      }
+    };
+    // Return 语句单独走:以返回值形式判定(直接递归处理块的后续不需要——直线体遇 return 即结束)
+    const walkBodyForReturns = (block) => {
+      for (const st of block.stmts) {
+        if (st.nt === 'Return') {
+          const f = st.value ? this.linOfExpr(st.value, varForms) : null;
+          if (f) checkAtReturn(f, st.span ?? block.span);
+          return; // return 之后的语句不可达,停止本块分析
+        }
+        if (st.nt === 'Let' && st.pat?.nt === 'PIdent') {
+          const f2 = this.linOfExpr(st.init, varForms);
+          if (f2) varForms.set(st.pat.name, f2); else return;
+        } else if (st.nt === 'Assign' && st.target?.nt === 'Ident') {
+          const f3 = this.linOfExpr(st.value, varForms);
+          if (f3 && varForms.has(st.target.name)) varForms.set(st.target.name, f3); else return;
+        } else if (st.nt === 'ExprStmt' && st.expr?.nt === 'Call') {
+          continue;
+        } else if (st.nt !== 'ExprStmt') {
+          return; // 非直线语句 → 放弃整条路径
+        }
+      }
+      if (block.tail) {
+        const f4 = this.linOfExpr(block.tail, varForms);
+        if (f4) checkAtReturn(f4, block.tail.span ?? block.span);
+      }
+    };
+    walkBodyForReturns(body);
   }
 
   // 契约表达式线性子集求值(IntLit/Ident/一元 - !/算术 +-*/%/比较/&& ||)。
