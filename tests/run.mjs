@@ -2592,6 +2592,75 @@ fn main() with io, fs {
   }
 }
 
+// ===================== 50. v0.51.2:构建可信性(artifact/回退/缓存/哈希/守卫)=====================
+{
+  const proj = (name) => { const d = path.join(TMP, name); fs.mkdirSync(d, { recursive: true }); return d; };
+  const writeProj = (d, files) => {
+    fs.writeFileSync(path.join(d, 'ming.toml'), `[project]\nname = "${path.basename(d)}"\nversion = "0.1.0"\nentry = "app.ming"\n`);
+    for (const [f, c] of Object.entries(files)) {
+      const p = path.join(d, f); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, c);
+    }
+  };
+  const build = (d) => spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: d, timeout: 120000 });
+  const runDist = (d) => spawnSync(process.execPath, [path.join(d, 'dist', 'ming-app.mjs')], { encoding: 'utf8', timeout: 60000 });
+
+  // 1) struct 形参:AOT 产物可序列化,且不泄漏字段类型/源码路径
+  const s1 = proj('v512-struct');
+  writeProj(s1, { 'app.ming': 'struct P { x: i64 }\nfn add(p: P) -> i64 { return p.x + 1; }\nfn main() with io { print(str(add(P { x: 1 }))); }\n' });
+  const b1 = build(s1);
+  const artPath = path.join(s1, 'dist', 'app.bytecode.json');
+  const art = fs.existsSync(artPath) ? fs.readFileSync(artPath, 'utf8') : '';
+  check('v51.2:struct 形参走 AOT(不再 BigInt 回退)', b1.status === 0 && fs.existsSync(artPath) && (b1.stdout ?? '').includes('字节码'), 'code=' + b1.status + ' out=' + (b1.stdout ?? '').slice(-100));
+  const bs = String.fromCharCode(92);
+  check('v51.2:AOT 产物不泄漏字段类型/绝对路径', art.length > 0 && !art.includes('"TName"') && !art.includes('C:' + bs), 'leak=' + art.slice(0, 120));
+  const r1 = runDist(s1);
+  check('v51.2:struct AOT 产物可运行', r1.status === 0 && r1.stdout === '2\n', 'out=' + JSON.stringify(r1.stdout));
+
+  // 2) 源码回退复制全部模块;二次构建命中且产物仍可运行
+  const s2 = proj('v512-multi');
+  writeProj(s2, {
+    'util.ming': 'pub fn tw(x: i64) -> i64 { return x * 2; }\n',
+    'app.ming': 'use util;\nfn main() with io, sync { print(str(util.tw(21))); }\n',
+  });
+  const b2 = build(s2);
+  const b2b = build(s2);
+  const r2 = runDist(s2);
+  check('v51.2:源码回退复制全部模块', b2.status === 0 && fs.existsSync(path.join(s2, 'dist', 'util.ming')) && (b2.stderr ?? '').includes('AOT 不可用'), 'hasUtil=' + fs.existsSync(path.join(s2, 'dist', 'util.ming')));
+  check('v51.2:多模块源码 dist 可运行(缓存命中后仍可)', r2.status === 0 && r2.stdout === '42\n' && (b2b.stdout ?? '').includes('缓存命中'), 'out=' + JSON.stringify(r2.stdout) + ' hit=' + (b2b.stdout ?? '').includes('缓存命中'));
+
+  // 3) 缓存命中必须校验 dist 内容
+  const s3 = proj('v512-cache');
+  writeProj(s3, { 'app.ming': 'fn main() with io { print("ok"); }\n' });
+  build(s3);
+  const hit1 = build(s3);
+  fs.rmSync(path.join(s3, 'dist', 'runtime'), { recursive: true, force: true });
+  const miss1 = build(s3);
+  const r3a = runDist(s3);
+  fs.writeFileSync(path.join(s3, 'dist', 'app.bytecode.json'), 'garbage');
+  const miss2 = build(s3);
+  const r3b = runDist(s3);
+  check('v51.2:缓存命中仍有效(内容未变)', (hit1.stdout ?? '').includes('缓存命中'), 'out=' + (hit1.stdout ?? '').slice(0, 60));
+  check('v51.2:dist 被删改 → 不再命中并重建', !(miss1.stdout ?? '').includes('缓存命中') && !(miss2.stdout ?? '').includes('缓存命中') && r3a.status === 0 && r3b.status === 0 && r3b.stdout === 'ok\n', 'miss1=' + (miss1.stdout ?? '').includes('缓存命中') + ' miss2=' + (miss2.stdout ?? '').includes('缓存命中') + ' out=' + JSON.stringify(r3b.stdout));
+
+  // 4) 接口哈希:枚举 payload 类型变化必须改变哈希
+  const s4 = proj('v512-enum');
+  writeProj(s4, { 'app.ming': 'enum E { A(i64) }\nfn main() with io { print("x"); }\n' });
+  build(s4);
+  const hash1 = JSON.parse(fs.readFileSync(path.join(s4, '.ming-cache', 'build-cache.json'), 'utf8')).modules.find(m => m.file === 'app.ming').interfaceHash;
+  fs.writeFileSync(path.join(s4, 'app.ming'), 'enum E { A(str) }\nfn main() with io { print("x"); }\n');
+  const b4 = build(s4);
+  const hash2 = JSON.parse(fs.readFileSync(path.join(s4, '.ming-cache', 'build-cache.json'), 'utf8')).modules.find(m => m.file === 'app.ming').interfaceHash;
+  check('v51.2:枚举 payload 类型变化 → 接口哈希变化', hash1 !== hash2 && (b4.stdout ?? '').includes('变更'), 'h1=' + hash1 + ' h2=' + hash2);
+
+  // 5) 拒绝覆盖非产物 dist(保护用户源码目录)
+  const s5 = proj('v512-guard');
+  writeProj(s5, { 'app.ming': 'fn main() with io { print("g"); }\n' });
+  fs.mkdirSync(path.join(s5, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(s5, 'dist', 'util.ming'), '// 用户源码\n');
+  const b5 = build(s5);
+  check('v51.2:非产物 dist 拒绝覆盖且保留文件', b5.status === 1 && (b5.stderr ?? '').includes('拒绝覆盖') && fs.existsSync(path.join(s5, 'dist', 'util.ming')), 'code=' + b5.status + ' stderr=' + (b5.stderr ?? '').slice(0, 100));
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

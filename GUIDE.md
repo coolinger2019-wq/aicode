@@ -1006,6 +1006,17 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.51.2(2026-11-11)
+
+- **构建可信性四项(代码审查修复)**:
+  - **AOT 产物纯 wire 化**:签名只序列化类型判别字段(不再内嵌 `mod`/`decl` AST);tag 池(`structspec`/`enumspec`/`pat`)脱敏;spans/modFile 改为项目内相对路径——struct 形参不再因 BigInt 回退源码模式,产物不再泄漏 AST 与绝对路径。
+  - **源码回退复制全部模块**(保留相对路径);launcher 源码模式改为 `new Checker(mingFile)` 从磁盘读全部模块(此前 provider 对所有路径返回入口源码,多模块 dist 必坏)。
+  - **缓存命中校验 dist 内容哈希**(相对路径 + 文件 sha256):删除 runtime / 损坏 bytecode 不再"缓存命中",自动重建。
+  - **接口哈希修正**:enum 改读 `v.types`(此前读不存在的 `v.args`,payload 类型变化不影响哈希);补 `bounds` 与 impl `typeArgs`。
+  - **dist 安全**:写 `.ming-dist.json` 标记;拒绝覆盖非产物 dist(`--clean-cache` 同样跳过),保护用户源码目录。
+- 回归(§50 九项):struct AOT 可运行且无泄漏/多模块回退可运行且命中/缓存删改重建/枚举哈希变化/非产物 dist 守卫。
+- 测试:513 项全绿;模糊 30 程序 0 分歧。
+
 ### v0.51.1(2026-11-11)
 
 - **契约纯性(M3043 contract-not-pure)**:requires/ensures/invariant 中禁止调用会修改接收者的方法(Vec/Map 原地方法、mut self 方法)——此前 `requires (v.pop() != None)` 会真的弹出参数,函数体看到被改后的值。三处契约检查上下文增加 contractMode。

@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.51.1';
+export const VERSION = '0.51.2';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -433,7 +433,7 @@ function stripAst(node) {
 
 function fnIface(d) {
   return {
-    nt: 'fn', name: d.name, tparams: d.tparams ?? [], pub: !!d.pub, local: !!d.local,
+    nt: 'fn', name: d.name, tparams: d.tparams ?? [], bounds: (d.bounds ?? []).map(b => b.name + ':' + b.trait), pub: !!d.pub, local: !!d.local,
     params: (d.params ?? []).map(p => ({ name: p.name, mut: !!p.mut, self: !!p.self, type: p.type ? stripAst(p.type) : null })),
     ret: d.ret ? stripAst(d.ret) : null,
     effects: (d.effects ?? []).map(x => x.name),
@@ -455,19 +455,35 @@ function moduleIfaceHash(mod) {
         invariants: (d.invariants ?? []).map(i => stripAst(i.expr)),
         pub: !!entry.pub,
       }]); break;
-      case 'enum': canon.push(['enum', name, { variants: (d.variants ?? []).map(v => ({ name: v.name, args: (v.args ?? []).map(a => a.type ? stripAst(a.type) : null) })), pub: !!entry.pub }]); break;
+      case 'enum': canon.push(['enum', name, { variants: (d.variants ?? []).map(v => ({ name: v.name, types: (v.types ?? []).map(t => stripAst(t)) })), pub: !!entry.pub }]); break;
       case 'const': canon.push(['const', name, { type: d.type ? stripAst(d.type) : null, value: stripAst(d.value ?? null), pub: !!entry.pub }]); break;
       case 'trait': canon.push(['trait', name, {
         tparams: d.tparams ?? [],
         methods: (d.methods ?? []).map(m => fnIface(m)),
         pub: !!entry.pub,
       }]); break;
-      case 'impl': canon.push(['impl', d.trait, d.typeName, (d.methods ?? []).map(m => fnIface(m))]); break;
+      case 'impl': canon.push(['impl', d.trait, d.typeName, { tparams: d.tparams ?? [], bounds: (d.bounds ?? []).map(b => b.name + ':' + b.trait), typeArgs: (d.typeArgs ?? []).map(t => stripAst(t)), methods: (d.methods ?? []).map(m => fnIface(m)) }]); break;
       default: break;
     }
   }
   canon.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return createHash('sha256').update(JSON.stringify(canon)).digest('hex').slice(0, 16);
+}
+
+// v0.51.2:目录内容哈希(相对路径 + 文件 sha256),用于缓存命中的 dist 完整性校验
+function hashTree(dir) {
+  if (!fs.existsSync(dir)) return null;
+  const files = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else files.push(path.relative(dir, p).split(path.sep).join('/') + '|' + createHash('sha256').update(fs.readFileSync(p)).digest('hex'));
+    }
+  };
+  walk(dir);
+  files.sort();
+  return createHash('sha256').update(files.join(String.fromCharCode(10))).digest('hex');
 }
 
 // 项目根目录下全部 .ming 与 ming.toml(排除隐藏/dist/.ming-cache/node_modules)
@@ -567,8 +583,22 @@ function cmdBuild(flags) {
   // v0.49:--clean-cache 删除缓存与 dist,强制全量重建
   if (flags.has('clean-cache')) {
     fs.rmSync(cacheFile, { force: true });
-    fs.rmSync(distDir, { recursive: true, force: true });
+    if (fs.existsSync(distDir)) {
+      const marker = path.join(distDir, '.ming-dist.json');
+      if (fs.existsSync(marker) || fs.existsSync(path.join(distDir, 'ming-app.mjs'))) {
+        fs.rmSync(distDir, { recursive: true, force: true });
+      } else if (!json) {
+        process.stderr.write('dist/ 不是 Ming 产物(缺少 .ming-dist.json),已跳过删除' + String.fromCharCode(10));
+      }
+    }
     if (!json) process.stdout.write('已清理构建缓存与 dist\n');
+  }
+  // v0.51.2:拒绝覆盖非产物 dist(避免递归删除用户源码目录)
+  if (fs.existsSync(distDir)) {
+    const marker = path.join(distDir, '.ming-dist.json');
+    if (!fs.existsSync(marker) && !fs.existsSync(path.join(distDir, 'ming-app.mjs'))) {
+      return fail('dist 目录已存在且不是 Ming 产物(缺少 .ming-dist.json);拒绝覆盖', json);
+    }
   }
   // v0.49:构建缓存——键 = 规范化哈希(编译器版本 + 项目全部 .ming 源 + ming.toml)
   // 过包含保健全:任何源变化 → 键变化 → 重建;命中 → 跳过 check+compile(dist 已有效)
@@ -577,8 +607,7 @@ function cmdBuild(flags) {
   })).digest('hex').slice(0, 32);
   let prevCache = null;
   try { prevCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { prevCache = null; }
-  const distIntact = fs.existsSync(path.join(distDir, 'ming-app.mjs')) &&
-    (fs.existsSync(path.join(distDir, 'app.bytecode.json')) || fs.existsSync(path.join(distDir, 'app.ming')));
+  const distIntact = !!prevCache?.distHash && hashTree(distDir) === prevCache.distHash;
   if (!flags.has('no-dist') && !flags.has('clean-cache') && prevCache && prevCache.key === buildKey && distIntact) {
     if (json) process.stdout.write(JSON.stringify({ ok: true, project: proj.project.name, cache: 'hit', ms: Date.now() - t0 }, null, 2) + '\n');
     else process.stdout.write('缓存命中(键未变,跳过检查与编译;--clean-cache 清除)\n');
@@ -615,6 +644,7 @@ function cmdBuild(flags) {
   if (ok && !flags.has('no-dist')) {
     fs.rmSync(distDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
+    fs.writeFileSync(path.join(distDir, '.ming-dist.json'), JSON.stringify({ tool: 'ming', version: VERSION }) + String.fromCharCode(10));
     for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js']) {
       fs.copyFileSync(path.join(__dirname, '..', 'src', m), path.join(distDir, 'runtime', m));
     }
@@ -629,7 +659,7 @@ function cmdBuild(flags) {
       }));
       if (usesSync) throw new Error('程序使用 sync 并发(spawn 子任务由源码编译)');
       const compiled = compile(checkResult);
-      const artifact = serializeArtifact(compiled);
+      const artifact = serializeArtifact(compiled, { baseDir: projectRoot });
       artifact.builtBy = VERSION;
       fs.writeFileSync(path.join(distDir, 'app.bytecode.json'), JSON.stringify(artifact));
     } catch (e) {
@@ -652,8 +682,7 @@ function cmdBuild(flags) {
       '  vm = VMInterp.fromArtifact(artifact, {});',
       '} else {',
       "  const { Checker } = await import('./runtime/checker.js');",
-      '  const src = fs.readFileSync(mingFile, "utf8");',
-      '  const checker = new Checker(mingFile, () => src);',
+      '  const checker = new Checker(mingFile);',
       '  const result = checker.run();',
       "  const errs = result.diags.filter(d => d.severity === 'error');",
       '  if (errs.length) {',
@@ -675,6 +704,18 @@ function cmdBuild(flags) {
     fs.writeFileSync(path.join(distDir, 'ming-app.mjs'), launcher);
     if (aotErr) {
       fs.copyFileSync(files[0], path.join(distDir, 'app.ming'));
+      // v0.51.2:回退时复制全部已加载模块(保留相对路径),否则多模块 dist 不可运行
+      const entryAbs = path.resolve(files[0]);
+      for (const m of checkResult.modules) {
+        const mAbs = path.resolve(m.file);
+        if (mAbs === entryAbs) continue;
+        const rel = path.relative(path.dirname(entryAbs), mAbs);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
+        if (!fs.existsSync(mAbs)) continue;
+        const dest = path.join(distDir, rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(mAbs, dest);
+      }
       process.stderr.write(`AOT 不可用:${aotErr};已回退源码模式(产物含明文源)\n`);
       process.stdout.write('产物:dist/(app.ming 源码模式 + runtime + ming-app.mjs)\n');
     } else {
@@ -689,7 +730,7 @@ function cmdBuild(flags) {
     const moduleHashes = checkResult.modules.map(m => ({ file: path.basename(m.file), interfaceHash: moduleIfaceHash(m) }));
     fs.mkdirSync(cacheDir, { recursive: true });
     fs.writeFileSync(cacheFile, JSON.stringify({
-      key: buildKey, builtAt: new Date().toISOString(), compilerVersion: VERSION, modules: moduleHashes,
+      key: buildKey, builtAt: new Date().toISOString(), compilerVersion: VERSION, distHash: hashTree(distDir), modules: moduleHashes,
     }, null, 1));
     if (prevCache && Array.isArray(prevCache.modules)) {
       const prevByFile = new Map(prevCache.modules.map(x => [x.file, x.interfaceHash]));
