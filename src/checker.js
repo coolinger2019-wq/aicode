@@ -30,7 +30,7 @@ export function mkMap(kt, vt) { return { k: 'map', kt, vt }; }
 export function mkOpt(el) { return { k: 'opt', el }; }
 export function mkRes(ok, er) { return { k: 'res', ok, err: er }; }
 export function mkTuple(ts) { return { k: 'tuple', ts }; }
-export function mkFn(ps, ret) { return { k: 'fn', ps, ret }; }
+export function mkFn(ps, ret, effects = new Set()) { return { k: 'fn', ps, ret, effects }; }
 export function mkRange(el) { return { k: 'range', el }; }
 export function mkJoin(el) { return { k: 'join', el }; }
 
@@ -71,6 +71,13 @@ function occurs(t, id, binds) {
   }
 }
 
+function effectsSubset(a, b) {
+  const as = a.effects ?? new Set();
+  const bs = b.effects ?? new Set();
+  for (const e of as) if (!bs.has(e)) return false;
+  return true;
+}
+
 // 尝试统一;成功返回 true(可能写入 binds)
 // 顺序关键:var 绑定优先(推断),param 只在两侧都非 var 时绑定(泛型 impl 的结构匹配)
 export function unify(a, b, binds) {
@@ -103,7 +110,7 @@ export function unify(a, b, binds) {
     case 'res': return unify(a.ok, b.ok, binds) && unify(a.err, b.err, binds);
     case 'map': return unify(a.kt, b.kt, binds) && unify(a.vt, b.vt, binds);
     case 'tuple': return a.ts.length === b.ts.length && a.ts.every((x, i) => unify(x, b.ts[i], binds));
-    case 'fn': return a.ps.length === b.ps.length && a.ps.every((x, i) => unify(x, b.ps[i], binds)) && unify(a.ret, b.ret, binds);
+    case 'fn': return a.ps.length === b.ps.length && a.ps.every((x, i) => unify(x, b.ps[i], binds)) && unify(a.ret, b.ret, binds) && effectsSubset(a, b);
     case 'struct': case 'enum':
       return a.def === b.def && (a.targs ?? []).length === (b.targs ?? []).length
         && (a.targs ?? []).every((x, i) => unify(x, b.targs[i], binds));
@@ -132,7 +139,7 @@ export function typeStr(t, binds = null) {
     case 'range': return `Range[${r(t.el)}]`;
     case 'join': return `Join[${r(t.el)}]`;
     case 'tuple': return t.ts.length === 0 ? '()' : `(${t.ts.map(r).join(', ')})`;
-    case 'fn': return `(${t.ps.map(r).join(', ')}) -> ${r(t.ret)}`;
+    case 'fn': { const base = `(${t.ps.map(r).join(', ')}) -> ${r(t.ret)}`; const es = [...(t.effects ?? [])]; return es.length ? base + ' with ' + es.join(', ') : base; }
     case 'param': return t.name;
     case 'typename': case 'typeobj': return t.prim ?? t.name;
     case 'typeref': return t.entry?.decl?.name ?? t.name;
@@ -1215,6 +1222,7 @@ export class Checker {
   // 效果检查:调用方必须声明被调方需要的全部效果
   checkEffects(ctx, required, span) {
     if (!required || !required.size) return;
+    if (ctx.effectSink) for (const e of required) ctx.effectSink.add(e);
     const missing = [...required].filter(e => !ctx.effects?.has(e));
     if (!missing.length) return;
     const d = err('M3029',
@@ -1672,7 +1680,7 @@ export class Checker {
         this.diags.push(err('M3003', `泛型函数 "${name}" 作为值使用前需要确定类型参数`, e.span));
         return null;
       }
-      return mkFn(localFn.params.map(p => p.type), localFn.ret);
+      return mkFn(localFn.params.map(p => p.type), localFn.ret, new Set(localFn.effects ?? []));
     }
     // 模块级函数(当前模块,用户定义优先于内置)
     const entry = ctx.mod.items.get(name);
@@ -1681,7 +1689,7 @@ export class Checker {
         this.diags.push(err('M3003', `泛型函数 "${name}" 作为值使用前需要确定类型参数`, e.span, '直接调用它,让类型从实参推断。'));
         return null;
       }
-      return mkFn(entry.sig.params.map(p => p.type), entry.sig.ret);
+      return mkFn(entry.sig.params.map(p => p.type), entry.sig.ret, new Set(entry.sig.effects ?? []));
     }
     if (entry?.kind === 'const') {
       return entry.rtype ?? null;
@@ -1815,7 +1823,7 @@ export class Checker {
         this.diags.push(err('M3003', `泛型函数 "${name}" 作为值使用前需要确定类型参数`, span));
         return null;
       }
-      return mkFn(entry.sig.params.map(p => p.type), entry.sig.ret);
+      return mkFn(entry.sig.params.map(p => p.type), entry.sig.ret, new Set(entry.sig.effects ?? []));
     }
     if (entry.kind === 'enum') {
       if (!entry.pub) this.visDiag(entry, name, span, fromMod);
@@ -2257,6 +2265,7 @@ export class Checker {
       this.diags.push(err('M3021', `${typeStr(r)} 不是函数,不能调用`, e.callee.span));
       return null;
     }
+    if (r.effects?.size) this.checkEffects(ctx, r.effects, e.callee.span);
     if (e.args.length !== r.ps.length) {
       this.diags.push(err('M3005', `这个函数需要 ${r.ps.length} 个参数,得到 ${e.args.length}`, e.span));
     }
@@ -3474,7 +3483,8 @@ export class Checker {
     });
     const scope = new Scope(ctx.scope, ctx.mod);
     for (const p of ps) scope.bind(p.name, p.type, false, p.span, true);
-    const ctx2 = { ...ctx, scope };
+    const sink = new Set();
+    const ctx2 = { ...ctx, scope, effectSink: sink };
     let retT;
     const retExpected = fnExpected ? fnExpected.ret : (expected && resolveT(expected, new Map())?.k !== 'fn' ? expected : undefined);
     if (e.body.nt === 'BlockExpr') retT = this.checkBlock(e.body.block, ctx2, retExpected ?? undefined);
@@ -3484,7 +3494,8 @@ export class Checker {
     // 推断变量填充
     ps.forEach(p => { if (p.type.k === 'var') p.type = resolveT(p.type, binds) ?? p.type; });
     if (retT) retT = resolveT(retT, binds) ?? retT;
-    return mkFn(ps.map(p => p.type), retT ?? T_UNIT);
+    if (ctx.effectSink) for (const e of sink) ctx.effectSink.add(e);
+    return mkFn(ps.map(p => p.type), retT ?? T_UNIT, sink);
   }
 
   checkPostQ(e, ctx) {

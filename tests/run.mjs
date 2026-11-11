@@ -2478,6 +2478,58 @@ fn main() with io, fs {
   check('v50.1:--no-wasm 走 VM 而非树引擎', noWasm.code === 101 && (noWasm.stderr ?? '').includes('M4015') && treeRun.stdout === '2\n', 'code=' + noWasm.code + ' stderr=' + (noWasm.stderr ?? '').slice(0, 120) + ' tree=' + JSON.stringify(treeRun.stdout));
 }
 
+// ===================== 48. v0.51:效果门禁函数值(类型携带 effects)=====================
+{
+  const bypass = mingFile('v51-eff-bypass.ming', [
+    'fn noisy() -> () with io { print("副作用!"); }',
+    'fn pure_one() -> () { let g = noisy; g(); }',
+    'fn apply(f: () -> ()) -> () { f(); }',
+    'fn pure_two() -> () { apply(noisy); }',
+    'fn main() { pure_one(); pure_two(); }',
+  ].join('\n'));
+  const rB = runMing(['check', bypass]);
+  check('v51:效果函数值调用被拒(M3029)', rB.code === 1 && (rB.stderr ?? '').includes('M3029') && (rB.stderr ?? '').includes('io'), 'code=' + rB.code + ' stderr=' + (rB.stderr ?? '').slice(0, 160));
+  check('v51:带效果函数作为实参被拒(类型显示 with io)', rB.code === 1 && (rB.stderr ?? '').includes('M3002') && (rB.stderr ?? '').includes('with io'), 'stderr=' + (rB.stderr ?? '').slice(0, 200));
+
+  const pos = mingFile('v51-eff-pos.ming', [
+    'fn noisy() -> () with io { print("ok"); }',
+    'fn wrapper() with io { let g = noisy; g(); g(); }',
+    'fn main() with io { wrapper(); }',
+  ].join('\n'));
+  const rPos = runMing(['run', pos]);
+  const rPosChk = runMing(['check', pos]);
+  check('v51:声明效果后函数值可正常使用', rPosChk.code === 0 && rPos.code === 0 && rPos.stdout === 'ok\nok\n', 'check=' + rPosChk.code + ' run=' + rPos.code + ' stdout=' + JSON.stringify(rPos.stdout));
+
+  const lam = mingFile('v51-eff-lambda.ming', [
+    'fn main() with io {',
+    '    let v = [1, 2];',
+    '    let g = (x: i64) => { print(str(x)); x };',
+    '    let w = v.map(g);',
+    '    print(str(w.len()));',
+    '}',
+  ].join('\n'));
+  const rLam = runMing(['check', lam]);
+  check('v51:带效果 lambda 不能传给纯 HOF(map)', rLam.code === 1 && (rLam.stderr ?? '').includes('M3002') && (rLam.stderr ?? '').includes('with io'), 'code=' + rLam.code + ' stderr=' + (rLam.stderr ?? '').slice(0, 180));
+
+  const pureLam = mingFile('v51-eff-pure-lambda.ming', [
+    'fn main() with io {',
+    '    let v = [1, 2];',
+    '    let w = v.map((x: i64) => x * 2);',
+    '    print(str(w.get(0).unwrap()));',
+    '}',
+  ].join('\n'));
+  const rPure = runMing(['run', pureLam]);
+  check('v51:纯 lambda 传 HOF 不受影响', rPure.code === 0 && rPure.stdout === '2\n', 'code=' + rPure.code + ' stdout=' + JSON.stringify(rPure.stdout));
+
+  const nested = mingFile('v51-eff-nested-lambda.ming', [
+    'fn noisy() -> () with io { print("x"); }',
+    'fn pure() -> () { let g = () => { noisy(); }; }',
+    'fn main() { pure(); }',
+  ].join('\n'));
+  const rNest = runMing(['check', nested]);
+  check('v51:嵌套 lambda 内的效果仍被追溯(M3029)', rNest.code === 1 && (rNest.stderr ?? '').includes('M3029'), 'code=' + rNest.code);
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

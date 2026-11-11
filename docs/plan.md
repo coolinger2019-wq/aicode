@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.50.1**（wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 488 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.51.0**（效果门禁函数值闭合；wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 494 项全绿）。
 
 ---
 
@@ -119,7 +119,7 @@
 
 | # | 缺陷 | 严重度 | 证据/位置 |
 |---|------|--------|-----------|
-| 1 | **函数值丢失效果集**:`let g = noisy; g();`、`apply(noisy)`、`v.map(noisy)` 均绕过 M3029;`main()` 无 `with io` 也能打印 | **P0** | checker.js mkFn/callFnType/lambda;实测 check exit 0 且 run 输出两行 |
+| ~~1~~ | ~~**函数值丢失效果集**~~ ✅ v0.51.0:`let g = noisy; g();`、`apply(noisy)`、`v.map(noisy)` 均绕过 M3029;`main()` 无 `with io` 也能打印 | **P0** | checker.js mkFn/callFnType/lambda;实测 check exit 0 且 run 输出两行 |
 | 2 | 契约表达式可调用 mut 方法,requires 修改参数 | P1 | `requires (v.pop() != None)` 后 len 从 3→2(tree/VM 一致) |
 | 3 | ensures 未覆盖 `?` 早退;树引擎嵌套 return 漏检(树/VM 不一致) | P1 | `f(None)` 无 M4015;嵌套 return 树输出 2、VM M4015 |
 | 4 | 容器访问器返回内部引用:`v.get(0).unwrap().push(9)` 修改非 mut 的 v | P1 | 输出 `[[1, 9], [2]]` |
