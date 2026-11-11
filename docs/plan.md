@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.51.2**（构建可信性；契约纯性 + ensures 全路径；效果门禁函数值闭合；wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 513 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.51.3**（C 后端 UB 修复；构建可信性；契约纯性 + ensures 全路径；效果门禁函数值闭合；wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 519 项全绿）。
 
 ---
 
@@ -127,9 +127,9 @@
 | 6 | `while let` 被 M3028 无条件拒绝(GUIDE 示例不可用) | P1 | checker.js:1292/1431 |
 | 7 | 泛型 bound 方法 arity 错误 → `ReferenceError: span is not defined` | P1 | checker.js:2607 |
 | 8 | Map 非原始键通过检查:get 静默 None,debug/keys 抛 TypeError | P1 | `Map[Vec[i64],i64]` 实测 |
-| 9 | C f64 打印 ≥9.22e17:浮点→long long 越界 UB,输出错值 | P1 | cc 对 1e18 输出 922337203685477580.0 |
-| 10 | C 有符号窄截断 `(long long)(x) << (64-N)` 负数 UB | P1 | cbackend.js:630;源码确认 |
-| 11 | C str 语义偏差:replace("")/pad 按字节宽度/ZWSP trim 产生非法 UTF-8 | P1 | JS `a-b`/`  中`/4 vs C `ab`/`中`/2 |
+| ~~9~~ | ~~C f64 打印 ≥9.22e17~~ ✅ v0.51.3 |:浮点→long long 越界 UB,输出错值 | P1 | cc 对 1e18 输出 922337203685477580.0 |
+| ~~10~~ | ~~C 有符号窄截断~~ ✅ v0.51.3 ming_sext | `(long long)(x) << (64-N)` 负数 UB | P1 | cbackend.js:630;源码确认 |
+| ~~11~~ | ~~C str 语义偏差~~ ✅ v0.51.3 |:replace("")/pad 按字节宽度/ZWSP trim 产生非法 UTF-8 | P1 | JS `a-b`/`  中`/4 vs C `ab`/`中`/2 |
 | ~~12~~ | ~~AOT sig 直写 mod 引用~~ ✅ v0.51.2 纯 wire 化 |:struct 形参 BigInt 失败回退;成功产物含 StructDecl AST(与"无明文源"冲突) | P1 | build 输出 BigInt 回退;产物 grep 到 `"nt":"StructDecl"` |
 | ~~13~~ | ~~build 源码回退只拷入口~~ ✅ v0.51.2 |:多模块 dist 不可运行,exit 0 且缓存命中破损 dist | P1 | `use util;` + sync:launcher M3022,二次 build 缓存命中 |
 | ~~14~~ | ~~缓存命中只验存在~~ ✅ v0.51.2 内容哈希 |:runtime 删除 / bytecode 损坏仍"缓存命中" | P1 | 删除 runtime → 命中;写入 garbage → 命中 |

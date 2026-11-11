@@ -2560,7 +2560,8 @@ export class Interp {
       case 'ends_with': return V.bool(s.endsWith(args[0].v));
       case 'contains': return V.bool(s.includes(args[0].v));
       case 'replace': {
-        const out = V.str(s.split(args[0].v).join(args[1].v));
+        // 空模式:按 Unicode 码点插入(与 C 后端 ming_str_replace 对齐)
+        const out = V.str(args[0].v === '' ? [...s].join(args[1].v) : s.split(args[0].v).join(args[1].v));
         this.chargeAllocBytes(out.v.length, span);
         return out;
       }
@@ -2604,8 +2605,14 @@ export class Interp {
       case 'is_space': return V.bool(s.length > 0 && /^\s+$/u.test(s));
       case 'is_upper': return V.bool(s.length > 0 && /\p{L}/u.test(s) && s === s.toUpperCase());
       case 'is_lower': return V.bool(s.length > 0 && /\p{L}/u.test(s) && s === s.toLowerCase());
-      case 'pad_left': return V.str(s.padStart(Number(args[0].v), ' '));
-      case 'pad_right': return V.str(s.padEnd(Number(args[0].v), ' '));
+      case 'pad_left': {
+        const chars = [...s], n = Number(args[0].v);
+        return V.str(n > chars.length ? ' '.repeat(n - chars.length) + s : s);
+      }
+      case 'pad_right': {
+        const chars = [...s], n = Number(args[0].v);
+        return V.str(n > chars.length ? s + ' '.repeat(n - chars.length) : s);
+      }
       // v0.31 二进制雏形:UTF-8 编码(纯函数;解码见 Vec[u8].to_str)
       case 'to_bytes': {
         const buf = Buffer.from(s, 'utf8');

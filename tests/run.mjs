@@ -2661,6 +2661,91 @@ fn main() with io, fs {
   check('v51.2:非产物 dist 拒绝覆盖且保留文件', b5.status === 1 && (b5.stderr ?? '').includes('拒绝覆盖') && fs.existsSync(path.join(s5, 'dist', 'util.ming')), 'code=' + b5.status + ' stderr=' + (b5.stderr ?? '').slice(0, 100));
 }
 
+// ===================== 51. v0.51.4:C 后端 UB 与语义对齐(f64/截断/str) =====================
+{
+  const detectCC = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const hasCC = !!detectCC();
+  const ccRun = (file, out) => spawnSync(process.execPath, [MING, 'cc', file, '--out', out], { encoding: 'utf8', timeout: 180000 });
+
+  // 1) f64 大整数打印:不再经 long long,结果与 JS 逐字一致
+  const f64 = mingFile('v514-f64.ming', [
+    'fn main() with io {',
+    '    print(str(1.0e18));',
+    '    print(str(1.0e19));',
+    '    print(str(9.0e20));',
+    '    print(str(2.5));',
+    '    print(str(0.0));',
+    '    print(str(1.0e21));',
+    '}',
+  ].join('\n'));
+  const wantF = '1000000000000000000.0\n10000000000000000000.0\n900000000000000000000.0\n2.5\n0.0\n1e+21\n';
+  const fJs = runMing(['run', f64]);
+  check('v51.3:f64 大整数 JS 输出', fJs.code === 0 && fJs.stdout === wantF, 'out=' + JSON.stringify(fJs.stdout));
+  if (hasCC) {
+    const fC = ccRun(f64, path.join(TMP, 'v514-c1'));
+    check('v51.3:C f64 大整数打印与 JS 一致', fC.status === 0 && fC.stdout === wantF, 'out=' + JSON.stringify((fC.stdout ?? '').slice(0, 120)));
+  } else {
+    check('v51.3:C f64 大整数打印(无编译器,跳过)', true);
+  }
+
+  // 2) str:空模式 replace(码点插入)/ pad 码点宽度 / ZWSP 不属空白
+  const zw = String.fromCharCode(0x200B);
+  const strSrc = [
+    'fn main() with io {',
+    '    print("ab".replace("", "-"));',
+    '    print("中文".replace("", "-"));',
+    '    print("😀a".replace("", "-"));',
+    '    print("中".pad_left(3));',
+    '    print(str("中".pad_left(3).char_len()));',
+    '    print(str("中".pad_left(3).byte_len()));',
+    '    print(str("中".pad_right(3).byte_len()));',
+    '    let z = "' + zw + 'a";',
+    '    print(str(z.trim_start().byte_len()));',
+    '}',
+  ].join('\n');
+  const strFile = mingFile('v514-str.ming', strSrc);
+  const wantS = 'a-b\n中-文\n😀-a\n  中\n3\n5\n5\n4\n';
+  const sVm = runMing(['run', strFile]);
+  const sTree = runMing(['run', strFile, '--tree']);
+  check('v51.3:str 空模式/pad/ZWSP 双引擎一致', sVm.code === 0 && sVm.stdout === wantS && sTree.stdout === wantS, 'vm=' + JSON.stringify(sVm.stdout) + ' tree=' + JSON.stringify(sTree.stdout));
+  if (hasCC) {
+    const sC = ccRun(strFile, path.join(TMP, 'v514-c2'));
+    check('v51.3:C str 三处语义与 JS 一致', sC.status === 0 && sC.stdout === wantS, 'out=' + JSON.stringify((sC.stdout ?? '').slice(0, 120)));
+  } else {
+    check('v51.3:C str 三处语义(无编译器,跳过)', true);
+  }
+
+  // 3) 有符号窄截断:负数/越界值符号扩展与 JS 一致;发射 C 用 ming_sext
+  const narrow = mingFile('v514-narrow.ming', [
+    'fn f(x: i64) -> i64 { let y = x as i32; return y as i64; }',
+    'fn main() with io { print(str(f(-5))); print(str(f(2147483647))); print(str(f(2147483648))); }',
+  ].join('\n'));
+  const wantN = '-5\n2147483647\n-2147483648\n';
+  const nJs = runMing(['run', narrow]);
+  check('v51.3:窄截断 JS 符号扩展基线', nJs.code === 0 && nJs.stdout === wantN, 'out=' + JSON.stringify(nJs.stdout));
+  if (hasCC) {
+    const outDir = path.join(TMP, 'v514-c3');
+    const nC = ccRun(narrow, outDir);
+    const emitDir = path.join(TMP, 'v514-c3e');
+    spawnSync(process.execPath, [MING, 'cc', narrow, '--emit-c', '--out', emitDir], { encoding: 'utf8', timeout: 60000 });
+    const cSrc = fs.readdirSync(emitDir).filter(x => x.endsWith('.c')).map(x => fs.readFileSync(path.join(emitDir, x), 'utf8')).join('\n');
+    check('v51.3:C 窄截断与 JS 一致且用 ming_sext', nC.status === 0 && nC.stdout === wantN && cSrc.includes('ming_sext('), 'out=' + JSON.stringify((nC.stdout ?? '').slice(0, 80)) + ' sext=' + cSrc.includes('ming_sext('));
+  } else {
+    check('v51.3:C 窄截断(无编译器,跳过)', true);
+  }
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');
