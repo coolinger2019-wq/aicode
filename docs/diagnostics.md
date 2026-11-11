@@ -74,7 +74,7 @@
 | M3027 | missing-field | 结构体字面量缺字段(没有默认值) |
 | M3028 | refutable-let-pattern | let 中使用可反驳模式(用 match / while let) |
 | M3029 | undeclared-effect | 调用需要未声明的效果:给签名加 `with io, ...` 并逐层传播 |
-| M3030 | unknown-effect | 未知效果名(当前可用:io / time) |
+| M3030 | unknown-effect | 未知效果名(当前可用:io / time / fs / net / sync / proc / env / rand / crypto / ffi) |
 | M3031 | const-not-constant | const 只接受常量表达式(字面量/运算/其他常量) |
 | M3032 | trait-impl-mismatch | trait/impl 问题:缺方法、self 可变性不符、类型未实现 bound 的 trait、impl 类型参数未覆盖目标参数 |
 | M3034 | join-handle-escapes | Join 句柄存入集合/struct 字段/元组/enum 载荷,或作为 spawn 参数/返回(线性资源) |

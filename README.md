@@ -97,7 +97,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.51.3** — **C 后端 UB 修复**:f64 大整数打印(%.1f)、符号扩展窄截断(ming_sext)、空模式 replace/pad 码点语义、trim 移除 ZWSP
 - **v0.51.4** — **检查器小缺陷**:访问器返回值语义副本、while let 恢复、元组穷尽性、泛型 arity 的 ReferenceError、Map 键类型 M3044
 - **v0.51.5(当前)** — **CLI 边界**:项目模式 `--` 参数透传、`-o` 短旗标、值旗标缺值/非整数硬报错——代码审查 16 项全部修复
-- **下一步方向** — QF_LIA 剩余模式(越界包含/免检访问);unsafe 块实现;异步运行时;eval;RSA/国密
+- **下一步方向** — 见 `docs/plan.md §4.2`:v0.52 越界包含静态证明 → v0.53 可信构建/CI → v0.54 `with unsafe`(C 原生)→ v0.55 跨函数契约摘要;`mask`/async/eval/国密留待更远
 
 ## 设计原则(全文见 design.md)
 

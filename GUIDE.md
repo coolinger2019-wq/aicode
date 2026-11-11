@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.48.0** · 字节码 VM + WASM 分层(v0.39 真正复活)+ **C 后端 C1/C2/C3(ming cc:cc 差分腿 = 解释引擎全形态;--static)**+ **with ffi 兑现(extern fn)** + **契约系统阶段 1(requires/ensures/invariant,M4015)** + **自举工具 mingkit/engdiff/diaghot/edit 等 12 个** + JSON + 正则 + capability fs/net/sync/proc/env/rand + HTTP(响应头/超时)+ std.fmt + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.51.5** · 字节码 VM + WASM 分层 + **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044)+ **ABI 哈希构建缓存**(ming build;--clean-cache)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
