@@ -2312,6 +2312,74 @@ fn main() with io, fs {
   check('v49:clean 后重建的缓存有效(下次命中)', b6.status === 0 && (b6.stdout ?? '').includes('缓存命中'), 'code=' + b6.status);
 }
 
+// ===================== 45. v0.49.1:GCM 长度边界修复(短明文往返 + nonce 唯一性 + <28B 拒绝)=====================
+{
+  const gb = mingFile('v491-gcm-boundary.ming', [
+    'use std.crypto;',
+    '',
+    'fn main() with io, crypto {',
+    '    let key = "0123456789abcdef0123456789abcdef";',
+    '    match std.crypto.aes256_gcm_encrypt(key, "hi") {',
+    '        Ok(d) => {',
+    '            print("short_len=" + str(d.len()));',
+    '            match std.crypto.aes256_gcm_decrypt(key, d) {',
+    '                Ok(pt) => print("short_rt=" + pt),',
+    '                Err(e) => print("SHORT-ERR: " + e),',
+    '            }',
+    '        },',
+    '        Err(e) => print("ENC-ERR: " + e),',
+    '    }',
+    '    match std.crypto.aes256_gcm_encrypt(key, "") {',
+    '        Ok(d) => {',
+    '            print("empty_len=" + str(d.len()));',
+    '            match std.crypto.aes256_gcm_decrypt(key, d) {',
+    '                Ok(pt) => print("empty_rt_len=" + str(pt.byte_len())),',
+    '                Err(e) => print("EMPTY-ERR: " + e),',
+    '            }',
+    '        },',
+    '        Err(e) => print("ENC-ERR: " + e),',
+    '    }',
+    '    match std.crypto.aes256_gcm_encrypt(key, "same") {',
+    '        Ok(a) => {',
+    '            match std.crypto.aes256_gcm_encrypt(key, "same") {',
+    '                Ok(b) => {',
+    '                    let mut same = true;',
+    '                    let mut i = 0;',
+    '                    while i < 12 {',
+    '                        if a[i] != b[i] { same = false; }',
+    '                        i += 1;',
+    '                    }',
+    '                    if same { print("NONCE-COLLISION"); } else { print("nonce-ok"); }',
+    '                },',
+    '                Err(e) => print("ENC2-ERR: " + e),',
+    '            }',
+    '        },',
+    '        Err(e) => print("ENC-ERR: " + e),',
+    '    }',
+    '    let mut b27: Vec[u8] = [];',
+    '    let mut k = 0;',
+    '    while k < 27 { b27.push(0 as u8); k += 1; }',
+    '    match std.crypto.aes256_gcm_decrypt(key, b27) {',
+    '        Ok(_) => print("27-ACCEPTED!"),',
+    '        Err(e) => print("27-rejected"),',
+    '    }',
+    '    let mut b12: Vec[u8] = [];',
+    '    let mut j = 0;',
+    '    while j < 12 { b12.push(0 as u8); j += 1; }',
+    '    match std.crypto.aes256_gcm_decrypt(key, b12) {',
+    '        Ok(_) => print("12-ACCEPTED!"),',
+    '        Err(e) => print("12-rejected"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const wantGb = ['short_len=30', 'short_rt=hi', 'empty_len=28', 'empty_rt_len=0', 'nonce-ok', '27-rejected', '12-rejected'].join('\n') + '\n';
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', gb, ...eng]);
+    check('v49.1:GCM 最小帧 28B/短与空明文往返/nonce 唯一' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantGb,
+      'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout) + ' stderr=' + r.stderr.slice(0, 200));
+  }
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

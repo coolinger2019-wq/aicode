@@ -1578,8 +1578,8 @@ export class Interp {
           return V.enumv('builtin-res', 'Err', [V.str(`aes256_gcm_decrypt:key 必须恰好 32 字节(AES-256),得到 ${key.length}`)]);
         }
         const data = this.u8VecToBuf(args[1], span);
-        if (!data || data.length < 12 + 16 + 16) {
-          return V.enumv('builtin-res', 'Err', [V.str(`aes256_gcm_decrypt:密文长度非法(需 nonce 12B + tag 16B + 密文 ≥ 16B),得到 ${data ? data.length : '非 Vec[u8]'}`)]);
+        if (!data || data.length < 12 + 16) {
+          return V.enumv('builtin-res', 'Err', [V.str(`aes256_gcm_decrypt:密文长度非法(需 nonce 12B + tag 16B + 密文,至少 28 字节),得到 ${data ? data.length : '非 Vec[u8]'}`)]);
         }
         try {
           const nonce = data.subarray(0, 12);

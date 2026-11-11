@@ -762,8 +762,8 @@ fn main() with io, sync {
 | `hmac_md5` / `hmac_sha1` / `hmac_sha256` / `hmac_sha384` / `hmac_sha512` | `(key: str, msg: str) -> str` · 效果 `crypto` | HMAC(v0.35) |
 | `aes256_encrypt` | `(key: str, plaintext: str) -> Result[Vec[u8], str]` · 效果 `crypto` | AES-256-CBC(v0.36):key 恰好 32 字节;输出 = IV(16B 随机)+ 密文;**无认证**,防篡改组合 hmac_sha256 |
 | `aes256_decrypt` | `(key: str, data: Vec[u8]) -> Result[str, str]` · 效果 `crypto` | 解密;长度非法/密钥错误(padding 校验失败)→ Err |
-| `aes256_gcm_encrypt` | `(key: str, plaintext: str) -> Result[Vec[u8], str]` · 效果 `crypto` | AES-256-GCM(v0.37,**带认证 AEAD**):key 恰 32 字节;输出 = nonce(12B 随机)+ tag(16B)+ 密文;无填充,密文长度 = 明文长度 |
-| `aes256_gcm_decrypt` | `(key: str, data: Vec[u8]) -> Result[str, str]` · 效果 `crypto` | 解密;认证校验失败(篡改/nonce 不符/密钥错误)→ Err |
+| `aes256_gcm_encrypt` | `(key: str, plaintext: str) -> Result[Vec[u8], str]` · 效果 `crypto` | AES-256-GCM(v0.37,**带认证 AEAD**):key 恰 32 字节;输出 = nonce(12B 随机)+ tag(16B)+ 密文;无填充,密文长度 = 明文长度。**nonce 边界(诚实声明)**:每条消息随机 96-bit nonce,碰撞概率约 q²/2^97(q 条消息后);NIST SP 800-38D 建议单密钥随机 nonce 调用量不超过 2^32——需要更高保证时由调用方管理确定性计数器 nonce(当前 API 未暴露) |
+| `aes256_gcm_decrypt` | `(key: str, data: Vec[u8]) -> Result[str, str]` · 效果 `crypto` | 解密;**最小合法帧 28 字节**(12B nonce + 16B tag,密文可为 0 字节;v0.49.1 修正),27B/12B 等截断输入 → Err;认证校验失败(篡改/nonce 不符/密钥错误)→ Err |
 
 ```ming
 use std.crypto;
@@ -1004,6 +1004,13 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.49.1(2026-11-11)
+
+- **GCM 解密最小帧修复**(社区反馈 diviner 的"length-boundary 必须显式测试"直接触发):原校验要求 `nonce 12B + tag 16B + 密文 ≥ 16B`(共 ≥44B),把**密文最小长度误当 16**——GCM 密文可为 0 字节(无填充),导致**明文 < 16 字节的合法包加密后无法解密**(潜伏 bug,原测试明文 20B 恰好绕过)。修正为最小帧 **28B**(12+16),错误消息同步。
+- 回归(§45,双引擎):短明文 `"hi"`(30B 包)往返、空明文(28B 包)往返、**nonce 唯一性**(同明文两次加密,12B nonce 前缀必不同)、27B/12B 截断输入必拒。
+- 文档:GUIDE std.crypto 表补 nonce 管理指引(随机 96-bit 碰撞界 q²/2^97;NIST 2^32 单密钥上限;更高保证需调用方自管计数器 nonce,当前 API 未暴露)。
+- 测试:473 项全绿(§45 两项:vm/tree)。
 
 ### v0.49.0(2026-11-11)
 
