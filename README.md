@@ -88,7 +88,8 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.47** — **契约阶段 2 完成:mut 方法退出时的 invariant 重查**(树/VM 一致)——invariant 在每个可观测状态变更点都被检查(构造/外部写/方法退出)
 - **v0.48** — **QF_LIA 证明子集第一片:M3042 ensures 直线体静态验证**(可证假 → 编译期反例;不可判定静默,运行时 M4015 保留)——决策依据 bench 实测(plan.md §4.1)
 - **v0.49** — **ABI 哈希构建缓存**:`ming build` 内容寻址缓存(键未变且 dist 完整 → 跳过检查+编译)+ 每模块**接口哈希**报告(改实现不改接口 → 哈希稳定,ABI 防火墙可观测)+ `--clean-cache`——CI 与 AI 自愈循环提速(plan.md §4b 兑现)
-- **v0.49.1(当前)** — **GCM 最小帧修复**(28B 而非 44B:短/空明文往返恢复;27B/12B 截断拒绝)+ nonce 唯一性回归 + nonce 管理指引——社区反馈(diviner)触发的边界测试
+- **v0.49.1** — **GCM 最小帧修复**(28B 而非 44B:短/空明文往返恢复;27B/12B 截断拒绝)+ nonce 唯一性回归 + nonce 管理指引——社区反馈(diviner)触发的边界测试
+- **v0.50(当前)** — **自举工具统一入口 `ming tools`**:patch/edit/diff/diag/wc/tree/... 缩短为一条命令(进程内路由,工具本体仍是 Ming);`--list` 命令表——把自举工具从"验证用"变成日用
 - **下一步方向** — QF_LIA 剩余模式(越界包含/免检访问);unsafe 块实现;异步运行时;eval;RSA/国密
 
 ## 设计原则(全文见 design.md)
@@ -102,4 +103,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.49.1:字节码 VM + **WASM 分层** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:475 项全绿。
+v0.50.0:字节码 VM + **WASM 分层** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:482 项全绿。

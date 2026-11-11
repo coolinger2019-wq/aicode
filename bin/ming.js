@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.49.1';
+export const VERSION = '0.50.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -34,6 +34,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   ming test  [file.ming...] [--json] [--filter 名称]
   ming build [--json] [--clean-cache] [--with-source] [--no-dist]
   ming cc    <file.ming> [--emit-c] [--out 目录] [--json] [-- args...]
+  ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
   ming doc   <file.ming> [--json]
@@ -483,6 +484,74 @@ function collectProjectSources(root) {
   return walk(root).sort();
 }
 
+// ---------- tools:自举工具统一入口(v0.50;工具本体仍是 tools/*.ming,Ming 自写) ----------
+// 目的:去掉 `node bin/ming.js run tools/xxx.ming -- ...` 的长命令行摩擦。
+const TOOL_CMDS = {
+  patch: { file: 'mingkit.ming', prefix: ['replace'] },
+  'patch-all': { file: 'mingkit.ming', prefix: ['replace-all'] },
+  read: { file: 'mingkit.ming', prefix: ['read'] },
+  write: { file: 'mingkit.ming', prefix: ['write'] },
+  append: { file: 'mingkit.ming', prefix: ['append'] },
+  insert: { file: 'mingkit.ming', prefix: ['insert-after'] },
+  'insert-before': { file: 'mingkit.ming', prefix: ['insert-before'] },
+  del: { file: 'mingkit.ming', prefix: ['delete-lines'] },
+  count: { file: 'mingkit.ming', prefix: ['count'] },
+  edit: { file: 'edit.ming', prefix: [] },
+  diff: { file: 'engdiff.ming', prefix: [] },
+  diag: { file: 'diaghot.ming', prefix: [] },
+  wc: { file: 'wc.ming', prefix: [] },
+  tree: { file: 'tree.ming', prefix: [] },
+  find: { file: 'find_files.ming', prefix: [] },
+  json: { file: 'json_query.ming', prefix: [] },
+  todo: { file: 'todo_scan.ming', prefix: [] },
+  log: { file: 'log_analyzer.ming', prefix: [] },
+  rename: { file: 'batch_rename.ming', prefix: [] },
+  organize: { file: 'file_organizer.ming', prefix: [] },
+};
+
+const toolsUsage = `
+ming tools — 自举工具统一入口(工具均为 tools/*.ming,用 Ming 自写)
+
+用法: ming tools <命令> [参数...]
+  patch <file> <old> <new>        精确替换恰好 1 处(0/多处拒绝)
+  patch-all <file> <old> <new>    替换全部
+  read <file> [start] [end]       读文件/行区间(1-based 含端点)
+  write <file>                    用 stdin 全量覆盖写入
+  append <file>                   用 stdin 全量追加
+  insert <file> <pat> <text>      在第一个含 pat 的行后插入
+  insert-before <file> <pat> <text>
+  del <file> <start> [end]        删行区间(缺 end = 删到文件尾)
+  count <file>                    行/字符/字节统计
+  edit <子命令> ...               行级编辑(show/get/set/ins/del/sub/append/count)
+  diff <file.ming>                多引擎差分(engdiff)
+  diag <file.ming...>             诊断热力图(diaghot)
+  wc | tree | find | json | todo | log | rename | organize   其余工具
+  任意已有文件也可直接: ming tools <名> [参数...](对应 tools/<名>.ming)
+示例: ming tools patch src/x.js "旧串" "新串"
+`.trim();
+
+function resolveTool(cmd) {
+  if (TOOL_CMDS[cmd]) return TOOL_CMDS[cmd];
+  const f = path.join(__dirname, '..', 'tools', cmd + '.ming');
+  if (/^[a-z0-9_-]+$/i.test(cmd) && fs.existsSync(f)) return { file: cmd + '.ming', prefix: [] };
+  return null;
+}
+
+function cmdTools(rest, flags, opts) {
+  if (!rest.length || rest[0] === 'list' || flags.has('list')) {
+    process.stdout.write(toolsUsage + '\n');
+    return (flags.has('list') || rest.length) ? 0 : 1;
+  }
+  const cmd = rest[0];
+  const hit = resolveTool(cmd);
+  if (!hit) {
+    process.stderr.write(`未知工具 "${cmd}"\n\n${toolsUsage}\n`);
+    return 1;
+  }
+  const file = path.join(__dirname, '..', 'tools', hit.file);
+  return cmdRun(file, flags, opts, [...hit.prefix, ...rest.slice(1)]);
+}
+
 function cmdBuild(flags) {
   const json = flags.has('json');
   const { files, proj, error } = projectEntry('build', [], json);
@@ -733,6 +802,7 @@ function main() {
       return cmdTest(files, flags, opts);
     }
     case 'build': return cmdBuild(flags);
+    case 'tools': return cmdTools(rest, flags, opts);
     case 'cc': {
       const { files, error } = projectEntry('cc', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));

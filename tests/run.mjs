@@ -2388,6 +2388,37 @@ fn main() with io, fs {
   }
 }
 
+// ===================== 46. v0.50:ming tools 统一入口 =====================
+{
+  const dir = path.join(TMP, 'tools50');
+  fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, 't.txt');
+  fs.writeFileSync(f, 'alpha\nbeta\ngamma\n');
+  const t = (args) => spawnSync(process.execPath, [MING, 'tools', ...args], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+
+  const rList = t(['--list']);
+  check('v50:--list 列出命令', rList.status === 0 && (rList.stdout ?? '').includes('patch') && (rList.stdout ?? '').includes('diff'), 'code=' + rList.status);
+
+  const rPatch = t(['patch', f, 'alpha', 'ALPHA']);
+  const afterPatch = fs.readFileSync(f, 'utf8');
+  check('v50:patch 精确替换(mingkit 路由)', rPatch.status === 0 && afterPatch === 'ALPHA\nbeta\ngamma\n', 'code=' + rPatch.status + ' content=' + JSON.stringify(afterPatch));
+
+  const rAgain = t(['patch', f, 'alpha', 'X']);
+  check('v50:patch 0 处匹配拒绝(退出码 1)', rAgain.status === 1 && fs.readFileSync(f, 'utf8') === afterPatch, 'code=' + rAgain.status);
+
+  const rEdit = t(['edit', 'set', f, '2', 'BETA']);
+  check('v50:edit 子命令路由(行级)', rEdit.status === 0 && fs.readFileSync(f, 'utf8').split('\n')[1] === 'BETA', 'code=' + rEdit.status);
+
+  const rWc = t(['wc', f]);
+  check('v50:wc 路由', rWc.status === 0 && (rWc.stdout ?? '').startsWith('3 '), 'stdout=' + JSON.stringify((rWc.stdout ?? '').slice(0, 40)));
+
+  const rDiff = t(['diff', path.join(ROOT, 'examples', 'fib.ming')]);
+  check('v50:diff 路由(engdiff 三引擎一致)', rDiff.status === 0 && (rDiff.stdout ?? '').includes('engdiff: 一致'), 'code=' + rDiff.status);
+
+  const rBad = t(['nope']);
+  check('v50:未知命令报错 exit 1', rBad.status === 1 && (rBad.stderr ?? '').includes('未知工具'), 'code=' + rBad.status);
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

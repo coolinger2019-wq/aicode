@@ -887,6 +887,7 @@ fn main() with io {
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:`node bin/ming.js run tools/diaghot.ming -- <file.ming...>` 聚合 `ming check --json` 的诊断码频次,Top-N 输出)——语法/检查改进的数据依据 |
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
+| `ming tools [--list] <命令> [参数...]`(v0.50) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -1004,6 +1005,13 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.50.0(2026-11-11)
+
+- **自举工具统一入口 `ming tools`**:把高频调用从 `node bin/ming.js run tools/xxx.ming -- ...` 缩短为 `ming tools <命令> ...`。命令表:`patch/patch-all/read/write/append/insert/insert-before/del/count`(mingkit 路由)、`edit`(行级)、`diff`(engdiff)、`diag`(diaghot)、`wc/tree/find/json/todo/log/rename/organize`(其余工具);任意 `tools/<名>.ming` 亦可直接调用;`--list` 输出命令表。
+  - 实现:CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用 mingkit/edit 的"恰好 1 处 / 行号越界拒绝"安全语义。
+  - 动机(宿主工具使用统计,本会话 351 次调用):**Bash 58.1%、Edit 21.4%、Read 17.7%**——文件读写/补丁是绝对高频,Ming 工具此前因调用摩擦未被日用;统一入口把单次调用缩到 `ming tools patch ...`。
+- 测试:482 项全绿(§46 七项:`--list`/patch 精确替换/0 处拒绝/edit 路由/wc 路由/engdiff 路由/未知命令报错)。
 
 ### v0.49.1(2026-11-11)
 
