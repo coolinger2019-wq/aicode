@@ -115,28 +115,27 @@
 | 两处 f64 比较表用 f32 操作码 → 模块校验失败、wasm 静默整体回落 | P0 | `MING_WASM_DEBUG=1` 输出 `实例化失败: f32.ge expected f32` |
 | `--no-wasm` 实际选中树引擎(模糊器 VM-only 腿名不副实) | P1 | ensures 嵌套 return 程序:--tree 输出 2,--no-wasm 旧行为也输出 2 |
 
-### 待修(建议顺序)
+### 已修复(v0.50.1–v0.51.5)
 
-| # | 缺陷 | 严重度 | 证据/位置 |
-|---|------|--------|-----------|
-| ~~1~~ | ~~**函数值丢失效果集**~~ ✅ v0.51.0:`let g = noisy; g();`、`apply(noisy)`、`v.map(noisy)` 均绕过 M3029;`main()` 无 `with io` 也能打印 | **P0** | checker.js mkFn/callFnType/lambda;实测 check exit 0 且 run 输出两行 |
-| ~~2~~ | ~~契约表达式可调用 mut 方法,requires 修改参数~~ ✅ v0.51.1(M3043) | P1 | `requires (v.pop() != None)` 后 len 从 3→2(tree/VM 一致) |
-| ~~3~~ | ~~ensures 未覆盖 `?` 早退;树引擎嵌套 return 漏检~~ ✅ v0.51.1 | P1 | `f(None)` 无 M4015;嵌套 return 树输出 2、VM M4015 |
-| ~~4~~ | ~~容器访问器返回内部引用~~ ✅ v0.51.4 deepCopy |:`v.get(0).unwrap().push(9)` 修改非 mut 的 v | P1 | 输出 `[[1, 9], [2]]` |
-| ~~5~~ | ~~match 元组嵌套模式穷尽性漏检~~ ✅ v0.51.4 | → 运行期内部 panic;树/VM 文案不一致 | P1 | `(E.A, _)` 单臂匹配 `(E.B,0)`:check 通过,运行期 M4001 |
-| ~~6~~ | ~~`while let` 被 M3028 无条件拒绝~~ ✅ v0.51.4 |(GUIDE 示例不可用) | P1 | checker.js:1292/1431 |
-| ~~7~~ | ~~泛型 bound 方法 arity 错误~~ ✅ v0.51.4 | → `ReferenceError: span is not defined` | P1 | checker.js:2607 |
-| ~~8~~ | ~~Map 非原始键通过检查~~ ✅ v0.51.4 M3044 |:get 静默 None,debug/keys 抛 TypeError | P1 | `Map[Vec[i64],i64]` 实测 |
-| ~~9~~ | ~~C f64 打印 ≥9.22e17~~ ✅ v0.51.3 |:浮点→long long 越界 UB,输出错值 | P1 | cc 对 1e18 输出 922337203685477580.0 |
-| ~~10~~ | ~~C 有符号窄截断~~ ✅ v0.51.3 ming_sext | `(long long)(x) << (64-N)` 负数 UB | P1 | cbackend.js:630;源码确认 |
-| ~~11~~ | ~~C str 语义偏差~~ ✅ v0.51.3 |:replace("")/pad 按字节宽度/ZWSP trim 产生非法 UTF-8 | P1 | JS `a-b`/`  中`/4 vs C `ab`/`中`/2 |
-| ~~12~~ | ~~AOT sig 直写 mod 引用~~ ✅ v0.51.2 纯 wire 化 |:struct 形参 BigInt 失败回退;成功产物含 StructDecl AST(与"无明文源"冲突) | P1 | build 输出 BigInt 回退;产物 grep 到 `"nt":"StructDecl"` |
-| ~~13~~ | ~~build 源码回退只拷入口~~ ✅ v0.51.2 |:多模块 dist 不可运行,exit 0 且缓存命中破损 dist | P1 | `use util;` + sync:launcher M3022,二次 build 缓存命中 |
-| ~~14~~ | ~~缓存命中只验存在~~ ✅ v0.51.2 内容哈希 |:runtime 删除 / bytecode 损坏仍"缓存命中" | P1 | 删除 runtime → 命中;写入 garbage → 命中 |
-| ~~15~~ | ~~接口哈希 enum 读 `v.args`~~ ✅ v0.51.2 |(parser 为 `v.types`):payload 类型变化哈希不变;bounds/typeArgs 未纳入 | P2 | i64→str payload 两次哈希均 9861fc34 |
-| ~~16~~ | ~~CLI 边界~~ ✅ v0.51.5:项目模式 `--` 参数被当文件;`-o` 被忽略;值旗标吞下一旗标(`--max-steps --json`) | P2 | 三项实测 |
-
-```
+| # | 缺陷 | 严重度 | 修复版本 |
+|---|------|--------|---------|
+| 0 | wasm 比较操作码错误 + --no-wasm 选错引擎 | P0 | v0.50.1 |
+| 1 | 函数值丢失效果集(绕过 M3029) | P0 | v0.51.0 |
+| 2 | 契约内 mut 方法修改参数 | P1 | v0.51.1(M3043) |
+| 3 | ensures 漏 ? 早退 / 树引擎嵌套 return | P1 | v0.51.1 |
+| 4 | 容器访问器返回内部引用 | P1 | v0.51.4(deepCopy) |
+| 5 | match 元组嵌套模式穷尽性漏检 | P1 | v0.51.4 |
+| 6 | while let 被 M3028 拒绝 | P1 | v0.51.4 |
+| 7 | 泛型 bound arity 的 ReferenceError | P1 | v0.51.4 |
+| 8 | Map 非原始键通过检查 | P1 | v0.51.4(M3044) |
+| 9 | C f64 ≥9.22e17 UB/错值 | P1 | v0.51.3 |
+| 10 | C 有符号窄截断 UB | P1 | v0.51.3(ming_sext) |
+| 11 | C str 空模式/pad/ZWSP 偏差 | P1 | v0.51.3 |
+| 12 | AOT sig 内嵌 AST/绝对路径 | P1 | v0.51.2 |
+| 13 | build 回退只拷入口 | P1 | v0.51.2 |
+| 14 | 缓存命中不校验 dist | P1 | v0.51.2 |
+| 15 | 接口哈希漏 enum payload/bounds/typeArgs | P2 | v0.51.2 |
+| 16 | CLI 项目参数 / -o / 值旗标 | P2 | v0.51.5 |
 
 ## 6. 过程纪律（所有版本适用）
 
