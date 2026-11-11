@@ -1006,6 +1006,16 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.51.4(2026-11-11)
+
+- **检查器小缺陷批量修复(代码审查)**:
+  - **容器访问器返回值语义副本**:`Vec.get/first/last`、`Map.get/values/items`、`Option/Result.unwrap/expect/unwrap_or` 在边界 deepCopy——`v.get(0).unwrap().push(9)` 不再修改非 `mut` 的 v(此前检查器"临时值允许"的假设与运行时引用语义矛盾)。**性能提示**:每次访问器读取都会拷贝元素,热路径如需零拷贝请直接索引(索引是借用读)。
+  - **`while let` 恢复可用**:改用 `checkMatchPattern` 校验(允许可反驳模式),GUIDE 示例与实际一致。
+  - **match 元组穷尽性**:元组模式仅当全部子模式不可反驳才视为穷尽;`(E.A, _)` 单臂不再漏检(运行期内部 panic 消除)。保守规则:含可反驳子模式的元组 match 需要 `_` 兜底。
+  - **泛型 bound 方法 arity**:修正未定义 `span` 导致的 `ReferenceError`,现在报 M3005。
+  - **Map 键类型(M3044 invalid-map-key)**:键限定 int/float/bool/str(泛型参数暂放行);Vec/struct/enum 键在类型层拒绝,避免运行期静默 None 与 debug TypeError。
+- 回归(§52 九项);527 项全绿;模糊 30 程序 0 分歧。
+
 ### v0.51.3(2026-11-11)
 
 - **C 后端 UB 与语义对齐(代码审查修复)**:

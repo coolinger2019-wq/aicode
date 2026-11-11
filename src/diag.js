@@ -59,6 +59,7 @@ export const CODES = {
   M3041: 'contract-violated-at-call',
   M3042: 'ensures-statically-false',
   M3043: 'contract-not-pure',
+  M3044: 'invalid-map-key',
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',

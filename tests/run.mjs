@@ -2746,6 +2746,80 @@ fn main() with io, fs {
   }
 }
 
+// ===================== 52. v0.51.4:检查器小缺陷(访问器/while let/元组/map 键/span) =====================
+{
+  // 1) 访问器返回副本:通过 get/unwrap 修改临时值不得影响原容器
+  const acc = mingFile('v514-accessor.ming', [
+    'fn main() with io {',
+    '    let v = [[1], [2]];',
+    '    v.get(0).unwrap().push(9);',
+    '    print(debug(v));',
+    '    let mut a = v.get(0).unwrap();',
+    '    a.push(7);',
+    '    print(debug(v));',
+    '    print(debug(a));',
+    '    let m = {"k": [1]};',
+    '    let mut b = m.get("k").unwrap();',
+    '    b.push(5);',
+    '    print(debug(m));',
+    '    print(debug(b));',
+    '}',
+  ].join('\n'));
+  const accWant = '[[1], [2]]\n[[1], [2]]\n[1, 7]\n{"k": [1]}\n[1, 5]\n';
+  const accVm = runMing(['run', acc]);
+  const accTree = runMing(['run', acc, '--tree']);
+  check('v51.4:容器访问器返回值语义副本(双引擎)', accVm.code === 0 && accVm.stdout === accWant && accTree.stdout === accWant, 'vm=' + JSON.stringify(accVm.stdout) + ' tree=' + JSON.stringify(accTree.stdout));
+
+  // 2) while let 可用(GUIDE 示例)
+  const wl = mingFile('v514-whilelet.ming', [
+    'fn main() with io {',
+    '    let mut v = [1, 2];',
+    '    while let Some(x) = v.pop() { print(str(x)); }',
+    '}',
+  ].join('\n'));
+  const wlVm = runMing(['run', wl]);
+  const wlTree = runMing(['run', wl, '--tree']);
+  check('v51.4:while let 枚举解构可运行(双引擎)', wlVm.code === 0 && wlVm.stdout === '2\n1\n' && wlTree.stdout === '2\n1\n', 'vm=' + JSON.stringify(wlVm.stdout));
+
+  // 3) 元组内嵌套可反驳模式不再被当作穷尽
+  const mt = mingFile('v514-match-tuple.ming', [
+    'enum E { A, B }',
+    'fn f(t: (E, i64)) -> i64 { match t { (E.A, _) => 1 } }',
+    'fn main() with io { print(str(f((E.B, 0)))); }',
+  ].join('\n'));
+  const mtChk = runMing(['check', mt]);
+  check('v51.4:元组内枚举模式未穷尽 → M3007', mtChk.code === 1 && (mtChk.stderr ?? '').includes('M3007'), 'code=' + mtChk.code);
+  const mtOk = mingFile('v514-match-tuple-ok.ming', [
+    'enum E { A, B }',
+    'fn f(t: (E, i64)) -> i64 { match t { (E.A, _) => 1, (E.B, _) => 2, _ => 3 } }',
+    'fn main() with io { print(str(f((E.B, 0)))); }',
+  ].join('\n'));
+  const mtRun = runMing(['run', mtOk]);
+  check('v51.4:元组 match 加兜底后可运行', mtRun.code === 0 && mtRun.stdout === '2\n', 'out=' + JSON.stringify(mtRun.stdout));
+
+  // 4) 泛型 bound 方法 arity 错误 → M3005(不是 ReferenceError)
+  const gen = mingFile('v514-generic.ming', [
+    'struct S { v: i64 }',
+    'trait T { fn m(self, x: i64) -> i64; }',
+    'impl T for S { fn m(self, x: i64) -> i64 { return self.v + x; } }',
+    'fn g[A: T](a: A) -> i64 { return a.m(); }',
+    'fn main() with io { print(str(g(S { v: 1 }))); }',
+  ].join('\n'));
+  const genChk = runMing(['check', gen]);
+  check('v51.4:泛型 bound arity → M3005 而非 ReferenceError', genChk.code === 1 && (genChk.stderr ?? '').includes('M3005') && !(genChk.stderr ?? '').includes('ReferenceError'), 'stderr=' + (genChk.stderr ?? '').slice(0, 150));
+
+  // 5) Map 键类型限制(M3044),原始键不受影响
+  const mk1 = mingFile('v514-mapkey-ann.ming', 'fn main() with io { let mut m: Map[Vec[i64], i64] = [:]; print(str(m.len())); }');
+  const mk2 = mingFile('v514-mapkey-lit.ming', 'fn main() with io { let m = { [1, 2]: 3 }; print(str(m.len())); }');
+  const mk1c = runMing(['check', mk1]);
+  const mk2c = runMing(['check', mk2]);
+  check('v51.4:Map 非原始键标注 → M3044', mk1c.code === 1 && (mk1c.stderr ?? '').includes('M3044'), 'code=' + mk1c.code);
+  check('v51.4:Map 非原始键字面量 → M3044', mk2c.code === 1 && (mk2c.stderr ?? '').includes('M3044'), 'code=' + mk2c.code);
+  const mkOk = mingFile('v514-mapkey-ok.ming', 'fn main() with io { let m = {"a": 1, "b": 2}; print(str(m.len())); }');
+  const mkOkRun = runMing(['run', mkOk]);
+  check('v51.4:str 键 Map 正常', mkOkRun.code === 0 && mkOkRun.stdout === '2\n', 'out=' + JSON.stringify(mkOkRun.stdout));
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

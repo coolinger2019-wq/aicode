@@ -2416,10 +2416,10 @@ export class Interp {
       case 'get': {
         const i = Number(args[0].v);
         if (!Number.isInteger(i) || i < 0 || i >= a.length) return V.enumv('builtin-opt', 'None', []);
-        return V.enumv('builtin-opt', 'Some', [a[i]]);
+        return V.enumv('builtin-opt', 'Some', [deepCopy(a[i])]); // 值语义:访问器返回副本
       }
-      case 'first': return a.length ? V.enumv('builtin-opt', 'Some', [a[0]]) : V.enumv('builtin-opt', 'None', []);
-      case 'last': return a.length ? V.enumv('builtin-opt', 'Some', [a[a.length - 1]]) : V.enumv('builtin-opt', 'None', []);
+      case 'first': return a.length ? V.enumv('builtin-opt', 'Some', [deepCopy(a[0])]) : V.enumv('builtin-opt', 'None', []);
+      case 'last': return a.length ? V.enumv('builtin-opt', 'Some', [deepCopy(a[a.length - 1])]) : V.enumv('builtin-opt', 'None', []);
       case 'contains': return V.bool(a.some(x => valueEquals(x, args[0])));
       case 'index_of': {
         const i = a.findIndex(x => valueEquals(x, args[0]));
@@ -2521,7 +2521,7 @@ export class Interp {
       case 'is_empty': return V.bool(m.size === 0);
       case 'get': {
         const k = normKey(args[0]);
-        return m.has(k) ? V.enumv('builtin-opt', 'Some', [m.get(k)]) : V.enumv('builtin-opt', 'None', []);
+        return m.has(k) ? V.enumv('builtin-opt', 'Some', [deepCopy(m.get(k))]) : V.enumv('builtin-opt', 'None', []);
       }
       case 'set': {
         const k = normKey(args[0]);
@@ -2532,8 +2532,8 @@ export class Interp {
       case 'has': return V.bool(m.has(normKey(args[0])));
       case 'delete': return V.bool(m.delete(normKey(args[0])));
       case 'keys': return V.vec([...m.keys()].map(keyValue));
-      case 'values': return V.vec([...m.values()]);
-      case 'items': return V.vec([...m.entries()].map(([k, v]) => V.tuple([keyValue(k), v])));
+      case 'values': return V.vec([...m.values()].map(deepCopy));
+      case 'items': return V.vec([...m.entries()].map(([k, v]) => V.tuple([keyValue(k), deepCopy(v)])));
       case 'clear': m.clear(); return UNIT;
       case 'clone': return deepCopy(recv);
       default: throw new Panic('M4001', `内部错误:Map.${name}`, span);
@@ -2634,8 +2634,8 @@ export class Interp {
         case 'is_none': return V.bool(!some);
         case 'unwrap': case 'expect':
           if (!some) throw new Panic('M4006', name === 'expect' ? `expect 失败: ${args[0].v}` : '对 None 调用 unwrap()', span);
-          return recv.vals[0];
-        case 'unwrap_or': return some ? recv.vals[0] : args[0];
+          return deepCopy(recv.vals[0]);
+        case 'unwrap_or': return deepCopy(some ? recv.vals[0] : args[0]);
         default: throw new Panic('M4001', `内部错误:Option.${name}`, span);
       }
     }
@@ -2646,11 +2646,11 @@ export class Interp {
         case 'is_err': return V.bool(!ok);
         case 'unwrap': case 'expect':
           if (!ok) throw new Panic('M4006', name === 'expect' ? `expect 失败: ${recv.vals[0].v}` : `对 Err(${displayStr(recv.vals[0])}) 调用 unwrap()`, span);
-          return recv.vals[0];
+          return deepCopy(recv.vals[0]);
         case 'unwrap_err':
           if (ok) throw new Panic('M4006', `对 Ok(${displayStr(recv.vals[0])}) 调用 unwrap_err()`, span);
-          return recv.vals[0];
-        case 'unwrap_or': return ok ? recv.vals[0] : args[0];
+          return deepCopy(recv.vals[0]);
+        case 'unwrap_or': return deepCopy(ok ? recv.vals[0] : args[0]);
         default: throw new Panic('M4001', `内部错误:Result.${name}`, span);
       }
     }

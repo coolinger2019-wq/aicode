@@ -598,7 +598,7 @@ export class Checker {
           }
           if (parts.length === 1 && t.name === 'Map') {
             if (t.args.length !== 2) self.diagT(t.span, `Map 需要 2 个类型参数,得到 ${t.args.length}`);
-            return mkMap(go(t.args[0]), go(t.args[1]));
+            { const kt = go(t.args[0]); const vt = go(t.args[1]); self.checkMapKey(kt, t.args[0].span ?? t.span); return mkMap(kt, vt); }
           }
           if (parts.length === 1 && t.name === 'Option') {
             if (t.args.length !== 1) self.diagT(t.span, `Option 需要 1 个类型参数,得到 ${t.args.length}`);
@@ -1301,7 +1301,8 @@ export class Checker {
         const t = this.checkExpr(s.expr, ctx);
         const inner = new Scope(ctx.scope, ctx.mod);
         const ctx2 = { ...ctx, scope: inner, bindings: new Map() };
-        this.checkPattern(s.pat, t, ctx2, s.span, true);
+        const r = t ? resolveT(t, new Map()) : null;
+        this.checkMatchPattern(s.pat, t, r, ctx2, new Map());
         this.checkBlock(s.body, { ...ctx2, inLoop: true }, T_UNIT);
         return;
       }
@@ -2613,7 +2614,7 @@ export class Checker {
       const spec = methods?.get(name);
       if (spec) {
         if (args.length !== spec.params.length) {
-          this.diags.push(err('M3005', `方法 .${name}() 需要 ${spec.params.length} 个参数,得到 ${args.length}`, span));
+          this.diags.push(err('M3005', `方法 .${name}() 需要 ${spec.params.length} 个参数,得到 ${args.length}`, fieldCallee.span));
           return r;
         }
         const mbinds = new Map();
@@ -3339,8 +3340,8 @@ export class Checker {
           this.diags.push(err('M3002', `元组模式有 ${pat.pats.length} 个元素,类型有 ${scrutR.ts.length} 个`, pat.span));
           return null;
         }
-        pat.pats.forEach((p, i) => this.checkMatchPattern(p, scrutR.ts[i], resolveT(scrutR.ts[i], new Map()), ctx, binds));
-        return 'all';
+        const cov = pat.pats.map((p, i) => this.checkMatchPattern(p, scrutR.ts[i], resolveT(scrutR.ts[i], new Map()), ctx, binds));
+        return cov.every(x => x === 'all') ? 'all' : 'variant';
       }
       default:
         this.diags.push(err('M2003', '无效的模式', pat.span));
@@ -3371,6 +3372,15 @@ export class Checker {
     return mkVec(elT ?? tvar());
   }
 
+  checkMapKey(t, span) {
+    const r = t ? resolveT(t, new Map()) : null;
+    if (!r || r.k === 'param' || r.k === 'var') return;
+    if (!['int', 'float', 'bool', 'str'].includes(r.k)) {
+      this.diags.push(err('M3044', `Map 键类型必须是 int/float/bool/str,实际是 ${typeStr(r)}`, span,
+        '结构/Vec 键没有值语义相等;请用 str 编码或 i64 id 作为键。'));
+    }
+  }
+
   checkMapLit(e, ctx, expected) {
     let kt = null, vt = null;
     if (expected) {
@@ -3390,6 +3400,7 @@ export class Checker {
       if (vt === null) vt = v; else if (!unify(v, vt, binds)) this.diags.push(err('M3002', `map 值类型不一致:${typeStr(vt, binds)} 与 ${typeStr(v, binds)}`, en.v.span));
     }
     if (vt) this.checkJoinNotStored(vt, binds, e.span, '作为 Map 值');
+    if (!expected) this.checkMapKey(kt, e.span);
     return mkMap(kt ?? tvar(), vt ?? tvar());
   }
 

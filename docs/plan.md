@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.51.3**（C 后端 UB 修复；构建可信性；契约纯性 + ensures 全路径；效果门禁函数值闭合；wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 519 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.51.4**（检查器小缺陷；C 后端 UB 修复；构建可信性；契约纯性 + ensures 全路径；效果门禁函数值闭合；wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 527 项全绿）。
 
 ---
 
@@ -122,11 +122,11 @@
 | ~~1~~ | ~~**函数值丢失效果集**~~ ✅ v0.51.0:`let g = noisy; g();`、`apply(noisy)`、`v.map(noisy)` 均绕过 M3029;`main()` 无 `with io` 也能打印 | **P0** | checker.js mkFn/callFnType/lambda;实测 check exit 0 且 run 输出两行 |
 | ~~2~~ | ~~契约表达式可调用 mut 方法,requires 修改参数~~ ✅ v0.51.1(M3043) | P1 | `requires (v.pop() != None)` 后 len 从 3→2(tree/VM 一致) |
 | ~~3~~ | ~~ensures 未覆盖 `?` 早退;树引擎嵌套 return 漏检~~ ✅ v0.51.1 | P1 | `f(None)` 无 M4015;嵌套 return 树输出 2、VM M4015 |
-| 4 | 容器访问器返回内部引用:`v.get(0).unwrap().push(9)` 修改非 mut 的 v | P1 | 输出 `[[1, 9], [2]]` |
-| 5 | match 元组嵌套模式穷尽性漏检 → 运行期内部 panic;树/VM 文案不一致 | P1 | `(E.A, _)` 单臂匹配 `(E.B,0)`:check 通过,运行期 M4001 |
-| 6 | `while let` 被 M3028 无条件拒绝(GUIDE 示例不可用) | P1 | checker.js:1292/1431 |
-| 7 | 泛型 bound 方法 arity 错误 → `ReferenceError: span is not defined` | P1 | checker.js:2607 |
-| 8 | Map 非原始键通过检查:get 静默 None,debug/keys 抛 TypeError | P1 | `Map[Vec[i64],i64]` 实测 |
+| ~~4~~ | ~~容器访问器返回内部引用~~ ✅ v0.51.4 deepCopy |:`v.get(0).unwrap().push(9)` 修改非 mut 的 v | P1 | 输出 `[[1, 9], [2]]` |
+| ~~5~~ | ~~match 元组嵌套模式穷尽性漏检~~ ✅ v0.51.4 | → 运行期内部 panic;树/VM 文案不一致 | P1 | `(E.A, _)` 单臂匹配 `(E.B,0)`:check 通过,运行期 M4001 |
+| ~~6~~ | ~~`while let` 被 M3028 无条件拒绝~~ ✅ v0.51.4 |(GUIDE 示例不可用) | P1 | checker.js:1292/1431 |
+| ~~7~~ | ~~泛型 bound 方法 arity 错误~~ ✅ v0.51.4 | → `ReferenceError: span is not defined` | P1 | checker.js:2607 |
+| ~~8~~ | ~~Map 非原始键通过检查~~ ✅ v0.51.4 M3044 |:get 静默 None,debug/keys 抛 TypeError | P1 | `Map[Vec[i64],i64]` 实测 |
 | ~~9~~ | ~~C f64 打印 ≥9.22e17~~ ✅ v0.51.3 |:浮点→long long 越界 UB,输出错值 | P1 | cc 对 1e18 输出 922337203685477580.0 |
 | ~~10~~ | ~~C 有符号窄截断~~ ✅ v0.51.3 ming_sext | `(long long)(x) << (64-N)` 负数 UB | P1 | cbackend.js:630;源码确认 |
 | ~~11~~ | ~~C str 语义偏差~~ ✅ v0.51.3 |:replace("")/pad 按字节宽度/ZWSP trim 产生非法 UTF-8 | P1 | JS `a-b`/`  中`/4 vs C `ab`/`中`/2 |
