@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.51.4';
+export const VERSION = '0.51.5';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -33,7 +33,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   ming check [file.ming...] [--json]
   ming test  [file.ming...] [--json] [--filter 名称]
   ming build [--json] [--clean-cache] [--with-source] [--no-dist]
-  ming cc    <file.ming> [--emit-c] [--out 目录] [--json] [-- args...]
+  ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
   ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
@@ -53,24 +53,48 @@ function parseArgs(argv) {
   const flags = new Set();
   const opts = {};
   const rest = [];
+  const dashRest = []; // v0.52:'--' 之后的程序参数,不再混入文件位置参数
+  const errors = [];
   let afterDoubleDash = false;
-  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out']); // 空格分隔取值的参数(v0.32;-o 见 ming cc)
+  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out']); // 空格分隔取值的参数
+  const NUMERIC_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms']);
+  const takeValue = (name, i) => {
+    const nxt = argv[i + 1];
+    if (nxt === undefined || nxt === '--' || /^--/.test(nxt) || /^-[A-Za-z]/.test(nxt)) {
+      errors.push(`--${name} 需要一个值`);
+      return null;
+    }
+    if (NUMERIC_FLAGS.has(name) && !/^\d+$/.test(nxt)) {
+      errors.push(`--${name} 需要非负整数,得到 "${nxt}"`);
+      return null;
+    }
+    return nxt;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (afterDoubleDash) { rest.push(a); continue; }
+    if (afterDoubleDash) { dashRest.push(a); continue; }
     if (a === '--') { afterDoubleDash = true; continue; }
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       flags.add(k);
-      if (v !== undefined) opts[k] = v;
-      else if (VALUE_FLAGS.has(k)) { i += 1; opts[k] = argv[i]; } // --max-alloc N 形式
+      if (v !== undefined) {
+        if (NUMERIC_FLAGS.has(k) && !/^\d+$/.test(v)) errors.push(`--${k} 需要非负整数,得到 "${v}"`);
+        else opts[k] = v;
+      } else if (VALUE_FLAGS.has(k)) {
+        const val = takeValue(k, i);
+        if (val !== null) { i += 1; opts[k] = val; }
+      }
+    } else if (a === '-o') {
+      const nxt = argv[i + 1];
+      if (nxt === undefined || nxt === '--' || nxt.startsWith('-')) errors.push('-o 需要一个目录');
+      else { i += 1; opts.out = nxt; }
     } else if (a.startsWith('-') && a.length > 1 && !/^-\d/.test(a)) {
       flags.add(a.slice(1));
     } else {
       rest.push(a);
     }
   }
-  return { flags, opts, rest };
+  return { flags, opts, rest, dashRest, errors };
 }
 
 function printDiags(diags, json) {
@@ -814,7 +838,11 @@ function cmdCC(file, flags, opts, programArgs) {
 function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
-  const { flags, opts, rest } = parseArgs(argv.slice(1));
+  const { flags, opts, rest, dashRest, errors } = parseArgs(argv.slice(1));
+  if (errors.length) {
+    for (const e of errors) process.stderr.write(e + String.fromCharCode(10));
+    return 1;
+  }
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     process.stdout.write(usage + '\n');
@@ -829,7 +857,7 @@ function main() {
     case 'run': {
       const { files, error } = projectEntry('run', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
-      const programArgs = files.length > 1 ? files.slice(1) : [];
+      const programArgs = [...(files.length > 1 ? files.slice(1) : []), ...dashRest];
       const file = files[0];
       return cmdRun(file, flags, opts, programArgs);
     }
@@ -848,7 +876,7 @@ function main() {
     case 'cc': {
       const { files, error } = projectEntry('cc', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
-      const programArgs = files.length > 1 ? files.slice(1) : [];
+      const programArgs = [...(files.length > 1 ? files.slice(1) : []), ...dashRest];
       return cmdCC(files[0], flags, opts, programArgs);
     }
     case 'init': return cmdInit(rest[0], flags);

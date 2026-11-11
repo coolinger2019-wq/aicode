@@ -2820,6 +2820,44 @@ fn main() with io, fs {
   check('v51.4:str 键 Map 正常', mkOkRun.code === 0 && mkOkRun.stdout === '2\n', 'out=' + JSON.stringify(mkOkRun.stdout));
 }
 
+// ===================== 53. v0.52:CLI 边界(项目参数/ -o / 值旗标) =====================
+{
+  const dir = path.join(TMP, 'v52cli');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ming.toml'), '[project]\nname = "cli"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  const app = path.join(dir, 'app.ming');
+  fs.writeFileSync(app, [
+    'fn main(args: Vec[str]) -> i64 with io {',
+    '    print(str(args.len()));',
+    '    for a in args { print(a); }',
+    '    return 0;',
+    '}',
+  ].join('\n'));
+  const run = (args) => spawnSync(process.execPath, [MING, 'run', ...args], { encoding: 'utf8', cwd: dir, timeout: 60000 });
+
+  const pArgs = run(['--', 'a', 'b']);
+  check('v52:项目模式 -- 之后的参数传给程序', pArgs.status === 0 && pArgs.stdout === '2\na\nb\n', 'out=' + JSON.stringify(pArgs.stdout) + ' err=' + (pArgs.stderr ?? '').slice(0, 100));
+  const fArgs = run(['app.ming', '--', 'x', 'y']);
+  check('v52:显式文件 -- 之后的参数传给程序', fArgs.status === 0 && fArgs.stdout === '2\nx\ny\n', 'out=' + JSON.stringify(fArgs.stdout));
+  const legacy = run(['app.ming', 'z']);
+  check('v52:位置参数兼容(无 --)', legacy.status === 0 && legacy.stdout === '1\nz\n', 'out=' + JSON.stringify(legacy.stdout));
+
+  // 值旗标缺值/非法值:报错而不是吞掉下一个旗标
+  const miss = spawnSync(process.execPath, [MING, 'run', app, '--max-steps', '--json'], { encoding: 'utf8', cwd: dir, timeout: 60000 });
+  check('v52:--max-steps 缺值报错(不吞 --json)', miss.status === 1 && (miss.stderr ?? '').includes('需要一个值') && !(miss.stdout ?? '').includes('args'), 'code=' + miss.status + ' err=' + (miss.stderr ?? '').slice(0, 80));
+  const bad = spawnSync(process.execPath, [MING, 'run', app, '--max-steps', 'abc'], { encoding: 'utf8', cwd: dir, timeout: 60000 });
+  check('v52:--max-steps 非整数报错', bad.status === 1 && (bad.stderr ?? '').includes('非负整数'), 'code=' + bad.status);
+  const badEq = spawnSync(process.execPath, [MING, 'run', app, '--max-steps=abc'], { encoding: 'utf8', cwd: dir, timeout: 60000 });
+  check('v52:--max-steps=abc 报错', badEq.status === 1 && (badEq.stderr ?? '').includes('非负整数'), 'code=' + badEq.status);
+
+  // -o 短旗标:产物进入指定目录,不建默认 ming-cc-out
+  const occ = path.join(dir, 'occ');
+  fs.mkdirSync(occ, { recursive: true });
+  fs.writeFileSync(path.join(occ, 'demo.ming'), 'fn main() with io { print("x"); }\n');
+  const emit = spawnSync(process.execPath, [MING, 'cc', 'demo.ming', '--emit-c', '-o', 'outdir'], { encoding: 'utf8', cwd: occ, timeout: 60000 });
+  check('v52:-o 短旗标被采纳', emit.status === 0 && fs.existsSync(path.join(occ, 'outdir', 'demo.c')) && !fs.existsSync(path.join(occ, 'ming-cc-out')), 'code=' + emit.status + ' out=' + (emit.stdout ?? '').slice(0, 100));
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');
