@@ -92,6 +92,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.50** — **自举工具统一入口 `ming tools`**:patch/edit/diff/diag/wc/tree/... 缩短为一条命令(进程内路由,工具本体仍是 Ming);`--list` 命令表——把自举工具从"验证用"变成日用
 - **v0.50.1** — **wasm 比较操作码修复(P0)**:i64/f64 的 `<=`/`>=` 静默算错与 f64 模块整体回落修复;`--no-wasm` 恢复真 VM 路由——代码审查触发
 - **v0.51(当前)** — **效果门禁闭合**:函数类型携带 effects,`let g = noisy; g()` / 传参 / lambda 不再绕过 M3029(M3002 显示 `with io`)
+- **v0.51.1(当前)** — **契约纯性 + ensures 全路径**:M3043 禁止契约内 mut 方法;`?` 早退/嵌套 return 双引擎都执行 ensures;`--json` 增加 engine/wasm 字段
 - **下一步方向** — QF_LIA 剩余模式(越界包含/免检访问);unsafe 块实现;异步运行时;eval;RSA/国密
 
 ## 设计原则(全文见 design.md)
@@ -105,4 +106,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.51.0:字节码 VM + **WASM 分层** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:494 项全绿。
+v0.51.1:字节码 VM + **WASM 分层** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:504 项全绿。

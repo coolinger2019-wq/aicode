@@ -752,8 +752,35 @@ class BytecodeCompiler {
         return;
       }
       case 'PostQ': {
+        // v0.51:? 早退也是返回出口——展开为 match 形字节码,早退前执行 ensures
+        const retK = st.entry?.sig?.ret?.k;
+        const pat = { nt: 'PEnum', enumName: null, variant: retK === 'opt' ? 'Some' : 'Ok', args: [{ nt: 'PIdent', name: '__q', span: e.span }], span: e.span };
         this.compileExpr(e.expr, st);
-        this.emit(st, OP.QMARK, 0, 0, e.span);
+        this.emit(st, OP.DUP, 0, 0, e.span);
+        this.emit(st, OP.PATMATCH, this.patternAdd(pat), 0, e.span);
+        this.emit(st, OP.JUMPNONE, 0, 0, e.span);
+        const jNone = this.here(st) - 1;
+        this.pushScope(st);
+        const names = [];
+        collectPatNames(pat, names);
+        const slots = names.map(n => this.declareLocal(st, n));
+        this.emit(st, OP.BIND, this.parr(slots), 0, e.span);
+        this.emit(st, OP.LD, 0, slots[0], e.span);
+        this.popScope(st);
+        this.emit(st, OP.SWAP, 0, 0, e.span);
+        this.emit(st, OP.POP, 0, 0, e.span);
+        this.emit(st, OP.JUMP, 0, 0, e.span);
+        const jEnd = this.here(st) - 1;
+        this.patch(st, jNone, this.here(st));
+        const ensuresQ = st.entry?.decl?.ensures;
+        if (ensuresQ && st.resultSlot !== null) {
+          this.emit(st, OP.DUP, 0, 0, e.span);
+          this.emit(st, OP.ST, 0, st.resultSlot, e.span);
+          this.compileExpr(ensuresQ.expr, st);
+          this.compileContractFail(st, ensuresQ.msg ? `契约违反: ${ensuresQ.msg}` : '契约违反: ensures', ensuresQ.span ?? e.span, (st) => { this.emit(st, OP.LD, 0, st.resultSlot, ensuresQ.span ?? e.span); });
+        }
+        this.emit(st, OP.RET, 0, 0, e.span);
+        this.patch(st, jEnd, this.here(st));
         return;
       }
       case 'If': {

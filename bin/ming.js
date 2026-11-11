@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.51.0';
+export const VERSION = '0.51.1';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -144,7 +144,7 @@ function cmdRun(file, flags, opts, programArgs) {
     const { exitCode } = interp.runMain(programArgs);
     if (json) {
       process.stdout.write(JSON.stringify({
-        ok: true, exit_code: exitCode, ms: Date.now() - t0,
+        ok: true, engine: flags.has('tree') ? 'tree' : 'vm', wasm: !flags.has('tree') && !flags.has('no-wasm'), exit_code: exitCode, ms: Date.now() - t0,
         stdout: interp.flushCaptured(), stderr: '',
       }, null, 2) + '\n');
     }
@@ -161,7 +161,7 @@ function cmdRun(file, flags, opts, programArgs) {
           };
         }
         process.stdout.write(JSON.stringify({
-          ok: false, exit_code: 101, ms: Date.now() - t0,
+          ok: false, engine: flags.has('tree') ? 'tree' : 'vm', wasm: !flags.has('tree') && !flags.has('no-wasm'), exit_code: 101, ms: Date.now() - t0,
           stdout: interp.flushCaptured(), stderr: '',
           diagnostics: [dj],
         }, null, 2) + '\n');
@@ -187,7 +187,7 @@ function cmdRun(file, flags, opts, programArgs) {
       // JS 栈溢出兜底(深嵌套表达式等),按 M4005 报告而不是内部错误
       if (json) {
         process.stdout.write(JSON.stringify({
-          ok: false, exit_code: 101, ms: Date.now() - t0,
+          ok: false, engine: flags.has('tree') ? 'tree' : 'vm', wasm: !flags.has('tree') && !flags.has('no-wasm'), exit_code: 101, ms: Date.now() - t0,
           stdout: interp.flushCaptured(), stderr: '',
           diagnostics: [{ code: 'M4005', name: 'stack-overflow', severity: 'error', message: '调用栈过深(递归或嵌套过深)' }],
         }, null, 2) + '\n');

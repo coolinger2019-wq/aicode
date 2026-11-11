@@ -475,6 +475,7 @@ export class Interp {
     this.maxMs = opts.maxMs ?? 600_000;             // 墙钟上限(默认 10 分钟)
     this.runStart = Date.now();
     this.capture = opts.capture ?? false;      // 测试模式:捕获 print
+    this.ensuresStack = [];                    // v0.51:当前函数帧的 ensures(contract 覆盖所有返回路径)
     this.captured = [];
     this.stdin = opts.stdin ?? null;           // 预读的 stdin 文本
     this.stdinPos = 0;
@@ -559,6 +560,7 @@ export class Interp {
       throw new Panic('M4005', `调用栈过深(>250 层递归);如需更深递归请改写为循环`, callSpan);
     }
     this.callStack.push({ name: decl.name, span: callSpan });
+    this.ensuresStack.push(decl.ensures ?? null);
     try {
       this.step();
       if (decl.requires) {
@@ -570,6 +572,7 @@ export class Interp {
       const v = this.execBlock(decl.body, fenv, { fnRet: entry.sig?.ret ?? null, fnEnsures: decl.ensures ?? null });
       this.depth--;
       this.callStack.pop();
+      this.ensuresStack.pop();
       return v ?? UNIT;
     } catch (e) {
       // v0.30 修复:callStack 一直存在但从未接到 Panic.stack——"panic 输出 Ming 层调用栈"的
@@ -579,8 +582,20 @@ export class Interp {
       }
       this.depth--;
       this.callStack.pop();
+      this.ensuresStack.pop();
       if (e instanceof RetSig) return e.value;
       throw e;
+    }
+  }
+
+  // v0.51:在所有返回出口检查 ensures(?/嵌套 return 不再漏检);闭包/普通函数均以 null 隔离
+  checkEnsures(env, tv, span) {
+    const ens = this.ensuresStack[this.ensuresStack.length - 1];
+    if (!ens) return;
+    env.vars.set('result', deepCopy(tv ?? UNIT));
+    const rv = this.evalExpr(ens.expr, env);
+    if (!(rv.t === 'bool' && rv.v)) {
+      throw new Panic('M4015', ens.msg ? `契约违反: ${ens.msg} (实际: ${debugStr(tv ?? UNIT)})` : `契约违反: ensures (实际: ${debugStr(tv ?? UNIT)})`, ens.span ?? span);
     }
   }
 
@@ -600,6 +615,7 @@ export class Interp {
     }
     const fnType = clo.fnType;
     this.callStack.push({ name: '<闭包>', span: callSpan });
+    this.ensuresStack.push(null);
     try {
       this.step();
       let v;
@@ -607,10 +623,12 @@ export class Interp {
       else v = this.evalExpr(clo.body, fenv);
       this.depth--;
       this.callStack.pop();
+      this.ensuresStack.pop();
       return v ?? UNIT;
     } catch (e) {
       this.depth--;
       this.callStack.pop();
+      this.ensuresStack.pop();
       if (e instanceof RetSig) return e.value;
       throw e;
     }
@@ -629,13 +647,7 @@ export class Interp {
     for (const s of block.stmts) this.execStmt(s, env, ctx);
     if (block.tail) {
       const tv = this.evalExpr(block.tail, env);
-      if (ctx?.fnEnsures) {
-        env.vars.set('result', deepCopy(tv ?? UNIT));
-        const rv = this.evalExpr(ctx.fnEnsures.expr, env);
-        if (!(rv.t === 'bool' && rv.v)) {
-          throw new Panic('M4015', ctx.fnEnsures.msg ? `契约违反: ${ctx.fnEnsures.msg} (实际: ${debugStr(tv ?? UNIT)})` : `契约违反: ensures (实际: ${debugStr(tv ?? UNIT)})`, ctx.fnEnsures.span);
-        }
-      }
+      this.checkEnsures(env, tv, block.tail.span);
       return tv;
     }
     return UNIT;
@@ -657,13 +669,7 @@ export class Interp {
       }
       case 'Return': {
         const v = s.value ? deepCopy(this.evalExpr(s.value, env)) : UNIT;
-        if (ctx?.fnEnsures) {
-          env.vars.set('result', deepCopy(v));
-          const rv = this.evalExpr(ctx.fnEnsures.expr, env);
-          if (!(rv.t === 'bool' && rv.v)) {
-            throw new Panic('M4015', ctx.fnEnsures.msg ? `契约违反: ${ctx.fnEnsures.msg} (实际: ${debugStr(v)})` : `契约违反: ensures (实际: ${debugStr(v)})`, ctx.fnEnsures.span);
-          }
-        }
+        this.checkEnsures(env, v, s.span);
         throw new RetSig(v);
       }
       case 'Break': throw new BrkSig();
@@ -977,8 +983,16 @@ export class Interp {
       case 'PostQ': {
         const v = this.evalExpr(e.expr, env);
         if (v.t === 'enum') {
-          if (v.def === 'builtin-opt' && v.tag === 'None') throw new RetSig(V.enumv('builtin-opt', 'None', []));
-          if (v.def === 'builtin-res' && v.tag === 'Err') throw new RetSig(V.enumv('builtin-res', 'Err', v.vals));
+          if (v.def === 'builtin-opt' && v.tag === 'None') {
+            const rv = V.enumv('builtin-opt', 'None', []);
+            this.checkEnsures(env, rv, e.span);
+            throw new RetSig(rv);
+          }
+          if (v.def === 'builtin-res' && v.tag === 'Err') {
+            const rv = V.enumv('builtin-res', 'Err', v.vals);
+            this.checkEnsures(env, rv, e.span);
+            throw new RetSig(rv);
+          }
           return v.vals[0];
         }
         throw new Panic('M4001', '内部错误:"?" 目标不是 Option/Result', e.span);

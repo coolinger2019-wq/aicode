@@ -1006,6 +1006,14 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.51.1(2026-11-11)
+
+- **契约纯性(M3043 contract-not-pure)**:requires/ensures/invariant 中禁止调用会修改接收者的方法(Vec/Map 原地方法、mut self 方法)——此前 `requires (v.pop() != None)` 会真的弹出参数,函数体看到被改后的值。三处契约检查上下文增加 contractMode。
+- **ensures 覆盖所有返回路径**:树引擎改为 ensures 栈(取代随 block 传递的 ctx),嵌套 return 与 `?` 早退不再漏检;编译器把 `?` 展开为 match 形字节码(Some/Ok 绑定 + 早退前 ensures + RET),VM/树行为一致。Result 的 Err 路径同样检查。
+- **`--json` 输出新增 `engine`(vm/tree)与 `wasm` 字段**,便于观测实际执行引擎(--no-wasm 回归测试改用该字段)。
+- 回归(§49 九项):requires/ensures mut 拒绝;Option/Result 的 `?` 早退、嵌套 return 双引擎 M4015(exit 101);`?` 成功路径行为不变。
+- 测试:504 项全绿;模糊 30 程序 0 分歧。
+
 ### v0.51.0(2026-11-11)
 
 - **效果门禁闭合:函数值不再绕过效果系统(P0,代码审查发现)**:函数类型(`mkFn`)新增 `effects` 集合并参与 unify;命名函数作为值、lambda、以及经变量/实参传递的函数值现在都携带并检查效果。

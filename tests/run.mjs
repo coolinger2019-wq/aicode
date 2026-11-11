@@ -2465,17 +2465,14 @@ fn main() with io, fs {
   const dbgErr = dbg.stderr ?? '';
   check('v50.1:wasm 模块真实实例化(非静默回落)', dbg.code === 0 && dbgErr.includes('[wasm] fn g6 OK') && !dbgErr.includes('实例化失败'), 'stderr=' + dbgErr.slice(0, 220));
 
-  // --no-wasm 必须走 VM(非树引擎):用树/VM 可区分的 ensures 嵌套 return 程序验证
-  const engineProbe = mingFile('v501-nowasm-engine.ming', [
-    'fn f(x: i64) -> i64 ensures result > x else "结果必须大于输入" {',
-    '    if x >= 0 { return x; }',
-    '    return 0 - x;',
-    '}',
-    'fn main() with io { print(str(f(2))); }',
-  ].join('\n'));
-  const noWasm = runMing(['run', engineProbe, '--no-wasm']);
-  const treeRun = runMing(['run', engineProbe, '--tree']);
-  check('v50.1:--no-wasm 走 VM 而非树引擎', noWasm.code === 101 && (noWasm.stderr ?? '').includes('M4015') && treeRun.stdout === '2\n', 'code=' + noWasm.code + ' stderr=' + (noWasm.stderr ?? '').slice(0, 120) + ' tree=' + JSON.stringify(treeRun.stdout));
+  // --no-wasm 必须走 VM(非树引擎):用 --json 的 engine 字段直接观测
+  const engineProbe = mingFile('v501-nowasm-engine.ming', 'fn main() with io { print("e"); }');
+  const noWasmJson = runMing(['run', engineProbe, '--no-wasm', '--json']);
+  const defaultJson = runMing(['run', engineProbe, '--json']);
+  let noWasmEngine = null, defaultWasm = null;
+  try { noWasmEngine = JSON.parse(noWasmJson.stdout ?? '{}').engine; } catch {}
+  try { defaultWasm = JSON.parse(defaultJson.stdout ?? '{}').wasm; } catch {}
+  check('v50.1:--no-wasm 走 VM 而非树引擎', noWasmJson.code === 0 && noWasmEngine === 'vm' && defaultWasm === true, 'engine=' + noWasmEngine + ' wasmDefault=' + defaultWasm);
 }
 
 // ===================== 48. v0.51:效果门禁函数值(类型携带 effects)=====================
@@ -2528,6 +2525,71 @@ fn main() with io, fs {
   ].join('\n'));
   const rNest = runMing(['check', nested]);
   check('v51:嵌套 lambda 内的效果仍被追溯(M3029)', rNest.code === 1 && (rNest.stderr ?? '').includes('M3029'), 'code=' + rNest.code);
+}
+
+// ===================== 49. v0.51.1:契约纯性(M3043)+ ensures 全返回路径 =====================
+{
+  const reqMut = mingFile('v511-contract-mut-requires.ming', [
+    'fn f(mut v: Vec[i64]) -> i64 requires (v.pop() != None) { return v.len(); }',
+    'fn main() with io { print(str(f([1, 2, 3]))); }',
+  ].join('\n'));
+  const rReq = runMing(['check', reqMut]);
+  check('v51.1:requires 中 mut 方法被拒(M3043)', rReq.code === 1 && (rReq.stderr ?? '').includes('M3043') && (rReq.stderr ?? '').includes('.pop()'), 'code=' + rReq.code + ' stderr=' + (rReq.stderr ?? '').slice(0, 160));
+
+  const ensMut = mingFile('v511-contract-mut-ensures.ming', [
+    'fn f(mut v: Vec[i64]) -> i64 ensures v.pop() != None else "必须有元素" { return v.len(); }',
+    'fn main() with io { print(str(f([1, 2, 3]))); }',
+  ].join('\n'));
+  const rEns = runMing(['check', ensMut]);
+  check('v51.1:ensures 中 mut 方法被拒(M3043)', rEns.code === 1 && (rEns.stderr ?? '').includes('M3043'), 'code=' + rEns.code);
+
+  const qopt = mingFile('v511-ensures-qopt.ming', [
+    'fn f(o: Option[i64]) -> Option[i64] ensures result.is_some() else "必须有值" {',
+    '    let x = o?;',
+    '    return Some(x);',
+    '}',
+    'fn main() with io { match f(None) { Some(v) => print("Some"), None => print("None") } }',
+  ].join('\n'));
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', qopt, ...eng]);
+    check('v51.1:? 早退触发 ensures' + (eng.length ? '(tree)' : '(vm)'), r.code === 101 && (r.stderr ?? '').includes('M4015') && (r.stderr ?? '').includes('必须有值'), 'code=' + r.code);
+  }
+
+  const qres = mingFile('v511-ensures-qres.ming', [
+    'fn g(r: Result[i64, str]) -> Result[i64, str] ensures result.is_ok() else "必须成功" {',
+    '    let x = r?;',
+    '    return Ok(x + 1);',
+    '}',
+    'fn main() with io { match g(Err("boom")) { Ok(v) => print("ok"), Err(e) => print("err " + e) } }',
+  ].join('\n'));
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', qres, ...eng]);
+    check('v51.1:Result ? 的 Err 路径触发 ensures' + (eng.length ? '(tree)' : '(vm)'), r.code === 101 && (r.stderr ?? '').includes('M4015'), 'code=' + r.code);
+  }
+
+  const nest = mingFile('v511-ensures-nested.ming', [
+    'fn f(x: i64) -> i64 ensures result > x else "结果必须大于输入" {',
+    '    if x >= 0 { return x; }',
+    '    return 0 - x;',
+    '}',
+    'fn main() with io { print(str(f(2))); }',
+  ].join('\n'));
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', nest, ...eng]);
+    check('v51.1:嵌套 return 触发 ensures' + (eng.length ? '(tree)' : '(vm)'), r.code === 101 && (r.stderr ?? '').includes('M4015'), 'code=' + r.code);
+  }
+
+  const ok = mingFile('v511-ensures-ok.ming', [
+    'fn f(o: Option[i64]) -> Option[i64] ensures result.is_some() else "必须有值" {',
+    '    let x = o?;',
+    '    return Some(x + 1);',
+    '}',
+    'fn main() with io { match f(Some(1)) { Some(v) => print("ok " + str(v)), None => print("None") } }',
+  ].join('\n'));
+  for (const eng of [[], ['--tree']]) {
+    const r = runMing(['run', ok, ...eng]);
+    check('v51.1:? 成功路径行为不变' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === 'ok 2\n', 'code=' + r.code + ' stdout=' + JSON.stringify(r.stdout));
+  }
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

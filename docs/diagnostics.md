@@ -111,6 +111,7 @@
 | M3040 | invariant-field-protected | 带 invariant 的 struct 字段只能在自身 impl 方法内修改(v0.46) |
 | M3041 | contract-violated-at-call | 调用点静态契约违反:整数字面量实参代入 requires 可判定为假(含反例)(v0.46) |
 | M3042 | ensures-statically-false | ensures 直线体符号执行可静态证伪(含反例)(v0.48,QF_LIA 第一片) |
+| M3043 | contract-not-pure | 契约表达式必须是纯表达式:requires/ensures/invariant 中调用 mut 方法(Vec/Map 原地方法或 mut self 方法)(v0.51) |
 
 ## 约定
 

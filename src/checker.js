@@ -1172,7 +1172,7 @@ export class Checker {
     };
     // 契约检查(v0.45):纯表达式 + bool;ensures 中 result 绑定返回值
     if (d.requires) {
-      const pureCtx = { ...ctx, scope, effects: new Set(), fnDecl: d };
+      const pureCtx = { ...ctx, scope, effects: new Set(), fnDecl: d, contractMode: true };
       const t = this.checkExpr(d.requires.expr, pureCtx, T_BOOL);
       const r = t ? resolveT(t, new Map()) : null;
       if (r && r.k !== 'bool') this.diags.push(err('M3014', `requires 条件必须是 bool,实际是 ${typeStr(r)}`, d.requires.expr.span));
@@ -1180,7 +1180,7 @@ export class Checker {
     if (d.ensures) {
       const resScope = new Scope(scope, mod);
       resScope.bind('result', entry.sig.ret, false, d.ensures.expr.span, true);
-      const pureCtx = { ...ctx, scope: resScope, effects: new Set(), fnDecl: d };
+      const pureCtx = { ...ctx, scope: resScope, effects: new Set(), fnDecl: d, contractMode: true };
       const t = this.checkExpr(d.ensures.expr, pureCtx, T_BOOL);
       const r = t ? resolveT(t, new Map()) : null;
       if (r && r.k !== 'bool') this.diags.push(err('M3014', `ensures 条件必须是 bool,实际是 ${typeStr(r)}`, d.ensures.expr.span));
@@ -2634,6 +2634,12 @@ export class Checker {
   }
 
   checkMutReceiver(baseExpr, ctx, methodName, span) {
+    // v0.51:契约表达式必须纯——禁止 mut 方法修改参数/状态(M3043)
+    if (ctx.contractMode) {
+      this.diags.push(err('M3043', `契约表达式必须是纯表达式:不能调用会修改接收者的方法 .${methodName}()`, span,
+        '把修改操作移出 requires/ensures/invariant,或改用不修改接收者的查询方法。'));
+      return false;
+    }
     // 方法修改接收者时,要求接收者来自可变绑定(链式 p.x / v[i] 亦然)
     let cur = baseExpr;
     for (;;) {
@@ -3454,7 +3460,7 @@ export class Checker {
         const ft = substTypes(fd.rtype, decl.tparams, new Map(decl.tparams.map((n, i) => [n, targsResolved[i]])));
         invScope.bind(fd.name, ft, false, fd.span, true);
       }
-      const pureCtx = { ...ctx, scope: invScope, effects: new Set(), fnDecl: ctx.fnDecl };
+      const pureCtx = { ...ctx, scope: invScope, effects: new Set(), fnDecl: ctx.fnDecl, contractMode: true };
       for (const inv of decl.invariants) {
         const t = this.checkExpr(inv.expr, pureCtx, T_BOOL);
         const r = t ? resolveT(t, new Map()) : null;
