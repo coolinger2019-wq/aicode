@@ -2419,6 +2419,65 @@ fn main() with io, fs {
   check('v50:未知命令报错 exit 1', rBad.status === 1 && (rBad.stderr ?? '').includes('未知工具'), 'code=' + rBad.status);
 }
 
+// ===================== 47. v0.50.1:wasm 比较操作码修复(<=/>= 六符 × i64/f64)=====================
+{
+  const icmp = mingFile('v501-wasm-cmp-i64.ming', [
+    'fn f1(a: i64, b: i64) -> i64 { if a == b { return 1; } return 0; }',
+    'fn f2(a: i64, b: i64) -> i64 { if a != b { return 2; } return 0; }',
+    'fn f3(a: i64, b: i64) -> i64 { if a < b { return 3; } return 0; }',
+    'fn f4(a: i64, b: i64) -> i64 { if a > b { return 4; } return 0; }',
+    'fn f5(a: i64, b: i64) -> i64 { if a <= b { return 5; } return 0; }',
+    'fn f6(a: i64, b: i64) -> i64 { if a >= b { return 6; } return 0; }',
+    'fn main() with io {',
+    '    print(str(f1(3,3)) + str(f2(3,4)) + str(f3(3,4)) + str(f4(4,3)) + str(f5(3,4)) + str(f6(4,3)));',
+    '    print(str(f5(5,3)) + str(f6(3,5)) + str(f5(9,2)) + str(f6(9,2)));',
+    '}',
+  ].join('\n'));
+  const icmpWant = '123456\n0006\n';
+  const iVm = runMing(['run', icmp]);
+  const iTree = runMing(['run', icmp, '--tree']);
+  check('v50.1:wasm i64 六种比较符正确(vm+wasm)', iVm.code === 0 && iVm.stdout === icmpWant, 'code=' + iVm.code + ' stdout=' + JSON.stringify(iVm.stdout));
+  check('v50.1:i64 六种比较符树引擎一致', iTree.code === 0 && iTree.stdout === icmpWant, 'code=' + iTree.code + ' stdout=' + JSON.stringify(iTree.stdout));
+
+  const fcmp = mingFile('v501-wasm-cmp-f64.ming', [
+    'fn g1(a: f64, b: f64) -> i64 { if a == b { return 1; } return 0; }',
+    'fn g2(a: f64, b: f64) -> i64 { if a != b { return 2; } return 0; }',
+    'fn g3(a: f64, b: f64) -> i64 { if a < b { return 3; } return 0; }',
+    'fn g4(a: f64, b: f64) -> i64 { if a > b { return 4; } return 0; }',
+    'fn g5(a: f64, b: f64) -> i64 { if a <= b { return 5; } return 0; }',
+    'fn g6(a: f64, b: f64) -> i64 { if a >= b { return 6; } return 0; }',
+    'fn main() with io {',
+    '    print(str(g1(3.0,3.0)) + str(g2(3.0,4.0)) + str(g3(3.0,4.0)) + str(g4(4.0,3.0)) + str(g5(3.0,4.0)) + str(g6(4.0,3.0)));',
+    '    print(str(g5(5.0,5.0)) + str(g6(5.0,5.0)) + str(g5(6.0,5.0)) + str(g6(4.0,5.0)));',
+    '}',
+  ].join('\n'));
+  const fcmpWant = '123456\n5600\n';
+  const fVm = runMing(['run', fcmp]);
+  const fTree = runMing(['run', fcmp, '--tree']);
+  check('v50.1:wasm f64 六种比较符正确(vm+wasm)', fVm.code === 0 && fVm.stdout === fcmpWant, 'code=' + fVm.code + ' stdout=' + JSON.stringify(fVm.stdout));
+  check('v50.1:f64 六种比较符树引擎一致', fTree.code === 0 && fTree.stdout === fcmpWant, 'code=' + fTree.code + ' stdout=' + JSON.stringify(fTree.stdout));
+
+  // 存活断言:函数真的编译进 wasm,且模块实例化未失败(此前 f32 操作码会导致整体静默回落)
+  const prevDbg2 = process.env.MING_WASM_DEBUG;
+  process.env.MING_WASM_DEBUG = '1';
+  const dbg = runMing(['run', fcmp]);
+  if (prevDbg2 === undefined) delete process.env.MING_WASM_DEBUG; else process.env.MING_WASM_DEBUG = prevDbg2;
+  const dbgErr = dbg.stderr ?? '';
+  check('v50.1:wasm 模块真实实例化(非静默回落)', dbg.code === 0 && dbgErr.includes('[wasm] fn g6 OK') && !dbgErr.includes('实例化失败'), 'stderr=' + dbgErr.slice(0, 220));
+
+  // --no-wasm 必须走 VM(非树引擎):用树/VM 可区分的 ensures 嵌套 return 程序验证
+  const engineProbe = mingFile('v501-nowasm-engine.ming', [
+    'fn f(x: i64) -> i64 ensures result > x else "结果必须大于输入" {',
+    '    if x >= 0 { return x; }',
+    '    return 0 - x;',
+    '}',
+    'fn main() with io { print(str(f(2))); }',
+  ].join('\n'));
+  const noWasm = runMing(['run', engineProbe, '--no-wasm']);
+  const treeRun = runMing(['run', engineProbe, '--tree']);
+  check('v50.1:--no-wasm 走 VM 而非树引擎', noWasm.code === 101 && (noWasm.stderr ?? '').includes('M4015') && treeRun.stdout === '2\n', 'code=' + noWasm.code + ' stderr=' + (noWasm.stderr ?? '').slice(0, 120) + ' tree=' + JSON.stringify(treeRun.stdout));
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

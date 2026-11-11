@@ -1006,6 +1006,13 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.50.1(2026-11-11)
+
+- **wasm 比较操作码修复(P0,代码审查发现)**:i64 有符号 `<=`/`>=` 误映射为 `0x56/0x57`(gt_u/le_s),应为 `0x57/0x59`(le_s/ge_s)——默认 vm+wasm 引擎对 `<=`/`>=` **静默算错**;两处 f64 比较表整体误用 f32 操作码(`0x5b..0x61`),导致含 f64 比较的模块 **WebAssembly 校验失败并静默回落 VM**(表面结果正确,wasm 层实际从未执行)。修复为 f64 `0x61..0x66`。
+- **`--no-wasm` 引擎路由修复**:此前 `new (no-wasm ? Interp : Engine)` 实际选中树引擎,导致 `--no-wasm`/`cmdTest` 与模糊器"VM-only"腿名不副实;改为 `VMInterp` + `{noWasm:true}`。
+- 回归(§47 六项):i64/f64 六种比较符 default vs tree 逐字一致;wasm 存活断言(`[wasm] fn g6 OK` 且无"实例化失败");`--no-wasm` 走 VM(用 ensures 嵌套 return 的树/VM 可区分程序验证)。
+- 测试:488 项全绿;模糊 40 程序 0 分歧(1 跳过)。
+
 ### v0.50.0(2026-11-11)
 
 - **自举工具统一入口 `ming tools`**:把高频调用从 `node bin/ming.js run tools/xxx.ming -- ...` 缩短为 `ming tools <命令> ...`。命令表:`patch/patch-all/read/write/append/insert/insert-before/del/count`(mingkit 路由)、`edit`(行级)、`diff`(engdiff)、`diag`(diaghot)、`wc/tree/find/json/todo/log/rename/organize`(其余工具);任意 `tools/<名>.ming` 亦可直接调用;`--list` 输出命令表。

@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.50.0';
+export const VERSION = '0.50.1';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -131,13 +131,14 @@ function cmdRun(file, flags, opts, programArgs) {
   }
   const result = c.result;
 
-  const Engine = (flags.has('tree') ? Interp : VMInterp) ?? null;
-  const interp = new (flags.has('no-wasm') ? Interp : Engine)(result, {
+  const interpOpts = {
     capture: json,
+    noWasm: flags.has('no-wasm'),
     maxSteps: opts['max-steps'] ? Number(opts['max-steps']) : Infinity,
     maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
     maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
-  });
+  };
+  const interp = flags.has('tree') ? new Interp(result, interpOpts) : new VMInterp(result, interpOpts);
   const t0 = Date.now();
   try {
     const { exitCode } = interp.runMain(programArgs);
@@ -254,8 +255,8 @@ function cmdTest(files, flags, opts) {
   for (const f of files) {
     const c = loadAndCheck(f, { json: false });
     if (!c.ok) { totalFailed++; continue; }
-    const Engine = (flags.has('tree') ? Interp : VMInterp) ?? null;
-    const interp = new (flags.has('no-wasm') ? Interp : Engine)(c.result, { capture: true });
+    const testOpts = { capture: true, noWasm: flags.has('no-wasm') };
+    const interp = flags.has('tree') ? new Interp(c.result, testOpts) : new VMInterp(c.result, testOpts);
     const results = interp.runTests(filter);
     for (const r of results) {
       r.file = f;

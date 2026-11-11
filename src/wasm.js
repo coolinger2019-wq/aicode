@@ -1226,7 +1226,7 @@ export class WasmCompiler {
     }
     if (ty === 'f64') {
       const ops = { '+': 0xa0, '-': 0xa1, '*': 0xa2, '/': 0xa3 };
-      const cmps = { '==': 0x5b, '!=': 0x5c, '<': 0x5d, '>': 0x5f, '<=': 0x60, '>=': 0x61 };
+      const cmps = { '==': 0x61, '!=': 0x62, '<': 0x63, '>': 0x64, '<=': 0x65, '>=': 0x66 };
       if (cmps[op]) {
         this.compileNum(e.l, ctx, 'f64');
         this.compileNum(e.r, ctx, 'f64');
@@ -1616,7 +1616,7 @@ export class WasmCompiler {
         }
         const t = this.inferNumType(e.l, ctx);
         if (t === 'f64') {
-          const ops = { '==': 0x5b, '!=': 0x5c, '<': 0x5d, '>': 0x5f, '<=': 0x60, '>=': 0x61 };
+          const ops = { '==': 0x61, '!=': 0x62, '<': 0x63, '>': 0x64, '<=': 0x65, '>=': 0x66 };
           this.compileNum(e.l, ctx, 'f64');
           this.compileNum(e.r, ctx, 'f64');
           b.push(ops[e.op]);
@@ -1641,7 +1641,7 @@ export class WasmCompiler {
         }
         if (t === 'i64' || t === 'u64') {
           const ops = t === 'i64'
-            ? { '==': 0x51, '!=': 0x52, '<': 0x53, '>': 0x55, '<=': 0x56, '>=': 0x57 }
+            ? { '==': 0x51, '!=': 0x52, '<': 0x53, '>': 0x55, '<=': 0x57, '>=': 0x59 }
             : { '==': 0x51, '!=': 0x52, '<': 0x54, '>': 0x56, '<=': 0x58, '>=': 0x5a }; // 无符号
           this.compileNum(e.l, ctx, t);
           this.compileNum(e.r, ctx, t);
