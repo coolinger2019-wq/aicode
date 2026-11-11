@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.48.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.49.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.48.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（约 440 项，含各版本分节 §1..§39）
+tests/run.mjs        回归套件（约 471 项，含各版本分节 §1..§44）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
 tools/               自举工具（Ming 自写）：mingkit 文件工具箱 / engdiff 引擎差分 / diaghot 诊断热力图
@@ -46,8 +46,9 @@ node bin/ming.js run   f.ming --no-wasm           # VM 关闭 wasm
 node bin/ming.js check f.ming --json              # 类型检查（JSON 协议，含 fix 处方）
 node bin/ming.js test  f.ming                     # test 块
 node bin/ming.js fmt   f.ming --write             # 唯一风格
-node bin/ming.js build                            # 项目模式：dist 字节码产物（AOT）
+node bin/ming.js build                            # 项目模式：dist 字节码产物（AOT；v0.49 内容寻址缓存，命中即跳过）
 node bin/ming.js build --with-source              # 附带源码
+node bin/ming.js build --clean-cache              # 清理缓存与 dist 并全量重建
 node bin/ming.js cc    f.ming                     # C 原生后端（需 gcc/clang）
 node bin/ming.js cc    f.ming --emit-c|--no-run|--static
 node bin/ming.js repl|lsp|doc|version
@@ -113,5 +114,5 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 
 ## 10. 当前状态与下一步
 
-- **v0.48.0**：465 项测试全绿；契约阶段 2 完成 + QF_LIA 第一片（M3042 ensures 静态验证）。
-- 下一步见 `docs/plan.md`：证明器剩余模式（越界包含/免检访问）、ABI 哈希构建缓存，远期污点即效应等。
+- **v0.49.0**：471 项测试全绿；ABI 哈希构建缓存（内容寻址命中 + 每模块接口哈希报告 + `--clean-cache`）；契约阶段 2 + QF_LIA 第一片（M3042）此前已完成。
+- 下一步见 `docs/plan.md`：证明器剩余模式（越界包含/免检访问）、unsafe 块，远期污点即效应等。

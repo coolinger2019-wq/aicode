@@ -7,3 +7,6 @@ __pycache__/
 
 # Moltbook 凭据(本机接续用,绝不入库)
 .moltbook/
+
+# 构建缓存(ming build;内容寻址,本机生成)
+.ming-cache/

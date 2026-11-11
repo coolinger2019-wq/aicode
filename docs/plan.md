@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.45.0**（契约系统阶段 1：requires/ensures 运行时检查已落地，树/VM/C-wasm 资格对齐；invariant 语法/类型检查进行中；测试 428+ 全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.49.0**（ABI 哈希构建缓存已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 471 项全绿）。
 
 ---
 
@@ -10,10 +10,10 @@
 | 项 | 状态 |
 |----|------|
 | 语言内核 | 显式类型/效果系统/值语义/确定性；树+VM+wasm+C 四后端 |
-| C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印；`extern fn` FFI（dlopen/dlsym）、`--static` |
-| 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退 |
+| C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static` |
+| 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`** |
 | 自举工具 | mingkit（文件补丁）/ engdiff（引擎差分）/ diaghot（诊断热力图），全部 Ming 自写 |
-| 质量护栏 | 422 项回归 + 多后端差分模糊（四腿）+ bench（cc 腿） |
+| 质量护栏 | 471 项回归 + 多后端差分模糊（四腿）+ bench（cc 腿） |
 | 能力矩阵 | 49 行口径 ≈82%（docs/capabilities.md） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
@@ -74,12 +74,11 @@
 - 风险：证明器工程量大；先做 1-2 个模式（越界包含、非负性），不做通用求解。
 - 前置：M4015/M3040/M3041 已落地（v0.45/v0.46）。
 
-### 4b. 构建缓存：接口哈希 ABI 防火墙（延后）
-- `ming build` 按**接口哈希**（签名/效果/契约的规范化哈希）跳过未变模块；
-  内容寻址缓存（函数级 AST 哈希）与 AOT 产物结合（`src/artifact.js` 已具备基础）。
-- 交付：`ming build` 增量缓存 + `--clean-cache` + 哈希稳定性测试（改实现不改接口 → 命中）。
-- 收益：CI 与 AI 自愈循环的速度。
-- 延后理由（2026-11-11 bench 实测）：当前规模 `ming check` 全程 126ms,编译非瓶颈;项目规模增长后再评估。
+### 4b. 构建缓存：接口哈希 ABI 防火墙（✅ v0.49 已交付，2026-11-11）
+- 交付（v0.49）：`ming build` 内容寻址缓存——键 = 编译器版本 + 项目全部 .ming 源 + ming.toml + `--with-source`（过包含保健全）；命中且 dist 完整 → 跳过检查与编译。
+- 接口哈希：每模块 decl 规范化序列化（签名/参数名/效果/requires/ensures/字段/invariant/变体/trait 方法/impl；排除函数体与 span），sha256 前 16 位；构建输出报告 `接口哈希:未变 N 个,变更 <文件>`；§44 测试锁定"改实现不改接口 → 哈希稳定 / 改签名 → 变更"。
+- `--clean-cache` 清理缓存与 dist 并全量重建；缓存文件 `.ming-cache/build-cache.json`（入 .gitignore）。
+- 说明：本版为**项目级**缓存（命中即整体跳过）；函数级模块化缓存（内容寻址代码，Backlog）留待项目规模增长后。
 
 ---
 

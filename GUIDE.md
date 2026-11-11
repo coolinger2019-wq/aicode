@@ -882,7 +882,7 @@ fn main() with io {
 |------|------|
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
-| `ming build`(项目模式,v0.38) | 项目检查通过后产出 **dist 可移植产物**:app.ming + runtime 8 模块拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑 |
+| `ming build`(项目模式,v0.38 / 缓存 v0.49) | 项目检查通过后产出 **dist 可移植产物**:app.bytecode.json(或 app.ming 源码模式)+ runtime 拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑。**v0.49 起内容寻址缓存**:键 = 编译器版本 + 项目全部 .ming 源 + ming.toml(过包含保健全),命中且 dist 完整 → 跳过检查与编译;每次构建报告每模块**接口哈希**(签名/效果/契约规范化,排除函数体:`接口哈希:未变 N 个,变更 <文件>`);`--clean-cache` 清理缓存与 dist 并全量重建 |
 | `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;插值串/Result 属 C4(显式拒绝) |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:`node bin/ming.js run tools/diaghot.ming -- <file.ming...>` 聚合 `ming check --json` 的诊断码频次,Top-N 输出)——语法/检查改进的数据依据 |
@@ -1004,6 +1004,15 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.49.0(2026-11-11)
+
+- **ABI 哈希构建缓存(plan.md §4b 兑现)**:`ming build` 新增内容寻址构建缓存——键 = 规范化哈希(编译器版本 + 项目根下**全部** .ming 源 + ming.toml + `--with-source` 旗标);**过包含保健全**(项目内任何源文件变化都使键变化,绝不产生过期 dist);命中(键未变且 dist 完整)→ 跳过全量检查与编译,AOT 产物直接可用。
+  - **接口哈希(ABI 防火墙)**:每次构建登记每模块**接口哈希**——decl 规范化序列化(函数签名/参数名/self/效果集/requires/ensures、struct 字段与 invariant、枚举变体、const 值与类型、trait 方法、impl 目标与签名;**显式排除函数体与位置信息**),sha256 前 16 位;构建输出报告 `接口哈希:未变 N 个,变更 <文件>`。改实现不改接口 → 哈希稳定(§44 测试锁定);改签名 → 哈希变更。
+  - **`--clean-cache`**:清理缓存与 dist 并全量重建(同一命令内完成)。
+  - 缓存文件:项目内 `.ming-cache/build-cache.json`(key/builtAt/compilerVersion/modules;已入 .gitignore)。
+- **交互修复**:缓存键纳入 `--with-source` 旗标——否则前置的普通构建命中后跳过 dist 重写,导致附源码失效(v39 测试捕获)。
+- 测试:471 项全绿(§44 新增六项:构建写缓存/缓存命中且 dist 可运行/改实现 → 重建且接口哈希稳定/改签名 → 接口哈希变更/--clean-cache 清理并重建/清理后重建的缓存下次命中)。
 
 ### v0.44.1(2026-11-10)
 

@@ -20,9 +20,10 @@ import { serializeArtifact } from '../src/artifact.js';
 import { emitC } from '../src/cbackend.js';
 import { Unsupported } from '../src/wasm.js';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.48.0';
+export const VERSION = '0.49.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -31,7 +32,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
   ming check [file.ming...] [--json]
   ming test  [file.ming...] [--json] [--filter 名称]
-  ming build [--json]
+  ming build [--json] [--clean-cache] [--with-source] [--no-dist]
   ming cc    <file.ming> [--emit-c] [--out 目录] [--json] [-- args...]
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
@@ -412,6 +413,76 @@ function cmdInit(name, flags) {
 }
 
 // ---------- build:项目级全量检查 ----------
+
+// v0.49:decl 的规范化接口对象(排除函数体/位置信息;含契约与字段默认值——
+// 它们属于 ABI:下游行为与 M3042/M4015 检查依赖它们)
+function stripAst(node) {
+  if (Array.isArray(node)) return node.map(stripAst);
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const k of Object.keys(node)) {
+      if (k === 'span' || k === 'docs' || k === 'nameSpan') continue;
+      out[k] = stripAst(node[k]);
+    }
+    return out;
+  }
+  return node;
+}
+
+function fnIface(d) {
+  return {
+    nt: 'fn', name: d.name, tparams: d.tparams ?? [], pub: !!d.pub, local: !!d.local,
+    params: (d.params ?? []).map(p => ({ name: p.name, mut: !!p.mut, self: !!p.self, type: p.type ? stripAst(p.type) : null })),
+    ret: d.ret ? stripAst(d.ret) : null,
+    effects: (d.effects ?? []).map(x => x.name),
+    requires: d.requires ? stripAst(d.requires) : null,
+    ensures: d.ensures ? stripAst(d.ensures) : null,
+  };
+}
+
+// 模块接口哈希:decl 的规范化序列化(排除函数体),sha256 前 16 位
+function moduleIfaceHash(mod) {
+  const canon = [];
+  for (const [name, entry] of mod.items) {
+    const d = entry.decl;
+    switch (entry.kind) {
+      case 'fn': canon.push(['fn', name, fnIface(d)]); break;
+      case 'struct': canon.push(['struct', name, {
+        tparams: d.tparams ?? [],
+        fields: (d.fields ?? []).map(f => ({ name: f.name, type: f.type ? stripAst(f.type) : null, dflt: f.dflt ? stripAst(f.dflt) : null, mut: !!f.mut, pub: !!f.pub })),
+        invariants: (d.invariants ?? []).map(i => stripAst(i.expr)),
+        pub: !!entry.pub,
+      }]); break;
+      case 'enum': canon.push(['enum', name, { variants: (d.variants ?? []).map(v => ({ name: v.name, args: (v.args ?? []).map(a => a.type ? stripAst(a.type) : null) })), pub: !!entry.pub }]); break;
+      case 'const': canon.push(['const', name, { type: d.type ? stripAst(d.type) : null, value: stripAst(d.value ?? null), pub: !!entry.pub }]); break;
+      case 'trait': canon.push(['trait', name, {
+        tparams: d.tparams ?? [],
+        methods: (d.methods ?? []).map(m => fnIface(m)),
+        pub: !!entry.pub,
+      }]); break;
+      case 'impl': canon.push(['impl', d.trait, d.typeName, (d.methods ?? []).map(m => fnIface(m))]); break;
+      default: break;
+    }
+  }
+  canon.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return createHash('sha256').update(JSON.stringify(canon)).digest('hex').slice(0, 16);
+}
+
+// 项目根目录下全部 .ming 与 ming.toml(排除隐藏/dist/.ming-cache/node_modules)
+function collectProjectSources(root) {
+  const out = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist' || e.name === '.ming-cache') continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) out.push(...walk(p));
+      else if (e.name.endsWith('.ming') || e.name === 'ming.toml') out.push(path.basename(p) + '\u0000' + fs.readFileSync(p, 'utf8'));
+    }
+    return out;
+  };
+  return walk(root).sort();
+}
+
 function cmdBuild(flags) {
   const json = flags.has('json');
   const { files, proj, error } = projectEntry('build', [], json);
@@ -419,6 +490,30 @@ function cmdBuild(flags) {
   if (!files) return 1;
   if (!proj) return fail('build 需要 ming.toml(在项目目录运行,或 ming init)', json);
   const t0 = Date.now();
+  const projectRoot = path.dirname(files[0]);
+  const distDir = path.join(projectRoot, 'dist');
+  const cacheDir = path.join(projectRoot, '.ming-cache');
+  const cacheFile = path.join(cacheDir, 'build-cache.json');
+  // v0.49:--clean-cache 删除缓存与 dist,强制全量重建
+  if (flags.has('clean-cache')) {
+    fs.rmSync(cacheFile, { force: true });
+    fs.rmSync(distDir, { recursive: true, force: true });
+    if (!json) process.stdout.write('已清理构建缓存与 dist\n');
+  }
+  // v0.49:构建缓存——键 = 规范化哈希(编译器版本 + 项目全部 .ming 源 + ming.toml)
+  // 过包含保健全:任何源变化 → 键变化 → 重建;命中 → 跳过 check+compile(dist 已有效)
+  const buildKey = createHash('sha256').update(JSON.stringify({
+    v: VERSION, manifest: proj.project ?? null, withSource: !!flags.has('with-source'), sources: collectProjectSources(projectRoot),
+  })).digest('hex').slice(0, 32);
+  let prevCache = null;
+  try { prevCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { prevCache = null; }
+  const distIntact = fs.existsSync(path.join(distDir, 'ming-app.mjs')) &&
+    (fs.existsSync(path.join(distDir, 'app.bytecode.json')) || fs.existsSync(path.join(distDir, 'app.ming')));
+  if (!flags.has('no-dist') && !flags.has('clean-cache') && prevCache && prevCache.key === buildKey && distIntact) {
+    if (json) process.stdout.write(JSON.stringify({ ok: true, project: proj.project.name, cache: 'hit', ms: Date.now() - t0 }, null, 2) + '\n');
+    else process.stdout.write('缓存命中(键未变,跳过检查与编译;--clean-cache 清除)\n');
+    return 0;
+  }
   const checker = new Checker(files[0]);
   let ok = true;
   let checkResult = null;
@@ -448,7 +543,6 @@ function cmdBuild(flags) {
   }
   // v0.39 真 AOT:字节码 JSON 产物(加载端跳过 Checker 与编译器);受限形态回退源码模式
   if (ok && !flags.has('no-dist')) {
-    const distDir = path.join(path.dirname(files[0]), 'dist');
     fs.rmSync(distDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
     for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js']) {
@@ -519,6 +613,20 @@ function cmdBuild(flags) {
         process.stdout.write('产物:dist/(app.bytecode.json 字节码 + runtime + ming-app.mjs;--with-source 附源码)\n');
       } else {
         process.stdout.write('产物:dist/(app.bytecode.json 字节码,无明文源 + runtime + ming-app.mjs;用法:node dist/ming-app.mjs)\n');
+      }
+    }
+    // v0.49:写构建缓存(键 + 每模块接口哈希)并报告接口变更(ABI 防火墙可观测)
+    const moduleHashes = checkResult.modules.map(m => ({ file: path.basename(m.file), interfaceHash: moduleIfaceHash(m) }));
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify({
+      key: buildKey, builtAt: new Date().toISOString(), compilerVersion: VERSION, modules: moduleHashes,
+    }, null, 1));
+    if (prevCache && Array.isArray(prevCache.modules)) {
+      const prevByFile = new Map(prevCache.modules.map(x => [x.file, x.interfaceHash]));
+      const unchanged = moduleHashes.filter(x => prevByFile.get(x.file) === x.interfaceHash);
+      const changed = moduleHashes.filter(x => prevByFile.get(x.file) !== x.interfaceHash);
+      if (!json) {
+        process.stdout.write(`接口哈希:未变 ${unchanged.length} 个${changed.length ? ',变更 ' + changed.map(x => x.file).join(', ') : ''}\n`);
       }
     }
   }

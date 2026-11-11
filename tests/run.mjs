@@ -2265,6 +2265,53 @@ fn main() with io, fs {
   check('v48:M3042 调用表达式静默', rcall.code === 0 && !(rcall.stderr ?? '').includes('M3042'), 'stderr=' + (rcall.stderr ?? '').slice(0, 140));
 }
 
+// ===================== 44. v0.49:ABI 哈希构建缓存(命中/接口哈希稳定性/--clean-cache)=====================
+{
+  const proj = path.join(TMP, 'v49proj');
+  fs.mkdirSync(proj, { recursive: true });
+  const appPath = path.join(proj, 'app.ming');
+  const cacheFile = path.join(proj, '.ming-cache', 'build-cache.json');
+  const build = () => spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+  const runDist = () => spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', timeout: 60000 });
+
+  fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v49"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.writeFileSync(appPath, ['fn fib(n: i64) -> i64 {', '    if n < 2 { return n; }', '    return fib(n - 1) + fib(n - 2);', '}', 'fn main() with io {', '    print(str(fib(10)));', '}', ''].join('\n'));
+
+  // build #1:全量,缓存写入
+  const b1 = build();
+  const cacheOk = b1.status === 0 && fs.existsSync(cacheFile);
+  check('v49:构建写入缓存', cacheOk && fs.existsSync(path.join(proj, 'dist', 'ming-app.mjs')), 'code=' + b1.status + ' stderr=' + (b1.stderr ?? '').slice(0, 120));
+
+  // build #2:键未变 → 缓存命中,dist 可运行
+  const b2 = build();
+  const r2 = runDist();
+  check('v49:缓存命中(跳过 check+compile,dist 可运行)', b2.status === 0 && (b2.stdout ?? '').includes('缓存命中') && r2.status === 0 && r2.stdout === '55\n', 'code=' + b2.status + ' stdout=' + JSON.stringify(r2.stdout));
+
+  // 改实现(输出文案变化)→ 不命中重建;接口哈希稳定(实现变化不影响接口哈希)
+  const ifaceBefore = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).modules.find(m => m.file === 'app.ming').interfaceHash;
+  fs.writeFileSync(appPath, ['fn fib(n: i64) -> i64 {', '    if n < 2 { return n; }', '    return fib(n - 1) + fib(n - 2);', '}', 'fn main() with io {', '    print(str(fib(12)));', '    print("v2");', '}', ''].join('\n'));
+  const b3 = build();
+  const ifaceAfter = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).modules.find(m => m.file === 'app.ming').interfaceHash;
+  const r3 = runDist();
+  check('v49:改实现 → 重建 + 接口哈希稳定', b3.status === 0 && !(b3.stdout ?? '').includes('缓存命中') && ifaceAfter === ifaceBefore && r3.stdout.includes('144') && r3.stdout.includes('v2'), 'code=' + b3.status + ' iface=' + ifaceBefore.slice(0, 8) + '→' + ifaceAfter.slice(0, 8) + ' out=' + JSON.stringify(r3.stdout));
+
+  // 改签名(加参数)→ 接口哈希变更(ABI 防火墙可观测)
+  fs.writeFileSync(appPath, ['fn fib(n: i64, acc: i64) -> i64 {', '    if n < 2 { return n; }', '    return fib(n - 1, acc) + fib(n - 2, acc);', '}', 'fn main() with io {', '    print(str(fib(12, 0)));', '    print("v3");', '}', ''].join('\n'));
+  const b4 = build();
+  const ifaceSig = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).modules.find(m => m.file === 'app.ming').interfaceHash;
+  const r4 = runDist();
+  check('v49:改签名 → 接口哈希变更', b4.status === 0 && ifaceSig !== ifaceAfter && (b4.stdout ?? '').includes('变更') && r4.stdout === '144\nv3\n', 'iface=' + ifaceSig.slice(0, 8) + ' out=' + JSON.stringify(r4.stdout));
+
+  // --clean-cache → 清理旧缓存与 dist 并全量重建(同一命令内完成,产物可运行;缓存重写)
+  const b5 = build();
+  const bClean = spawnSync(process.execPath, [MING, 'build', '--clean-cache'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+  const rClean = runDist();
+  check('v49:--clean-cache 清理并全量重建', bClean.status === 0 && (bClean.stdout ?? '').includes('已清理') && fs.existsSync(path.join(proj, 'dist', 'ming-app.mjs')) && fs.existsSync(cacheFile) && rClean.status === 0 && rClean.stdout === '144\nv3\n', 'clean=' + bClean.status + ' stdout=' + (bClean.stdout ?? '').slice(0, 120) + ' out=' + JSON.stringify(rClean.stdout));
+  // 重建后的缓存有效:下一次构建命中
+  const b6 = build();
+  check('v49:clean 后重建的缓存有效(下次命中)', b6.status === 0 && (b6.stdout ?? '').includes('缓存命中'), 'code=' + b6.status);
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');
