@@ -96,7 +96,8 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.51.2** — **构建可信性**:AOT 产物纯 wire 化(无 AST/绝对路径泄漏)+ 源码回退复制全部模块 + 缓存内容哈希校验 + 接口哈希修正 + 非产物 dist 守卫
 - **v0.51.3** — **C 后端 UB 修复**:f64 大整数打印(%.1f)、符号扩展窄截断(ming_sext)、空模式 replace/pad 码点语义、trim 移除 ZWSP
 - **v0.51.4** — **检查器小缺陷**:访问器返回值语义副本、while let 恢复、元组穷尽性、泛型 arity 的 ReferenceError、Map 键类型 M3044
-- **v0.51.5(当前)** — **CLI 边界**:项目模式 `--` 参数透传、`-o` 短旗标、值旗标缺值/非整数硬报错——代码审查 16 项全部修复
+- **v0.51.5** — **CLI 边界**:项目模式 `--` 参数透传、`-o` 短旗标、值旗标缺值/非整数硬报错——代码审查 16 项全部修复
+- **v0.51.6(当前)** — **自举工具优化 + 两个语言/工具链 P0**:9 个工具错误走 stderr、失败退出 1;wc 多文件、json_query 点路径、diaghot 目录展开+`--top`、batch_rename 幂等、tree 深度、`ming tools --` 透传;修复 VM 复合赋值窥孔(`x += N`(N≠1)误融 ±1,自举工具暴露)与 fmt 两处缺陷(if 表达式崩溃、else-if 悬挂非幂等),12 个工具全部 fmt 规范
 - **下一步方向** — 见 `docs/plan.md §4.2`:v0.52 越界包含静态证明 → v0.53 可信构建/CI → v0.54 `with unsafe`(C 原生)→ v0.55 跨函数契约摘要;`mask`/async/eval/国密留待更远
 
 ## 设计原则(全文见 design.md)
@@ -110,4 +111,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.51.5:字节码 VM + **WASM 分层** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:534 项全绿。
+v0.51.6:字节码 VM + **WASM 分层** + **VM 复合赋值窥孔修复（`x += N`(N≠1) 曾误融 ±1）** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:568 项全绿。

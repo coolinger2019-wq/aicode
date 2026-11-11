@@ -4,12 +4,22 @@
 // 但缺"哪些码在真实代码里高频"的数据。diaghot 跑 ming check --json 并聚合,
 // 让语法/检查的改进有数据依据。
 //
-// 用法:node bin/ming.js run tools/diaghot.ming -- <file.ming...>
-
+// v0.51.6 优化:参数可以是文件或目录(目录递归收集 .ming,跳过隐藏/
+// node_modules/dist,去重)+ `--top N` 限量输出(缺省 Top-10;此前文档写
+// Top-N 实际全量)。
+//
+// 用法:node bin/ming.js run tools/diaghot.ming -- <文件或目录...> [--top N]
+//   ming tools diag examples -- --top 5
 use std.proc;
+
 use std.json;
 
+use std.fs;
+
+use std.path;
+
 const NODE: str = "node";
+
 const MING: str = "bin/ming.js";
 
 // Json 可选字段读取(缺键/类型不符都给默认)
@@ -17,102 +27,215 @@ fn jstr(j: Json, key: str, dflt: str) -> str {
     match j.get(key) {
         Some(v) => {
             match v.as_str() {
-                Some(s) => { return s; }
-                None => { return dflt; }
+                Some(s) => {
+                    return s;
+                },
+                None => {
+                    return dflt;
+                },
             }
-        }
-        None => { return dflt; }
+        },
+        None => {
+            return dflt;
+        },
     }
 }
 
-fn main(args: Vec[str]) -> i64 with io, proc {
+// 展开:目录递归收集 .ming(跳隐藏/node_modules/dist),文件必须以 .ming 结尾;
+// 去重保序。发现非法参数(非 .ming 文件)返回 Err。
+fn expand(p: str, files: Vec[str]) -> Result[Vec[str], str] with fs {
+    let mut out = files;
+    if std.fs.is_dir(p) {
+        match std.fs.list_dir(p) {
+            Ok(entries) => {
+                for name in entries {
+                    if name.starts_with(".") {
+                        continue;
+                    }
+                    if name == "node_modules" || name == "dist" {
+                        continue;
+                    }
+                    let full = std.path.join(p, name);
+                    if std.fs.is_dir(full) {
+                        match expand(full, out) {
+                            Ok(v) => {
+                                out = v;
+                            },
+                            Err(e) => {
+                                return Err(e);
+                            },
+                        }} else if name.ends_with(".ming") {
+
+                        if !out.contains(full) {
+                            out.push(full);
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                return Err("无法读取目录 " + p + ": " + e);
+            },
+        }} else if p.ends_with(".ming") {
+
+        if !out.contains(p) {
+            out.push(p);
+        }} else {
+
+        return Err("不是 .ming 文件也不是目录: " + p);
+    }
+    return Ok(out);
+}
+
+fn main(args: Vec[str]) -> i64 with io, proc, fs {
     if args.len() < 1 {
         eprint("diaghot — 诊断热力图(用 Ming 自写)");
-        eprint("用法: node bin/ming.js run tools/diaghot.ming -- <file.ming...>");
+        eprint("用法: node bin/ming.js run tools/diaghot.ming -- <文件或目录...> [--top N]");
+        eprint("  目录递归收集 .ming;--top N 限量输出(缺省 10)");
         return 1;
     }
+
+    // 解析参数:路径 + 可选 --top N / --top=N
+    let mut paths: Vec[str] = [];
+    let mut top: i64 = 10;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if a == "--top" {
+            if i + 1 >= args.len() {
+                eprint("diaghot: --top 需要一个正整数");
+                return 1;
+            }
+            match args[i + 1].parse_i64() {
+                Ok(n) => {
+                    if n < 1 {
+                        eprint("diaghot: --top 需要正整数,得到 " + args[i + 1]);
+                        return 1;
+                    }
+                    top = n;
+                },
+                Err(_) => {
+                    eprint("diaghot: --top 不是整数: " + args[i + 1]);
+                    return 1;
+                },
+            }
+            i += 2;} else if a.starts_with("--top=") {
+
+            let v = a.slice_chars(6, a.char_len());
+            match v.parse_i64() {
+                Ok(n) => {
+                    if n < 1 {
+                        eprint("diaghot: --top 需要正整数,得到 " + v);
+                        return 1;
+                    }
+                    top = n;
+                },
+                Err(_) => {
+                    eprint("diaghot: --top 不是整数: " + v);
+                    return 1;
+                },
+            }
+            i += 1;} else if a.starts_with("--") {
+
+            eprint("diaghot: 未知选项: " + a);
+            return 1;} else {
+
+            paths.push(a);
+            i += 1;
+        }
+    }
+    if paths.len() == 0 {
+        eprint("diaghot: 没有给出文件或目录");
+        return 1;
+    }
+    let mut files: Vec[str] = [];
+    for p in paths {
+        match expand(p, files) {
+            Ok(v) => {
+                files = v;
+            },
+            Err(e) => {
+                eprint("diaghot: " + e);
+                return 1;
+            },
+        }
+    }
+    if files.len() == 0 {
+        eprint("diaghot: 参数中没有 .ming 文件");
+        return 1;
+    }
+
     // 一次 check 全部文件(--json 输出单个合并对象)
     let mut cmd: Vec[str] = [MING, "check"];
-    for f in args {
+    for f in files {
         cmd.push(f);
     }
     cmd.push("--json");
-    let out = match std.proc.exec(NODE, cmd) {
-        Ok(t) => {
-            let (code, o, err) = t;
-            if code < 0 {
-                eprint("diaghot: check 进程异常: " + err);
-                return 1;
-            }
-            o
-        }
-        Err(e) => {
-            eprint("diaghot: exec 失败: " + e);
-            return 1;
-        }
-    };
-    let doc = match std.json.parse(out) {
-        Ok(j) => j,
-        Err(e) => {
-            eprint("diaghot: 输出不是合法 JSON: " + e);
-            return 1;
-        }
-    };
+    let out = match std.proc.exec(NODE, cmd) { Ok(t) => { let (code, o, err) = t; if code < 0 { eprint("diaghot: check 进程异常: " + err); return 1; } o }, Err(e) => { eprint("diaghot: exec 失败: " + e); return 1; } };
+    let doc = match std.json.parse(out) { Ok(j) => j, Err(e) => { eprint("diaghot: 输出不是合法 JSON: " + e); return 1; } };
     let mut diags: Vec[Json] = [];
     match doc.get("diagnostics") {
         Some(d) => {
             match d.as_arr() {
-                Some(arr) => { diags = arr; }
-                None => {},
+                Some(arr) => {
+                    diags = arr;
+                },
+                None => {
+                },
             }
-        }
-        None => {},
+        },
+        None => {
+        },
     }
+
     // 聚合:码 → 次数 / 文件列表 / 首条消息
-    let mut counts: Map[str, i64] = [:];
-    let mut files: Map[str, Vec[str]] = [:];
-    let mut sample: Map[str, str] = [:];
+    let mut counts: Map[str, i64] = {};
+    let mut filesByCode: Map[str, Vec[str]] = {};
+    let mut sample: Map[str, str] = {};
     for d in diags {
         let code = jstr(d, "code", "?");
         counts.set(code, counts.get(code).unwrap_or(0) + 1);
         let f = jstr(d, "file", "?");
         let mut fl: Vec[str] = [];
-        match files.get(code) {
-            Some(v) => { fl = v; }
-            None => {},
+        match filesByCode.get(code) {
+            Some(v) => {
+                fl = v;
+            },
+            None => {
+            },
         }
         if !fl.contains(f) {
             fl.push(f);
         }
-        files.set(code, fl);
+        filesByCode.set(code, fl);
         match sample.get(code) {
-            Some(_) => {},
+            Some(_) => {
+            },
             None => {
                 sample.set(code, jstr(d, "message", ""));
-            }
+            },
         }
     }
     let n = diags.len();
-    let nfiles = args.len();
-    print("诊断热力图:" + str(nfiles) + " 个文件," + str(n) + " 条诊断," + str(counts.len()) + " 种码");
+    print("诊断热力图:" + str(files.len()) + " 个文件," + str(n) + " 条诊断," + str(counts.len()) + " 种码");
     if counts.len() == 0 {
         print("(干净)");
         return 0;
     }
-    // 选择排序输出(码数少,O(n^2) 足够)
+
+    // 选择排序取 Top-N(码数少,O(n^2·top) 足够)
     let mut remaining: Vec[str] = [];
     for k in counts.keys() {
         remaining.push(k);
     }
     let mut rank = 1;
-    while remaining.len() > 0 {
+    while remaining.len() > 0 && rank <= top {
         let mut bi = 0;
-        let mut i = 1;
-        while i < remaining.len() {
-            if counts.get(remaining[i]).unwrap_or(0) > counts.get(remaining[bi]).unwrap_or(0) {
-                bi = i;
+        let mut i2 = 1;
+        while i2 < remaining.len() {
+            if counts.get(remaining[i2]).unwrap_or(0) > counts.get(remaining[bi]).unwrap_or(0) {
+                bi = i2;
             }
-            i = i + 1;
+            i2 = i2 + 1;
         }
         let code = remaining[bi];
         let mut rest: Vec[str] = [];
@@ -126,15 +249,15 @@ fn main(args: Vec[str]) -> i64 with io, proc {
         remaining = rest;
         let cnt = counts.get(code).unwrap_or(0);
         let mut nf = 0;
-        match files.get(code) {
-            Some(v) => { nf = v.len(); }
-            None => {},
+        match filesByCode.get(code) {
+            Some(v) => {
+                nf = v.len();
+            },
+            None => {
+            },
         }
         print("  " + str(rank) + ". " + code + "  x" + str(cnt) + "  (" + str(nf) + " 个文件)");
-        let m = match sample.get(code) {
-            Some(s) => s,
-            None => "",
-        };
+        let m = match sample.get(code) { Some(s) => s, None => "" };
         if m != "" {
             print("     " + m);
         }

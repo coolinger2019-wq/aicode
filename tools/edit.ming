@@ -16,7 +16,6 @@
 //   sub  <file> <start> <end> <text> 用 text(可含 \n)整段替换区间
 //   append <file> <text>             在文件末尾追加一行(可含 \n)
 //   count <file>                     实际行数(尾部换行不计)
-
 use std.fs;
 
 // 转义解释:与 mingkit 完全一致
@@ -25,18 +24,22 @@ fn esc(s: str) -> str {
     let mut bs = false;
     for c in s.chars() {
         if bs {
-            if c == "n" { out = out + "\n"; }
-            else if c == "t" { out = out + "\t"; }
-            else if c == "\\" { out = out + "\\"; }
-            else { out = out + "\\" + c; }
-            bs = false;
-        } else if c == "\\" {
-            bs = true;
-        } else {
+            if c == "n" {
+                out = out + "\n";} else if c == "t" {
+                out = out + "\t";} else if c == "\\" {
+                out = out + "\\";} else {
+                out = out + "\\" + c;
+            }
+            bs = false;} else if c == "\\" {
+
+            bs = true;} else {
+
             out = out + c;
         }
     }
-    if bs { out = out + "\\"; }
+    if bs {
+        out = out + "\\";
+    }
     return out;
 }
 
@@ -44,7 +47,9 @@ fn join_lines(lines: Vec[str]) -> str {
     let mut out = "";
     let mut first = true;
     for ln in lines {
-        if !first { out = out + "\n"; }
+        if !first {
+            out = out + "\n";
+        }
         out = out + ln;
         first = false;
     }
@@ -63,27 +68,31 @@ fn load(file: str) -> Result[Vec[str], str] with fs {
                 return Ok(empty);
             }
             return Ok(parts);
-        }
+        },
         Err(e) => {
             return Err("无法读取 " + file + ": " + e);
-        }
+        },
     }
 }
 
 fn save(file: str, lines: Vec[str]) -> i64 with io, fs {
     match std.fs.write_file(file, join_lines(lines)) {
-        Ok(_) => { return 0; }
+        Ok(_) => {
+            return 0;
+        },
         Err(e) => {
             eprint("edit: 写入失败: " + e);
             return 1;
-        }
+        },
     }
 }
 
 // 实际行数(末尾 "" 换行标记不计)
 fn real_count(lines: Vec[str]) -> i64 {
     let n = lines.len();
-    if n > 0 && lines[n - 1] == "" { return n - 1; }
+    if n > 0 && lines[n - 1] == "" {
+        return n - 1;
+    }
     return n;
 }
 
@@ -109,37 +118,39 @@ fn usage() -> i64 with io {
 
 // 区间参数解析:返回 Ok((s, e)) 或 Err;e 缺省 = s
 fn parse_range(a: str, b: str, limit: i64) -> Result[(i64, i64), str] {
-    let s = match a.parse_i64() {
-        Ok(n) => n,
-        Err(_) => { return Err("start 不是整数: " + a); }
-    };
-    let mut e = match b.parse_i64() {
-        Ok(n) => n,
-        Err(_) => { return Err("end 不是整数: " + b); }
-    };
-    if s < 1 { return Err("start 必须从 1 开始"); }
-    if e < s { return Err("end 不能小于 start"); }
-    if s > limit { return Err("start 超出文件范围(" + str(s) + " > " + str(limit) + ")"); }
-    if e > limit { e = limit; }  // 截断至文件尾(与 mingkit delete-lines 口径一致)
+    let s = match a.parse_i64() { Ok(n) => n, Err(_) => { return Err("start 不是整数: " + a); } };
+    let mut e = match b.parse_i64() { Ok(n) => n, Err(_) => { return Err("end 不是整数: " + b); } };
+    if s < 1 {
+        return Err("start 必须从 1 开始");
+    }
+    if e < s {
+        return Err("end 不能小于 start");
+    }
+    if s > limit {
+        return Err("start 超出文件范围(" + str(s) + " > " + str(limit) + ")");
+    }
+
+    // 截断至文件尾(与 mingkit delete-lines 口径一致)
+    if e > limit {
+        e = limit;
+    }
     return Ok((s, e));
 }
 
 fn main(args: Vec[str]) -> i64 with io, fs {
-    if args.len() < 1 { return usage(); }
+    if args.len() < 1 {
+        return usage();
+    }
     let cmd = args[0];
 
     // ---- show:带行号输出 ----
     if cmd == "show" {
-        if args.len() < 3 { return fail("show 需要 <file> <start> [end]"); }
-        let mut lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < 3 {
+            return fail("show 需要 <file> <start> [end]");
+        }
+        let mut lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         let rc = real_count(lines);
-        let se = match parse_range(args[2], if args.len() >= 4 { args[3] } else { args[2] }, rc) {
-            Ok(t) => t,
-            Err(m) => { return fail(m); }
-        };
+        let se = match parse_range(args[2], if args.len() >= 4 { args[3] } else { args[2] }, rc) { Ok(t) => t, Err(m) => { return fail(m); } };
         let (s, e) = se;
         let mut i = s;
         while i <= e {
@@ -151,51 +162,45 @@ fn main(args: Vec[str]) -> i64 with io, fs {
 
     // ---- get:单行原文 ----
     if cmd == "get" {
-        if args.len() < 3 { return fail("get 需要 <file> <lineno>"); }
-        let mut lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < 3 {
+            return fail("get 需要 <file> <lineno>");
+        }
+        let mut lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         let rc = real_count(lines);
-        let n = match args[2].parse_i64() {
-            Ok(v) => v,
-            Err(_) => { return fail("lineno 不是整数: " + args[2]); }
-        };
-        if n < 1 || n > rc { return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)"); }
+        let n = match args[2].parse_i64() { Ok(v) => v, Err(_) => { return fail("lineno 不是整数: " + args[2]); } };
+        if n < 1 || n > rc {
+            return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)");
+        }
         print(lines[n - 1]);
         return 0;
     }
 
     // ---- set:替换第 N 行 ----
     if cmd == "set" {
-        if args.len() < 4 { return fail("set 需要 <file> <lineno> <text>"); }
-        let mut lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < 4 {
+            return fail("set 需要 <file> <lineno> <text>");
+        }
+        let mut lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         let rc = real_count(lines);
-        let n = match args[2].parse_i64() {
-            Ok(v) => v,
-            Err(_) => { return fail("lineno 不是整数: " + args[2]); }
-        };
-        if n < 1 || n > rc { return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)"); }
+        let n = match args[2].parse_i64() { Ok(v) => v, Err(_) => { return fail("lineno 不是整数: " + args[2]); } };
+        if n < 1 || n > rc {
+            return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)");
+        }
         lines[n - 1] = esc(args[3]);
         return save(args[1], lines);
     }
 
     // ---- ins:在第 N 行前插入 ----
     if cmd == "ins" {
-        if args.len() < 4 { return fail("ins 需要 <file> <lineno> <text>"); }
-        let mut lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < 4 {
+            return fail("ins 需要 <file> <lineno> <text>");
+        }
+        let mut lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         let rc = real_count(lines);
-        let n = match args[2].parse_i64() {
-            Ok(v) => v,
-            Err(_) => { return fail("lineno 不是整数: " + args[2]); }
-        };
-        if n < 1 || n > rc + 1 { return fail("行号超出范围(允许 1.." + str(rc + 1) + ")"); }
+        let n = match args[2].parse_i64() { Ok(v) => v, Err(_) => { return fail("lineno 不是整数: " + args[2]); } };
+        if n < 1 || n > rc + 1 {
+            return fail("行号超出范围(允许 1.." + str(rc + 1) + ")");
+        }
         let text = esc(args[3]);
         let mut out: Vec[str] = [];
         let mut done = false;
@@ -208,7 +213,11 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             out.push(lines[i]);
             i = i + 1;
         }
-        if !done { out.push(text); }  // 插入位置在末尾之后(含无换行标记的文件)
+
+        // 插入位置在末尾之后(含无换行标记的文件)
+        if !done {
+            out.push(text);
+        }
         return save(args[1], out);
     }
 
@@ -216,17 +225,13 @@ fn main(args: Vec[str]) -> i64 with io, fs {
     if cmd == "del" || cmd == "sub" {
         let need = if cmd == "del" { "del 需要 <file> <start> [end]" } else { "sub 需要 <file> <start> <end> <text>" };
         let minArgs = if cmd == "del" { 3 } else { 5 };
-        if args.len() < minArgs { return fail(need); }
-        let mut lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < minArgs {
+            return fail(need);
+        }
+        let mut lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         let rc = real_count(lines);
         let endArg = if cmd == "del" && args.len() < 4 { args[2] } else { args[3] };
-        let se = match parse_range(args[2], endArg, rc) {
-            Ok(t) => t,
-            Err(m) => { return fail(m); }
-        };
+        let se = match parse_range(args[2], endArg, rc) { Ok(t) => t, Err(m) => { return fail(m); } };
         let (s, e) = se;
         let mut repl: Vec[str] = [];
         if cmd == "sub" {
@@ -241,8 +246,8 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         let mut i = 0;
         while i < lines.len() {
             if i < s - 1 || i > e - 1 {
-                out.push(lines[i]);
-            } else if i == s - 1 {
+                out.push(lines[i]);} else if i == s - 1 {
+
                 for r in repl {
                     out.push(r);
                 }
@@ -254,11 +259,10 @@ fn main(args: Vec[str]) -> i64 with io, fs {
 
     // ---- append:末尾追加 ----
     if cmd == "append" {
-        if args.len() < 3 { return fail("append 需要 <file> <text>"); }
-        let lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < 3 {
+            return fail("append 需要 <file> <text>");
+        }
+        let lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         let text = esc(args[2]);
         let n = lines.len();
         let hadMarker = n > 0 && lines[n - 1] == "";
@@ -280,11 +284,10 @@ fn main(args: Vec[str]) -> i64 with io, fs {
 
     // ---- count ----
     if cmd == "count" {
-        if args.len() < 2 { return fail("count 需要 <file>"); }
-        let lines = match load(args[1]) {
-            Ok(v) => v,
-            Err(m) => { return fail(m); }
-        };
+        if args.len() < 2 {
+            return fail("count 需要 <file>");
+        }
+        let lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
         print(str(real_count(lines)));
         return 0;
     }

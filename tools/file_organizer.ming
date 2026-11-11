@@ -1,58 +1,91 @@
+// tools/file_organizer.ming — 按扩展名整理文件(用 Ming 自写;破坏性操作)
+//
+// v0.51.6 优化:错误纪律(逐条失败走 stderr,存在失败退出码 1;
+// 目标子目录创建失败不再静默吞掉,而是计入失败)。
+//
+// 用法:node bin/ming.js run tools/file_organizer.ming -- <目录>
+//   (也可用环境变量 ORGANIZE_ROOT)
+// 目录必须显式给出,不再默认 "."。
 use std.fs;
+
 use std.path;
 
-fn organize(dir: str, mut moved: i64) -> i64 with io, fs {
+// 返回 (移动数, 失败数)
+fn organize(dir: str, mut moved: i64, mut failed: i64) -> (i64, i64) with io, fs {
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             for name in entries {
                 let full = std.path.join(dir, name);
-                if std.fs.is_dir(full) { continue; }
+                if std.fs.is_dir(full) {
+                    continue;
+                }
                 let mut ext = std.path.extension(name);
-                if ext == "" { ext = "noext"; }
+                if ext == "" {
+                    ext = "noext";
+                }
+
                 // 去掉前导点
-                if ext.starts_with(".") { ext = ext.slice_chars(1, ext.char_len()); }
+                if ext.starts_with(".") {
+                    ext = ext.slice_chars(1, ext.char_len());
+                }
                 let target_dir = std.path.join(dir, ext);
                 match std.fs.make_dir(target_dir) {
-                    Ok(_) => { }
-                    Err(_) => { }
+                    Ok(_) => {
+                    },
+                    // 已存在是常态;真正的失败由后续 rename 暴露
+                    Err(_) => {
+                    },
                 }
                 let target = std.path.join(target_dir, name);
                 match std.fs.rename(full, target) {
                     Ok(_) => {
                         print("移动: \{full} -> \{target}");
                         moved += 1;
-                    }
+                    },
                     Err(e) => {
-                        print("失败: \{full}: \{e}");
-                    }
+                        eprint("file_organizer: 失败: \{full}: \{e}");
+                        failed += 1;
+                    },
                 }
             }
-        }
+        },
         Err(e) => {
-            print("无法读取目录 \{dir}: \{e}");
-        }
+            eprint("file_organizer: 无法读取目录 \{dir}: \{e}");
+            failed += 1;
+        },
     }
-    return moved;
+    return (moved, failed);
 }
 
 fn main(args: Vec[str]) -> i64 with io, fs, env {
+
     // v0.45.1 检视修正:按扩展名移动文件是破坏性操作——目录必须显式给出
     // (args 优先,env 回退),不再默认 "."(此前误运行会把当前目录文件打散进扩展名子目录)
     let mut root = "";
-    if args.len() >= 1 { root = args[0]; }
+    if args.len() >= 1 {
+        root = args[0];
+    }
     if root == "" {
         match std.env.get("ORGANIZE_ROOT") {
-            Some(v) => { root = v; }
-            None => { }
+            Some(v) => {
+                root = v;
+            },
+            None => {
+            },
         }
     }
     if root == "" {
-        print("用法: node bin/ming.js run tools/file_organizer.ming -- <目录>");
-        print("  (也可用环境变量 ORGANIZE_ROOT)");
+        eprint("用法: node bin/ming.js run tools/file_organizer.ming -- <目录>");
+        eprint("  (也可用环境变量 ORGANIZE_ROOT)");
+        eprint("  存在失败时退出码 1");
         return 1;
     }
     print("整理目录: \{root}");
-    let total = organize(root, 0);
+    let (total, failed) = organize(root, 0, 0);
     print("共移动 \{total} 个文件");
+    if failed > 0 {
+        eprint("file_organizer: \{failed} 个失败");
+        return 1;
+    }
     return 0;
 }

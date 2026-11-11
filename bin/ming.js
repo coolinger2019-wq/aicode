@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.51.5';
+export const VERSION = '0.51.6';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -553,7 +553,7 @@ const TOOL_CMDS = {
 const toolsUsage = `
 ming tools — 自举工具统一入口(工具均为 tools/*.ming,用 Ming 自写)
 
-用法: ming tools <命令> [参数...]
+用法: ming tools <命令> [参数...] [-- <工具自有选项...>]
   patch <file> <old> <new>        精确替换恰好 1 处(0/多处拒绝)
   patch-all <file> <old> <new>    替换全部
   read <file> [start] [end]       读文件/行区间(1-based 含端点)
@@ -565,10 +565,19 @@ ming tools — 自举工具统一入口(工具均为 tools/*.ming,用 Ming 自�
   count <file>                    行/字符/字节统计
   edit <子命令> ...               行级编辑(show/get/set/ins/del/sub/append/count)
   diff <file.ming>                多引擎差分(engdiff)
-  diag <file.ming...>             诊断热力图(diaghot)
-  wc | tree | find | json | todo | log | rename | organize   其余工具
+  diag <文件或目录...> [--top N]  诊断热力图(diaghot;目录递归收 .ming,默认 Top-10)
+  wc <file...>                    行/词/字节(多文件附 total 行)
+  json <file> <点路径>            取字段,支持 a.b.0.c;字符串裸输出,其余 JSON 原貌
+  tree <目录> [深度]              目录树(深度缺省不限)
+  find <目录> <子串>              按名查找文件(递归)
+  todo <目录>                     扫描 TODO/FIXME/XXX/HACK
+  log <文件>                      ERROR/WARN/INFO 行计数
+  rename <目录> <前缀> [扩展名]   批量改名(幂等:已带前缀的跳过)
+  organize <目录>                 按扩展名移动进子目录
   任意已有文件也可直接: ming tools <名> [参数...](对应 tools/<名>.ming)
+纪律:所有工具错误走 stderr,失败退出码 1;破坏性操作(rename/organize)目录必须显式给出。
 示例: ming tools patch src/x.js "旧串" "新串"
+      ming tools diag examples -- --top 5
 `.trim();
 
 function resolveTool(cmd) {
@@ -578,7 +587,7 @@ function resolveTool(cmd) {
   return null;
 }
 
-function cmdTools(rest, flags, opts) {
+function cmdTools(rest, flags, opts, dashRest) {
   if (!rest.length || rest[0] === 'list' || flags.has('list')) {
     process.stdout.write(toolsUsage + '\n');
     return (flags.has('list') || rest.length) ? 0 : 1;
@@ -590,7 +599,8 @@ function cmdTools(rest, flags, opts) {
     return 1;
   }
   const file = path.join(__dirname, '..', 'tools', hit.file);
-  return cmdRun(file, flags, opts, [...hit.prefix, ...rest.slice(1)]);
+  // v0.51.6:`--` 之后的参数透传给工具(与 run/cc 一致),工具才能收到 --top 等自有选项
+  return cmdRun(file, flags, opts, [...hit.prefix, ...rest.slice(1), ...(dashRest ?? [])]);
 }
 
 function cmdBuild(flags) {
@@ -872,7 +882,7 @@ function main() {
       return cmdTest(files, flags, opts);
     }
     case 'build': return cmdBuild(flags);
-    case 'tools': return cmdTools(rest, flags, opts);
+    case 'tools': return cmdTools(rest, flags, opts, dashRest);
     case 'cc': {
       const { files, error } = projectEntry('cc', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));

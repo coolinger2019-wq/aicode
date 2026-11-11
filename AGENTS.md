@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.51.5），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.51.6），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,10 +28,14 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.51.5�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（约 534 项，含各版本分节 §1..§53）
+tests/run.mjs        回归套件（568 项，含各版本分节 §1..§55；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
-tools/               自举工具（Ming 自写）：mingkit 文件工具箱 / engdiff 引擎差分 / diaghot 诊断热力图
+tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
+                     edit 行级编辑（按行号，与 mingkit 按模式互补）· engdiff 三引擎差分 · diaghot 诊断热力图（目录展开 + --top）·
+                     wc 行词字节（多文件 + total）· tree 目录树（深度可选）· find_files 按名查找 · json_query JSON 点路径（a.b.0.c）·
+                     todo_scan 待办扫描 · log_analyzer 日志计数 · batch_rename 批量改名（幂等）· file_organizer 按扩展名归档。
+                     纪律：错误走 stderr、失败退出码 1；破坏性操作目录必须显式给出；全部 `ming fmt --check` 规范
 examples/            可运行示例
 docs/                design.md 设计 · diagnostics.md 诊断码 · capabilities.md 能力矩阵 · plan.md 计划
 GUIDE.md             使用指南 + 修订记录（每次改动必须登记）
@@ -57,19 +61,22 @@ node bin/ming.js cc    f.ming --emit-c|--no-run|--static
 node bin/ming.js repl|lsp|doc|version
 ```
 
-自举工具：
+自举工具（推荐一律走 `ming tools` 统一入口；`--` 之后的参数透传给工具本体）：
 
 ```bash
-node bin/ming.js run tools/mingkit.ming -- replace <file> <old> <new>   # 精确文件补丁（0/多处拒绝）
-node bin/ming.js run tools/engdiff.ming -- <file.ming>                  # 三引擎差分一条命令
-node bin/ming.js run tools/diaghot.ming -- <file.ming...>               # 诊断热力图
+node bin/ming.js tools patch f.ming 旧串 新串        # 精确补丁恰好 1 处（0/多处拒绝）
+node bin/ming.js tools edit show f.ming 1 20         # 行级编辑（show/get/set/ins/del/sub/append）
+node bin/ming.js tools diff f.ming                   # 三引擎差分一条命令
+node bin/ming.js tools diag src -- --top 5           # 诊断热力图（目录递归 + Top-N）
+node bin/ming.js tools json pkg.json deps.0.name     # JSON 点路径（obj 键 + arr 下标）
+node bin/ming.js tools wc a.txt b.txt                # 行/词/字节（多文件附 total）
+node bin/ming.js tools tree . 2 | todo .             # 目录树限深 / 待办扫描
 ```
 
 ## 5. 测试与验证（提交前硬门槛）
 
 ```bash
-node tests/run.mjs                    # 全量回归，必须 0 失败
-node tests/run.mjs <起始节号>          # 从指定分节起跑（例：node tests/run.mjs 39）
+node tests/run.mjs                    # 全量回归，必须 0 失败（每次全量运行,无分节过滤;约 6 分钟）
 node tests/fuzz.mjs --seed 44044 --count 40   # 差分模糊（多后端必须 0 分歧）
 node tests/bench.mjs                 # 基准（信息性；无编译器时 C 腿自动跳过）
 ```
@@ -104,7 +111,7 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 | 改 C 后端 | `src/cbackend.js`（资格经 wasm.js）；跑 `ming cc --emit-c` 快照 + 四方一致 + panic 首行对齐测试 |
 | 改 wasm | `MING_WASM_DEBUG=1` 验证编译/实例化存活（§32 门禁）；保持三引擎差分绿 |
 | 修语义 bug | 先写最小复现 → `tests/run.mjs` 回归（双引擎/四后端）→ 再改实现 |
-| 加自举工具 | `tools/<name>.ming`，入口 `fn main(args: Vec[str]) -> i64 with io, ...`；登记 GUIDE 工具链表并补测试 |
+| 加自举工具 | `tools/<name>.ming`，入口 `fn main(args: Vec[str]) -> i64 with io, ...`；**错误走 stderr、失败退出 1**；`ming fmt <文件> --write` 到规范（可能需两遍到定点）；`bin/ming.js` TOOL_CMDS 登记路由 + GUIDE 工具链表 + 测试 |
 
 ## 9. 已知陷阱
 
@@ -114,8 +121,10 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 - **mingkit 转义**：只认 `\n \t \\` 一层；透明转义不存在，未知转义原样保留——嵌套 shell 时注意层数。
 - **`Json` 类型**：unify 曾有 json 缺失分支 bug（v0.44 修）；Json 值可赋值/传参，但结构体不自动序列化（M3033）。
 - **VM 操作数栈**：全帧共享 `valueStack`；`RET`/`?` 提前返回会截断到帧 `stackBase`（v0.44 修复 match-arm-return 残留）。
+- **fmt 需两遍到定点**：注释瀑布按源行距保留空行,一次 `--write` 后注释占行可能触发再排;跑到 `fmt --check` 全绿为止(2026-11-12 已登记 plan.md #20)。
+- **模糊器不生成 `+=`**：表达式语法无复合赋值臂——VM 窥孔 bug（v0.51.6 #17）因此漏网;语义可疑时先写最小 .ming 复现跑 `--tree` 对照,别只信模糊绿。
 
 ## 10. 当前状态与下一步
 
-- **v0.51.5**：534 项测试全绿；ABI 哈希构建缓存（内容寻址命中 + 每模块接口哈希报告 + `--clean-cache`）；契约阶段 2 + QF_LIA 第一片（M3042）此前已完成。
+- **v0.51.6**：568 项测试全绿；自举工具 12 个统一错误纪律（stderr/退出码）并全部 fmt 规范；VM 复合赋值窥孔（`x += N` N≠1 误融 ±1）与 fmt 两处缺陷（if 表达式崩溃、else-if 悬挂）已修；ABI 哈希构建缓存、契约阶段 2 + QF_LIA 第一片此前已完成。
 - 下一步见 `docs/plan.md §4.2`：v0.52 越界证明 → v0.53 可信构建/CI → v0.54 `with unsafe` → v0.55 跨函数契约摘要。

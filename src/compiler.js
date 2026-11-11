@@ -328,8 +328,9 @@ class BytecodeCompiler {
           if (s.target.nt !== 'Ident' || !pureOp(s.op[0])) return false;
           const dst = localSlotOf(s.target.name);
           if (dst === null) return false;
-          // (A) x += 1 / x -= 1
-          if ((s.op === '+=' || s.op === '-=') && s.value.nt === 'IntLit' && !s.value.suffix) {
+          // (A) x += 1 / x -= 1(仅当字面量恰为 1;v0.51.6 修复:此前只判 IntLit 不判值,
+          // x += 2 也被融成 ADDI +1——树引擎一致通过而 VM 静默算错,违反三引擎合同)
+          if ((s.op === '+=' || s.op === '-=') && s.value.nt === 'IntLit' && !s.value.suffix && s.value.v === 1n) {
             this.emit(st, OP.ADDI, dst, s.op === '+=' ? 1 : -1, s.span);
             return true;
           }

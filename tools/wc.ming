@@ -1,33 +1,83 @@
+// tools/wc.ming — 行/词/字节统计(用 Ming 自写;Unix wc 口径)
+//
+// v0.51.6 优化:多文件支持(多文件时末尾附 total 行,与 Unix 一致;
+// 单文件保持旧行数不附加)+ 错误纪律(读不了的文件走 stderr 并计入失败,
+// 退出码 1,不中断其余文件)。单文件输出格式与 v0.45.1 完全一致。
+//
+// 用法:node bin/ming.js run tools/wc.ming -- <file...>
+//   输出:行 词 字节 <路径>(多文件时追加:行 词 字节 total)
 use std.fs;
-use std.path;
+
 use std.re;
 
-fn count_file(path: str) with io, fs {
+// 返回 (行, 词, 字节) 或 Err(消息)
+fn count_file(path: str) -> Result[(i64, i64, i64), str] with fs {
     match std.fs.read_file(path) {
         Ok(content) => {
             let lines = content.split("\n");
             let mut line_count = lines.len();
-            if content.ends_with("\n") { line_count -= 1; }
-            if line_count < 0 { line_count = 0; }
-            let parts = std.re.split(r"\s+", content.trim());
+            if content.ends_with("\n") {
+                line_count -= 1;
+            }
+            if line_count < 0 {
+                line_count = 0;
+            }
+            let trimmed = content.trim();
             let mut word_count = 0;
-            if content.trim() != "" { word_count = parts.len(); }
-            print("\{line_count} \{word_count} \{content.byte_len()} \{path}");
-        }
+            if trimmed != "" {
+                let parts = std.re.split("\\s+", trimmed);
+                word_count = parts.len();
+            }
+            return Ok((line_count, word_count, content.byte_len()));
+        },
         Err(e) => {
-            print("无法读取 \{path}: \{e}");
-        }
+            return Err(e);
+        },
     }
 }
 
 fn main(args: Vec[str]) -> i64 with io, fs, env {
-    let mut path = "";
-    if args.len() >= 1 { path = args[0]; }
-    if path == "" { match std.env.get("WC_FILE") { Some(v) => { path = v; } None => { } } }
-    if path == "" {
-        print("用法: node bin/ming.js run tools/wc.ming -- <文件>(或环境变量 WC_FILE)");
+
+    // 兼容旧用法:无参数时回退环境变量 WC_FILE
+    // 值语义:拿到的是深拷贝
+    let mut files = args;
+    if files.len() == 0 {
+        match std.env.get("WC_FILE") {
+            Some(v) => {
+                files.push(v);
+            },
+            None => {
+            },
+        }
+    }
+    if files.len() == 0 {
+        eprint("用法: node bin/ming.js run tools/wc.ming -- <文件...>(或环境变量 WC_FILE)");
         return 1;
     }
-    count_file(path);
+    let mut failed = 0;
+    let mut t_lines: i64 = 0;
+    let mut t_words: i64 = 0;
+    let mut t_bytes: i64 = 0;
+    for f in files {
+        match count_file(f) {
+            Ok(t) => {
+                let (lc, wc, bc) = t;
+                print("\{lc} \{wc} \{bc} \{f}");
+                t_lines += lc;
+                t_words += wc;
+                t_bytes += bc;
+            },
+            Err(e) => {
+                eprint("wc: 无法读取 \{f}: \{e}");
+                failed += 1;
+            },
+        }
+    }
+    if files.len() > 1 {
+        print("\{t_lines} \{t_words} \{t_bytes} total");
+    }
+    if failed > 0 {
+        return 1;
+    }
     return 0;
 }

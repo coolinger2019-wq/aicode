@@ -2135,7 +2135,7 @@ fn main() with io, fs {
   r = runTool('batch_rename.ming', [rd, 'pre_']);
   check('v45.1:batch_rename 加前缀', r.status === 0 && fs.existsSync(path.join(rd, 'pre_1.txt')) && fs.existsSync(path.join(rd, 'pre_2.log')), r.stdout ?? '');
   r = runTool('batch_rename.ming', []);
-  check('v45.1:batch_rename 缺参拒绝', r.status === 1 && (r.stdout ?? '').includes('用法'), 'code=' + r.status);
+  check('v45.1:batch_rename 缺参拒绝(用法走 stderr)', r.status === 1 && (r.stderr ?? '').includes('用法'), 'code=' + r.status);
   const od = path.join(dir, 'org');
   fs.mkdirSync(od);
   fs.writeFileSync(path.join(od, 'x.txt'), 'a');
@@ -2143,7 +2143,7 @@ fn main() with io, fs {
   r = runTool('file_organizer.ming', [od]);
   check('v45.1:file_organizer 按扩展名归档', r.status === 0 && fs.existsSync(path.join(od, 'txt', 'x.txt')) && fs.existsSync(path.join(od, 'md', 'y.md')), r.stdout ?? '');
   r = runTool('file_organizer.ming', []);
-  check('v45.1:file_organizer 缺参拒绝', r.status === 1 && (r.stdout ?? '').includes('用法'), 'code=' + r.status);
+  check('v45.1:file_organizer 缺参拒绝(用法走 stderr)', r.status === 1 && (r.stderr ?? '').includes('用法'), 'code=' + r.status);
 }
 
 // ===================== 42. v0.46:契约阶段 2 第一步(invariant 封装 + 调用点静态校验)=====================
@@ -2856,6 +2856,174 @@ fn main() with io, fs {
   fs.writeFileSync(path.join(occ, 'demo.ming'), 'fn main() with io { print("x"); }\n');
   const emit = spawnSync(process.execPath, [MING, 'cc', 'demo.ming', '--emit-c', '-o', 'outdir'], { encoding: 'utf8', cwd: occ, timeout: 60000 });
   check('v52:-o 短旗标被采纳', emit.status === 0 && fs.existsSync(path.join(occ, 'outdir', 'demo.c')) && !fs.existsSync(path.join(occ, 'ming-cc-out')), 'code=' + emit.status + ' out=' + (emit.stdout ?? '').slice(0, 100));
+}
+
+// ===================== 54. v0.51.6:VM 复合赋值窥孔修复(x += N / -= N,N≠1 被误融 ±1)=====================
+// 自举工具 diaghot 的 `i += 2` 在 VM 下静默算错暴露:窥孔融合只判 IntLit 不判值,
+// x += 2 被编成 ADDI +1(树引擎正确 → 双引擎分歧)。修复后三引擎一致。
+{
+  const caFile = mingFile('v516-compound-addi.ming', [
+    'fn main() -> i64 with io {',
+    '    let mut i = 0;',
+    '    i += 2;',
+    '    i += 2;',
+    '    print(str(i));',
+    '    let mut j = 10;',
+    '    j -= 3;',
+    '    print(str(j));',
+    '    let mut k = 5;',
+    '    while k > 0 { k -= 2; }',
+    '    print(str(k));',
+    '    let mut m = 0;',
+    '    m += 1;',
+    '    print(str(m));',
+    '    return 0;',
+    '}',
+  ].join('\n'));
+  // 期望:4 / 7 / 1(5-2-2)/ 1;误融版本会输出 2 / 9 / 0 / 1
+  const caWant = '4\n7\n-1\n1\n';
+  const caVm = runMing(['run', caFile]);
+  const caTree = runMing(['run', caFile, '--tree']);
+  const caOnly = runMing(['run', caFile, '--no-wasm']);
+  check('v51.6:x += N(N≠1)VM 正确(不再融成 +1)', caVm.code === 0 && caVm.stdout === caWant, 'code=' + caVm.code + ' stdout=' + JSON.stringify(caVm.stdout));
+  check('v51.6:复合赋值树引擎一致', caTree.code === 0 && caTree.stdout === caWant, 'stdout=' + JSON.stringify(caTree.stdout));
+  check('v51.6:复合赋值 vm-only 一致', caOnly.code === 0 && caOnly.stdout === caWant, 'stdout=' + JSON.stringify(caOnly.stdout));
+  check('v51.6:x += 1 窥孔融合保持有效', caVm.stdout.endsWith('1\n'), 'tail=' + JSON.stringify(caVm.stdout.slice(-2)));
+}
+
+// ===================== 55. v0.51.6:自举工具优化(错误纪律/多文件/点路径/目录展开/--top/幂等/深度)=====================
+{
+  const dir = path.join(TMP, 'tools516');
+  fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+  const runTool = (tool, args) => spawnSync(process.execPath, [MING, 'run', path.join(ROOT, 'tools', tool), ...args], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+  const tools = (args) => spawnSync(process.execPath, [MING, 'tools', ...args], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+
+  // ---- fmt:v0.51.6 两处修复(if 表达式崩溃 / else-if 悬挂)+ 工具规范格式 ----
+  const probeSrc = [
+    'fn pick(a: i64) -> i64 {',
+    '    if a > 10 { return 1; }',
+    '    else if a > 5 { return 2; }',
+    '    else { return 3; }',
+    '}',
+    'fn main() with io {',
+    '    let x = if 1 > 0 { 7 } else { 8 };',
+    '    print(str(x));',
+    '}',
+  ].join('\n');
+  const probeFile = path.join(dir, 'fmtprobe.ming');
+  fs.writeFileSync(probeFile, probeSrc);
+  const rf1 = runMing(['fmt', probeFile]);
+  const fmt1 = rf1.stdout ?? '';
+  check('v51.6:fmt if 表达式不崩溃且 else-if 内联', rf1.code === 0 && fmt1.includes('} else if a > 5 {') && fmt1.includes('let x = if 1 > 0 { 7 } else { 8 };'), 'code=' + rf1.status + ' out=' + JSON.stringify(fmt1));
+  fs.writeFileSync(probeFile, fmt1);
+  const rf2 = runMing(['fmt', probeFile, '--check']);
+  check('v51.6:fmt else-if 输出幂等', rf2.code === 0 && (rf2.stdout ?? '').includes('已是规范格式'), 'code=' + rf2.status + ' out=' + JSON.stringify(rf2.stdout));
+  const probeRun = runMing(['run', probeFile]);
+  check('v51.6:fmt 后行为不变', probeRun.code === 0 && probeRun.stdout === '7\n', JSON.stringify(probeRun.stdout));
+  const nonCanon = [];
+  for (const tf of fs.readdirSync(path.join(ROOT, 'tools'))) {
+    if (!tf.endsWith('.ming')) continue;
+    const c = runMing(['fmt', path.join(ROOT, 'tools', tf), '--check']);
+    if (c.code !== 0) nonCanon.push(tf);
+  }
+  check('v51.6:全部自举工具 fmt 规范', nonCanon.length === 0, '非规范: ' + nonCanon.join(','));
+
+  // ---- wc:多文件 + total + 错误纪律 ----
+  const wa = path.join(dir, 'a.txt');
+  fs.writeFileSync(wa, 'one two\nthree\n');
+  const wb = path.join(dir, 'b.txt');
+  fs.writeFileSync(wb, 'x y z w\n');
+  let r = runTool('wc.ming', [wa]);
+  check('v51.6:wc 单文件格式不变', r.status === 0 && r.stdout.trim() === '2 3 14 ' + wa, JSON.stringify(r.stdout));
+  r = runTool('wc.ming', [wa, wb]);
+  check('v51.6:wc 多文件附 total', r.status === 0 && r.stdout === '2 3 14 ' + wa + '\n1 4 8 ' + wb + '\n3 7 22 total\n', JSON.stringify(r.stdout));
+  r = runTool('wc.ming', [wa, path.join(dir, 'nope.txt'), wb]);
+  check('v51.6:wc 失败走 stderr 退出 1 且不中断其余', r.status === 1 && (r.stderr ?? '').includes('nope.txt') && !(r.stdout ?? '').includes('wc:') && (r.stdout ?? '').includes(wa) && (r.stdout ?? '').endsWith('total\n'), 'code=' + r.status + ' out=' + JSON.stringify(r.stdout) + ' err=' + (r.stderr ?? '').slice(0, 80));
+
+  // ---- json_query:点路径 + 类型化输出 + 退出码 ----
+  const jf = path.join(dir, 'cfg.json');
+  fs.writeFileSync(jf, '{"name":"ming","v":44,"ok":true,"n":null,"servers":[{"host":"h1"},{"host":"h2"}],"deps":{"a":1}}');
+  r = runTool('json_query.ming', [jf, 'name']);
+  check('v51.6:json 字符串叶子裸输出', r.status === 0 && r.stdout === 'ming\n', JSON.stringify(r.stdout));
+  r = runTool('json_query.ming', [jf, 'servers.1.host']);
+  check('v51.6:json 点路径数组下标', r.status === 0 && r.stdout === 'h2\n', JSON.stringify(r.stdout));
+  r = runTool('json_query.ming', [jf, 'v', 'ok', 'n', 'deps']);
+  check('v51.6:json 多路径类型化输出', r.status === 0 && r.stdout === '44\ntrue\nnull\n{"a":1}\n', JSON.stringify(r.stdout));
+  r = runTool('json_query.ming', [jf, 'servers.9.host']);
+  check('v51.6:json 越界退出 1(stderr)', r.status === 1 && (r.stderr ?? '').includes('越界') && (r.stdout ?? '') === '', JSON.stringify(r.stdout));
+  r = runTool('json_query.ming', [jf, 'name.x']);
+  check('v51.6:json 穿过标量拒绝', r.status === 1 && (r.stderr ?? '').includes('标量'), 'code=' + r.status);
+  r = runTool('json_query.ming', [jf, 'nope']);
+  check('v51.6:json 键不存在退出 1', r.status === 1 && (r.stderr ?? '').includes('键不存在'), 'code=' + r.status);
+  const badJf = path.join(dir, 'bad.json');
+  fs.writeFileSync(badJf, '{"a": ');
+  r = runTool('json_query.ming', [badJf, 'a']);
+  check('v51.6:json 解析失败退出 1', r.status === 1 && (r.stderr ?? '').includes('解析失败'), 'code=' + r.status);
+
+  // ---- diaghot:目录递归展开 + --top + `--` 透传 ----
+  const ddir = path.join(dir, 'proj');
+  fs.mkdirSync(path.join(ddir, 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(ddir, 'bad1.ming'), 'fn main() with io { let x: i64 = "s"; print("x"); }\n');
+  fs.writeFileSync(path.join(ddir, 'bad2.ming'), 'fn main() with io { let unused1 = 1; print("x"); }\n');
+  fs.writeFileSync(path.join(ddir, 'note.md'), 'fn fake() {}\n');
+  fs.writeFileSync(path.join(ddir, 'nested', 'bad3.ming'), 'fn main() with io { let unused2 = 2; let unused3 = 3; print("y"); }\n');
+  r = tools(['diag', ddir]);
+  check('v51.6:diag 目录递归收 .ming(排除非 .ming)', r.status === 0 && (r.stdout ?? '').includes('3 个文件') && (r.stdout ?? '').includes('1. W3101') && (r.stdout ?? '').includes('2. M3002'), JSON.stringify(r.stdout));
+  r = tools(['diag', ddir, '--', '--top', '1']);
+  check('v51.6:diag --top 限量且 `--` 透传生效', r.status === 0 && (r.stdout ?? '').includes('1. W3101') && !(r.stdout ?? '').includes('M3002'), JSON.stringify(r.stdout));
+  r = tools(['diag', ddir, '--', '--top=1']);
+  check('v51.6:diag --top=N 等号形式', r.status === 0 && (r.stdout ?? '').includes('1. W3101') && !(r.stdout ?? '').includes('M3002'), JSON.stringify(r.stdout));
+  r = tools(['diag', ddir, '--', '--top', '0']);
+  check('v51.6:diag --top 0 拒绝', r.status === 1 && (r.stderr ?? '').includes('正整数'), 'code=' + r.status + ' err=' + (r.stderr ?? '').slice(0, 80));
+  r = runTool('diaghot.ming', [wa]);
+  check('v51.6:diag 非 .ming 参数拒绝', r.status === 1 && (r.stderr ?? '').includes('不是 .ming'), 'code=' + r.status + ' err=' + (r.stderr ?? '').slice(0, 80));
+
+  // ---- batch_rename:幂等 + 失败退出 1 ----
+  const rdir = path.join(dir, 'ren');
+  fs.mkdirSync(rdir, { recursive: true });
+  fs.writeFileSync(path.join(rdir, 'a.txt'), 'a');
+  fs.writeFileSync(path.join(rdir, 'b.txt'), 'b');
+  r = runTool('batch_rename.ming', [rdir, 'p_', '.txt']);
+  check('v51.6:rename 首轮全部改名', r.status === 0 && fs.existsSync(path.join(rdir, 'p_a.txt')) && fs.existsSync(path.join(rdir, 'p_b.txt')) && !fs.existsSync(path.join(rdir, 'a.txt')), JSON.stringify(r.stdout));
+  r = runTool('batch_rename.ming', [rdir, 'p_', '.txt']);
+  check('v51.6:rename 幂等(已带前缀跳过)', r.status === 0 && (r.stdout ?? '').includes('共重命名 0 个文件') && !fs.existsSync(path.join(rdir, 'p_p_a.txt')), JSON.stringify(r.stdout));
+  fs.writeFileSync(path.join(rdir, 'c.txt'), 'c');
+  fs.mkdirSync(path.join(rdir, 'p_c.txt'));
+  r = runTool('batch_rename.ming', [rdir, 'p_', '.txt']);
+  check('v51.6:rename 失败退出 1 且保留原文件', r.status === 1 && (r.stderr ?? '').includes('失败') && fs.existsSync(path.join(rdir, 'c.txt')), 'code=' + r.status + ' err=' + (r.stderr ?? '').slice(0, 100));
+
+  // ---- file_organizer:失败退出 1 + 正常路径 ----
+  // 跨平台必败场景:目标位置(x.txt 在 txt/ 内的位置)已被目录占用——
+  // Windows 会静默覆盖同路径普通文件,但文件→目录的 rename 在两边都失败
+  const odir = path.join(dir, 'org');
+  fs.mkdirSync(path.join(odir, 'txt', 'x.txt'), { recursive: true });
+  fs.writeFileSync(path.join(odir, 'x.txt'), 'x');
+  r = runTool('file_organizer.ming', [odir]);
+  check('v51.6:organize 失败退出 1 且保留原文件', r.status === 1 && (r.stderr ?? '').includes('失败') && fs.existsSync(path.join(odir, 'x.txt')), 'code=' + r.status + ' err=' + (r.stderr ?? '').slice(0, 100));
+  const od2 = path.join(dir, 'org2');
+  fs.mkdirSync(od2, { recursive: true });
+  fs.writeFileSync(path.join(od2, 'y.txt'), 'y');
+  r = runTool('file_organizer.ming', [od2]);
+  check('v51.6:organize 正常移动进扩展名目录', r.status === 0 && fs.existsSync(path.join(od2, 'txt', 'y.txt')) && !fs.existsSync(path.join(od2, 'y.txt')), JSON.stringify(r.stdout));
+
+  // ---- tree:深度参数 + 错误纪律 ----
+  r = runTool('tree.ming', [dir, '1']);
+  check('v51.6:tree 深度 1 不下钻', r.status === 0 && (r.stdout ?? '').includes('├── a.txt') && !(r.stdout ?? '').includes('│   '), JSON.stringify(r.stdout).slice(0, 120));
+  r = runTool('tree.ming', [dir, '0']);
+  check('v51.6:tree 深度 0 拒绝', r.status === 1 && (r.stderr ?? '').includes('正整数'), 'code=' + r.status);
+  r = runTool('tree.ming', [dir, 'abc']);
+  check('v51.6:tree 深度非整数拒绝', r.status === 1 && (r.stderr ?? '').includes('不是整数'), 'code=' + r.status);
+
+  // ---- log_analyzer / todo_scan:错误纪律 + .mjs 覆盖 ----
+  r = runTool('log_analyzer.ming', [path.join(dir, 'nope.log')]);
+  check('v51.6:log 读不了退出 1(stderr)', r.status === 1 && (r.stderr ?? '').includes('无法读取') && (r.stdout ?? '') === '', JSON.stringify(r.stdout));
+  fs.writeFileSync(path.join(dir, 'task.mjs'), '// TODO: mjs 覆盖\n');
+  r = runTool('todo_scan.ming', [dir]);
+  check('v51.6:todo_scan 覆盖 .mjs', r.status === 0 && (r.stdout ?? '').includes('task.mjs:1: // TODO: mjs 覆盖'), JSON.stringify(r.stdout).slice(-200));
+
+  // ---- tools 路由:wc 多文件经统一入口 ----
+  r = tools(['wc', wa, wb]);
+  check('v51.6:ming tools wc 多文件', r.status === 0 && (r.stdout ?? '').endsWith('total\n'), JSON.stringify(r.stdout));
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

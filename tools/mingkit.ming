@@ -6,7 +6,6 @@
 // 精确匹配、确定性、错误显式化(0 处或多处命中都拒绝写入)。
 //
 // 用法:node bin/ming.js run tools/mingkit.ming -- <子命令> ...
-
 use std.fs;
 
 // 转义解释:\\n → 换行,\\t → 制表,\\\\ → 反斜杠;未知转义原样保留
@@ -15,18 +14,22 @@ fn esc(s: str) -> str {
     let mut bs = false;
     for c in s.chars() {
         if bs {
-            if c == "n" { out = out + "\n"; }
-            else if c == "t" { out = out + "\t"; }
-            else if c == "\\" { out = out + "\\"; }
-            else { out = out + "\\" + c; }
-            bs = false;
-        } else if c == "\\" {
-            bs = true;
-        } else {
+            if c == "n" {
+                out = out + "\n";} else if c == "t" {
+                out = out + "\t";} else if c == "\\" {
+                out = out + "\\";} else {
+                out = out + "\\" + c;
+            }
+            bs = false;} else if c == "\\" {
+
+            bs = true;} else {
+
             out = out + c;
         }
     }
-    if bs { out = out + "\\"; }
+    if bs {
+        out = out + "\\";
+    }
     return out;
 }
 
@@ -35,7 +38,9 @@ fn join_lines(lines: Vec[str]) -> str {
     let mut out = "";
     let mut first = true;
     for ln in lines {
-        if !first { out = out + "\n"; }
+        if !first {
+            out = out + "\n";
+        }
         out = out + ln;
         first = false;
     }
@@ -64,52 +69,75 @@ fn fail(msg: str) -> i64 with io {
 }
 
 fn main(args: Vec[str]) -> i64 with io, fs {
-    if args.len() < 1 { return usage(); }
+    if args.len() < 1 {
+        return usage();
+    }
     let cmd = args[0];
 
     // ---- read:整文件或行区间 ----
     if cmd == "read" {
-        if args.len() < 2 { return fail("read 需要 <file> [start] [end]"); }
+        if args.len() < 2 {
+            return fail("read 需要 <file> [start] [end]");
+        }
         let mut content = "";
         match std.fs.read_file(args[1]) {
-            Ok(t) => { content = t; }
-            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+            Ok(t) => {
+                content = t;
+            },
+            Err(e) => {
+                return fail("无法读取 " + args[1] + ": " + e);
+            },
         }
         if args.len() >= 4 {
             let mut start: i64 = 0;
             match args[2].parse_i64() {
-                Ok(n) => { start = n; }
-                Err(_) => { return fail("start 不是整数: " + args[2]); }
+                Ok(n) => {
+                    start = n;
+                },
+                Err(_) => {
+                    return fail("start 不是整数: " + args[2]);
+                },
             }
             let mut end: i64 = 0;
             match args[3].parse_i64() {
-                Ok(n) => { end = n; }
-                Err(_) => { return fail("end 不是整数: " + args[3]); }
+                Ok(n) => {
+                    end = n;
+                },
+                Err(_) => {
+                    return fail("end 不是整数: " + args[3]);
+                },
             }
             if start > end {
                 return fail("start 不能大于 end");
             }
             if content == "" {
-                return 0;  // 空文件没有行
+
+                // 空文件没有行
+                return 0;
             }
             let lines = content.split("\n");
             let mut i: i64 = 0;
             for ln in lines {
                 i = i + 1;
-                if i >= start && i <= end { print(ln); }
+                if i >= start && i <= end {
+                    print(ln);
+                }
             }
             return 0;
         }
+
         // 原样输出:剥掉一个尾部换行,抵消 print 自带的换行;
         // 无尾部换行的文件用 print_raw 精确输出,不附加换行
         if content == "" {
-            return 0;  // 空文件:没有任何内容
+
+            // 空文件:没有任何内容
+            return 0;
         }
         let mut body = content;
         if body.ends_with("\n") {
             body = body.slice_chars(0, body.char_len() - 1);
-            print(body);
-        } else {
+            print(body);} else {
+
             print_raw(body);
         }
         return 0;
@@ -117,59 +145,83 @@ fn main(args: Vec[str]) -> i64 with io, fs {
 
     // ---- write / append:stdin 全量落盘 ----
     if cmd == "write" || cmd == "append" {
-        if args.len() < 2 { return fail(cmd + " 需要 <file>"); }
+        if args.len() < 2 {
+            return fail(cmd + " 需要 <file>");
+        }
         let data = std.io.read_to_end();
-        let r = if cmd == "write" {
-            std.fs.write_file(args[1], data)
-        } else {
-            std.fs.append_file(args[1], data)
-        };
+        let r = if cmd == "write" { std.fs.write_file(args[1], data) } else { std.fs.append_file(args[1], data) };
         match r {
-            Ok(_) => { return 0; }
-            Err(e) => { return fail(cmd + " 失败: " + e); }
+            Ok(_) => {
+                return 0;
+            },
+            Err(e) => {
+                return fail(cmd + " 失败: " + e);
+            },
         }
     }
 
     // ---- replace / replace-all ----
     if cmd == "replace" || cmd == "replace-all" {
-        if args.len() < 4 { return fail(cmd + " 需要 <file> <old> <new>"); }
+        if args.len() < 4 {
+            return fail(cmd + " 需要 <file> <old> <new>");
+        }
         let mut content = "";
         match std.fs.read_file(args[1]) {
-            Ok(t) => { content = t; }
-            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+            Ok(t) => {
+                content = t;
+            },
+            Err(e) => {
+                return fail("无法读取 " + args[1] + ": " + e);
+            },
         }
         let old = esc(args[2]);
         let repl = esc(args[3]);
-        if old == "" { return fail("old 不能为空串"); }
+        if old == "" {
+            return fail("old 不能为空串");
+        }
         let parts = content.split(old);
         let mut out = "";
         if cmd == "replace" {
-            if parts.len() == 1 { return fail("未找到目标串(0 处): " + args[2]); }
+            if parts.len() == 1 {
+                return fail("未找到目标串(0 处): " + args[2]);
+            }
             if parts.len() > 2 {
                 return fail("目标串出现 " + str(parts.len() - 1) + " 处,要求恰好 1 处;请改用 replace-all");
             }
-            out = parts[0] + repl + parts[1];
-        } else {
+            out = parts[0] + repl + parts[1];} else {
+
             let mut first = true;
             for p in parts {
-                if !first { out = out + repl; }
+                if !first {
+                    out = out + repl;
+                }
                 out = out + p;
                 first = false;
             }
         }
         match std.fs.write_file(args[1], out) {
-            Ok(_) => { return 0; }
-            Err(e) => { return fail("写入失败: " + e); }
+            Ok(_) => {
+                return 0;
+            },
+            Err(e) => {
+                return fail("写入失败: " + e);
+            },
         }
     }
 
     // ---- insert-after / insert-before:首个含 pat 的行前/后插一行 ----
     if cmd == "insert-after" || cmd == "insert-before" {
-        if args.len() < 4 { return fail(cmd + " 需要 <file> <pat> <text>"); }
+        if args.len() < 4 {
+            return fail(cmd + " 需要 <file> <pat> <text>");
+        }
         let mut content = "";
         match std.fs.read_file(args[1]) {
-            Ok(t) => { content = t; }
-            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+            Ok(t) => {
+                content = t;
+            },
+            Err(e) => {
+                return fail("无法读取 " + args[1] + ": " + e);
+            },
         }
         let pat = esc(args[2]);
         let text = esc(args[3]);
@@ -180,47 +232,70 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             if !done && ln.contains(pat) {
                 if cmd == "insert-after" {
                     outv.push(ln);
-                    outv.push(text);
-                } else {
+                    outv.push(text);} else {
+
                     outv.push(text);
                     outv.push(ln);
                 }
-                done = true;
-            } else {
+                done = true;} else {
+
                 outv.push(ln);
             }
         }
-        if !done { return fail("没有行包含模式: " + pat); }
+        if !done {
+            return fail("没有行包含模式: " + pat);
+        }
         match std.fs.write_file(args[1], join_lines(outv)) {
-            Ok(_) => { return 0; }
-            Err(e) => { return fail("写入失败: " + e); }
+            Ok(_) => {
+                return 0;
+            },
+            Err(e) => {
+                return fail("写入失败: " + e);
+            },
         }
     }
 
     // ---- delete-lines ----
     if cmd == "delete-lines" {
-        if args.len() < 3 { return fail("delete-lines 需要 <file> <start> [end]"); }
+        if args.len() < 3 {
+            return fail("delete-lines 需要 <file> <start> [end]");
+        }
         let mut content = "";
         match std.fs.read_file(args[1]) {
-            Ok(t) => { content = t; }
-            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+            Ok(t) => {
+                content = t;
+            },
+            Err(e) => {
+                return fail("无法读取 " + args[1] + ": " + e);
+            },
         }
         let mut start: i64 = 0;
         match args[2].parse_i64() {
-            Ok(n) => { start = n; }
-            Err(_) => { return fail("start 不是整数: " + args[2]); }
+            Ok(n) => {
+                start = n;
+            },
+            Err(_) => {
+                return fail("start 不是整数: " + args[2]);
+            },
         }
         let mut end: i64 = 2147483647;
         if args.len() >= 4 {
             match args[3].parse_i64() {
-                Ok(n) => { end = n; }
-                Err(_) => { return fail("end 不是整数: " + args[3]); }
+                Ok(n) => {
+                    end = n;
+                },
+                Err(_) => {
+                    return fail("end 不是整数: " + args[3]);
+                },
             }
         }
         let lines = content.split("\n");
         let mut n = lines.len();
+
         // 末尾换行产生的空元素不算一行;空文件算 0 行
-        if n > 0 && lines[n - 1] == "" { n = n - 1; }
+        if n > 0 && lines[n - 1] == "" {
+            n = n - 1;
+        }
         if start < 1 {
             return fail("start 必须从 1 开始");
         }
@@ -230,31 +305,50 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if start > n {
             return fail("start 超出文件范围(" + str(start) + " > " + str(n) + ")");
         }
-        if end > n { end = n; }  // 截断至文件尾,与"删到文件尾"的默认语义一致
+
+        // 截断至文件尾,与"删到文件尾"的默认语义一致
+        if end > n {
+            end = n;
+        }
         let mut outv: Vec[str] = [];
         let mut i: i64 = 0;
         for ln in lines {
             i = i + 1;
-            if i < start || i > end { outv.push(ln); }
+            if i < start || i > end {
+                outv.push(ln);
+            }
         }
         match std.fs.write_file(args[1], join_lines(outv)) {
-            Ok(_) => { return 0; }
-            Err(e) => { return fail("写入失败: " + e); }
+            Ok(_) => {
+                return 0;
+            },
+            Err(e) => {
+                return fail("写入失败: " + e);
+            },
         }
     }
 
     // ---- count ----
     if cmd == "count" {
-        if args.len() < 2 { return fail("count 需要 <file>"); }
+        if args.len() < 2 {
+            return fail("count 需要 <file>");
+        }
         let mut content = "";
         match std.fs.read_file(args[1]) {
-            Ok(t) => { content = t; }
-            Err(e) => { return fail("无法读取 " + args[1] + ": " + e); }
+            Ok(t) => {
+                content = t;
+            },
+            Err(e) => {
+                return fail("无法读取 " + args[1] + ": " + e);
+            },
         }
         let lines = content.split("\n");
         let mut n = lines.len();
+
         // 末尾换行产生的空元素不算一行;空文件算 0 行
-        if n > 0 && lines[n - 1] == "" { n = n - 1; }
+        if n > 0 && lines[n - 1] == "" {
+            n = n - 1;
+        }
         print("行 " + str(n));
         print("字符 " + str(content.char_len()));
         print("字节 " + str(content.byte_len()));

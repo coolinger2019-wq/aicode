@@ -1,30 +1,118 @@
+// tools/json_query.ming — JSON 字段查询(用 Ming 自写)
+//
+// v0.51.6 优化:点路径(obj 段用键、arr 段用下标,如 servers.0.host)+
+// 类型化输出(字符串裸输出便于 shell 使用,其余按 JSON 原貌打印)+
+// 错误纪律(读不了/解析失败/路径不存在一律 stderr 并退出 1)。
+//
+// 用法:node bin/ming.js run tools/json_query.ming -- <文件> <点路径...>
+//   json cfg.json name            → ming(裸字符串)
+//   json cfg.json servers.0.host  → 逐段下钻
+//   json cfg.json deps            → {"a":1}(非字符串按 JSON 原貌)
 use std.json;
+
 use std.fs;
+
+// 沿点路径下钻:obj 段用 get,arr 段用 at
+fn lookup(j: Json, path: str) -> Result[Json, str] {
+    let segs = path.split(".");
+    let mut cur = j;
+    for seg in segs {
+        if seg == "" {
+            return Err("路径有空段: " + path);
+        }
+        if cur.is_obj() {
+            match cur.get(seg) {
+                Some(v) => {
+                    cur = v;
+                },
+                None => {
+                    return Err("键不存在: " + seg + "(路径 " + path + ")");
+                },
+            }} else if cur.is_arr() {
+
+            let idx = match seg.parse_i64() { Ok(n) => n, Err(_) => { return Err("数组段不是非负整数: " + seg + "(路径 " + path + ")"); } };
+            if idx < 0 {
+                return Err("数组下标不能为负: " + seg);
+            }
+            match cur.at(idx) {
+                Some(v) => {
+                    cur = v;
+                },
+                None => {
+                    return Err("下标越界: " + seg + "(路径 " + path + ")");
+                },
+            }} else {
+
+            return Err("路径穿过标量: \"" + seg + "\" 之前已是叶子(路径 " + path + ")");
+        }
+    }
+    return Ok(cur);
+}
+
+// 叶子输出:字符串裸输出,其余 JSON 原貌(双引擎一致的 debug 形态)
+fn show(v: Json) with io {
+    if v.is_str() {
+        match v.as_str() {
+            Some(s) => {
+                print(s);
+            },
+            None => {
+                print(debug(v));
+            },
+        }} else {
+
+        print(debug(v));
+    }
+}
 
 fn main(args: Vec[str]) -> i64 with io, fs, env {
     let mut path = "";
-    let mut field = "";
-    if args.len() >= 1 { path = args[0]; }
-    if args.len() >= 2 { field = args[1]; }
-    if path == "" { match std.env.get("JSON_FILE") { Some(v) => { path = v; } None => { } } }
-    if field == "" { match std.env.get("JSON_FIELD") { Some(v) => { field = v; } None => { } } }
-    if path == "" || field == "" {
-        print("用法: node bin/ming.js run tools/json_query.ming -- <文件> <字段>(或 JSON_FILE / JSON_FIELD)");
+    let mut first_field = "";
+    if args.len() >= 1 {
+        path = args[0];
+    }
+    if args.len() >= 2 {
+        first_field = args[1];
+    }
+    if path == "" {
+        match std.env.get("JSON_FILE") {
+            Some(v) => {
+                path = v;
+            },
+            None => {
+            },
+        }
+    }
+    if first_field == "" {
+        match std.env.get("JSON_FIELD") {
+            Some(v) => {
+                first_field = v;
+            },
+            None => {
+            },
+        }
+    }
+    if path == "" || first_field == "" {
+        eprint("用法: node bin/ming.js run tools/json_query.ming -- <文件> <点路径...>(或 JSON_FILE / JSON_FIELD)");
+        eprint("  点路径:obj 段用键、arr 段用下标,如 servers.0.host");
         return 1;
     }
-    match std.fs.read_file(path) {
-        Ok(content) => {
-            match std.json.parse(content) {
-                Ok(doc) => {
-                    match doc.get(field) {
-                        Some(v) => { print(debug(v)); }
-                        None => { print("字段不存在: \{field}"); }
-                    }
-                }
-                Err(e) => { print("JSON 解析失败: \{e}"); }
-            }
+    let content = match std.fs.read_file(path) { Ok(t) => t, Err(e) => { eprint("json_query: 无法读取文件: " + e); return 1; } };
+    let doc = match std.json.parse(content) { Ok(j) => j, Err(e) => { eprint("json_query: JSON 解析失败: " + e); return 1; } };
+
+    // 支持一次查多个路径,逐行输出;任一失败即退出 1(错误显式化)
+    let mut i = 1;
+    while i < args.len() {
+        match lookup(doc, args[i]) {
+            Ok(v) => {
+                show(v);
+            },
+            Err(m) => {
+                eprint("json_query: " + m);
+                return 1;
+            },
         }
-        Err(e) => { print("无法读取文件: \{e}"); }
+        i += 1;
     }
     return 0;
 }

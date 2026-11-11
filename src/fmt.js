@@ -59,12 +59,13 @@ class Writer {
       this.out[this.out.length - 1] += '  ' + (c.doc ? '/// ' : '// ') + c.text.trim();
       return;
     }
-    // 独立行注释(保持缩进;规范化为恰好一个空格)
+    // 独立行注释(保持缩进;规范化为恰好一个空格;空注释不带尾随空格)
     const prefix = c.doc ? '///' : '//';
     const text = c.text.replace(/^ /, '');
     const lines = text.split('\n');
     for (const ln of lines) {
-      this.out.push(INDENT.repeat(this.indent) + prefix + ' ' + ln.trimEnd());
+      const body = ln.trimEnd();
+      this.out.push(INDENT.repeat(this.indent) + (body ? prefix + ' ' + body : prefix));
     }
     void before;
   }
@@ -274,14 +275,19 @@ class Writer {
   ifStmt(e) {
     this.line(`if ${expr(e.cond)} {`, e.span.line);
     this.indent++; this.blockBody(e.then); this.indent--;
-    if (e.els) {
-      if (e.els.nt === 'If') {
-        this.lineEnd('} else ');
-        this.ifStmt(e.els);
-        return;
+    // v0.51.6 修复:else-if 链此前输出悬挂的 "} else " 后另起一行 if(非幂等且难看),
+    // 现把 "else if 头" 整体并回上一行
+    let els = e.els;
+    while (els) {
+      if (els.nt === 'If') {
+        this.lineEnd(`} else if ${expr(els.cond)} {`);
+        this.indent++; this.blockBody(els.then); this.indent--;
+        els = els.els;
+      } else {
+        this.lineEnd('} else {');
+        this.indent++; this.blockBody(els); this.indent--;
+        els = null;
       }
-      this.lineEnd('} else {');
-      this.indent++; this.blockBody(e.els); this.indent--;
     }
     this.line('}');
   }
@@ -402,10 +408,12 @@ export function expr(e, minPrec = 0) {
       return `(${ps}) => ${body}`;
     }
     case 'If': {
-      let s = `if ${expr(e.cond)} ${blockInline(e.then)}`;
+      // v0.51.6 修复:e.then / e.els(块分支)是裸块 {stmts,tail},须包 {block} 再交给 blockInline——
+      // 此前 let x = if … {} 形态会让 fmt 直接 TypeError 崩溃(自举工具 mingkit/edit 均触发)
+      let s = `if ${expr(e.cond)} ${blockInline({ block: e.then })}`;
       if (e.els) {
         if (e.els.nt === 'If') s += ' else ' + expr(e.els);
-        else s += ' else ' + blockInline(e.els);
+        else s += ' else ' + blockInline({ block: e.els });
       }
       return s;
     }

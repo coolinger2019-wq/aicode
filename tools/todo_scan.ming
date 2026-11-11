@@ -1,35 +1,66 @@
+// tools/todo_scan.ming — 待办标记扫描(用 Ming 自写;递归)
+//
+// v0.51.6 优化:错误纪律(读不了的目录走 stderr 并计入失败,存在失败退出码 1)
+// + 扫描扩展名补充 .mjs/.cjs(此前 tests/run.mjs 这类文件不在覆盖面)。
+//
+// 用法:node bin/ming.js run tools/todo_scan.ming -- <目录>
+//   (也可用环境变量 TODO_SCAN_ROOT)
 use std.fs;
+
 use std.path;
+
 use std.re;
 
-fn scan_dir(dir: str, mut count: i64) -> i64 with io, fs {
+const SCAN_EXTS: Vec[str] = [".ming", ".js", ".mjs", ".cjs", ".ts", ".md", ".py", ".go", ".rs"];
+
+fn is_scan_target(name: str) -> bool {
+    let ext = std.path.extension(name);
+    for e in SCAN_EXTS {
+        if ext == e {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 返回 (命中数, 失败数)
+fn scan_dir(dir: str, mut count: i64, mut failed: i64) -> (i64, i64) with io, fs {
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             for name in entries {
                 let full = std.path.join(dir, name);
                 if std.fs.is_dir(full) {
-                    // 跳过隐藏目录与 node_modules
-                    if name.starts_with(".") { continue; }
-                    if name == "node_modules" { continue; }
-                    if name == "dist" { continue; }
-                    count = scan_dir(full, count);
-                } else {
-                    // 只扫描文本源文件
-                    let ext = std.path.extension(name);
-                    if ext == ".ming" || ext == ".js" || ext == ".ts" || ext == ".md" || ext == ".py" || ext == ".go" || ext == ".rs" {
-                        count = scan_file(full, count);
+
+                    // 跳过隐藏目录与 node_modules/dist
+                    if name.starts_with(".") {
+                        continue;
                     }
+                    if name == "node_modules" {
+                        continue;
+                    }
+                    if name == "dist" {
+                        continue;
+                    }
+                    let (c, f) = scan_dir(full, count, failed);
+                    count = c;
+                    failed = f;} else if is_scan_target(name) {
+
+                    let (c, f) = scan_file(full, count, failed);
+                    count = c;
+                    failed = f;
                 }
             }
-        }
+        },
         Err(e) => {
-            print("无法读取目录 \{dir}: \{e}");
-        }
+            eprint("todo_scan: 无法读取目录 \{dir}: \{e}");
+            failed += 1;
+        },
     }
-    return count;
+    return (count, failed);
 }
 
-fn scan_file(path: str, mut count: i64) -> i64 with io, fs {
+// 返回 (命中数, 失败数)
+fn scan_file(path: str, mut count: i64, mut failed: i64) -> (i64, i64) with io, fs {
     match std.fs.read_file(path) {
         Ok(content) => {
             let lines = content.split("\n");
@@ -37,32 +68,43 @@ fn scan_file(path: str, mut count: i64) -> i64 with io, fs {
             let n = lines.len();
             while i < n {
                 let line = lines[i];
-                if std.re.is_match(r"(TODO|FIXME|XXX|HACK)", line) {
+                if std.re.is_match("(TODO|FIXME|XXX|HACK)", line) {
                     print("\{path}:\{i + 1}: \{line.trim()}");
                     count += 1;
                 }
                 i += 1;
             }
-        }
+        },
         Err(e) => {
-            print("无法读取 \{path}: \{e}");
-        }
+            eprint("todo_scan: 无法读取 \{path}: \{e}");
+            failed += 1;
+        },
     }
-    return count;
+    return (count, failed);
 }
 
 fn main(args: Vec[str]) -> i64 with io, fs, env {
     let mut root = ".";
+
     // args 优先,环境变量 TODO_SCAN_ROOT 回退
-    if args.len() >= 1 { root = args[0]; }
+    if args.len() >= 1 {
+        root = args[0];
+    }
     if root == "" {
         match std.env.get("TODO_SCAN_ROOT") {
-            Some(v) => { root = v; }
-            None => { }
+            Some(v) => {
+                root = v;
+            },
+            None => {
+            },
         }
     }
     print("扫描目录: \{root}");
-    let total = scan_dir(root, 0);
+    let (total, failed) = scan_dir(root, 0, 0);
     print("共发现 \{total} 处待办标记");
+    if failed > 0 {
+        eprint("todo_scan: \{failed} 个路径读取失败");
+        return 1;
+    }
     return 0;
 }

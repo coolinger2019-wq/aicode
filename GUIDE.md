@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.51.5** · 字节码 VM + WASM 分层 + **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044)+ **ABI 哈希构建缓存**(ming build;--clean-cache)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.51.6** · 字节码 VM + WASM 分层 + **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044)+ **ABI 哈希构建缓存**(ming build;--clean-cache)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -885,9 +885,10 @@ fn main() with io {
 | `ming build`(项目模式,v0.38 / 缓存 v0.49) | 项目检查通过后产出 **dist 可移植产物**:app.bytecode.json(或 app.ming 源码模式)+ runtime 拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑。**v0.49 起内容寻址缓存**:键 = 编译器版本 + 项目全部 .ming 源 + ming.toml(过包含保健全),命中且 dist 完整 → 跳过检查与编译;每次构建报告每模块**接口哈希**(签名/效果/契约规范化,排除函数体:`接口哈希:未变 N 个,变更 <文件>`);`--clean-cache` 清理缓存与 dist 并全量重建 |
 | `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;插值串/Result 属 C4(显式拒绝) |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
-| 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:`node bin/ming.js run tools/diaghot.ming -- <file.ming...>` 聚合 `ming check --json` 的诊断码频次,Top-N 输出)——语法/检查改进的数据依据 |
+| 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:聚合 `ming check --json` 的诊断码频次;v0.51.6 起参数可为**文件或目录**(目录递归收 .ming,跳隐藏/node_modules/dist)+ `--top N` 限量,缺省 Top-10)——语法/检查改进的数据依据 |
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
-| `ming tools [--list] <命令> [参数...]`(v0.50) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
+| 自举工具 v0.51.6 优化(脚本化纪律) | 9 个工具**错误走 stderr、失败退出码 1**(此前 stdout + 退出 0);`wc` 多文件附 total 行(单文件格式不变);`json_query` 点路径(`servers.0.host`:obj 段用键、arr 段用下标)+ 类型化输出(字符串裸输出,其余 JSON 原貌)+ 一次多路径;`diaghot` 目录展开 + `--top N`;`batch_rename` **幂等**(已带前缀跳过,重复运行不再叠加);`tree` 可选深度参数;`todo_scan` 增扫 .mjs/.cjs;12 个工具全部 `ming fmt --check` 规范 |
+| `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
 | `ming check f.ming [--json]` | 只做静态检查 |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
@@ -1005,6 +1006,24 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.51.6(2026-11-12)
+
+- **自举工具优化(开发者工具纪律:错误 stderr / 失败退出 1 / 幂等 / 可组合)**:
+  - **错误纪律统一**:9 个工具(wc/json_query/log_analyzer/find_files/tree/todo_scan/batch_rename/file_organizer/diaghot)的错误信息从 stdout 迁到 stderr;失败(读不了文件/目录、部分改名/移动失败)退出码 1,不再静默成功。用法提示同样走 stderr。
+  - **wc**:多文件支持(末尾附 `total` 行;单文件输出格式不变);个别文件读不了不中断其余文件,最终退出 1。
+  - **json_query**:点路径下钻(`servers.0.host`,obj 段用键、arr 段用下标)+ 类型化输出(字符串裸输出便于 shell 使用,其余按 JSON 原貌)+ 一次查多个路径;键不存在/下标越界/穿过标量/解析失败一律退出 1。
+  - **diaghot**:参数可为目录(递归收集 .ming,跳过隐藏/node_modules/dist,去重保序)+ `--top N`(空格与 `=` 两种写法,缺省 10——此前文档写 Top-N 实际全量);非 .ming 参数显式拒绝。
+  - **batch_rename**:**幂等**——文件名已带前缀的跳过(重复运行不再叠加前缀);存在失败退出 1 且保留原文件。
+  - **tree**:可选深度参数(`tree <目录> [深度]`,缺省不限);**todo_scan**:扫描扩展名增补 .mjs/.cjs(tests/run.mjs 这类文件此前不在覆盖面)。
+  - **`ming tools` 统一入口**:`--` 之后的参数透传给工具本体(与 run/cc 一致),工具自有选项可用:`ming tools diag examples -- --top 5`。
+- **VM 复合赋值窥孔修复(P0,自举暴露)**:`x += N` / `x -= N`(N≠1)在 VM 被误融成 `ADDI ±1`——窥孔只判定了 IntLit 未校验值,树引擎正确 → 双引擎分歧。diaghot 的 `i += 2` 在实际使用中抓到;模糊器此前不生成 `+=`。修复后三引擎一致,§54 补三引擎回归。
+- **fmt 修复(唯一风格首次覆盖 tools/)**:
+  - **if 表达式崩溃**:`let x = if … { } else { }` 使 fmt 直接 TypeError(blockInline 收到裸块,未按 `{block}` 包装)——mingkit/edit 等自举工具全部触发;
+  - **else-if 悬挂**:else-if 链输出 `} else ` 后另起一行 `if`(非幂等),现整体内联为 `} else if … {`;
+  - **空注释** `//` 不再产出尾随空格;已知边界:注释瀑布使部分文件需 `fmt --write` 两遍到定点(已登记 plan.md)。
+  - tools/ 12 个工具全部 `ming fmt --check` 通过。
+- 回归(§54/§55 新增 34 项);共 568 项全绿;模糊 40 程序 0 分歧。
 
 ### v0.51.5(2026-11-11)
 

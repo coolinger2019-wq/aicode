@@ -1,7 +1,20 @@
+// tools/tree.ming — 目录树(用 Ming 自写;递归)
+//
+// v0.51.6 优化:可选深度参数(缺省不限)+ 错误纪律(读不了的目录走 stderr
+// 并计入失败,存在失败退出码 1)。跳过隐藏目录与 node_modules/dist 不变;
+// 计数口径不变(打印过的条目数,含目录)。
+//
+// 用法:node bin/ming.js run tools/tree.ming -- <目录> [深度]
+//   (也可用环境变量 TREE_ROOT;深度 1 = 只看顶层)
 use std.fs;
+
 use std.path;
 
-fn print_tree(dir: str, prefix: str, mut count: i64) -> i64 with io, fs {
+// 返回 (条目数, 失败数);depth 从 1 起,maxdepth <= 0 表示不限
+fn print_tree(dir: str, prefix: str, depth: i64, maxdepth: i64, mut count: i64, mut failed: i64) -> (i64, i64) with io, fs {
+    if maxdepth > 0 && depth > maxdepth {
+        return (count, failed);
+    }
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             let mut i = 0;
@@ -9,32 +22,67 @@ fn print_tree(dir: str, prefix: str, mut count: i64) -> i64 with io, fs {
             while i < n {
                 let name = entries[i];
                 let full = std.path.join(dir, name);
-                let is_last = (i == n - 1);
+                let is_last = i == n - 1;
                 let branch = if is_last { "└── " } else { "├── " };
                 print("\{prefix}\{branch}\{name}");
                 count += 1;
                 if std.fs.is_dir(full) {
                     if !name.starts_with(".") && name != "node_modules" && name != "dist" {
                         let next_prefix = if is_last { prefix + "    " } else { prefix + "│   " };
-                        count = print_tree(full, next_prefix, count);
+                        let (c, f) = print_tree(full, next_prefix, depth + 1, maxdepth, count, failed);
+                        count = c;
+                        failed = f;
                     }
                 }
                 i += 1;
             }
-        }
+        },
         Err(e) => {
-            print("\{prefix}[错误: \{e}]");
-        }
+            eprint("tree: \{prefix}[无法读取 \{dir}: \{e}]");
+            failed += 1;
+        },
     }
-    return count;
+    return (count, failed);
 }
 
 fn main(args: Vec[str]) -> i64 with io, fs, env {
     let mut root = ".";
-    if args.len() >= 1 { root = args[0]; }
-    if root == "" { match std.env.get("TREE_ROOT") { Some(v) => { root = v; } None => { } } }
+
+    // 0 = 不限
+    let mut maxdepth: i64 = 0;
+    if args.len() >= 1 {
+        root = args[0];
+    }
+    if args.len() >= 2 {
+        match args[1].parse_i64() {
+            Ok(n) => {
+                if n < 1 {
+                    eprint("tree: 深度必须是正整数,得到 " + args[1]);
+                    return 1;
+                }
+                maxdepth = n;
+            },
+            Err(_) => {
+                eprint("tree: 深度不是整数: " + args[1]);
+                return 1;
+            },
+        }
+    }
+    if root == "" {
+        match std.env.get("TREE_ROOT") {
+            Some(v) => {
+                root = v;
+            },
+            None => {
+            },
+        }
+    }
     print(root);
-    let total = print_tree(root, "", 0);
+    let (total, failed) = print_tree(root, "", 1, maxdepth, 0, 0);
     print("\n共 \{total} 个条目");
+    if failed > 0 {
+        eprint("tree: \{failed} 个目录读取失败");
+        return 1;
+    }
     return 0;
 }
