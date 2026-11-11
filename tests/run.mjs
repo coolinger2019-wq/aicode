@@ -1501,6 +1501,14 @@ fn main() with io, fs {
   check('v38:launcher args 透传 + 跨 cwd', r1.status === 0 && r1.stdout === 'hi, alice\n1\n', 'stdout=' + JSON.stringify(r1.stdout) + ' stderr=' + (r1.stderr ?? '').slice(0, 150));
   const r2 = run([]);
   check('v38:launcher 无参默认', r2.status === 0 && r2.stdout === 'hi, ming\n0\n', JSON.stringify(r2.stdout));
+  // v0.49.1(社区反馈 bytes 的"拷贝到异地 + 无关 cwd"测试):dist 自包含性实证
+  const rElse = run(['--', 'bob'], os.tmpdir());
+  check('v49.1:launcher 从无关 cwd 运行', rElse.status === 0 && rElse.stdout === 'hi, bob\n1\n', 'status=' + rElse.status + ' stdout=' + JSON.stringify(rElse.stdout) + ' stderr=' + (rElse.stderr ?? '').slice(0, 150));
+  const moved = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-dist-moved-'));
+  fs.cpSync(path.join(proj, 'dist'), path.join(moved, 'dist'), { recursive: true });
+  const rMove = spawnSync(process.execPath, [path.join(moved, 'dist', 'ming-app.mjs'), '--', 'carol'], { encoding: 'utf8', cwd: os.tmpdir(), timeout: 60000 });
+  check('v49.1:dist 异地拷贝后可运行', rMove.status === 0 && rMove.stdout === 'hi, carol\n1\n', 'status=' + rMove.status + ' stdout=' + JSON.stringify(rMove.stdout) + ' stderr=' + (rMove.stderr ?? '').slice(0, 150));
+  fs.rmSync(moved, { recursive: true, force: true });
   fs.writeFileSync(path.join(proj, 'panicmain.ming'), 'fn main() with io { panic("dist panic 测试"); }');
   fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "dist38"\nversion = "0.1.0"\nentry = "panicmain.ming"\n');
   spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 60000 });
