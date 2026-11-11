@@ -33,9 +33,20 @@ class Writer {
     if (srcLine) { this.lastLine = srcLine; this.lastEndLine = Math.max(this.lastEndLine, srcLine); }
   }
 
-  // 若源码中两段之间有空行,则保留一个空行
+  // 若源码中两段之间有空行,则保留一个空行。
+  // v0.51.6 修复(plan #20):行尾注释经"瀑布"冲刷成独立行后,在第二遍里
+  // 占用一行源码,把其后语句的源行号往后推——第一遍按原行距判"不留空行"、
+  // 第二遍按新行距判"留空行",导致部分文件需 fmt 两遍才定点。这里向前看:
+  // 凡本语句之前还将冲刷成独立行的注释,与"行距 ≥ 2"同等触发空行保留,
+  // 使第一遍即得到第二遍的判定结果(一次到位)。
   preserveBlank(beforeLine) {
-    if (this.lastEndLine > 0 && beforeLine - this.lastEndLine >= 2) this.blank();
+    if (this.lastEndLine === 0) return;
+    if (beforeLine - this.lastEndLine >= 2) { this.blank(); return; }
+    // 注释已按行号排序:首个待冲刷注释是否落在本语句之前,首元素即可判定
+    if (this.ci < this.comments.length && this.comments[this.ci].span.line <= beforeLine) {
+      this.blank();
+      return;
+    }
   }
 
   noteEnd(endLine) { this.lastEndLine = Math.max(this.lastEndLine, endLine); }

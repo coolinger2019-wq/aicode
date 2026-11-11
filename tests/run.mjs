@@ -3024,6 +3024,47 @@ fn main() with io, fs {
   // ---- tools 路由:wc 多文件经统一入口 ----
   r = tools(['wc', wa, wb]);
   check('v51.6:ming tools wc 多文件', r.status === 0 && (r.stdout ?? '').endsWith('total\n'), JSON.stringify(r.stdout));
+
+  // ---- fmt 一次到位:v0.51.6 后续修复(plan #20 注释瀑布两遍定点)----
+  // tools/ + examples/ 全量:一遍 fmt --write 后再 fmt --check 必须通过(一次到定点),
+  // 且两遍 --write 输出逐字相等;凡原本 --check 通过的规范文件,一遍 fmt 不得改写任何字节。
+  let fmtIdemBad = [], fmtDriftBad = [], fmtCanonN = 0;
+  for (const d of ['tools', 'examples']) {
+    for (const tf of fs.readdirSync(path.join(ROOT, d))) {
+      if (!tf.endsWith('.ming')) continue;
+      const orig = path.join(ROOT, d, tf);
+      const origBytes = fs.readFileSync(orig, 'utf8');
+      const copy = path.join(dir, 'idem-' + tf);
+      fs.writeFileSync(copy, origBytes);
+      const origCanon = runMing(['fmt', orig, '--check']).code === 0;
+      if (origCanon) fmtCanonN++;
+      runMing(['fmt', copy, '--write']);
+      const b1 = fs.readFileSync(copy, 'utf8');
+      runMing(['fmt', copy, '--write']);
+      const b2 = fs.readFileSync(copy, 'utf8');
+      if (runMing(['fmt', copy, '--check']).code !== 0 || b1 !== b2) fmtIdemBad.push(d + '/' + tf);
+      if (origCanon && b1 !== origBytes) fmtDriftBad.push(d + '/' + tf);
+    }
+  }
+  check('v51.6:fmt 一次到位(tools+examples 全部一遍到定点)', fmtIdemBad.length === 0, '未到定点: ' + fmtIdemBad.join(','));
+  check('v51.6:fmt 规范文件零漂移(' + fmtCanonN + ' 个 --check 通过者零字节改写)', fmtDriftBad.length === 0, '被改写: ' + fmtDriftBad.join(','));
+
+  // 最小复现(单行块 + 行尾注释,来自 mingkit 历史形态):行尾注释被瀑布移成独立行后,
+  // 第二遍曾按新行距多插一个空行(需 fmt 两遍才定点);修复后两遍输出必须逐字相等,
+  // 且规范形态在独立行注释前保留一个空行(与 tools/mingkit.ming 现状一致)。
+  const reproSrc = [
+    'fn main() with io {',
+    '    if 1 > 0 { return; }  // 行尾注释',
+    '    print("ok");',
+    '}',
+  ].join('\n');
+  const reproFile = path.join(dir, 'fmtcomment.ming');
+  fs.writeFileSync(reproFile, reproSrc);
+  runMing(['fmt', reproFile, '--write']);
+  const repro1 = fs.readFileSync(reproFile, 'utf8');
+  runMing(['fmt', reproFile, '--write']);
+  const repro2 = fs.readFileSync(reproFile, 'utf8');
+  check('v51.6:fmt 行尾注释一次到位(两遍逐字相等 + 空行保留)', repro1 === repro2 && repro1 !== reproSrc && repro1.includes('fn main() with io {\n\n    // 行尾注释\n    if 1 > 0 {'), JSON.stringify(repro1));
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
