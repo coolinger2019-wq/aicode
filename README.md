@@ -34,13 +34,13 @@ $ node bin/ming.js check examples/hello.ming --json
 | **明确** | 无隐式转换、无 null(用 `Option[T]`)、无真值化、无操作符重载、`mut` 显式声明 |
 | **效果系统** | 副作用必须显式声明并逐层传播:`fn f() with io, time { ... }`;纯函数是编译期可证明的 |
 | **跨函数契约摘要** | v0.55:纯函数 + 直线体 + 无环调用图上的 `requires`/`ensures` 摘要(被调方优先拓扑序 + 环检测);调用点 requires 可证违反 → M3041,已证后置条件才被调用方假设,链式 ensures 可静态证明;`--proof-report` 输出每函数契约状态与调用点统计(未证明绝不假设) |
-| **安全** | 整数溢出/除零/越界/缺键全部 panic(可预期、有位置、有错误码);v0.2 程序**没有文件系统与网络能力** |
+| **安全** | 整数溢出/除零/越界/缺键全部 panic(可预期、有位置、有错误码);危险能力默认不可达——碰磁盘/网络的代码必须在签名声明 `fs`/`net` 效果 |
 | **值语义** | 赋值/传参/捕获都是深拷贝,结构共享不可能发生——没有别名 bug,没有数据竞争 |
 | **trait + impl** | 用户类型的方法必须定义在 trait 中;prelude 内置 `Eq` / `ToStr`;泛型 bound `[T: Eq]` 调用处校验 |
-| **确定确定** | Map 保持插入序、求值顺序从左到右、溢出行为有定义、`ming fmt` 唯一风格 |
-| **机器友好** | 所有工具支持 `--json`;稳定诊断码(M1xxx~M4xxx)带 hint;`ming doc` 提取文档 |
+| **确定性** | Map 保持插入序、求值顺序从左到右、溢出行为有定义、`ming fmt` 唯一风格 |
+| **机器友好** | 所有工具支持 `--json`;稳定诊断码(M1xxx–M4xxx / W3xxx)带 hint;`ming doc` 提取文档 |
 | **快速反馈** | `check` 秒级类型检查;内置 `test` 块;`?` 错误传播;模式匹配穷尽性检查 |
-| **双引擎** | 默认字节码 VM;`--tree` 树遍历对照;同一测试套锁定语义一致 |
+| **多引擎** | 默认字节码 VM(含 WASM 分层);`--tree` 树遍历对照;`--no-wasm` 纯 VM;同一测试套锁定语义一致 |
 | **工程化** | ming.toml 项目模式(init/run/build/test)、LSP 服务器(诊断/hover)、number 快路径 |
 | **泛型 impl** | `impl[A: Eq, B: Eq] Eq for Pair[A, B]`;bound 递归校验;Compare trait + Vec.min/max |
 | **capability fs** | `std.fs` 文件系统以 fs 效果开放——碰磁盘的代码在签名上自首 |
@@ -73,7 +73,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 ## 文档
 
 - **[AGENTS.md](AGENTS.md)** — AI 代理与本仓库协作的指南(硬规则、命令、提交规范、已知陷阱)
-- **[docs/plan.md](docs/plan.md)** — 实施计划(v0.45 起的版本范围、验收与 Backlog)
+- **[docs/plan.md](docs/plan.md)** — 实施计划(v0.52–v0.55 路线已全部交付;Backlog 与已知缺陷 #23–#32 跟踪)
 - **[docs/references.md](docs/references.md)** — 参考语言跟踪(Jenny / Blood 的地址、要点与进度查看方式)
 - **[GUIDE.md](GUIDE.md)** — 使用指南(语法、类型、标准库、工具链、AI 使用建议)
 - **[docs/design.md](docs/design.md)** — 设计哲学与语言规范要点
