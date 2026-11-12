@@ -979,6 +979,12 @@ class BytecodeCompiler {
       this.emit(st, OP.LDFN, this.entryFnIdx.get(entry), 0, span);
       return;
     }
+    // 内置函数(v0.58 起先于 use 导入分支:与 checker/tree 的"裸名调用内置优先"对齐——
+    // `use std.str;` 后裸 `str(42)` 曾被编译成 stdmod 值,VM M4001 而 tree 正常)
+    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic', 'contract_fail'].includes(name)) {
+      this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__builtin:' + name }), 0, span);
+      return;
+    }
     // v0.54 审查 B5:use std.x [as y] 的短名/别名是模块值(与树引擎 evalField 的
     // import 分支对齐)。此前只有全限定 std.x.f 能编译,`use std.math; math.sqrt(...)`
     // 在 run(VM)下抛 "名字未解析 math" —— check 通过但运行崩溃(#27)。
@@ -993,11 +999,6 @@ class BytecodeCompiler {
     }
     if (name === 'std') {
       this.emit(st, OP.CONST, this.poolAdd({ __tag: 'stdmod', v: 'std' }), 0, span);
-      return;
-    }
-    // 内置函数
-    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic', 'contract_fail'].includes(name)) {
-      this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__builtin:' + name }), 0, span);
       return;
     }
     // 基本类型名(类型级函数的 base)
@@ -1112,6 +1113,16 @@ class BytecodeCompiler {
             this.emit(st, OP.CONST, this.constVals.get(mEntry) ?? this.poolAdd(UNIT), 0, e.span);
             return;
           }
+        }
+        // v0.58:std 导入的方法形式(str.join(x) / math.sqrt(x))→ stdmod 接收者 +
+        // CALLMETHOD 携带方法名(callStd 分派)。内建名与导入同名时(如 use std.str
+        // 后的 str),方法形式按导入解析——与树引擎 evalCall 的 Field 分支一致;
+        // 调用形式 str(42) 仍是内建(compileNamedValue 内建分支已先于导入)。
+        if (imp?.std) {
+          this.emit(st, OP.CONST, this.pstr('__stdmod:' + imp.std), 0, e.span);
+          for (const a of e.args) this.compileExpr(a, st);
+          this.emit(st, OP.CALLMETHOD, this.pstr(callee.name), e.args.length, e.span);
+          return;
         }
       }
       // recv 在栈 = callee.base 的值;直接编译 base(方法名给 CALLMETHOD)

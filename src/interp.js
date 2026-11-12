@@ -1484,6 +1484,15 @@ export class Interp {
       case 'path.base_name': return V.str(nodePath.basename(args[0].v));
       case 'path.dir_name': return V.str(nodePath.dirname(args[0].v));
       case 'path.extension': return V.str(nodePath.extname(args[0].v));
+      // ---- std.str(纯函数)----
+      // v0.58:join 单次拼接 O(n)(Builder 方案的最小替代;依序连接,空 Vec → "",
+      // 语义与 `+` 逐字一致;入参 Vec 已由既有管道深拷贝,此处只读不改写)
+      case 'str.join': {
+        const parts = args[0].a;
+        const buf = new Array(parts.length);
+        for (let i = 0; i < parts.length; i++) buf[i] = parts[i].v;
+        return V.str(buf.join(''));
+      }
       // ---- std.json(纯函数)----
       case 'json.stringify': {
         // 检查器已保证 JSON 兼容类型;这里把 Ming 值转为 Json 值再输出

@@ -1,0 +1,61 @@
+name: Release
+
+# v0.58(plan §4.3.5 任务 4):tag 推送触发的发布打包 workflow。
+# 决策:不自动创建 GitHub Release——常见 gh-release 类 action(softprops/action-gh-release 等)
+# 均为第三方社区 action,违反本仓库"只用官方 action"纪律(ci.yml 同款约束);
+# 本 workflow 只产出 artifact zip,由维护者在 GitHub Releases 页手动创建 Release 并附该 zip。
+# 约束:只用官方 action(actions/checkout / actions/setup-node / actions/upload-artifact),
+# 零 npm 依赖(zip/unzip 为 ubuntu runner 预装);打包内容 = 运行所需全部源(bin/src/tools)+ 资源,
+# 排除本地缓存与产物目录(.ming-cache/.zcode/ming-cc-out/dist)。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: package (ubuntu, node 20)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 冒烟(CLI 可运行 + 示例可执行,打包前验证)
+        run: |
+          node bin/ming.js version
+          node bin/ming.js run examples/hello.ming
+      - name: 版本三处一致性(package.json 与 bin/ming.js)
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          CLI=$(node bin/ming.js version | sed 's/^Ming v//')
+          if [ "$PKG" != "$CLI" ]; then
+            echo "版本不一致:package.json=$PKG,bin/ming.js=$CLI;请先按提交规范同步版本"
+            exit 1
+          fi
+          echo "版本一致:v$PKG"
+      - name: 零 npm 依赖校验
+        run: node -e "const p=require('./package.json');const d=Object.keys(p.dependencies||{}).concat(Object.keys(p.devDependencies||{}));if(d.length){console.error('发现 npm 依赖:'+d.join(', '));process.exit(1)}console.log('零 npm 依赖校验通过')"
+      - name: 打包 zip(bin/src/tools/examples/docs + 根文档;排除缓存/产物目录)
+        run: |
+          mkdir -p dist-release
+          zip -r "dist-release/ming-${{ github.ref_name }}.zip" \
+            bin src tools examples docs GUIDE.md README.md AGENTS.md package.json \
+            -x "*.ming-cache/*" "*.zcode/*" "*ming-cc-out/*" "*dist/*"
+      - name: 包内容核对(zip 清单)
+        run: |
+          unzip -l "dist-release/ming-${{ github.ref_name }}.zip"
+          test -n "$(unzip -l "dist-release/ming-${{ github.ref_name }}.zip" | grep 'bin/ming.js')" || { echo '缺 bin/ming.js'; exit 1; }
+      - name: 上传 artifact(维护者手动创建 GitHub Release 并附此 zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ming-${{ github.ref_name }}
+          path: dist-release/ming-${{ github.ref_name }}.zip
+          if-no-files-found: error

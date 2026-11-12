@@ -428,6 +428,12 @@ export const STD_MODULES = {
       mF('extension', [T_STR], T_STR),
     ],
   },
+  // 字符串工具(纯函数,无效果;v0.58:join 单次 O(n) 拼接——Builder 方案的最小替代,plan §4.3.5 调整)
+  str: {
+    fns: [
+      mF('join', [mkVec(T_STR)], T_STR),
+    ],
+  },
   // v0.54:原生存取(能力 unsafe;C 后端兑现,tree/VM 运行时 M4016 诚实拒绝)
   mem: {
     fns: [
@@ -2050,7 +2056,14 @@ export class Checker {
     // 2) 模块成员调用 math.sqrt(x) / geom.dist(p)
     if (callee.nt === 'Field') {
       const base = callee.base;
-      if (base.nt === 'Ident' && ctx.mod.imports.has(base.name)) {
+      // v0.58(B 审查 MINOR-1):基名被局部/参数变量遮蔽时,按局部值的方法调用解析
+      // (与 compiler.js compileCall 的 !resolveName 守卫、interp evalField 的
+      // lookupVar-first 一致)。此前 checker 无条件走导入:`use std.str` + 局部
+      // str: Vec[str] 时 checker 按 std.str.join 放行(并误报局部 str 未使用),
+      // 引擎却按 Vec.join 执行 → checker/引擎静默分歧(math 同形态引擎 M4001)。
+      // 仅影响"基名被局部遮蔽"形态;无遮蔽的既有导入调用逐一不变。
+      const baseShadowed = base.nt === 'Ident' && !!ctx.scope.lookup(base.name);
+      if (!baseShadowed && base.nt === 'Ident' && ctx.mod.imports.has(base.name)) {
         const imp = ctx.mod.imports.get(base.name);
         if (imp.std) {
           const f = this.stdModuleMember(imp.std, callee.name, callee, ctx, expected);

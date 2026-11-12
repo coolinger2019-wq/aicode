@@ -27,7 +27,7 @@ $ node bin/ming.js check examples/hello.ming --json
 { "ok": true, "diagnostics": [] }
 ```
 
-## 核心特性(v0.57)
+## 核心特性(v0.58)
 
 | 特性 | 说明 |
 |------|------|
@@ -40,8 +40,8 @@ $ node bin/ming.js check examples/hello.ming --json
 | **确定性** | Map 保持插入序、求值顺序从左到右、溢出行为有定义、`ming fmt` 唯一风格 |
 | **机器友好** | 所有工具支持 `--json`;稳定诊断码(M1xxx–M4xxx / W3xxx)带 hint;`ming doc` 提取文档 |
 | **快速反馈** | `check` 秒级类型检查;内置 `test` 块;`?` 错误传播;模式匹配穷尽性检查 |
-| **多引擎** | 默认字节码 VM(含 WASM 分层);`--tree` 树遍历对照;`--no-wasm` 纯 VM;同一测试套锁定语义一致;v0.56 起 tree/VM 作用域与捕获闭包一致(791 项全量) |
-| **工程化** | ming.toml 项目模式(init/run/build/test)、LSP 服务器(诊断/hover)、number 快路径 |
+| **多引擎** | 默认字节码 VM(含 WASM 分层);`--tree` 树遍历对照;`--no-wasm` 纯 VM;同一测试套锁定语义一致;v0.56 起 tree/VM 作用域与捕获闭包一致(825 项全量) |
+| **工程化** | ming.toml 项目模式(init/run/build/test)、LSP 服务器(诊断/hover + **v0.58 补全/跳转定义/文档符号**,非 ASCII 字节分帧)、number 快路径、`std.str.join` 单次 O(n) 拼接(v0.58) |
 | **泛型 impl** | `impl[A: Eq, B: Eq] Eq for Pair[A, B]`;bound 递归校验;Compare trait + Vec.min/max |
 | **capability fs** | `std.fs` 文件系统以 fs 效果开放——碰磁盘的代码在签名上自首 |
 | **capability net** | `std.net.http_get` / `http_request` 以 net 效果开放;同步 HTTP(worker + Atomics 桥接) |
@@ -70,10 +70,12 @@ node bin/ming.js cc your.ming                 # C 后端:编译为原生可执�
 
 Windows 下也可以用 `bin\ming.cmd`。
 
+编辑器集成:`node bin/ming.js lsp` 启动语言服务器(stdio JSON-RPC;诊断/hover + v0.58 补全/跳转定义/文档符号,消息按 Content-Length 字节分帧)。
+
 ## 文档
 
 - **[AGENTS.md](AGENTS.md)** — AI 代理与本仓库协作的指南(硬规则、命令、提交规范、已知陷阱)
-- **[docs/plan.md](docs/plan.md)** — 实施计划(v0.52–v0.57 已交付;Backlog 与已知缺陷 #37–#47 跟踪,v0.56 已修 #22–#26/#28–#34/#36–#38)
+- **[docs/plan.md](docs/plan.md)** — 实施计划(v0.52–v0.58 已交付;Backlog 与已知缺陷 #37–#49 跟踪,v0.56 已修 #22–#26/#28–#34/#36–#38)
 - **[docs/references.md](docs/references.md)** — 参考语言跟踪(Jenny / Blood 的地址、要点与进度查看方式)
 - **[GUIDE.md](GUIDE.md)** — 使用指南(语法、类型、标准库、工具链、AI 使用建议)
 - **[docs/design.md](docs/design.md)** — 设计哲学与语言规范要点
@@ -105,8 +107,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.54.0** — **`with unsafe` 最小实现(C5):受控不安全**。效果名 `unsafe` + 双门禁(签名 `with unsafe` → M3029 逐层传播;指针读写/`std.mem`/Ptr 实参/含 Ptr 的容器载荷必须在 `unsafe { ... }` 块内 → M3046);**Ptr[mut u8]/Ptr[u8]**(元素仅 u8、mut 精确匹配、无隐式转换;load/store/offset/is_null 四方法;索引/算术/==/插值/打印/debug/JSON/Map 键/as 全部静态拒绝);**std.mem.alloc/free**(malloc 失败 **M4011** 不伪装 null);**C5 后端**(Ptr → `unsigned char*`/`const unsigned char*`、alloc/free → malloc/free、extern 槽接受/返回 Ptr、非 unsafe 程序 C 输出逐字不变);tree/VM 在 std.mem/Ptr 面以 **M4016** panic(消息"unsafe 指针操作仅在 C 原生后端可用",exit 101;wasm 回落 VM 同码);`ming build` 遇 `with unsafe` 显式回退源码模式;Ptr 值语义例外(拷贝地址本身,别名可见)与悬垂/越界 UB 不捕获(GUIDE §14.1 诚实声明);§58 共 20 项(含独立审查 B1–B5 回归:unsafe 控制流、C 作用域、载荷逃逸、闭包效果、`use std.x` 短名)
 - **v0.55.0** — **跨函数契约摘要(QF_LIA 第三片)**:摘要引擎(`src/prover.js` `computeSummaries`:Tarjan SCC 环检测 + 被调方优先拓扑序 + 硬门控——requires 不完整或函数在环上则 ensures 不采用);**调用点线性前置证明**(实参线性形式代入被调 requires,可证违反 → M3041 + 小值反例;反例按调用方 requires 上下文枚举;字面量路径逐字不变);**调用后置条件假设**(被调 requires 完整且当前路径可证才采用其已证 ensures,`result` 绑定每次调用独有 `res$N` 符号;未证明前置条件绝不假设);**M3042 假设集扩展**(本函数 requires + 已验证调用后置,可证假 → M3042 + 反例须满足假设集;不可判定静默,运行时 M4015 保留);`--proof-report` 新增契约摘要(文本 `requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>` + additive `proofs.summaries`(含 `requires_present/ensures_present`);无旗标输出与 v0.54.0 逐字一致);**无新诊断码、codegen 零改动**;`proof_fuzz --mode summaries --count 300` 0 误报/0 假反例;**v0.55.0 独立审查修复 B1–B4/M5–M7/N10**(直线体共享判定阻断分支穿透、短路右侧不作无条件调用点、反例调用方上下文、复合赋值线性转移、摘要 JSON present 字段、下界 requires 反例形态、注入 op 校验)
 - **v0.56.0** — **引擎一致性与缺陷清零(质量版,无新语言面)**:tree 作用域模型统一(#23 for-in 遮蔽泄漏 / #28 块作用域泄漏:execBlock 子环境 + for-in/while-let 每迭代内层绑定,tree/VM 逐字一致;tree bench +5–32%,循环项最大——语义修复代价);**VM 捕获闭包 + HOF**(#24 `callClosure` 漏传 `captures` 一行修复);**契约尾部裸标识歧义**(#33 专用解析模式 + struct literal 前瞻);**fmt 契约保真**(#36 P1 数据丢失:requires/ensures/invariant 不再被格式化丢弃,幂等,既有文件零改写;else 插值消息经 `msgRaw` 逐字保留,#39 已修);**wasm 四个严格模式语义修复**(W1 一元负号栈序 / W2 循环内 if 的 break/continue br 深度 / F1 for 体内 continue 跳过自增 / F2 `inferNumType` 重复 case;均 `--strict-wasm` 存活);**fuzz 真实 wasm 腿**(#25 eligible helper + `[wasm] fn OK` 断言,wasm 真实执行计数 20/16/18);**buildKey 编译器源指纹**(#26 `compilerSourceHash` 含 src+bin;敏感性回归覆盖改 `bin/ming.js` → 键变 → 恢复;additive `compiler_hash`);**v0.56 独立审查修复**:契约作用域(B3:body 遮蔽/`result` 绑定/嵌套块)、u64 一元负号 M3008、u64 减法四引擎 M4002、fmt 契约破坏三修(lambda callee 括号/内联块失败不落盘/else 插值消息/空结构体与转义)、#31 按模块身份(abs)去重、**M3047 本地函数显式拒绝**(VM 不再 TypeError);**复审阻塞回归 C1/C2**(ensures 自身作用域基线:match 臂变量/if 块 let 可解析、臂变量词法遮蔽形参;闭包/本地函数 return 不再编译外层 ensures);工具链 #22/#29/#30/#31/#32/#34;§60 共 70 项、**764 项全绿**
-- **v0.57.0(当前)** — **循环/守卫敏感边界证明(QF_LIA 第四片)+ tools AOT 缓存 + 覆盖率/bench 观测**:范围 for(`for i in lo..hi`)体内 `buf[i]` 义务两向证明——循环变量绑定确定性符号 `i$<n>`,半开区间假设 `lo <= i$<n> < hi` 并入义务假设集(`0 <= i` 由 lo 推出;`buf[i+k]` 位移同口径;空洞区间按假言成立);脏循环(体内重赋值循环变量/改写外层变量/藏分支)、嵌套 for、`while`/`loop`、区间不可线性化一律**保守放弃**;break/continue 不破坏不变式;反例枚举含循环符号(`i$0 = -1`);义务记录 additive `scope: body|loop`;M3045/W3105 码与消息不变,**proven 不消除运行时 M4003**;proof_fuzz 新增 `--mode loops`(200 例 0 误报:可证 100/静默 50/违反 50,反例独立求值器三重验证);**ming tools 工具 AOT 缓存**(12 工具全缓存零回退;键 = VERSION + Node 主版本 + 编译器源指纹 + 工具 basename + 源文本,原子写;span/declSpans 回填 panic 首行/摘录/栈帧逐字对齐;`--json`/`--tree`/strict-wasm 旁路不缓存;损坏自愈;`MING_TOOLS_DEBUG=1` 观测;bin 惰性导入 + enableCompileCache;**热缓存净 ~25–30ms/次——目标 <20ms 未完全达标如实注明**,对无缓存净改进 12–19ms/次);**观测基线**(tests/coverage.mjs 零依赖覆盖率:首个基线 93.0% 行/86.1% 函数 + docs/coverage-baseline.md;bench 基线 tests/bench.baseline.json + Δ基线列 + cc/vm 比值回退 >20% WARN 仍 exit 0 + `--write-baseline`);§61 共 27 项、**791 项全绿**;prover.js 求解器与 codegen 零改动
-- **下一步方向** — 见 `docs/plan.md §4.3`:**v0.58 AI 协作体验与文本工程**(LSP 补全/跳转/符号、`std.str.Builder`、doc JSON 与 Release 打包)→ v0.59 服务端/并发 ADR → v0.60 污点即效应/mask ADR;async/eval/国密留待更远;已知缺陷 #37–#47(#37–#39 已修;#40–#43/#45–#47 wasm 剩余回落形态、#44 本地函数恢复)按 §4.3.8/§5.1 处置
+- **v0.57.0** — **循环/守卫敏感边界证明(QF_LIA 第四片)+ tools AOT 缓存 + 覆盖率/bench 观测**:范围 for(`for i in lo..hi`)体内 `buf[i]` 义务两向证明——循环变量绑定确定性符号 `i$<n>`,半开区间假设 `lo <= i$<n> < hi` 并入义务假设集(`0 <= i` 由 lo 推出;`buf[i+k]` 位移同口径;空洞区间按假言成立);脏循环(体内重赋值循环变量/改写外层变量/藏分支)、嵌套 for、`while`/`loop`、区间不可线性化一律**保守放弃**;break/continue 不破坏不变式;反例枚举含循环符号(`i$0 = -1`);义务记录 additive `scope: body|loop`;M3045/W3105 码与消息不变,**proven 不消除运行时 M4003**;proof_fuzz 新增 `--mode loops`(200 例 0 误报:可证 100/静默 50/违反 50,反例独立求值器三重验证);**ming tools 工具 AOT 缓存**(12 工具全缓存零回退;键 = VERSION + Node 主版本 + 编译器源指纹 + 工具 basename + 源文本,原子写;span/declSpans 回填 panic 首行/摘录/栈帧逐字对齐;`--json`/`--tree`/strict-wasm 旁路不缓存;损坏自愈;`MING_TOOLS_DEBUG=1` 观测;bin 惰性导入 + enableCompileCache;**热缓存净 ~25–30ms/次——目标 <20ms 未完全达标如实注明**,对无缓存净改进 12–19ms/次);**观测基线**(tests/coverage.mjs 零依赖覆盖率:首个基线 93.0% 行/86.1% 函数 + docs/coverage-baseline.md;bench 基线 tests/bench.baseline.json + Δ基线列 + cc/vm 比值回退 >20% WARN 仍 exit 0 + `--write-baseline`);§61 共 27 项、**791 项全绿**;prover.js 求解器与 codegen 零改动
+- **v0.58.0(当前)** — **AI 协作体验与文本工程(开发者体验版)**:**LSP 三新查询**(补全:标识符/字段方法/模块成员/枚举变体/关键字,保守策略——类型推不出 → 空列表、语法不可修复 → null、注释与字符串内不补全,打字中间态占位修复;跳转定义:模块项/局部绑定/跨文件 use,std 与内置保守 null;文档符号:fn/struct/enum/trait/const + impl 层级;**非 ASCII 消息体按 Content-Length 字节分帧**,坏 JSON 体/空体帧存活不杀会话,块注释内不补全——审查修复回归锁定);**`std.str.join`**(`use std.str;` 纯函数,单次 O(n) 拼接,Builder 方案的最小替代如实记录;`use std.str` 下内建/模块/别名/模块级遮蔽四形态名字解析三引擎逐字 + 遮蔽守卫;**API 不对称与 #49 分配记账差异如实登记**:Vec 方法 join 计费、std join 不计费);**`ming doc --json` 稳定 schema**(六种 kind 含 trait/impl,impl 方法签名含 `with` 效果与 requires/ensures)+ **`--index`** 多文件聚合(默认文本输出逐字不变);**Release 打包**(release.yml:tags `v*` + workflow_dispatch,官方 action,零 npm 依赖校验,artifact `ming-<tag>`,维护者手动创建 Release + docs/release.md);审查修复:坏 JSON 存活/块注释补全/第三式中间态/遮蔽守卫/impl 方法签名契约;§62 共 34 项、**825 项全绿**
+- **下一步方向** — 见 `docs/plan.md §4.3`:**v0.59 服务端与并发 ADR 先行**(ADR-001 async 选型 + 原型实验;仅当 ADR 通过才最小 `std.net.serve`)→ v0.60 污点即效应/mask ADR;async/eval/国密留待更远;已知缺陷 #37–#49(#37–#39 已修;#40–#43/#45–#47 wasm 剩余回落形态、#44 本地函数恢复、#48 wasm str_cat 记账、#49 join 记账不对称)按 §4.3.8/§5.1 处置
 
 ## 设计原则(全文见 design.md)
 

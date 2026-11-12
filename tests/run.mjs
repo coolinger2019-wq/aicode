@@ -11,6 +11,7 @@ import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { computeSummaries } from '../src/prover.js';
+import { completionFor, definitionFor, documentSymbolsFor } from '../src/lsp.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
@@ -7024,6 +7025,930 @@ fn main() with io, fs {
     `bench=${benchR.status} baselineDate=${JSON.stringify(base5727?.meta?.date)} `
     + `items=${Object.keys(base5727?.items ?? {}).length} `
     + `lines=${JSON.stringify(benchLines5727.slice(-2))}`);
+}
+
+// ===================== 62. v0.58:LSP 补全/跳转/符号(A)+ std.str.join 与编译器名字解析(B)+ doc --json/--index 与 Release(C)=====================
+// A 组(v58.1–v58.16):LSP 三新查询。语义断言直连 src/lsp.js 导出的
+//   completionFor/definitionFor/documentSymbolsFor(lsp.js 供测试/工具直连的可测入口);
+//   协议断言(initialize capabilities/诊断推送/didClose/坏 JSON 存活/非 ASCII 分帧)走 §8 同款
+//   Content-Length 管道会话(runMing stdin + Buffer 字节分帧)。kind 为 LSP 标准数值
+//   (5 Field / 2 Method / 3 Function / 6 Variable / 9 Module / 14 Keyword / 20 EnumMember / 8 Field-symbol / 22…)。
+//   保守策略锁死:类型推不出 → [](宁可少补),语法不可修复 → null;注释/字符串内 → []。
+//   断言以工作树实现逐条实测校准(2026-11-13);impl 语法必须为 `impl <Trait> for <Type>`。
+// B 组(v58.17–v58.29):std.str.join(单次 O(n) 拼接,Builder 方案的最小替代,plan §4.3.5 架构调整)+
+//   `use std.str` 下内建/模块/别名/模块级遮蔽四形态名字解析(三引擎逐字;B 包修复)+
+//   遮蔽守卫(B 审查 MINOR-1:基名被局部遮蔽 → 按局部值方法调用)+
+//   分配记账不对称(#49 已登记,按现状如实断言:std join 结果不计费,Vec 方法 join 计费)。
+// C 组(v58.30–v58.34):ming doc --json 稳定 schema / --index 聚合 / 默认文本输出逐字不变 /
+//   release.yml 结构静态校验(零 YAML 依赖:关键串 + uses 前缀白名单 + 无双 v)。
+{
+  const dir = path.join(TMP, 'v58');
+  fs.mkdirSync(dir, { recursive: true });
+  const mk = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+
+  // ---- A 组公用:直连三查询 ----
+  const labelsOf = (r) => (r === null || r === undefined ? null : r.items.map((i) => i.label));
+  const kindsOf = (r) => (r === null ? null : r.items.map((i) => i.kind));
+  // ---- A 组公用:管道会话(帧按字节计,Content-Length 是字节数) ----
+  const lspFrame = (m) => { const b = JSON.stringify(m); return `Content-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`; };
+  const lspParse = (out) => {
+    const responses = [];
+    let buf = Buffer.from(out, 'utf8');
+    for (;;) {
+      const sep = buf.indexOf('\r\n\r\n');
+      if (sep === -1) break;
+      const head = buf.slice(0, sep).toString('utf8');
+      const m = head.match(/Content-Length:\s*(\d+)/i);
+      if (!m) { buf = buf.slice(sep + 4); continue; }
+      const len = Number(m[1]);
+      if (buf.length < sep + 4 + len) break;
+      try { responses.push(JSON.parse(buf.slice(sep + 4, sep + 4 + len).toString('utf8'))); } catch { /* 坏体不计数 */ }
+      buf = buf.slice(sep + 4 + len);
+    }
+    return responses;
+  };
+  const lspSession = (msgs) => {
+    const r = runMing(['lsp'], { stdin: msgs.map(lspFrame).join('') });
+    return { code: r.code, rs: lspParse(r.stdout), err: r.stderr };
+  };
+  const uriOf = (p) => 'file:///' + p.split(path.sep).join('/');
+
+  // ---- v58.1(任务 1):initialize capabilities 四能力同时真;shutdown 后 exit 0 ----
+  {
+    const s = lspSession([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } },
+      { jsonrpc: '2.0', id: 2, method: 'shutdown', params: null },
+      { jsonrpc: '2.0', method: 'exit', params: null },
+    ]);
+    const caps = s.rs.find((x) => x.id === 1)?.result?.capabilities;
+    check('v58.1:A1 lsp_initialize_capabilities —— hover/completion/definition/documentSymbol 四能力同时真;shutdown 后 exit 0',
+      s.code === 0 && !!caps
+      && caps.hoverProvider === true && !!caps.completionProvider && caps.definitionProvider === true && caps.documentSymbolProvider === true,
+      `code=${s.code} caps=${JSON.stringify(caps)}`);
+  }
+
+  // ---- v58.2(任务 2):字段补全-字面量:struct 字段(kind 5)+ impl 方法(kind 2),不含 fn ----
+  {
+    const p = mk('a2_field_literal.ming', [
+      'struct Point { x: i64, y: i64, }',
+      'trait Geo { fn len2(self) -> i64; }',
+      'impl Geo for Point { fn len2(self) -> i64 { return self.x * self.x + self.y * self.y; } }',
+      'fn main() with io {',
+      '  let p = Point { x: 1, y: 2 };',
+      '  p.',
+      '}',
+      '',
+    ].join('\n'));
+    const r = completionFor(p, fs.readFileSync(p, 'utf8'), 5, 4);
+    check('v58.2:A2 completion_field_literal —— `p.`(字面量推导)→ 字段 x,y(kind 5)+ 方法 len2(kind 2);不含 fn',
+      r !== null && JSON.stringify(labelsOf(r)) === JSON.stringify(['x', 'y', 'len2'])
+      && JSON.stringify(kindsOf(r)) === JSON.stringify([5, 5, 2])
+      && !labelsOf(r).includes('fn'),
+      `r=${JSON.stringify(r)}`);
+  }
+
+  // ---- v58.3(任务 3):注解参数与 impl self 同型成员列表 ----
+  {
+    const pA = mk('a3_annot.ming', [
+      'struct Point { x: i64, y: i64, }',
+      'trait Geo { fn len2(self) -> i64; }',
+      'impl Geo for Point { fn len2(self) -> i64 { return self.x * self.x; } }',
+      'fn f(p: Point) -> i64 {',
+      '  return p.',
+      '}',
+      'fn main() with io { print(str(f(Point { x: 1, y: 2 }))); }',
+      '',
+    ].join('\n'));
+    const pS = mk('a3_self.ming', [
+      'struct Point { x: i64, y: i64, }',
+      'trait Geo { fn len2(self) -> i64; }',
+      'impl Geo for Point { fn len2(self) -> i64 { return self.',
+      '} }',
+      '',
+    ].join('\n'));
+    const rA = completionFor(pA, fs.readFileSync(pA, 'utf8'), 4, 11);
+    const rS = completionFor(pS, fs.readFileSync(pS, 'utf8'), 2, 57);
+    check('v58.3:A3 completion_annot_vs_self —— `fn f(p: Point)` 内 `p.` 与 impl 内 `self.` 同型(字段+方法同列表)',
+      rA !== null && rS !== null
+      && JSON.stringify(labelsOf(rA)) === JSON.stringify(['x', 'y', 'len2'])
+      && JSON.stringify(labelsOf(rA)) === JSON.stringify(labelsOf(rS))
+      && JSON.stringify(kindsOf(rA)) === JSON.stringify(kindsOf(rS)),
+      `annot=${JSON.stringify(rA)} self=${JSON.stringify(rS)}`);
+  }
+
+  // ---- v58.4(任务 4):成员补全-use:math. 含 sqrt/pi;std. 模块列表;helper. 只含 pub 项 ----
+  {
+    mk('helper.ming', [
+      'pub fn shout(s: str) -> str { return s + "!"; }',
+      'fn hidden() -> i64 { return 1; }',
+      'pub const LIMIT: i64 = 3;',
+      '',
+    ].join('\n'));
+    const pM = mk('a4_math.ming', [
+      'use std.math;',
+      'fn main() with io {',
+      '  print(str(math.sqrt(4.0)));',
+      '  math.',
+      '}',
+      '',
+    ].join('\n'));
+    const rM = completionFor(pM, fs.readFileSync(pM, 'utf8'), 3, 8);
+    const pStd = mk('a4_std.ming', ['fn main() with io {', '  std.', '}', ''].join('\n'));
+    const rStd = completionFor(pStd, fs.readFileSync(pStd, 'utf8'), 1, 6);
+    const pH = mk('a4_helper.ming', ['use helper;', 'fn main() with io {', '  helper.', '}', ''].join('\n'));
+    const rH = completionFor(pH, fs.readFileSync(pH, 'utf8'), 2, 9);
+    check('v58.4:A4 completion_use_members —— math. 含 sqrt/pi(kind 3);std. 列模块(kind 9);helper. 只含 pub 项(shout/LIMIT,无 hidden)',
+      rM !== null && labelsOf(rM).includes('sqrt') && labelsOf(rM).includes('pi') && kindsOf(rM).every((k) => k === 3)
+      && rStd !== null && labelsOf(rStd).includes('math') && labelsOf(rStd).includes('str') && kindsOf(rStd).every((k) => k === 9)
+      && rH !== null && JSON.stringify(labelsOf(rH)) === JSON.stringify(['shout', 'LIMIT']) && !labelsOf(rH).includes('hidden'),
+      `math=${JSON.stringify(rM && labelsOf(rM))} std=${JSON.stringify(rStd && labelsOf(rStd))} helper=${JSON.stringify(rH && labelsOf(rH))}`);
+  }
+
+  // ---- v58.5(任务 5):空前缀(关键字+模块项)与作用域保守前缀 ----
+  {
+    const pE = mk('a5_empty.ming', ['fn main() with io {', '  ', '}', ''].join('\n'));
+    const rE = completionFor(pE, fs.readFileSync(pE, 'utf8'), 1, 2);
+    const pO = mk('a5_prefix.ming', [
+      'struct Opt { v: i64, }',
+      'fn main() with io {',
+      '  let o2 = 1;',
+      '  o',
+      '}',
+      '',
+    ].join('\n'));
+    const rO = completionFor(pO, fs.readFileSync(pO, 'utf8'), 3, 3);
+    check('v58.5:A5 completion_prefix_scope —— 空前缀含关键字(let)与内置(print)与 std;前缀 `o` 恰命中作用域内 o2(大小写敏感,不命中 Opt)',
+      rE !== null && rE.items.length >= 40 && labelsOf(rE).includes('let') && labelsOf(rE).includes('print') && labelsOf(rE).includes('std')
+      && rO !== null && JSON.stringify(labelsOf(rO)) === JSON.stringify(['o2']),
+      `empty n=${rE && rE.items.length} o=${JSON.stringify(rO && labelsOf(rO))}`);
+  }
+
+  // ---- v58.6(任务 6):枚举变体补全(kind 20) ----
+  {
+    const pC = mk('a6_color.ming', [
+      'enum Color { Red, Green, Blue }',
+      'fn main() with io {',
+      '  let c = Color.',
+      '}',
+      '',
+    ].join('\n'));
+    const rC = completionFor(pC, fs.readFileSync(pC, 'utf8'), 2, 16);
+    const pO = mk('a6_option.ming', ['fn main() with io {', '  Option.', '}', ''].join('\n'));
+    const rO = completionFor(pO, fs.readFileSync(pO, 'utf8'), 1, 9);
+    check('v58.6:A6 completion_enum_variants —— `Color.` → Red/Green/Blue(kind 20);`Option.` → Some/None(kind 20)',
+      rC !== null && JSON.stringify(labelsOf(rC)) === JSON.stringify(['Red', 'Green', 'Blue']) && kindsOf(rC).every((k) => k === 20)
+      && rO !== null && JSON.stringify(labelsOf(rO)) === JSON.stringify(['Some', 'None']) && kindsOf(rO).every((k) => k === 20),
+      `color=${JSON.stringify(rC && labelsOf(rC))} option=${JSON.stringify(rO && labelsOf(rO))}`);
+  }
+
+  // ---- v58.7(任务 7):打字中间态(占位修复)与不可修复 null ----
+  {
+    const p1 = mk('a7_mid1.ming', [
+      'struct Point { x: i64, y: i64, }',
+      'fn main() with io {',
+      '  let p = Point { x: 1, y: 2 };',
+      '  let probe = p.',
+      '}',
+      '',
+    ].join('\n'));
+    const r1 = completionFor(p1, fs.readFileSync(p1, 'utf8'), 3, 16);
+    const p2 = mk('a7_mid2.ming', [
+      'struct Point { x: i64, y: i64, }',
+      'fn main() with io {',
+      '  let probe: Po',
+      '}',
+      '',
+    ].join('\n'));
+    const r2 = completionFor(p2, fs.readFileSync(p2, 'utf8'), 2, 14);
+    const p3 = mk('a7_num.ming', ['fn main() with io {', '  3.', '}', ''].join('\n'));
+    const r3 = completionFor(p3, fs.readFileSync(p3, 'utf8'), 1, 4); // 光标在小数点后(打字位)
+    const p4 = mk('a7_broken.ming', ['fn main() with io {', '  let a = ??? weird', '}', ''].join('\n'));
+    const r4 = completionFor(p4, fs.readFileSync(p4, 'utf8'), 1, 19);
+    check('v58.7:A7 completion_typing_midstate —— `let probe = p.` → x/y;`let probe: Po` → 单项 Point;`3.` → 空列表;不可修复 → null',
+      r1 !== null && JSON.stringify(labelsOf(r1)) === JSON.stringify(['x', 'y'])
+      && r2 !== null && JSON.stringify(labelsOf(r2)) === JSON.stringify(['Point'])
+      && r3 !== null && Array.isArray(r3.items) && r3.items.length === 0
+      && r4 === null,
+      `mid1=${JSON.stringify(r1 && labelsOf(r1))} mid2=${JSON.stringify(r2 && labelsOf(r2))} num=${JSON.stringify(r3)} broken=${JSON.stringify(r4)}`);
+  }
+
+  // ---- v58.8(任务 8):definition-模块项:fn 名 span 精确(行+列) ----
+  {
+    const p = mk('a8_def_fn.ming', [
+      'fn greet(name: str) -> str { return "hi " + name; }',
+      'fn main() with io { print(greet("x")); }',
+      '',
+    ].join('\n'));
+    const d = definitionFor(p, p, fs.readFileSync(p, 'utf8'), 1, 26);
+    check('v58.8:A8 definition_module_fn —— greet 跳转到本文件声明名 span(line 0,char 3..8)',
+      d !== null && d.uri === p
+      && d.range.start.line === 0 && d.range.start.character === 3
+      && d.range.end.line === 0 && d.range.end.character === 8,
+      `d=${JSON.stringify(d)}`);
+  }
+
+  // ---- v58.9(任务 9):definition-跨文件与内置保守 null ----
+  {
+    mk('helper.ming', ['pub fn shout(s: str) -> str { return s + "!"; }', ''].join('\n'));
+    const p = mk('a9_def_cross.ming', [
+      'use helper;',
+      'use std.math;',
+      'fn main() with io {',
+      '  print(helper.shout("hi"));',
+      '  print(str(math.sqrt(4.0)));',
+      '}',
+      '',
+    ].join('\n'));
+    const dCross = definitionFor(p, p, fs.readFileSync(p, 'utf8'), 3, 15);
+    const dStd = definitionFor(p, p, fs.readFileSync(p, 'utf8'), 4, 17);
+    const pB = mk('a8_def_fn.ming', [
+      'fn greet(name: str) -> str { return "hi " + name; }',
+      'fn main() with io { print(greet("x")); }',
+      '',
+    ].join('\n'));
+    const dBuiltin = definitionFor(pB, pB, fs.readFileSync(pB, 'utf8'), 1, 21); // print:内置无源 → null
+    check('v58.9:A9 definition_cross_and_builtin —— helper.shout → 另一文件 file:/// URI(char 7..12);math.sqrt → null;内置 print → null',
+      dCross !== null && dCross.uri.startsWith('file:///') && dCross.uri.endsWith('helper.ming')
+      && dCross.range.start.line === 0 && dCross.range.start.character === 7 && dCross.range.end.character === 12
+      && dStd === null && dBuiltin === null,
+      `cross=${JSON.stringify(dCross)} std=${JSON.stringify(dStd)} builtin=${JSON.stringify(dBuiltin)}`);
+  }
+
+  // ---- v58.10(任务 10):definition-局部变量与枚举变体 ----
+  {
+    const p = mk('a10_def_local.ming', [
+      'enum Color { Red, Green }',
+      'fn f(p: i64) -> i64 { return p; }',
+      'fn main() with io {',
+      '  let p = 7;',
+      '  print(str(f(p)));',
+      '  let c = Color.Red;',
+      '}',
+      '',
+    ].join('\n'));
+    const dLocal = definitionFor(p, p, fs.readFileSync(p, 'utf8'), 4, 14);
+    const dVariant = definitionFor(p, p, fs.readFileSync(p, 'utf8'), 5, 17);
+    check('v58.10:A10 definition_local_variant —— 实参 p → `let p` span(line 3,char 6..7);Color.Red → 变体行(line 0,char 13..16)',
+      dLocal !== null && dLocal.uri === p
+      && dLocal.range.start.line === 3 && dLocal.range.start.character === 6 && dLocal.range.end.character === 7
+      && dVariant !== null && dVariant.uri.startsWith('file:///')
+      && dVariant.range.start.line === 0 && dVariant.range.start.character === 13 && dVariant.range.end.character === 16,
+      `local=${JSON.stringify(dLocal)} variant=${JSON.stringify(dVariant)}`);
+  }
+
+  // ---- v58.11(任务 11):documentSymbol 顶层 kinds + children 层级;use/test 不列 ----
+  {
+    const p = mk('a11_symbols.ming', [
+      'const TOP: i64 = 1;',
+      'struct Pair { a: i64, b: i64, }',
+      'enum Shade { Dark, Light }',
+      'trait Eq2 { fn same(self, other: Self) -> bool; }',
+      'impl Eq2 for Pair { fn same(self, other: Self) -> bool { return true; } }',
+      'fn top_fn() -> i64 { return 0; }',
+      'use std.math;',
+      'test t1 { assert_eq(1, 1); }',
+      'fn main() with io { print(str(top_fn())); }',
+      '',
+    ].join('\n'));
+    const syms = documentSymbolsFor(p, fs.readFileSync(p, 'utf8'));
+    const flat = syms === null ? null : syms.map((s) => `${s.name}:${s.kind}`);
+    const pair = syms === null ? null : syms.find((s) => s.name === 'Pair');
+    const impl = syms === null ? null : syms.find((s) => s.name === 'impl Eq2 for Pair');
+    check('v58.11:A11 document_symbols —— 顶层 const/struct/enum/trait/impl/fn kinds 与 children 层级;use 与 test 不列',
+      Array.isArray(syms)
+      && JSON.stringify(flat) === JSON.stringify(['TOP:14', 'Pair:23', 'Shade:10', 'Eq2:11', 'impl Eq2 for Pair:5', 'top_fn:12', 'main:12'])
+      && JSON.stringify(pair.children.map((c) => `${c.name}:${c.kind}`)) === JSON.stringify(['a:8', 'b:8'])
+      && JSON.stringify(impl.children.map((c) => `${c.name}:${c.kind}`)) === JSON.stringify(['same:6'])
+      && !flat.some((s) => s.startsWith('t1') || s.startsWith('math')),
+      `flat=${JSON.stringify(flat)}`);
+  }
+
+  // ---- v58.12(任务 12):错误形态:语法文件三查询 null 不崩溃、诊断仍推送;didClose 后 null ----
+  {
+    const brokenText = 'fn main() with io { let = 1; }\n';
+    const p = mk('a12_broken.ming', brokenText);
+    const uri = uriOf(p);
+    const s = lspSession([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'ming', version: 1, text: brokenText } } },
+      { jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: { textDocument: { uri }, position: { line: 0, character: 24 } } },
+      { jsonrpc: '2.0', id: 3, method: 'textDocument/definition', params: { textDocument: { uri }, position: { line: 0, character: 4 } } },
+      { jsonrpc: '2.0', id: 4, method: 'textDocument/documentSymbol', params: { textDocument: { uri } } },
+      { jsonrpc: '2.0', method: 'textDocument/didClose', params: { textDocument: { uri } } },
+      { jsonrpc: '2.0', id: 5, method: 'textDocument/hover', params: { textDocument: { uri }, position: { line: 0, character: 4 } } },
+      { jsonrpc: '2.0', id: 6, method: 'shutdown', params: null },
+      { jsonrpc: '2.0', method: 'exit', params: null },
+    ]);
+    const diag = s.rs.find((x) => x.method === 'textDocument/publishDiagnostics');
+    const byId = (i) => s.rs.find((x) => x.id === i);
+    check('v58.12:A12 lsp_error_shapes —— 语法文件 completion/definition/documentSymbol 全 null 不崩溃;诊断仍推送(M 码);didClose 后 hover null;exit 0',
+      s.code === 0
+      && byId(2)?.result === null && byId(3)?.result === null && byId(4)?.result === null
+      && Array.isArray(diag?.params?.diagnostics) && diag.params.diagnostics.length >= 1
+      && String(diag.params.diagnostics[0].code).startsWith('M')
+      && byId(5)?.result === null && byId(6)?.result === null,
+      `code=${s.code} ids=${JSON.stringify(s.rs.map((x) => x.id))} diag=${JSON.stringify(diag?.params?.diagnostics?.[0]?.code)}`);
+  }
+
+  // ---- v58.13(任务 13):非 ASCII 分帧(既有 P1 修复回归):中文注释/字符串 → 诊断与 hover 正常 ----
+  {
+    const zhSrc = '// 中文注释:类型不匹配\nfn main() with io {\n  let s = "中文😀字符串";\n  let x: i64 = true;\n  print(s);\n}\n';
+    const p = mk('a13_zh.ming', zhSrc);
+    const uri = uriOf(p);
+    const s = lspSession([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri, languageId: 'ming', version: 1, text: zhSrc } } },
+      { jsonrpc: '2.0', id: 2, method: 'textDocument/hover', params: { textDocument: { uri }, position: { line: 1, character: 3 } } },
+      { jsonrpc: '2.0', id: 3, method: 'shutdown', params: null },
+      { jsonrpc: '2.0', method: 'exit', params: null },
+    ]);
+    const diag = s.rs.find((x) => x.method === 'textDocument/publishDiagnostics');
+    const hoverVal = s.rs.find((x) => x.id === 2)?.result?.contents?.value ?? '';
+    check('v58.13:A13 lsp_nonascii_framing —— didOpen 含中文注释/中文字符串/emoji → 会话不瘫痪:诊断推送(M3002)+ hover 正常;exit 0',
+      s.code === 0
+      && Array.isArray(diag?.params?.diagnostics) && diag.params.diagnostics.some((d) => d.code === 'M3002')
+      && hoverVal.includes('fn main() with io'),
+      `code=${s.code} nDiag=${diag?.params?.diagnostics?.length} hover=${JSON.stringify(hoverVal.slice(0, 40))}`);
+  }
+
+  // ---- v58.14(A 审查回归 1):坏 JSON 体存活:坏体 + 空体帧后 initialize/shutdown 仍有响应 ----
+  {
+    const bad = 'Content-Length: 5\r\n\r\n{@}@@' + 'Content-Length: 0\r\n\r\n'
+      + lspFrame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      + lspFrame({ jsonrpc: '2.0', id: 2, method: 'shutdown', params: null })
+      + lspFrame({ jsonrpc: '2.0', method: 'exit', params: null });
+    const r = runMing(['lsp'], { stdin: bad });
+    const rs = lspParse(r.stdout);
+    check('v58.14:A14 lsp_bad_json_survival —— 坏体/空体不杀会话:exit 0、stderr 无 ReferenceError、initialize/shutdown 均有响应',
+      r.code === 0 && !/ReferenceError/.test(r.stderr)
+      && JSON.stringify(rs.map((x) => x.id)) === JSON.stringify([1, 2]),
+      `code=${r.code} ids=${JSON.stringify(rs.map((x) => x.id))} err=${JSON.stringify(r.stderr.slice(0, 120))}`);
+  }
+
+  // ---- v58.15(A 审查回归 2):块注释内不补全(嵌套深度按 lexer 语义) ----
+  {
+    const src = [
+      'use std.math;',
+      'fn main() with io {',
+      '  /* math. */',
+      '  let x = 1.0;',
+      '  /* math.',
+      '  跨行 */ let y = std.math.sqrt(x);',
+      '  /* /* 嵌套未闭 */ let z = 2.0;',
+      '  */ let w = 3.0; math.',
+      '}',
+      '',
+    ].join('\n');
+    const p = mk('a15_block_comment.ming', src);
+    const q = (li, col) => completionFor(p, src, li, col);
+    const inComment1 = q(2, 10);   // 单行块注释内
+    const inComment2 = q(4, 10);   // 跨行块注释内
+    const inComment3 = q(6, 24);   // 嵌套未闭(深度 1)内
+    const afterClose = q(7, 18);   // 注释闭合后同行 → 正常补全
+    check('v58.15:A15 completion_block_comment —— 单行/跨行/嵌套未闭块注释内 → [];闭合后同行正常(含 w,不含注释内 z)',
+      inComment1 !== null && inComment1.items.length === 0
+      && inComment2 !== null && inComment2.items.length === 0
+      && inComment3 !== null && inComment3.items.length === 0
+      && afterClose !== null && afterClose.items.length > 0
+      && labelsOf(afterClose).includes('w') && !labelsOf(afterClose).includes('z'),
+      `c1=${JSON.stringify(inComment1)} c2=${JSON.stringify(inComment2)} c3=${JSON.stringify(inComment3)} after=${JSON.stringify(afterClose && labelsOf(afterClose))}`);
+  }
+
+  // ---- v58.16(A 审查回归 3):第三式(吞掉光标后同行残余 + 括号补齐) ----
+  {
+    const mkCase = (bodyLine) => {
+      const src = [
+        'enum Color { Red, Green }',
+        'struct Pt { x: i64, y: i64, }',
+        'fn main() with io {',
+        '  let pt = Pt { x: 1, y: 2 };',
+        bodyLine,
+        '}',
+        '',
+      ].join('\n');
+      const p = mk('a16_third.ming', src);
+      return { p, src, line: 4 };
+    };
+    const c1 = mkCase('  let c = Color.;');
+    const r1 = completionFor(c1.p, c1.src, 4, 16);
+    const c2 = mkCase('  print(pt.);');
+    const r2 = completionFor(c2.p, c2.src, 4, 11);
+    const c3 = mkCase('  print(std.');
+    const r3 = completionFor(c3.p, c3.src, 4, 12);
+    const c4 = mkCase('  print(pt.');
+    const r4 = completionFor(c4.p, c4.src, 4, 11);
+    const c5 = mkCase('  let pp = Pt { x: pt.');
+    const r5 = completionFor(c5.p, c5.src, 4, 22);
+    const srcNest = [
+      'struct Pt { x: i64, y: i64, }',
+      'fn id(v: i64) -> i64 { return v; }',
+      'fn main() with io {',
+      '  let pt = Pt { x: 1, y: 2 };',
+      '  print(id(pt.',
+      '}',
+      '',
+    ].join('\n');
+    const pNest = mk('a16_nested.ming', srcNest);
+    const r6 = completionFor(pNest, srcNest, 4, 14);
+    check('v58.16:A16 completion_third_form —— `let c = Color.;` → Red/Green;`print(pt.);` → x/y;`print(std.` → std 列表;`print(id(pt.` → x/y;struct 字段值位 → null',
+      r1 !== null && JSON.stringify(labelsOf(r1)) === JSON.stringify(['Red', 'Green'])
+      && r2 !== null && JSON.stringify(labelsOf(r2)) === JSON.stringify(['x', 'y'])
+      && r3 !== null && labelsOf(r3).includes('math') && labelsOf(r3).includes('str')
+      && r4 !== null && JSON.stringify(labelsOf(r4)) === JSON.stringify(['x', 'y'])
+      && r6 !== null && JSON.stringify(labelsOf(r6)) === JSON.stringify(['x', 'y'])
+      && r5 === null,
+      `c1=${JSON.stringify(r1 && labelsOf(r1))} c2=${JSON.stringify(r2 && labelsOf(r2))} c3=${JSON.stringify(r3 && labelsOf(r3))} c4=${JSON.stringify(r4 && labelsOf(r4))} c6=${JSON.stringify(r6 && labelsOf(r6))} c5=${JSON.stringify(r5)}`);
+  }
+
+  // ---- v58.17(任务 17):join 空 Vec / 单元素 / 多元素依序 ----
+  {
+    const p = mk('b17_join_basic.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let a: Vec[str] = [];',
+      '  print(str.join(a));',
+      '  let b = ["x"];',
+      '  print(str.join(b));',
+      '  let c = ["a", "b", "c"];',
+      '  print(str.join(c));',
+      '}',
+      '',
+    ].join('\n'));
+    const r = runMing(['run', p]);
+    check('v58.17:B17 join_basic —— 空 Vec → ""(空行);单元素 = 该元素;多元素依序连接',
+      r.code === 0 && r.stdout === '\nx\nabc\n',
+      `code=${r.code} out=${JSON.stringify(r.stdout)} err=${r.stderr.slice(0, 120)}`);
+  }
+
+  // ---- v58.18(任务 18):join 含空串(含全空)/中文与 emoji(byte_len 口径) ----
+  {
+    const p = mk('b18_join_empty_zh.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let a = ["", "b", ""];',
+      '  print("[" + str.join(a) + "]");',
+      '  let e: Vec[str] = [""];',
+      '  print("[" + str.join(e) + "]");',
+      '  let zh = ["中", "文", "😀"];',
+      '  let j = str.join(zh);',
+      '  print(j);',
+      '  print(str(j.byte_len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const r = runMing(['run', p]);
+    check('v58.18:B18 join_empty_zh —— 含空串/全空串数组;中文+emoji 按 byte_len 口径 = 10(3+3+4)',
+      r.code === 0 && r.stdout === '[b]\n[]\n中文😀\n10\n',
+      `code=${r.code} out=${JSON.stringify(r.stdout)} err=${r.stderr.slice(0, 120)}`);
+  }
+
+  // ---- v58.19(任务 19):join == `+` 循环逐字相等;1000 元素;值语义 ----
+  {
+    const pEq = mk('b19a_join_eq_plus.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let v = ["a", "b", "c"];',
+      '  let mut acc = "";',
+      '  for s in v { acc = acc + s; }',
+      '  print(str(str.join(v) == acc));',
+      '}',
+      '',
+    ].join('\n'));
+    const rEq = runMing(['run', pEq]);
+    const rEqT = runMing(['run', pEq, '--tree']);
+    const p1k = mk('b19b_join_1k.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let mut v: Vec[str] = [];',
+      '  for i in 0..1000 { v.push(str(i)); }',
+      '  let j = str.join(v);',
+      '  print(str(j.byte_len()));',
+      '  print(j);',
+      '}',
+      '',
+    ].join('\n'));
+    const r1k = runMing(['run', p1k]);
+    const r1kT = runMing(['run', p1k, '--tree']);
+    const pVal = mk('b19c_join_value_sem.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let v = ["a", "b"];',
+      '  let _j = str.join(v);',
+      '  print(str(v.len()));',
+      '  print(v[0]);',
+      '}',
+      '',
+    ].join('\n'));
+    const rVal = runMing(['run', pVal]);
+    check('v58.19:B19 join_eq_plus_1k_value —— join 与 `+` 循环逐字相等(双引擎);1000 元素 byte_len 2890 且双引擎输出逐字一致;join 后入参 Vec 不变(值语义)',
+      rEq.code === 0 && rEqT.code === 0 && rEq.stdout === 'true\n' && rEqT.stdout === 'true\n'
+      && r1k.code === 0 && r1kT.code === 0 && r1k.stdout === r1kT.stdout && r1k.stdout.startsWith('2890\n')
+      && rVal.code === 0 && rVal.stdout === '2\na\n',
+      `eq=${rEq.code}/${rEqT.code} 1k=${r1k.code}/${r1kT.code} val=${JSON.stringify(rVal.stdout)} err=${r1k.stderr.slice(0, 120)}`);
+  }
+
+  // ---- v58.20(任务 20a):负例-类型(M3002 ×2) ----
+  {
+    const pV = mk('b20a_join_vec_i64.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let v: Vec[i64] = [1, 2];',
+      '  print(str.join(v));',
+      '}',
+      '',
+    ].join('\n'));
+    const rV = runMing(['check', pV]);
+    const pS = mk('b20b_join_str_arg.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  print(str.join("ab"));',
+      '}',
+      '',
+    ].join('\n'));
+    const rS = runMing(['check', pS]);
+    check('v58.20:B20 join_negative_types —— Vec[i64] 实参与 str 实参均 M3002(期望 Vec[str]),check exit 1',
+      rV.code === 1 && rV.stderr.includes('M3002') && rV.stderr.includes('期望 Vec[str]')
+      && rS.code === 1 && rS.stderr.includes('M3002') && rS.stderr.includes('期望 Vec[str]'),
+      `vec=${rV.code} str=${rS.code} err=${rV.stderr.slice(0, 100)}`);
+  }
+
+  // ---- v58.21(任务 20b):负例-参数个数(M3005)与不存在名(M3001) ----
+  {
+    const p0 = mk('b20c_join_0arg.ming', ['use std.str;', 'fn main() with io {', '  print(str.join());', '}', ''].join('\n'));
+    const r0 = runMing(['check', p0]);
+    const p2 = mk('b20d_join_2arg.ming', ['use std.str;', 'fn main() with io {', '  let v = ["a"];', '  print(str.join(v, v));', '}', ''].join('\n'));
+    const r2 = runMing(['check', p2]);
+    const pX = mk('b20e_join_unknown.ming', ['use std.str;', 'fn main() with io {', '  print(str.joinx());', '}', ''].join('\n'));
+    const rX = runMing(['check', pX]);
+    check('v58.21:B21 join_negative_arity_name —— 0 参/2 参 → M3005(需要 1 个参数);不存在名 joinx → M3001(std.str 中没有)',
+      r0.code === 1 && r0.stderr.includes('M3005') && r0.stderr.includes('需要 1 个参数')
+      && r2.code === 1 && r2.stderr.includes('M3005')
+      && rX.code === 1 && rX.stderr.includes('M3001') && rX.stderr.includes('joinx'),
+      `n0=${r0.code} n2=${r2.code} nx=${rX.code} err=${rX.stderr.slice(0, 100)}`);
+  }
+
+  // ---- v58.22(任务 21):纯函数:无效果声明调用通过(双引擎) ----
+  {
+    const p = mk('b21_join_pure.ming', [
+      'use std.str;',
+      'fn j(v: Vec[str]) -> str {',
+      '  return str.join(v);',
+      '}',
+      'fn main() with io {',
+      '  print(j(["p", "q"]));',
+      '}',
+      '',
+    ].join('\n'));
+    const c = runMing(['check', p]);
+    const r = runMing(['run', p]);
+    const rT = runMing(['run', p, '--tree']);
+    check('v58.22:B22 join_pure_fn —— join 是纯函数:无效果声明的函数体调用 check exit 0,双引擎输出 pq',
+      c.code === 0 && r.code === 0 && rT.code === 0 && r.stdout === 'pq\n' && rT.stdout === 'pq\n',
+      `check=${c.code} run=${r.code} tree=${rT.code} out=${JSON.stringify(r.stdout)}`);
+  }
+
+  // ---- v58.23(任务 22):`use std.str as s;` 别名形式 ----
+  {
+    const p = mk('b22_join_alias.ming', [
+      'use std.str as s;',
+      'fn main() with io {',
+      '  print(s.join(["m", "n"]));',
+      '}',
+      '',
+    ].join('\n'));
+    const r = runMing(['run', p]);
+    const rT = runMing(['run', p, '--tree']);
+    check('v58.23:B23 join_alias —— `use std.str as s;` + `s.join(v)` 双引擎输出 mn',
+      r.code === 0 && rT.code === 0 && r.stdout === 'mn\n' && rT.stdout === 'mn\n',
+      `run=${r.code} tree=${rT.code} out=${JSON.stringify(r.stdout)} err=${r.stderr.slice(0, 120)}`);
+  }
+
+  // ---- v58.24(任务 23):wasm 资格:join 所在数值型函数 REJECT(非直接调用)→ strict 回落可见 exit 2 ----
+  {
+    const p = mk('b23_join_strict_wasm.ming', [
+      'use std.str;',
+      'fn probe(a: i64) -> i64 {',
+      '  let v = ["x"];',
+      '  let s = str.join(v);',
+      '  if s == "x" { return a + 1; }',
+      '  return a;',
+      '}',
+      'fn main() with io { print(str(probe(1))); }',
+      '',
+    ].join('\n'));
+    const r = runMing(['run', p, '--strict-wasm']);
+    const rPlain = runMing(['run', p]);
+    check('v58.24:B24 join_strict_wasm_reject —— probe 含 str.join 非直接调用 → wasm REJECT;--strict-wasm 回落可见 exit 2(stderr 点名);非 strict 正常运行',
+      r.code === 2 && r.stderr.includes('strict-wasm:') && r.stderr.includes('非直接调用')
+      && rPlain.code === 0,
+      `strict=${r.code} err=${JSON.stringify(r.stderr.slice(0, 140))} plain=${rPlain.code}`);
+  }
+
+  // ---- v58.25(任务 24):ming cc C1 拒绝(资格面外的形态,发射期显式拒绝) ----
+  {
+    const p = mk('b24_join_cc.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  print(str.join(["a", "b"]));',
+      '}',
+      '',
+    ].join('\n'));
+    const r = runMing(['cc', p, '--emit-c']);
+    check('v58.25:B25 join_cc_c1_reject —— cc --emit-c 显式拒绝(exit 1,stderr C1 不支持,不进资格面)',
+      r.code === 1 && r.stderr.includes('C1 不支持'),
+      `code=${r.code} err=${JSON.stringify(r.stderr.slice(0, 120))}`);
+  }
+
+  // ---- v58.26(任务 25):编译器四形态 × 三引擎逐字(内建/模块/别名/模块级遮蔽) ----
+  {
+    const pA = mk('b25a_builtin_vs_module.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  print(str(42));',
+      '  let v = ["a", "b"];',
+      '  print(str.join(v));',
+      '}',
+      '',
+    ].join('\n'));
+    const pB = mk('b25b_alias.ming', [
+      'use std.str as s;',
+      'fn main() with io {',
+      '  let v = ["a", "b"];',
+      '  print(s.join(v));',
+      '}',
+      '',
+    ].join('\n'));
+    const pC = mk('b25c_module_fn_shadow.ming', [
+      'fn str(x: i64) -> i64 { return x * 100; }',
+      'fn main() with io {',
+      '  print(str(42));',
+      '}',
+      '',
+    ].join('\n'));
+    const three = (p) => {
+      const vm = runMing(['run', p]);
+      const tree = runMing(['run', p, '--tree']);
+      const nowasm = runMing(['run', p, '--no-wasm']);
+      return { vm, tree, nowasm };
+    };
+    const a = three(pA);
+    const b = three(pB);
+    const c = three(pC);
+    check('v58.26:B26 compiler_four_forms —— `use std.str` 下 str(42) 仍内建(42)+ str.join(v) 走模块(ab);别名 s.join(v)=ab;模块级 fn str 遮蔽调用模块 fn 赢(4200);三引擎逐字一致',
+      a.vm.code === 0 && a.vm.stdout === '42\nab\n' && a.tree.stdout === a.vm.stdout && a.nowasm.stdout === a.vm.stdout
+      && b.vm.code === 0 && b.vm.stdout === 'ab\n' && b.tree.stdout === b.vm.stdout && b.nowasm.stdout === b.vm.stdout
+      && c.vm.code === 0 && c.vm.stdout === '4200\n' && c.tree.stdout === c.vm.stdout && c.nowasm.stdout === c.vm.stdout,
+      `a=${a.vm.code}/${JSON.stringify(a.vm.stdout)} b=${b.vm.code}/${JSON.stringify(b.vm.stdout)} c=${c.vm.code}/${JSON.stringify(c.vm.stdout)} `
+      + `errA=${a.vm.stderr.slice(0, 80)} errC=${c.vm.stderr.slice(0, 80)}`);
+  }
+
+  // ---- v58.27(任务 26):遮蔽守卫(B 审查 MINOR-1):局部 str: Vec[str] 遮蔽导入 → Vec 方法 ----
+  {
+    const p = mk('b26_shadow_vec.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let str: Vec[str] = ["a", "b"];',
+      '  print(str.join(","));',
+      '}',
+      '',
+    ].join('\n'));
+    const c = runMing(['check', p]);
+    const r = runMing(['run', p]);
+    const rT = runMing(['run', p, '--tree']);
+    const pBad = mk('b26b_shadow_m3002.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '  let str: Vec[str] = ["a", "b"];',
+      '  let other = ["x", "y"];',
+      '  print(str.join(other));',
+      '}',
+      '',
+    ].join('\n'));
+    const cBad = runMing(['check', pBad]);
+    check('v58.27:B27 shadow_guard —— 局部 str 遮蔽导入:check ok,tree/VM "a,b"(Vec 方法);str.join(其他 Vec) → checker M3002(分隔符须 str)',
+      c.code === 0 && r.code === 0 && rT.code === 0 && r.stdout === 'a,b\n' && rT.stdout === 'a,b\n'
+      && cBad.code === 1 && cBad.stderr.includes('M3002') && cBad.stderr.includes('join 的分隔符必须是 str'),
+      `check=${c.code} run=${r.code} tree=${rT.code} bad=${cBad.code} err=${cBad.stderr.slice(0, 100)}`);
+  }
+
+  // ---- v58.28(任务 27):math 共存:use std.str + use std.math 同文件 ----
+  {
+    const p = mk('b27_str_math_coexist.ming', [
+      'use std.str;',
+      'use std.math;',
+      'fn main() with io {',
+      '  print(str.join(["a", "b"]));',
+      '  print(str(math.sqrt(4.0)));',
+      '}',
+      '',
+    ].join('\n'));
+    const r = runMing(['run', p]);
+    const rT = runMing(['run', p, '--tree']);
+    check('v58.28:B28 str_math_coexist —— 同文件两导入:join 与 sqrt 均正常(双引擎 ab / 2.0)',
+      r.code === 0 && rT.code === 0 && r.stdout === 'ab\n2.0\n' && rT.stdout === 'ab\n2.0\n',
+      `run=${r.code} tree=${rT.code} out=${JSON.stringify(r.stdout)} err=${r.stderr.slice(0, 120)}`);
+  }
+
+  // ---- v58.29(任务 28):分配记账不对称(#49 已登记,按现状如实断言) ----
+  // std.str.join 结果不计入分配记账(100KB 结果在 60KB 配额下 exit 0);
+  // Vec 方法 join 按结果长度计费 → 同尺寸结果触发 M4011。行为差异 = #49 文档化口径,非回归。
+  {
+    const bigItems = Array.from({ length: 10000 }, () => '"abcdefghij"').join(', ');
+    const pStd = mk('b28a_join_std_alloc.ming',
+      'use std.str;\nfn main() with io {\n  let v: Vec[str] = [' + bigItems + '];\n  print(str(str.join(v).byte_len()));\n}\n');
+    const rStd = runMing(['run', pStd, '--max-alloc', '60000']);
+    const pVec = mk('b28b_join_vec_alloc.ming',
+      'fn main() with io {\n  let v: Vec[str] = [' + bigItems + '];\n  print(str(v.join(",").byte_len()));\n}\n');
+    const rVec = runMing(['run', pVec, '--max-alloc', '60000']);
+    check('v58.29:B29 join_alloc_accounting —— --max-alloc 60000 下 100KB 结果:std.str.join 不计费 exit 0(输出 100000);Vec.join 计费 M4011 exit 101(#49 如实登记)',
+      rStd.code === 0 && rStd.stdout === '100000\n'
+      && rVec.code === 101 && rVec.stderr.includes('M4011'),
+      `std=${rStd.code}/${JSON.stringify(rStd.stdout)} vec=${rVec.code} err=${rVec.stderr.split('\n')[0]}`);
+  }
+
+  // ---- v58.30(任务 29):doc --json schema:六种 kind + 字段 + impl name + 泛型 impl 签名 ----
+  {
+    const p = mk('c30_doc_all_kinds.ming', [
+      '/// 顶层常量文档',
+      '/// 第二行文档',
+      'const LIMIT: i64 = 3;',
+      '',
+      '/// 一对值',
+      'struct Pair[A, B] { l: A, r: B, }',
+      '',
+      '/// 颜色',
+      'enum Color { Red, Green }',
+      '',
+      '/// 相等',
+      'trait Eq2 {',
+      '  /// 判等',
+      '  fn eq(self, other: Self) -> bool;',
+      '}',
+      '',
+      'impl[A: Eq2, B: Eq2] Eq2 for Pair[A, B] {',
+      '  /// 实现 eq',
+      '  fn eq(self, other: Self) -> bool { return true; }',
+      '}',
+      '',
+      'fn plain() -> i64 { return 1; }',
+      '',
+      'fn main() with io { print(str(plain())); }',
+      '',
+    ].join('\n'));
+    const r = runMing(['doc', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 断言处报错 */ }
+    const kinds = new Set((j?.items ?? []).map((i) => i.kind));
+    const impl = (j?.items ?? []).find((i) => i.kind === 'impl');
+    const fieldsOk = (j?.items ?? []).every((i) => typeof i.kind === 'string' && typeof i.name === 'string'
+      && typeof i.line === 'number' && Array.isArray(i.doc) && typeof i.signature === 'string');
+    check('v58.30:C30 doc_json_schema —— ok/file/items;六种 kind 各 ≥1;item 字段 kind/name/line/doc/signature;impl name=impl Eq2 for Pair;泛型 impl 签名重建',
+      r.code === 0 && j?.ok === true && j.file === p && Array.isArray(j.items) && j.items.length >= 6
+      && ['fn', 'struct', 'enum', 'trait', 'const', 'impl'].every((k) => kinds.has(k))
+      && fieldsOk
+      && impl?.name === 'impl Eq2 for Pair'
+      && impl?.signature === 'impl[A, B] Eq2 for Pair[A, B] { fn eq(self, other: Self) -> bool }',
+      `code=${r.code} kinds=${JSON.stringify([...kinds])} impl=${JSON.stringify(impl)}`);
+  }
+
+  // ---- v58.31(任务 30):无 /// → doc [];多行 /// 保序;methodSig 含 effects 与 requires/ensures ----
+  {
+    const pC = mk('c31_method_contract.ming', [
+      '/// 存储',
+      'trait Store {',
+      '  fn save(self, path: str) -> i64;',
+      '}',
+      '',
+      '/// 文件存储',
+      'impl Store for Saver {',
+      '  /// 保存并计数',
+      '  fn save(self, path: str) -> i64 with fs requires path.len() > 0 else "path 非空" ensures result >= 0 else "非负" {',
+      '    return 0;',
+      '  }',
+      '}',
+      '',
+      'struct Saver { n: i64, }',
+      '',
+      'fn main() with io { print("ok"); }',
+      '',
+    ].join('\n'));
+    const r = runMing(['doc', pC, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 断言处报错 */ }
+    const impl = (j?.items ?? []).find((i) => i.kind === 'impl');
+    const main = (j?.items ?? []).find((i) => i.name === 'main');
+    const pD = mk('c31_multidoc.ming', [
+      '/// 第一行',
+      '/// 第二行',
+      'const K: i64 = 1;',
+      '',
+      'fn main() with io { print(str(K)); }',
+      '',
+    ].join('\n'));
+    const rD = runMing(['doc', pD, '--json']);
+    let jD = null;
+    try { jD = JSON.parse(rD.stdout); } catch { /* 断言处报错 */ }
+    const kItem = (jD?.items ?? []).find((i) => i.name === 'K');
+    check('v58.31:C31 doc_json_doc_methodsig —— main 无 /// → doc [];多行 /// 保序;impl 方法签名含 with fs + requires/ensures 与 else 消息(逐字)',
+      r.code === 0 && Array.isArray(main?.doc) && main.doc.length === 0
+      && rD.code === 0 && JSON.stringify(kItem?.doc) === JSON.stringify([' 第一行', ' 第二行'])
+      && impl?.signature === 'impl Store for Saver { fn save(self, path: str) -> i64 with fs requires path.len() > 0 else "path 非空" ensures result >= 0 else "非负" }',
+      `main=${JSON.stringify(main?.doc)} k=${JSON.stringify(kItem?.doc)} impl=${JSON.stringify(impl?.signature)}`);
+  }
+
+  // ---- v58.32(任务 31):默认文本输出逐字不变;trait/impl 不列;多文件无 --index 保持单文件 ----
+  {
+    const pG = mk('g1.ming', [
+      '/// 常量文档',
+      '/// 第二行',
+      'const LIMIT: i64 = 3;',
+      '',
+      '/// 打印',
+      'fn main() with io { print("x"); }',
+      '',
+    ].join('\n'));
+    const g = runMing(['doc', pG]);
+    const expected = '## const LIMIT: i64 = ...\n常量文档\n第二行\n    (g1.ming:3)\n\n## fn main() with io\n打印\n    (g1.ming:6)\n\n';
+    const pTI = mk('c32_trait_impl.ming', [
+      '/// 存储',
+      'trait Store {',
+      '  fn save(self, path: str) -> i64;',
+      '}',
+      '',
+      'impl Store for Saver {',
+      '  fn save(self, path: str) -> i64 { return 0; }',
+      '}',
+      '',
+      'struct Saver { n: i64, }',
+      '',
+      'fn main() with io { print("ok"); }',
+      '',
+    ].join('\n'));
+    const ti = runMing(['doc', pTI]);
+    const p2nd = mk('c32_second.ming', [
+      'fn only_second() -> i64 { return 1; }',
+      '',
+      'fn main() with io { print(str(only_second())); }',
+      '',
+    ].join('\n'));
+    const multi = runMing(['doc', pG, p2nd]);
+    check('v58.32:C32 doc_text_unchanged —— 默认文本逐字不变(黄金);trait/impl 文件 text 不含 trait/impl 行;多文件无 --index 只处理第一个',
+      g.code === 0 && g.stdout === expected
+      && ti.code === 0 && ti.stdout.includes('## struct Saver') && !ti.stdout.includes('Store') && !ti.stdout.includes('impl ')
+      && multi.code === 0 && multi.stdout.includes('LIMIT') && !multi.stdout.includes('only_second'),
+      `g=${g.code} ti=${JSON.stringify(ti.stdout.slice(0, 60))} multi=${multi.code}`);
+  }
+
+  // ---- v58.33(任务 32):--index 多文件聚合 / 单文件同 schema / 错误路径 json 化 ----
+  {
+    const pA = mk('c33_idx_a.ming', [
+      '/// 文档 A',
+      'const LIMIT_A: i64 = 1;',
+      '',
+      'fn main() with io { print(str(LIMIT_A)); }',
+      '',
+    ].join('\n'));
+    const pB = mk('c33_idx_b.ming', [
+      '/// 文档 B',
+      'const LIMIT_B: i64 = 2;',
+      '',
+      'fn main() with io { print(str(LIMIT_B)); }',
+      '',
+    ].join('\n'));
+    const rMulti = runMing(['doc', pA, pB, '--index']);
+    let jM = null;
+    try { jM = JSON.parse(rMulti.stdout); } catch { /* 断言处报错 */ }
+    const rSingle = runMing(['doc', pA, '--index']);
+    let jS = null;
+    try { jS = JSON.parse(rSingle.stdout); } catch { /* 断言处报错 */ }
+    const rErr = runMing(['doc', path.join(dir, 'nope.ming'), '--index']);
+    let jE = null;
+    try { jE = JSON.parse(rErr.stdout); } catch { /* 断言处报错 */ }
+    check('v58.33:C33 doc_index —— 多文件聚合 {ok, files:2, items 每项含 file 且两文件项都在};单文件 --index 同 schema(files:1);缺失文件 {ok:false,error} exit 1',
+      rMulti.code === 0 && jM?.ok === true && jM.files === 2 && Array.isArray(jM.items) && jM.items.length >= 4
+      && jM.items.every((i) => typeof i.file === 'string')
+      && jM.items.some((i) => i.name === 'LIMIT_A' && i.file === pA) && jM.items.some((i) => i.name === 'LIMIT_B' && i.file === pB)
+      && rSingle.code === 0 && jS?.ok === true && jS.files === 1 && jS.items.every((i) => i.file === pA)
+      && rErr.code === 1 && jE?.ok === false && typeof jE.error === 'string' && jE.error.includes('无法读取'),
+      `multi=${rMulti.code}/${jM?.files}/${jM?.items?.length} single=${jS?.files} err=${rErr.code}/${JSON.stringify(jE)}`);
+  }
+
+  // ---- v58.34(任务 33):release.yml 静态校验(零 YAML 依赖) ----
+  {
+    const ymlPath = path.join(ROOT, '.github', 'workflows', 'release.yml');
+    const yml = fs.existsSync(ymlPath) ? fs.readFileSync(ymlPath, 'utf8') : null;
+    const usesLines = yml === null ? [] : yml.split('\n').filter((l) => /^\s*uses:/.test(l)).map((l) => l.trim());
+    const artifactName = 'name: ming-${{ github.ref_name }}';
+    const zipName = 'ming-${{ github.ref_name }}.zip';
+    check('v58.34:C34 release_workflow_static —— 可解析结构(name/jobs/steps);触发含 tags v* 与 workflow_dispatch;uses 全部 actions/ 前缀;artifact 名 ming-<tag> 无双 v',
+      yml !== null && yml.startsWith('name: Release') && yml.includes('jobs:') && yml.includes('steps:')
+      && yml.includes("tags: ['v*']") && yml.includes('workflow_dispatch:')
+      && usesLines.length >= 3 && usesLines.every((l) => /^uses:\s*actions\//.test(l))
+      && yml.includes(artifactName)
+      && yml.includes(zipName)
+      && !yml.includes('ming-v${{'),
+      `exists=${yml !== null} uses=${JSON.stringify(usesLines)}`);
+  }
 }
 
 

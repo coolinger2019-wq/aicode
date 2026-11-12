@@ -1,8 +1,8 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.57.0**（v0.52–v0.56 路线已全部交付；**v0.57 循环/守卫敏感边界证明 + tools AOT 缓存 + 覆盖率/bench 观测已交付(2026-11-13)**：范围 for 内 `buf[i]` 义务两向证明(QF_LIA 第四片,义务 additive `scope: body|loop`,M3045/W3105 不变,proven 不消除 M4003)、ming tools 工具字节码 AOT 缓存(12 工具全缓存;热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明)、tests/coverage.mjs 覆盖率基线(93.0% 行 / 86.1% 函数)+ bench 基线；测试 791 项全绿）。
-> **下一步规划见 §4.3（v0.58–v0.60,software-architect 精读,2026-11-12;v0.57 已收口）**。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.58.0**（v0.52–v0.57 路线已全部交付；**v0.58 AI 协作体验与文本工程已交付(2026-11-13)**：LSP 补全/跳转定义/文档符号(保守策略 + 字节分帧 + 坏 JSON 存活;A 审查三修)、`std.str.join` 单次 O(n) 拼接(**Builder→join 架构调整如实记录**;四形态名字解析三引擎逐字 + 遮蔽守卫;#49 记账差异与 API 不对称如实登记)、`ming doc --json` 稳定 schema + `--index` 聚合(默认文本逐字不变)、Release 打包 workflow(官方 action,artifact 而非自动 Release)+ docs/release.md；测试 825 项全绿）。
+> **下一步规划见 §4.3（v0.59–v0.60,software-architect 精读,2026-11-12;v0.58 已收口）**。
 
 ---
 
@@ -15,9 +15,9 @@
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
-| 质量护栏 | 回归全绿（v0.57.0 起 **791 项**，§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比**）+ **v0.57 覆盖率基线**（tests/coverage.mjs；信息性不设门槛） |
+| 质量护栏 | 回归全绿（v0.58.0 起 **825 项**，§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比**）+ **v0.57 覆盖率基线**（tests/coverage.mjs；信息性不设门槛） |
 | 能力矩阵 | 52 行口径 ≈81%（docs/capabilities.md；v0.56 新增 WASM 分层覆盖面行并重算：39✅ 6🟡 7❌，(39+6×0.5)/52=80.8%；v0.57 契约/证明行补循环形态） |
-| 下一步 | **§4.3.5 v0.58：AI 协作体验与文本工程**（LSP 补全/跳转/符号、`std.str.Builder`、doc JSON 与 Release 打包） |
+| 下一步 | **§4.3.6 v0.59：服务端与并发 ADR 先行**（ADR-001 async 选型 + 原型实验;仅当 ADR 通过才最小 `std.net.serve`） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -93,7 +93,7 @@
 
 ## 4.2 v0.52+ 路线(software-architect 规划,2026-11-11)
 
-> **状态(2026-11-12):v0.52–v0.56 路线已全部交付**(v0.52 QF_LIA 第二片 / v0.53 可信构建与跨平台验证基线 / v0.54 `with unsafe` C5 / v0.55 跨函数契约摘要 / v0.56 引擎一致性与缺陷清零)。本节已无待办计划任务;下一步方向见 §4.3.8 Backlog(v0.57+)与 §5.1 已知缺陷 #37–#47。
+> **状态(2026-11-12):v0.52–v0.56 路线已全部交付**(v0.52 QF_LIA 第二片 / v0.53 可信构建与跨平台验证基线 / v0.54 `with unsafe` C5 / v0.55 跨函数契约摘要 / v0.56 引擎一致性与缺陷清零)。本节已无待办计划任务;下一步方向见 §4.3.8 Backlog(v0.57+)与 §5.1 已知缺陷 #37–#49。
 
 > 基线:v0.51.5,534 项测试全绿,四后端差分 0 分歧;§5.1 的 16 项审查缺陷已清零。
 > 总原则:**先装安全带,再讲解开安全带的规则**——验证基础设施先于危险能力;一版一个语义面;
@@ -209,6 +209,7 @@
 | v0.55 | 无 | — | 复用 M3041/M3042 |
 | v0.56 | 无 | — | 无新码(引擎一致性/契约保真/wasm 语义修复均复用既有码) |
 | v0.57 | 无 | — | 无新码(循环义务复用 M3045/W3105,码与消息不变;义务记录 additive `scope: body\|loop`) |
+| v0.58 | 无 | — | 无新码(LSP 三查询为协议层无诊断码;std.str.join 复用 M3002/M3005/M3001/M4011 口径;doc --json 为工具输出非诊断) |
 
 三处登记:`src/diag.js` CODES(+CODE_HINTS)、`docs/diagnostics.md`、`tests/run.mjs` 对应分节;GUIDE 修订记录同步;已发布码不改号。
 
@@ -345,22 +346,22 @@
 
 **风险/回退**：循环上界含调用/别名/重赋值 → 保守放弃；若证明器复杂度失控，退回“只支持 `0..len` 直接形态”，其余静默。
 
-### 4.3.5 v0.58 — AI 协作体验与文本工程（开发者体验版）
+### 4.3.5 v0.58 — AI 协作体验与文本工程（开发者体验版）✅（2026-11-13 交付）
 
 **目标**：把“AI 生成 → 检查 → 修正”的循环摩擦再降一档，并补文本工具的实用性能面。
 
 **任务**
 
-1. **LSP 扩展**：补全（标识符/字段/方法/关键字）、跳转定义、文档符号；保持同步、零依赖、单文件协议实现；对泛型/多文件保守（宁可少补，不可错补）；§62 协议测试扩充（≥6 项）。
-2. **`std.str.Builder`**：`push/append/to_str`，值语义；10 万次拼接 O(n)（附可复现 bench 对比 `+` 的 O(n²)）；tree/VM 一致；C 后端若不支持则发射期显式拒绝（`C1 不支持`），不进资格面。
-3. **`ming doc --json` 稳定 schema + `ming doc --index`**：把 `///` 文档变成机器可消费的索引（AI 检索用）；additive，不改默认文本输出。
-4. **Release 分发**：tag 触发 GitHub Release 打包 zip（bin/src/tools/examples/docs/GUIDE/README；零 npm、官方 action）；不承诺安装器/包管理器。
-5. **测试 §62**（≥15）：LSP 补全/跳转/符号；Builder 双引擎 + 大输入性能断言（宽松阈值）；doc JSON schema；Release workflow 结构静态校验。
-6. **文档**：GUIDE LSP/doc/Builder 节；能力矩阵更新（Builder ✅、LSP 行细化）；README 快速开始补 LSP 用法。
+1. ✅ **LSP 扩展**：补全（标识符/字段/方法/关键字）、跳转定义、文档符号；保持同步、零依赖、单文件协议实现；对泛型/多文件保守（宁可少补，不可错补）；§62 协议测试扩充（**实测 34 项**,A 组 16:LSP 直连 + 管道协议）。**A 审查修复**:坏 JSON 体存活(不再 ReferenceError 杀进程)、块注释内不补全(嵌套深度按 lexer 语义)、第三式中间态补全;既有 P1 修复(非 ASCII 字节分帧)回归锁定。
+2. ✅ **`std.str.join`（Builder → join 架构调整,如实记录）**：原计划 `std.str.Builder`（push/append/to_str），实现改为 **`use std.str;` + `str.join(Vec[str]) -> str` 纯函数**——单次 O(n) 拼接达到同一目标（消除 `+` 循环的 O(n²)），不动语法面、无需 C 后端资格决策（`str.join` 所在函数非直接调用形态 wasm REJECT（`--strict-wasm` 可见回落）、C 后端 C1 发射期显式拒绝，不进资格面）；tree/VM 一致；10 万元素量级拼接 O(n)（§62 v58.19 以 1000 元素 + `byte_len` 断言覆盖语义与规模,bench 专项未单列——join 为单次调用,无累积状态）。**与 Vec 方法 `join` 的 API 不对称与分配记账差异如实登记**（§5.1 #49:`v.join(sep)` 计费 vs `str.join(v)` 不计费）。
+3. ✅ **`ming doc --json` 稳定 schema + `ming doc --index`**：把 `///` 文档变成机器可消费的索引（AI 检索用）；additive，不改默认文本输出。**--index 已实现（v0.58）**：`ming doc f1.ming f2.ming ... --index` 聚合输出 `{ok, files: N, items: [...每项前置 file 字段,其余与单文件 item 同形...]}`；单文件加 `--index` 输出同 schema（天然兼容）；无 `--index` 保持单文件命令（只处理第一个）；读失败/解析诊断错误路径与 `--json` 协议一致（fail-fast）。**C 审查 MINOR 已修**:impl 方法签名补 `with` 效果与 requires/ensures。
+4. ✅ **Release 分发**：tag 触发 GitHub Release 打包 zip（bin/src/tools/examples/docs/GUIDE/README；零 npm、官方 action）；不承诺安装器/包管理器。**实现口径**:release.yml 只产出 workflow artifact(`ming-<tag>` zip,无双 v)——**不自动创建 GitHub Release**(第三方 gh-release action 违反“只用官方 action”纪律,由维护者手动附 artifact);含版本三处一致性 + 零 npm 依赖校验步骤;`docs/release.md` 流程文档落地。
+5. ✅ **测试 §62**（实测 **34 项** ≥15）：LSP 补全/跳转/符号（直连 + 管道协议双路径）；join 双引擎 + 大输入断言；doc JSON schema；Release workflow 结构静态校验。
+6. ✅ **文档**：GUIDE 命令表 LSP 行（v0.58 三新查询 + 字节分帧 + 坏 JSON 存活）、doc 行（--json/--index）、新增 std.str 节（join 语义/API 不对称/#49 记账差异）、修订记录 v0.58.0、路线图 v0.58 行；能力矩阵更新（流式拼接行 Builder→join 口径、LSP 行细化）；README 路线图 v0.58.0 + 状态段。
 
-**验收**：`run.mjs` 0 失败；LSP 会话测试通过；Builder 双引擎输出一致且 10 万次拼接 < 1s（本机，信息性）；doc JSON additive（无旗标输出与 v0.57 逐字一致）；CI 保持绿色；零新依赖。
+**验收（2026-11-13 实测）**：`run.mjs` 0 失败（**825 项**全绿,§62 共 34 项）；LSP 会话测试通过（直连 16 + 管道 4 会话）；join 双引擎输出一致（O(n) 单次拼接）；doc JSON additive（无旗标输出与 v0.57 逐字一致,§62 v58.32 黄金锁定）；fuzz 40 程序 0 分歧;proof_fuzz 0 误报;零新依赖。
 
-**风险/回退**：补全对泛型/模块解析易错 → 保守策略与开关；Builder 是 std 方法，不动语法（可整体回退）。
+**风险/回退**：补全对泛型/模块解析易错 → 保守策略与开关（已按保守策略交付）；Builder → join 架构调整后为纯 std 函数,不动语法（可整体回退）。
 
 ### 4.3.6 v0.59 — 服务端与并发：ADR 先行（条件承诺）
 
@@ -418,7 +419,7 @@
 |------|---------------------|----------|
 | v0.56 | **✅(2026-11-12 实测)**:三引擎作用域/闭包/HOF 一致；契约尾部歧义修复；fmt 契约保真；fuzz 真实 wasm 腿；buildKey 含编译器源(src+bin)；存量 P1/P2 清零；独立审查 A/B 组修复(契约作用域/u64/fmt/#31/#26/M3047)；复审 C1/C2 修复(ensures 内嵌作用域/闭包 return)；#37/#38/#39 收口，新登记 #44–#47 见 §5.1 | §60 实测 70 项(≥15)；回归 **764 项**全绿(≥715)；fuzz 40 程序 0 分歧、wasm 真实执行 20(三种子 20/16/18)；buildKey 敏感性覆盖 src 与 bin；proof_fuzz 三模式 0 误报(实测模式 1 100 例/模式 2 反例 18/18/summaries 100 例 0 误报) |
 | v0.57 | **✅(2026-11-13 实测)**:范围 for 内 `buf[i]` 两向可证明(循环符号 + 区间假设;脏循环/嵌套/while 保守放弃);tools AOT 缓存 12 工具全缓存零回退(热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明);覆盖率基线 93.0% 行/86.1% 函数;bench Δ基线 + 回退 WARN;codegen 零改动 | §61 实测 27 项(≥12);**791 项**全绿;proof_fuzz loops 200 例 0 误报(反例独立求值器三重验证);check 语料 0.96x HEAD(≤1.3x 达标);既有 §56/§59 全绿 |
-| v0.58 | LSP 补全/跳转/符号可用；Builder O(n)；doc JSON additive；Release 打包 | §62 ≥15；10 万次拼接 <1s（本机）；无旗标 doc 输出逐字不变；CI 绿 |
+| v0.58 | **✅(2026-11-13 实测)**:LSP 补全/跳转/符号可用(保守策略,§62 直连+管道 16 项);`std.str.join` O(n)(Builder→join 架构调整,如实记录);doc JSON additive(文本黄金锁定逐字不变);Release 打包(artifact + 手动 Release 决策,docs/release.md) | §62 实测 **34 项**(≥15);回归 **825 项**全绿;fuzz 40 程序 0 分歧;proof_fuzz 0 误报;无旗标 doc 输出逐字不变;零新依赖 |
 | v0.59 | ADR-001 完成；若实现则最小 HTTP server 通过 | ADR 评审清单全勾；实现时 §63 ≥12 + 三引擎拒绝一致 |
 | v0.60 | ADR-002/003 完成；实现与否均有结论与理由 | ADR 评审清单全勾；实现时 §64 ≥12 |
 
@@ -433,7 +434,7 @@
 
 ## 5.1 已知缺陷(2026-11-11 code-review,已逐项复核)
 
-> 来源:两个 code-reviewer 子智能体 + 主会话复现。**状态:v0.50.1–v0.56.0 的已修复项逐行标注;#37–#43 中 #37/#38/#39 已于 v0.56.0 收口;新增 #44(待实现);#45–#47 未修;v0.57 收口未动 #40–#43/#45–#47(wasm 回落形态与本地函数,见 §4.3.8)。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
+> 来源:两个 code-reviewer 子智能体 + 主会话复现。**状态:v0.50.1–v0.56.0 的已修复项逐行标注;#37–#43 中 #37/#38/#39 已于 v0.56.0 收口;新增 #44(待实现);#45–#47 未修;v0.57 收口未动 #40–#43/#45–#47(wasm 回落形态与本地函数,见 §4.3.8);v0.58 审查新登记 #48/#49(未修,均实测)。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
 
 ### 已修复(v0.50.1–v0.51.6)
 
@@ -531,6 +532,8 @@
 | 45 | **wasm 值型 if 的 blocktype 编码失败**:表达式 `if`(值上下文)静默回落,`--strict-wasm` 可见——导致 W2 的 expr-if 声明不可达(未真实走 wasm) | P2 | 未修(wasm 块类型编码专项) |
 | 46 | **wasm 块尾 if(unit 上下文)按值编译** → `REJECT: if 无 else` 回落(常见 `while { …; if c { break; } }` 形态;导致 W2/F1 在尾 if 形态上未真实走 wasm) | P2 | 未修(wasm 语句/块尾判别专项) |
 | 47 | **tree 引擎 ensures 求值内嵌块尾值重入 checkEnsures**:契约表达式含带尾值的块(`if` 分支、`match` 臂块等)时,块尾求值再次触发同一函数的 checkEnsures,递归至 M4005,或二次求值时 `result` 被错误替换为块尾 bool 而报 `内部错误:match 无分支命中`。HEAD 可复现;VM/VM-only 正常(与本次 C1 编译器修复无关)。**最小复现**:`fn f(a: i64) -> i64 ensures if a > 0 { true } else { true } { return a; }` + `fn main() with io { print(str(f(5))); }` → `run --tree` M4005(exit 101),`run`/`run --no-wasm` 输出 5 | P3 | 未修(tree 契约求值重入专项;§60 v60.55/v60.57 记录已知行为,修复前不锁定 M4005 断言) |
+| 48 | **wasm 路径 `str_cat` 不计入 allocBytes → M4011 配额门禁引擎分歧**:wasm 把 str `+`/插值编译为 `str_cat` 导入(wasm.js compileBinNum str 分支),而宿主绑定(vm.js `str_cat`)只拼 strTable、**不调 chargeAllocBytes/ming_alloc**;解释器与 VM 字节码路径对 str 拼接按结果长度计费(interp.js `chargeAllocBytes(l.v.length + r.v.length)`)→ 同一程序默认引擎不触发配额、`--no-wasm`/tree 触发 M4011。**已验证(v0.58 审查复现)**:`fn probe(a: str) -> i64 { if a + "<120000×A>" == "x" { return 1; } return 0; }` + `print(str(probe("")))`,`--max-alloc 50000` → 默认 exit 0(输出 1)/`--no-wasm` 与 tree M4011(exit 101,累计 120000)。注:B 审查原报告的"20,000 次 `+` 循环"形态**不复现分歧**——str 累积循环(main 内 mut str 局部/str 返回 helper/Vec.push 方法调用/str 实参递归)今日均不满足 wasm 资格或实例化失败而回落字节码(计费),分歧只在 wasm 真实执行的 str_cat 上;随 #40–#43/#45/#46 修复扩大 str 形态覆盖面,该分歧**从潜伏变可达** | P2 | 未修(wasm 分配记账专项:str_cat/插值结果计入 allocBytes;与 #40–#43/#45/#46 同列 wasm 覆盖面) |
+| 49 | **`std.str.join` 结果不计入分配记账,与 Vec 方法 `join` 计费不对称**:Vec 方法 join 按结果长度计费(interp.js `case 'join'` chargeAllocBytes(out.v.length)),v0.58 新增的 `std.str.join`(单次 O(n) 拼接)不调 chargeAllocBytes → 同尺寸结果 std 函数侧不触发 M4011。**已验证(v0.58 审查复现)**:10,000 × "abcdefghij" 入 Vec(`--max-alloc 60000`)→ `str.join(v).byte_len()` exit 0(输出 100000,结果 100KB 未计费)/`v.join(",").byte_len()` M4011(exit 101,累计 119999)。文档须如实标注:"join 的配额优势部分来自不计费";**API 不对称同步登记**:`v.join(sep)`(Vec 方法,带分隔符,计费)与 `str.join(v)`(std 函数,无分隔符,不计费)——GUIDE v0.58 收口条目覆盖该说明 | P3 | 未修(修复方向:std.str.join 按结果长度计费对齐;或文档明示口径——修复时连同 #48 的记账专项一并考虑) |
 ### 备注登记(2026-11-13,v0.57 收口;信息性,非缺陷)
 
 | # | 备注 | 级别 | 状态 |

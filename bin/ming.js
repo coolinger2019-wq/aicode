@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.57.0';
+export const VERSION = '0.58.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -84,13 +84,15 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
-  ming doc   <file.ming> [--json]
+  ming doc   <file.ming...> [--json] [--index]
   ming lsp   (stdio JSON-RPC 语言服务:诊断推送/hover)
   ming repl  (交互式会话:表达式回显、声明持久化)
   ming version
 
 说明:
   * 诊断同时输出人类可读格式与 --json 结构化格式,错误码稳定(见 docs/diagnostics.md)
+  * doc --json schema:{ok,file,items:[{kind:fn|struct|enum|trait|const|impl,name,line,doc,signature}]};doc 为 /// 行去前缀原文(无文档为 []),signature 为 AST 重建(impl 方法含 with 效果与 requires/ensures);impl 的 name 为 "impl <trait> for <类型>"(v0.58)
+  * doc --index:多文件聚合 {ok,files:N,items:[{file,...同上}]};单文件也可用;错误路径与 --json 协议一致(v0.58)
   * 副作用必须显式声明:fn main() with io { ... };v0.4 无文件系统/网络能力(io/time 之外)
   * 顶层声明:fn / struct / enum / use / test / const / trait / impl
   * 项目模式:run/check/test/build 不带文件参数时,自动向上查找 ming.toml
@@ -568,48 +570,131 @@ async function cmdFmt(files, flags) {
 }
 
 // ---------- doc ----------
-async function cmdDoc(file, flags) {
+async function cmdDoc(files, flags) {
   await loadCore();
   const json = flags.has('json');
-  if (!file) return fail('doc 需要一个 .ming 文件', json);
+  const index = flags.has('index');
+  if (!files.length || !files[0]) return fail('doc 需要一个 .ming 文件', json || index);
+  // v0.58(C 审查 MINOR / plan §4.3.5 任务 3 另一半):--index 多文件聚合;
+  // 无 --index 保持既有行为(单文件命令,只处理第一个文件)。
+  if (index) return docIndex(files);
+  const file = files[0];
   let src;
   try { src = fs.readFileSync(file, 'utf8'); } catch (e) {
+    // v0.58:--json 错误路径走既有 fail 协议(stdout {ok:false,error});文本模式 stderr 逐字不变
+    if (json) return fail(`无法读取 ${file}: ${e.message}`, json);
     process.stderr.write(`无法读取 ${file}: ${e.message}\n`);
     return 1;
   }
   const { program, comments, diags } = parse(file, src);
   if (diags.length) {
+    // v0.58:--json 下解析诊断结构化输出(与 reportCompileError 的 {ok:false,diagnostics} 同形)
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: false, exit_code: 1, diagnostics: diags.map(d => d.toJson()) }, null, 2) + '\n');
+      return 1;
+    }
     for (const d of diags) process.stderr.write(formatDiag(d, process.stderr.isTTY) + '\n');
     return 1;
   }
   attachDocsImpl(program.items, comments);
 
-  const items = [];
-  for (const it of program.items) {
-    if (it.nt === 'FnDecl') {
-      const tps = it.tparams.length ? `[${it.tparams.join(', ')}]` : '';
-      const params = it.params.map(p => `${p.name}: ${sigType(p.type)}`).join(', ');
-      const eff = it.effects?.length ? ` with ${it.effects.map(e => e.name).join(', ')}` : '';
-      items.push({ kind: 'fn', name: it.name, signature: `fn ${it.name}${tps}(${params})${it.ret ? ' -> ' + sigType(it.ret) : ''}${eff}`, docs: it.docs ?? [], line: it.span.line });
-    } else if (it.nt === 'StructDecl') {
-      items.push({ kind: 'struct', name: it.name, signature: `struct ${it.name}{ ${it.fields.map(f => `${f.name}: ${sigType(f.type)}`).join(', ')} }`, docs: it.docs ?? [], line: it.span.line });
-    } else if (it.nt === 'EnumDecl') {
-      items.push({ kind: 'enum', name: it.name, signature: `enum ${it.name} { ${it.variants.map(v => v.name + (v.types.length ? `(${v.types.map(sigType).join(', ')})` : '')).join(', ')} }`, docs: it.docs ?? [], line: it.span.line });
-    } else if (it.nt === 'ConstDecl') {
-      items.push({ kind: 'const', name: it.name, signature: `const ${it.name}${it.type ? ': ' + sigType(it.type) : ''} = ...`, docs: it.docs ?? [], line: it.span.line });
-    }
-  }
+  // v0.58(任务 3):--json 稳定 schema(additive;默认文本输出逐字不变):
+  //   { "ok": true, "file": "<路径>", "items": [ { "kind": "fn|struct|enum|trait|const|impl",
+  //     "name": "...", "line": N, "doc": ["/// 行原文(去前缀)"], "signature": "..." } ] }
+  // 口径:
+  //   - kind/name/line 以 AST 为准;默认单文件命令(多文件无 --index 只处理第一个);
+  //   - doc:每个 /// 行去掉 `///` 前缀后的原文(保留其余字符;无 /// 文档时为 []);test/use/extern fn 不列入 items;
+  //   - signature:AST 重建(规范化空白),非源码逐字摘录;trait/impl 方法只重建签名(不列方法体);
+  //   - impl 方法签名补 effects 与 requires/ensures(C 审查 MINOR,与顶层 fn/fmt 口径一致:
+  //     `fn n(...) -> ret with eff requires ... ensures ...`);trait 方法语法无 effects/契约,渲染不变;
+  //   - impl 的 name 为 `impl <trait> for <类型>`(与 LSP 文档符号口径一致);kind trait/impl 仅 --json 新增,
+  //     文本输出仍只含 fn/struct/enum/const(逐字不变)。
+  const { expr: exprSrc } = await lazyFmt(); // 契约表达式规范化重建(fmt expr 与 contractSuffix 同口径)
+  const items = collectDocItems(program.items, exprSrc);
   if (json) {
-    process.stdout.write(JSON.stringify({ file, items }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ ok: true, file, items }, null, 2) + '\n');
   } else {
-    for (const it of items) {
+    const textItems = items.filter(i => i.kind === 'fn' || i.kind === 'struct' || i.kind === 'enum' || i.kind === 'const');
+    for (const it of textItems) {
       process.stdout.write(`## ${it.signature}\n`);
-      if (it.docs.length) process.stdout.write(it.docs.map(d => d.replace(/^\/?\//, '').trim()).join('\n') + '\n');
+      if (it.doc.length) process.stdout.write(it.doc.map(d => d.replace(/^\/?\//, '').trim()).join('\n') + '\n');
       process.stdout.write(`    (${path.basename(file)}:${it.line})\n\n`);
     }
-    if (!items.length) process.stdout.write('(没有可文档化的项;给声明加 /// 文档注释)\n');
+    if (!textItems.length) process.stdout.write('(没有可文档化的项;给声明加 /// 文档注释)\n');
   }
   return 0;
+}
+
+// v0.58(C 审查 MINOR / plan §4.3.5 任务 3):ming doc --index 多文件聚合。
+//   { "ok": true, "files": N, "items": [ { "file": "<路径>", ...单文件 item 同形 } ] }
+// 每项前置 file 字段(additive);单文件加 --index 输出同 schema(天然兼容);
+// 文件顺序 = 命令行顺序,先到先停;错误路径与 --json 协议一致:
+// 读失败 → fail 的 {ok:false,error}(exit 1);解析诊断 → {ok:false,exit_code,diagnostics}(exit 1)。
+async function docIndex(files) {
+  const { expr: exprSrc } = await lazyFmt();
+  const items = [];
+  for (const file of files) {
+    let src;
+    try { src = fs.readFileSync(file, 'utf8'); } catch (e) {
+      return fail(`无法读取 ${file}: ${e.message}`, true);
+    }
+    const { program, comments, diags } = parse(file, src);
+    if (diags.length) {
+      process.stdout.write(JSON.stringify({ ok: false, exit_code: 1, diagnostics: diags.map(d => d.toJson()) }, null, 2) + '\n');
+      return 1;
+    }
+    attachDocsImpl(program.items, comments);
+    for (const it of collectDocItems(program.items, exprSrc)) items.push({ file, ...it });
+  }
+  process.stdout.write(JSON.stringify({ ok: true, files: files.length, items }, null, 2) + '\n');
+  return 0;
+}
+
+// doc items 构建(单文件与 --index 共用;exprSrc 来自 fmt.js,契约表达式规范化重建)。
+function collectDocItems(programItems, exprSrc) {
+  // impl 方法签名的契约后缀(与 fmt.js contractSuffix 同序:requires 前、ensures 后;
+  // else 消息优先 msgRaw 原样(v0.56 #39 口径),字面量退化 JSON 引号;trait 方法无此类,
+  // 语法上无 effects/契约,渲染不变)。
+  const contractSuffixDoc = (m) => {
+    const parts = [];
+    const add = (kw, cl) => {
+      if (!cl) return;
+      const msg = cl.msgRaw != null ? ' else ' + cl.msgRaw : (cl.msg == null ? '' : ' else ' + JSON.stringify(cl.msg));
+      parts.push(`${kw} ${exprSrc(cl.expr)}${msg}`);
+    };
+    add('requires', m.requires);
+    add('ensures', m.ensures);
+    return parts.length ? ' ' + parts.join(' ') : '';
+  };
+  const methodSig = (m) => {
+    const ps = m.params.map(p => p.self ? (p.mut ? 'mut self' : 'self') : `${p.name}: ${sigType(p.type)}`).join(', ');
+    // v0.58(C 审查 MINOR):impl 方法补 effects 与 requires/ensures(顶层 fn 已有口径,对齐之)
+    const eff = m.effects?.length ? ` with ${m.effects.map(e => e.name).join(', ')}` : '';
+    return `fn ${m.name}(${ps})${m.ret ? ' -> ' + sigType(m.ret) : ''}${eff}${contractSuffixDoc(m)}`;
+  };
+  const items = [];
+  for (const it of programItems) {
+    if (it.nt === 'FnDecl') {
+      const tps = it.tparams.length ? `[${it.tparams.join(', ')}]` : '';
+      // v0.58:参数渲染逐字保留 v0.57 口径(顶层 fn 不含 self;self 只在 methodSig 处理)
+      const params = it.params.map(p => `${p.name}: ${sigType(p.type)}`).join(', ');
+      const eff = it.effects?.length ? ` with ${it.effects.map(e => e.name).join(', ')}` : '';
+      items.push({ kind: 'fn', name: it.name, line: it.span.line, doc: it.docs ?? [], signature: `fn ${it.name}${tps}(${params})${it.ret ? ' -> ' + sigType(it.ret) : ''}${eff}` });
+    } else if (it.nt === 'StructDecl') {
+      items.push({ kind: 'struct', name: it.name, line: it.span.line, doc: it.docs ?? [], signature: `struct ${it.name}{ ${it.fields.map(f => `${f.name}: ${sigType(f.type)}`).join(', ')} }` });
+    } else if (it.nt === 'EnumDecl') {
+      items.push({ kind: 'enum', name: it.name, line: it.span.line, doc: it.docs ?? [], signature: `enum ${it.name} { ${it.variants.map(v => v.name + (v.types.length ? `(${v.types.map(sigType).join(', ')})` : '')).join(', ')} }` });
+    } else if (it.nt === 'ConstDecl') {
+      items.push({ kind: 'const', name: it.name, line: it.span.line, doc: it.docs ?? [], signature: `const ${it.name}${it.type ? ': ' + sigType(it.type) : ''} = ...` });
+    } else if (it.nt === 'TraitDecl') {
+      items.push({ kind: 'trait', name: it.name, line: it.span.line, doc: it.docs ?? [], signature: `trait ${it.name} { ${it.methods.map(methodSig).join('; ')} }` });
+    } else if (it.nt === 'ImplDecl') {
+      const tps = it.tparams.length ? `[${it.tparams.join(', ')}]` : '';
+      const args = it.typeArgs.length ? `[${it.typeArgs.map(sigType).join(', ')}]` : '';
+      items.push({ kind: 'impl', name: `impl ${it.trait} for ${it.typeName}`, line: it.span.line, doc: it.docs ?? [], signature: `impl${tps} ${it.trait} for ${it.typeName}${args} { ${it.methods.map(methodSig).join('; ')} }` });
+    }
+  }
+  return items;
 }
 
 function sigType(t) {
@@ -1381,7 +1466,7 @@ async function main() {
     case 'lsp': (await lazyLsp()).startLsp(); return null; // 常驻:不退出进程
     case 'repl': (await lazyRepl()).startRepl(); return null; // 常驻:不退出进程
     case 'fmt': return cmdFmt(rest, flags);
-    case 'doc': return cmdDoc(rest[0], flags);
+    case 'doc': return cmdDoc(rest, flags);
     default:
       process.stderr.write(`未知命令 "${cmd}"\n\n${usage}\n`);
       return 1;

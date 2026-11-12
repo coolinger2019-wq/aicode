@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.57.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.58.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.57.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（791 项，含各版本分节 §1..§61；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（825 项，含各版本分节 §1..§62；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/proof_fuzz.mjs 静态证明模糊器（边界证明 1/2 + summaries + v0.57 loops 模式；反例独立求值器）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc；v0.57 基线对比 --write-baseline）
@@ -130,8 +130,10 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 - **模糊器覆盖不等于语义证明**：v0.51.6 起生成器已含 `+=/-=/*=`（含 while 内）；VM 复合赋值窥孔 bug 曾因早期生成器不生成 `+=` 漏网。语义可疑时仍要写最小 .ming 复现跑 `--tree` 对照，别只信模糊绿。
 - **unsafe 仅 C 原生可用**：`with unsafe`/`Ptr`/`std.mem` 在 tree/VM（以及 wasm 回落 VM）以 **M4016** panic（exit 101，消息逐字）；`ming cc` 是唯一真实执行者（C5 旗标仅 cc 路径传入）。`std.mem.alloc` 的 malloc 失败复用 **M4011**（不返回空指针）。悬垂/越界解引用是进程级 UB，Ming 不捕获——写 unsafe 测试时不要制造越界访问（§58 黄金均用 1–3 字节分配且界内）。
 - **契约循环义务（v0.57）**：静态边界证明覆盖范围 for（`for i in lo..hi`，循环变量确定性符号 `i$<n>` + 半开区间假设入义务假设集）；**proven 不消除运行时 M4003**，`--warn-unproven-index` 对循环义务同口径（W3105）。脏循环（体内重赋值循环变量/改写外层可见变量/藏分支）、嵌套 for、`while`/`loop`、区间不可线性化一律静默放弃——"义务未采集"不等于"义务已证明"，别在文档或结论里混用。
+- **LSP 分帧是字节口径（v0.58）**：stdio JSON-RPC 的 `Content-Length` 按 **UTF-8 字节**计,消息体含中文/emoji 时按字符累计会截断会话——服务端与测试两侧都必须 Buffer 分帧（lsp.js LspServer 与 §62 lspParse 同款）;坏 JSON 体/空体帧不杀会话（parse 失败 → msg undefined,不发错误响应照常续读），排查用 `MING_LSP_TRACE=1` 观测 chunk 与缓冲。
+- **`use std.str` 下调用/方法双形式解析口径（v0.58）**：裸调用形式 `str(42)` 永远是内建（编译器 compileNamedValue 内建分支先于 use 导入），方法形式 `str.join(v)` 按导入解析为 std 模块;模块级 `fn str` 遮蔽时模块 fn 赢;**局部变量遮蔽基名**（`let str: Vec[str]` 后 `str.join(",")`）按局部值的方法调用解析（checker/compiler/interp 三处同口径的遮蔽守卫）——改这三处任何一处都要跑 §62 v58.26/v58.27 三引擎断言。wasm 侧 `str.join` 所在函数非直接调用 REJECT（strict 可见回落,exit 2）,cc C1 发射期拒绝,均不影响语义正确性。
 
 ## 10. 当前状态与下一步
 
-- **v0.57.0**（2026-11-13，QF_LIA 第四片 + 工具链缓存 + 观测基线；无新语言面，prover.js 求解器与 codegen 零改动）：791 项测试全绿（§61 共 27 项：A 循环义务 19 + B tools 缓存 6 + C 观测冒烟 2）。**循环/守卫敏感边界证明**：范围 for 内 `buf[i]` 义务两向证明——循环变量确定性符号 `i$<n>`、半开区间假设 `lo <= i$<n> < hi` 入义务假设集；脏循环（体内重赋值循环变量/改写外层变量/藏分支）、嵌套 for、while/loop、区间不可线性化保守放弃；break/continue 不破坏不变式；反例枚举含循环符号（`i$0 = -1`）；义务记录 additive `scope: body|loop`；M3045/W3105 码与消息不变，proven 不消除 M4003；proof_fuzz `--mode loops` 200 例 0 误报（反例独立求值器三重验证）。**ming tools 工具 AOT 缓存**：12 工具全缓存零回退；缓存键 = VERSION + Node 主版本 + compilerSourceHash + 工具 basename + 源文本；原子写；span/declSpans 回填 panic 首行/摘录/栈帧逐字对齐；`--json`/`--tree`/strict-wasm 旁路不缓存、损坏自愈、`MING_TOOLS_DEBUG=1` 观测；bin 惰性导入 + enableCompileCache（`ming version` 地板 73→57ms）；**热缓存净 ~25–30ms/次——目标 <20ms 未完全达标如实注明**（剩余地板 = bin 顶层导入 ~9ms + 核心模块图 ~15ms，进一步需 src 级瘦身）。**观测基线**：tests/coverage.mjs 覆盖率首个基线 93.0% 行 / 86.1% 函数（docs/coverage-baseline.md；信息性不设门槛）；bench 基线（tests/bench.baseline.json + Δ基线列 + cc/vm 比值回退 >20% WARN 仍 exit 0 + `--write-baseline`）。独立审查两条 MINOR 已落地（v57.10 补 check 退出码断言、v57.19 补 proven 义务 main 实跑双引擎 exit 0）。v0.52–v0.56 路线已全部交付。
-- 下一步见 `docs/plan.md §4.3.5`：**v0.58 AI 协作体验与文本工程**（LSP 补全/跳转/符号、`std.str.Builder`、doc JSON 与 Release 打包）→ v0.59 服务端 ADR → v0.60 taint/mask ADR；已知缺陷 #37–#47 按 §4.3.8/§5.1 处置（#37–#39 已修；#40–#43、#45–#47 待修；#44 为本地函数恢复项；wasm 剩余回落形态不影响语义正确性）。
+- **v0.58.0**（2026-11-13，AI 协作体验与文本工程/开发者体验版）：825 项测试全绿（§62 共 34 项：A LSP 16 + B join/解析 13 + C doc/Release 5）。**A 包 LSP 扩展**：补全（标识符/字段方法/模块成员/枚举变体/关键字；保守策略——类型推不出 → 空列表、语法不可修复 → null、注释与字符串内不补全；打字中间态占位修复 + 第三式吞残余补括号）、跳转定义（模块项/局部绑定/跨文件 use；std 与内置 → null）、文档符号（fn/struct/enum/trait/const + impl 层级）；**非 ASCII 消息体按 Content-Length 字节分帧**（既有 P1 修复回归锁定）；审查修复：坏 JSON 体/空体帧存活（不再 ReferenceError 杀进程）、块注释内不补全（嵌套深度按 lexer 语义）；`completionFor/definitionFor/documentSymbolsFor` 导出供测试/工具直连。**B 包 std.str.join + 编译器名字解析**：`use std.str;` 纯函数 `str.join(Vec[str]) -> str` 单次 O(n) 拼接（**Builder→join 架构调整如实记录**，plan §4.3.5）；`use std.str` 下四形态名字解析三引擎逐字（裸 `str(42)` 内建 / `str.join(v)` 模块 / `as` 别名 / 模块级 `fn str` 遮蔽模块 fn 赢）+ **遮蔽守卫**（基名被局部遮蔽 → 按局部值方法调用，checker 与引擎不再分歧）；wasm：join 所在函数非直接调用 REJECT（`--strict-wasm` 可见回落）；cc C1 发射期显式拒绝；**#49 分配记账差异与 API 不对称如实登记**（`v.join(sep)` 计费 vs `str.join(v)` 不计费）。**C 包 doc --json + Release**：`ming doc --json` 稳定 schema（六种 kind 含 trait/impl；signature 为 AST 重建,impl 方法含 `with` 效果与 requires/ensures）+ `--index` 多文件聚合（默认文本逐字不变）；release.yml（tags `v*` + workflow_dispatch,官方 action,零 npm 校验,artifact `ming-<tag>`,**不自动创建 Release**——维护者手动附 artifact）+ `docs/release.md`。无新诊断码。v0.52–v0.57 路线已全部交付。
+- 下一步见 `docs/plan.md §4.3.6`：**v0.59 服务端与并发 ADR 先行**（ADR-001 async 选型 + 原型实验；仅当 ADR 通过才最小 `std.net.serve`）→ v0.60 taint/mask ADR；已知缺陷 #37–#49 按 §4.3.8/§5.1 处置（#37–#39 已修；#40–#43、#45–#48 待修；#44 为本地函数恢复项；#49 join 记账不对称已文档化口径；wasm 剩余回落形态不影响语义正确性）。
