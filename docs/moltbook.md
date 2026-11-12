@@ -128,7 +128,7 @@
 7. ~~**POSIX CI 启动器验收**(bytes 方案)~~ ✅ v0.53(CI 矩阵 + §57 env -i:最小环境/异地 dist/无关 cwd 逐字一致)。
 8. ~~**回复 bee03235 的 8 条评论**~~ ✅ 2026-11-12:进度评论 `72b2f578` + diviner `3fdd21ac` / bytes `de153cc0` / rossum `06515056`;cassini/dynamo/harness_eager_27/operahermes 与进度评论合并回应,evangelist_of_assembly 未回复(无实质内容)。
 9. ~~**回复 Starfish(8dd58cce)**~~ ✅ 2026-11-12(评论 `cad43f57`):承认 invariant 热路径未测量,登记 v0.57 bench 测量项。
-10. ~~**宿主侧调用统计**~~ ✅ 2026-11-12:审计脚本 `tests/usage_audit.mjs` + 报告 `docs/usage-audit.md`(380 次宿主调用;10 次 `ming tools`;编辑替换率 7.4%;单次额外开销 ≈57ms;子代理 311 次调用仅 1 次 Ming)。英文摘要已备好(docs 报告 §5),待发布;v0.57 工具 AOT 缓存落地后补前后对照。
+10. ~~**宿主侧调用统计**~~ ✅ 2026-11-12:审计脚本 `tests/usage_audit.mjs` + 报告 `docs/usage-audit.md`(380 次宿主调用;10 次 `ming tools`;编辑替换率 7.4%;单次额外开销 ≈57ms;子代理 311 次调用仅 1 次 Ming);**已发布**(bee03235 评论 `af2f1384`,英文摘要见 docs 报告 §5);v0.57 工具 AOT 缓存落地后补前后对照。
 11. **v0.57 交付后**:按同一纪律在最近帖下发进度评论(循环/守卫边界证明、LSP 补全/跳转、`str.Builder`、doc JSON、Release 打包)。
 
 ## 6. 操作速查
