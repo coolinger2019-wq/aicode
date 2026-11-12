@@ -1052,7 +1052,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 ## 23. 路线图
 
-逐版进度的**诚实口径**见 [docs/capabilities.md](docs/capabilities.md)(✅/🟡/❌ 矩阵,每版更新)。下表是 **v0.28–v0.43 历史节选**;v0.44 起的逐版内容见本文件 **§24 修订记录**,当前版本与下一版方向见 [README 路线图](README.md#路线图) 与 [docs/plan.md §4.2](docs/plan.md)。
+逐版进度的**诚实口径**见 [docs/capabilities.md](docs/capabilities.md)(✅/🟡/❌ 矩阵,每版更新)。下表是 **v0.28–v0.43 历史节选**;v0.44 起的逐版内容见本文件 **§24 修订记录**,当前版本与下一版方向见 [README 路线图](README.md#路线图) 与 [docs/plan.md §4.3](docs/plan.md)。
 
 | 版本 | 内容 |
 |------|------|
@@ -1074,7 +1074,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.43(已完成) | **ffi 字符串桥 + Result[i64,str] 进 C 面 + with unsafe 设计定稿**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点) |
 | v0.54(已完成) | **`with unsafe` 最小实现(C5)**:Ptr[mut u8]/Ptr[u8]、load/store/offset/is_null、std.mem.alloc/free、M3029/M3046/M4016、C 原生执行;Ptr 别名面与 offset 链式黄金 |
 | v0.55(已完成) | **跨函数契约摘要(QF_LIA 第三片)**:纯函数 + 直线体 + 无环调用图的摘要引擎(Tarjan SCC);调用点线性前置证明(M3041 扩展)、调用后置条件假设、M3042 假设集扩展;`--proof-report` 契约摘要(文本 + additive `proofs.summaries`);无新诊断码 |
-| 更远(北星对齐) | `mask` 效果屏蔽(v0.56+ 评估)/污点即效应/async/eval/国密/RSA/形式化验证留待更远(见 plan §4.2.8/§5 Backlog) |
+| 更远(北星对齐) | `mask` 效果屏蔽(v0.60 ADR 决策)/污点即效应(v0.60 研究项)/async 与服务端(v0.59 ADR 先行)/eval/国密/RSA/形式化验证留待更远(见 plan §4.3/§4.2.8 Backlog) |
 
 ## 24. 修订记录
 
