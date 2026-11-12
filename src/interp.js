@@ -714,6 +714,12 @@ export class Interp {
         }
         return;
       }
+      case 'UnsafeBlock': {
+        // v0.54:语义 = 普通块;tree/VM 的真实拒绝发生在 std.mem / Ptr 方法(M4016)。
+        // 若块内没有指针操作,树引擎照常执行(与 VM 编译结果一致)
+        this.execBlock(s.body, env, ctx);
+        return;
+      }
       case 'SyncScopeBlock': {
         this.enterSyncScope();
         let unwinding = null;
@@ -1417,6 +1423,12 @@ export class Interp {
         if (args[2].t === 'map') for (const [k, v] of args[2].m) hs[String(k)] = String(v.v);
         return this.httpOpts({ method: args[0].v, url: args[1].v, headers: hs, body: args.length > 4 ? args[3].v : '', timeoutMs: Number(args[4].v), redirect: 'follow', withHeaders: true }, span);
       }
+      // ---- std.mem(v0.54;原生存取)----
+      // tree/VM 没有真实指针面:C 原生后端(ming cc)兑现,解释执行诚实拒绝。
+      // panic 码 M4016[native-only-feature],消息与 panic 首行逐字对齐 plan §4.2.5。
+      case 'mem.alloc':
+      case 'mem.free':
+        throw new Panic('M4016', 'unsafe 指针操作仅在 C 原生后端可用', span);
       // ---- std.sync(结构化并发)----
       case 'sync.spawn': return this.syncSpawn(args, span);
       case 'sync.spawn_all': return this.syncSpawnAll(args, span);
@@ -2397,6 +2409,9 @@ export class Interp {
         throw new Panic('M4001', `内部错误:${recv.name} 没有方法 .${name}`, span);
       }
       case 'bool': return this.boolMethodImpl(recv, name, args, span);
+      // v0.54 审查 M1:Ptr 只可能在非 C 后端被观察到(正常路径在 std.mem/Ptr 方法处已 M4016)。
+      // 防御:C 侧语义之外的方法调用不得落到 "内部错误:<t> 没有方法" M4001,统一按原生限定拒绝。
+      case 'ptr': throw new Panic('M4016', 'unsafe 指针操作仅在 C 原生后端可用', span);
       case 'int': case 'float': return this.numMethodImpl(recv, name, args, span);
       default:
         throw new Panic('M4001', `内部错误:${recv.t} 没有方法 .${name}`, span);

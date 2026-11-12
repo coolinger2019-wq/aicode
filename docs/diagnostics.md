@@ -1,4 +1,4 @@
-# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.53.0)
+# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.54.0)
 
 诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27-v0.30 无新增码(错误链复用既有码面,新增可选字段)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。
@@ -74,7 +74,7 @@
 | M3027 | missing-field | 结构体字面量缺字段(没有默认值) |
 | M3028 | refutable-let-pattern | let 中使用可反驳模式(用 match / while let) |
 | M3029 | undeclared-effect | 调用需要未声明的效果:给签名加 `with io, ...` 并逐层传播 |
-| M3030 | unknown-effect | 未知效果名(当前可用:io / time / fs / net / sync / proc / env / rand / crypto / ffi) |
+| M3030 | unknown-effect | 未知效果名(当前可用:io / time / fs / net / sync / proc / env / rand / crypto / ffi / unsafe) |
 | M3031 | const-not-constant | const 只接受常量表达式(字面量/运算/其他常量) |
 | M3032 | trait-impl-mismatch | trait/impl 问题:缺方法、self 可变性不符、类型未实现 bound 的 trait、impl 类型参数未覆盖目标参数 |
 | M3034 | join-handle-escapes | Join 句柄存入集合/struct 字段/元组/enum 载荷,或作为 spawn 参数/返回(线性资源) |
@@ -104,17 +104,19 @@
 | M4007 | missing-key | map 下标缺键(用 .get(k) 得 Option) |
 | M4008 | assertion-failed | assert / assert_eq 失败(附两侧 debug 值) |
 | M4010 | task-timeout | 子任务超时/已取消(join_detailed 超时参数、cancel 后 join;以 Err 值的 code 字段出现,非 panic;v0.30 起) |
-| M4011 | alloc-quota-exceeded | 内存配额超限:累计分配(元素/字符口径)超过 --max-alloc(v0.32) |
+| M4011 | alloc-quota-exceeded | 内存配额超限:累计分配(元素/字符口径)超过 --max-alloc(v0.32);v0.54 起 C 后端 `std.mem.alloc` 的 malloc 返回 NULL 也复用本码(消息"内存分配失败:std.mem.alloc(N) 返回 NULL",不伪装 null) |
 | M4012 | time-quota-exceeded | 执行时间超过 --max-ms 墙钟上限(v0.32) |
 | M4013 | ffi-load-failed | v0.42 启用:extern fn 库加载/符号查找失败(C 后端启动绑定阶段,退出码 101) |
 | M4014 | ffi-signature-invalid | v0.39 预留(未启用):ffi 签名与目标符号不符 |
 | M4015 | contract-violation | v0.45:契约违反(requires/ensures),退出码 101 |
+| M4016 | native-only-feature | v0.54:tree/VM 执行 `std.mem.alloc/free` 或指针读写(`p.load/store/offset`;经 `std.mem.alloc` 取得的 Ptr 在 alloc 处即拒绝,extern Ptr 在 JS 桩体处拒绝)时 panic;消息"unsafe 指针操作仅在 C 原生后端可用",退出码 101,三路(tree / VM / wasm 回落 VM)首行逐字一致。C 原生后端由 C5(v0.54)兑现:Ptr[mut u8]/Ptr[u8] → `unsigned char*`/`const unsigned char*`;C5 资格旗标 `opts.unsafe` 仅在 `ming cc` 路径放行,wasm 保持严格拒绝 |
 | M3040 | invariant-field-protected | 带 invariant 的 struct 字段只能在自身 impl 方法内修改(v0.46) |
 | M3041 | contract-violated-at-call | 调用点静态契约违反:整数字面量实参代入 requires 可判定为假(含反例)(v0.46) |
 | M3042 | ensures-statically-false | ensures 直线体符号执行可静态证伪(含反例)(v0.48,QF_LIA 第一片) |
 | M3043 | contract-not-pure | 契约表达式必须是纯表达式:requires/ensures/invariant 中调用 mut 方法(Vec/Map 原地方法或 mut self 方法)(v0.51) |
 | M3044 | invalid-map-key | Map 键类型必须是 int/float/bool/str(Vec/struct/enum 键无值语义相等)(v0.51.4) |
 | M3045 | index-bounds-violated | 静态边界证明(QF_LIA 第二片):在 requires 线性边界 + 直线体下,Vec 索引义务(`0 <= i` 或 `i < len$buf`,len$x 为非 mut `Vec[i64]` 参数的长度符号)被可证违反——所有满足 requires 的调用都会 M4003 panic;含小值反例(i64 参数 ∈ {-2..2}、len$x ∈ 0..8 确定性枚举;反例满足完整 requires——按被跳过但可求值的 requires 叶子过滤,无候选则不给反例)。未证明不报告;requires 自相矛盾(负环)整函数跳过;不改运行时语义(v0.52) |
+| M3046 | unsafe-context-required | v0.54:指针操作(`p.load/store/offset`、`std.mem.alloc/free`)、Ptr 实参传递给非 extern 函数,或把含 Ptr 的值装进容器/构造器(`Vec.push/insert/extend`、`Map.set`/Map 字面量、`Some/Ok/Err` 等变体、元组/结构体字面量;判定为递归类型谓词 `typeContainsPtr`,含 Ptr 的容器传给普通函数同样拒绝),出现在 `unsafe { ... }` 块外;所在函数还必须声明 `with unsafe`(缺效果声明报 M3029)。块外只允许 let/赋值/return 传递与 `p.is_null()` |
 
 ## 约定
 

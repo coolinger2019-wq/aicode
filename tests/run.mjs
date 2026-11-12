@@ -5,6 +5,7 @@ import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -211,9 +212,17 @@ fn main() with io {
     const rr = runMing(['check', fp]);
     check(`fmt:${file} 格式化后可编译`, rr.code === 0, rr.stderr);
     // 格式化后行为不变(run 输出一致)
+    // v0.54 审查 M6:同时断言退出码与 stderr 首行(unsafe_demo 在 tree/VM 是 M4016 panic,
+    // stdout 恒为空;只比 stdout 会空转)。
     const origRun = runMing(['run', path.join(ROOT, 'examples', file)]);
     const fmtRun = runMing(['run', fp]);
-    check(`fmt:${file} 运行结果不变`, origRun.stdout === fmtRun.stdout, `orig=${JSON.stringify(origRun.stdout)} fmt=${JSON.stringify(fmtRun.stdout)}`);
+    const normHead = (s, f) => (s ?? '').split('\n')[0].split(path.resolve(f)).join('<file>').split(f).join('<file>');
+    const sameExit = origRun.code === fmtRun.code;
+    const sameOut = origRun.stdout === fmtRun.stdout;
+    const sameErrHead = normHead(origRun.stderr, path.join(ROOT, 'examples', file)) === normHead(fmtRun.stderr, fp);
+    check(`fmt:${file} 运行结果不变`, sameOut && sameExit && sameErrHead,
+      `orig=${JSON.stringify(origRun.stdout)} fmt=${JSON.stringify(fmtRun.stdout)} code=${origRun.code}/${fmtRun.code}`
+      + ` errHead=${JSON.stringify((origRun.stderr ?? '').split('\n')[0])}/${JSON.stringify((fmtRun.stderr ?? '').split('\n')[0])}`);
   }
 }
 
@@ -3899,6 +3908,616 @@ fn main() with io, fs {
     pureB.status === 0 && pureB.stdout.trim().startsWith('{') && pureB.stdout.trim().endsWith('}')
     && (pureB.stderr ?? '').includes('产物:dist/') && pureJ.ok === true && pureJ.cache_hit === false && typeof pureJ.build_key === 'string',
     'status=' + pureB.status + ' head=' + JSON.stringify((pureB.stdout ?? '').slice(0, 20)) + ' stderr=' + JSON.stringify((pureB.stderr ?? '').slice(0, 120)));
+}
+
+// ===================== 58. v0.54:with unsafe 最小实现(类型/语法/检查器/效果门禁/C5)=====================
+// 14 项:v58.1-6 类型面/禁止面/门禁/黄金+三路 M4016;v58.7-11 C5 黄金/emit-c/alloc 失败/build 回退/既有 C 不变;
+// v58.12-14 Ptr 别名面/offset 链式 C 黄金/unsafe 效果传播。
+{
+  const dir = path.join(TMP, 'v54unsafe');
+  fs.mkdirSync(dir, { recursive: true });
+  const mkU = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+
+  // 1) 类型面/方法面正向:Ptr[mut u8] + Ptr[u8] 解析、四条方法、块外 let/return 传递与 is_null
+  const okU = mkU('types_ok.ming', [
+    'fn ro(p: Ptr[u8]) -> bool {',
+    '    return p.is_null();',
+    '}',
+    '',
+    'fn peek(p: Ptr[mut u8]) -> bool {',
+    '    let q = p;',
+    '    return q.is_null();',
+    '}',
+    '',
+    'fn main() with io, unsafe {',
+    '    unsafe {',
+    '        let p: Ptr[mut u8] = std.mem.alloc(2);',
+    '        p.store(65);',
+    '        p.offset(1).store(66);',
+    '        let first = p.load();',
+    '        let second = p.offset(1).load();',
+    '        let empty = p.is_null();',
+    '        let same = peek(p);',
+    '        print(str(first));',
+    '        print(str(second));',
+    '        print(str(empty));',
+    '        print(str(same));',
+    '        std.mem.free(p);',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const rOkU = runMing(['check', okU]);
+  check('v58.1:Ptr[mut u8]/Ptr[u8] 解析 + load/store/offset/is_null + 块外 let/is_null 允许(check 0 诊断)',
+    rOkU.code === 0 && (rOkU.stderr ?? '') === '', 'code=' + rOkU.code + ' stderr=' + (rOkU.stderr ?? '').slice(0, 300));
+
+  // 2) 类型面负向:unify 拒绝 mut 错配、Ptr 元素仅 u8、只读 Ptr 不可 store(typeStr 逐字出现)
+  const tyU = mkU('types_neg.ming', [
+    'fn ro(p: Ptr[u8]) with unsafe {',
+    '    unsafe {',
+    '        p.store(1);',
+    '    }',
+    '}',
+    '',
+    'fn main() with io, unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        let q: Ptr[u8] = p;',
+    '        let bad: Ptr[i64] = p;',
+    '        print(str(q.is_null()));',
+    '        print(str(bad.is_null()));',
+    '        std.mem.free(p);',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const rTyU = runMing(['check', tyU]);
+  const tyErr = rTyU.stderr ?? '';
+  check('v58.2:Ptr 类型负向(mut 错配 unify 拒绝 + 元素仅 u8 + 只读不可 store;typeStr 为 Ptr[mut u8]/Ptr[u8])',
+    rTyU.code === 1 && tyErr.includes('M3002') && tyErr.includes('Ptr[mut u8]') && tyErr.includes('Ptr[u8]')
+    && tyErr.includes('只支持 u8') && tyErr.includes('只读指针,不能 store'),
+    'code=' + rTyU.code + ' stderr=' + tyErr.slice(0, 500));
+
+  // 3) 禁止面:索引/算术/==/插值/打印/debug/JSON/Map 键/as 全部静态拒绝
+  const badU = mkU('surfaces.ming', [
+    'fn main() with io, unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        let _ = p[0];',
+    '        let _ = p + 1;',
+    '        let _ = p == p;',
+    '        let _ = "\\{p}";',
+    '        print(str(p));',
+    '        debug(p);',
+    '        std.json.stringify(p);',
+    '        let _m: Map[Ptr[u8], i64] = [:];',
+    '        let _ = p as i64;',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const rBadU = runMing(['check', badU]);
+  const badErr = rBadU.stderr ?? '';
+  check('v58.3:Ptr 禁止面(M3020 索引 / M3008 算术与== / M3012 插值 / M3002 打印与 debug / M3033 JSON / M3044 Map 键 / M3019 as)',
+    rBadU.code === 1 && ['M3020', 'M3008', 'M3012', 'M3002', 'M3033', 'M3044', 'M3019'].every((c) => badErr.includes(c))
+    && badErr.includes('Ptr 不支持 "=="') && badErr.includes('不能传给 debug'),
+    'code=' + rBadU.code + ' codes=' + ['M3020', 'M3008', 'M3012', 'M3002', 'M3033', 'M3044', 'M3019'].map((c) => c + ':' + badErr.includes(c)).join(',') + ' stderr=' + badErr.slice(0, 400));
+
+  // 4) unsafe 块必须位于声明 with unsafe 的函数内(M3029,沿用效果码)
+  const noEffU = mkU('no_effect.ming', [
+    'fn main() with io {',
+    '    unsafe {',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const rNoEffU = runMing(['check', noEffU]);
+  check('v58.4:unsafe 块缺 with unsafe → M3029(消息含 [unsafe])',
+    rNoEffU.code === 1 && (rNoEffU.stderr ?? '').includes('M3029') && (rNoEffU.stderr ?? '').includes('[unsafe]')
+    && (rNoEffU.stderr ?? '').includes('with unsafe'),
+    'code=' + rNoEffU.code + ' stderr=' + (rNoEffU.stderr ?? '').slice(0, 300));
+
+  // 5) 指针操作/Ptr 实参在块外 → M3046(load 调用 + 传参两处;块外 let/return/is_null 不报)
+  const outU = mkU('outside.ming', [
+    'fn take(p: Ptr[u8]) -> () {',
+    '}',
+    '',
+    'fn load_out(p: Ptr[u8]) -> u8 {',
+    '    return p.load();',
+    '}',
+    '',
+    'fn pass_out(p: Ptr[u8]) -> () {',
+    '    take(p);',
+    '}',
+    '',
+    'fn ok_out(p: Ptr[u8]) -> bool {',
+    '    let q = p;',
+    '    return q.is_null();',
+    '}',
+    '',
+  ].join('\n'));
+  const rOutU = runMing(['check', outU]);
+  const outErr = rOutU.stderr ?? '';
+  check('v58.5:块外指针操作/Ptr 传参 → M3046(2 处;load 与 take;ok_out 的 let/is_null 不报)',
+    rOutU.code === 1 && (outErr.match(/M3046/g) ?? []).length === 2
+    && outErr.includes('指针操作 ".load()"') && outErr.includes('函数 "take"'),
+    'code=' + rOutU.code + ' M3046=' + (outErr.match(/M3046/g) ?? []).length + ' stderr=' + outErr.slice(0, 400));
+
+  // 6) 黄金示例:check 0 诊断;tree/VM/wasm 回落三路 M4016 逐字一致(exit 101)
+  const exU = path.join(ROOT, 'examples', 'unsafe_demo.ming');
+  const chkU = runMing(['check', exU]);
+  const trU = runMing(['run', exU, '--tree']);
+  const vmU = runMing(['run', exU, '--no-wasm']);
+  const wmU = runMing(['run', exU]); // with unsafe 不进 wasm 资格面 → 回落 VM,同一 M4016
+  const firstLineU = (s) => (s ?? '').split('\n')[0];
+  const msgU = 'unsafe 指针操作仅在 C 原生后端可用';
+  check('v58.6:examples/unsafe_demo.ming check 0 诊断;tree/VM/wasm 回落 exit 101 + M4016 首行逐字一致',
+    chkU.code === 0 && (chkU.stderr ?? '') === ''
+    && trU.code === 101 && vmU.code === 101 && wmU.code === 101
+    && firstLineU(trU.stderr) === firstLineU(vmU.stderr) && firstLineU(vmU.stderr) === firstLineU(wmU.stderr)
+    && firstLineU(trU.stderr).includes('M4016[native-only-feature]') && firstLineU(trU.stderr).includes(msgU)
+    && trU.stdout === '' && vmU.stdout === '' && wmU.stdout === '',
+    'check=' + chkU.code + '/' + JSON.stringify((chkU.stderr ?? '').slice(0, 120))
+    + ' tree=' + trU.code + ' vm=' + vmU.code + ' wasm=' + wmU.code
+    + ' first=' + JSON.stringify(firstLineU(trU.stderr)));
+
+  // ---------- 阶段 2(v0.54/C5):C 原生后端(Ptr → unsigned char*/const unsigned char*) ----------
+  const detectCC58 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const hasCC58 = !!detectCC58();
+  const ccRun58 = (file, out) => spawnSync(process.execPath, [MING, 'cc', file, '--out', out], { encoding: 'utf8', timeout: 180000 });
+  const readC58 = (d) => fs.readdirSync(d).filter(x => x.endsWith('.c')).map(x => fs.readFileSync(path.join(d, x), 'utf8')).join('\n');
+
+  // 7) C5 黄金:alloc 2 字节 → store 65 at 0 / 66 at offset 1 → load 两条打印(u8 提升 i64)
+  if (hasCC58) {
+    const cg = ccRun58(exU, path.join(dir, 'c5-golden'));
+    check('v58.7:C5 黄金 examples/unsafe_demo.ming(cc 实跑 65/66/false,exit 0)',
+      cg.status === 0 && cg.stdout === '65\n66\nfalse\n' && (cg.stderr ?? '') === '',
+      'status=' + cg.status + ' stdout=' + JSON.stringify(cg.stdout) + ' stderr=' + JSON.stringify((cg.stderr ?? '').slice(0, 160)));
+  } else {
+    check('v58.7:C5 黄金(无编译器,跳过)', true);
+  }
+
+  // 8) emit-c 符号:Ptr[mut u8] → unsigned char*;Ptr[u8] → const unsigned char*(extern 槽直接传裸地址)
+  const emDir = path.join(dir, 'c5-emit');
+  const em = spawnSync(process.execPath, [MING, 'cc', exU, '--emit-c', '--out', emDir], { encoding: 'utf8', timeout: 60000 });
+  const emSrc = readC58(emDir);
+  const roU = mkU('ro_slot.ming', [
+    'extern "msvcrt" fn memchr(s: Ptr[u8], c: i64, n: i64) -> Ptr[u8];',
+    '',
+    'fn main() with io, unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        std.mem.free(p);',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const roDir = path.join(dir, 'c5-emit-ro');
+  const roEm = spawnSync(process.execPath, [MING, 'cc', roU, '--emit-c', '--out', roDir], { encoding: 'utf8', timeout: 60000 });
+  const roSrc = readC58(roDir);
+  check('v58.8:emit-c 含 unsigned char*/malloc/free;Ptr[u8] extern 槽为 const unsigned char*(裸地址直传)',
+    em.status === 0 && emSrc.includes('unsigned char*') && emSrc.includes('malloc(') && emSrc.includes('free(')
+    && emSrc.includes('ming_mem_alloc(') && roEm.status === 0
+    && roSrc.includes('static const unsigned char* (*ming_ffi_memchr)(const unsigned char*, long long, long long)'),
+    'emit=' + em.status + ' ro=' + roEm.status + ' markers=' + ['unsigned char*', 'malloc(', 'free(', 'ming_mem_alloc('].map(k => k + ':' + emSrc.includes(k)).join(',')
+    + ' slot=' + roSrc.includes('const unsigned char* (*ming_ffi_memchr)'));
+
+  // 9) alloc 失败语义:malloc 返回 NULL 不伪装 null → M4011 panic + exit 101(负长度必失败)
+  if (hasCC58) {
+    const oomU = mkU('oom_alloc.ming', [
+      'fn main() with io, unsafe {',
+      '    unsafe {',
+      '        let p = std.mem.alloc(-1);',
+      '        print(str(p.is_null()));',
+      '        std.mem.free(p);',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const oom = ccRun58(oomU, path.join(dir, 'c5-oom'));
+    const oomFirst = (oom.stderr ?? '').split('\n')[0];
+    check('v58.9:std.mem.alloc 失败(malloc 返回 NULL)→ M4011 首行 + exit 101(不伪装 null)',
+      oom.status === 101 && oom.stdout === ''
+      && oomFirst.includes('M4011[alloc-quota-exceeded]') && oomFirst.includes('内存分配失败')
+      && oomFirst.includes('std.mem.alloc(-1)') && oomFirst.includes('返回 NULL'),
+      'status=' + oom.status + ' stdout=' + JSON.stringify(oom.stdout) + ' first=' + JSON.stringify(oomFirst));
+  } else {
+    check('v58.9:std.mem.alloc 失败语义(无编译器,跳过)', true);
+  }
+
+  // 10) ming build 遇 with unsafe:AOT 显式回退源码模式并说明原因(不产出字节码产物)
+  const bp = path.join(dir, 'c5-build');
+  fs.mkdirSync(bp, { recursive: true });
+  fs.writeFileSync(path.join(bp, 'ming.toml'), '[project]\nname = "c5build"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.copyFileSync(exU, path.join(bp, 'app.ming'));
+  const bld = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: bp, timeout: 120000 });
+  check('v58.10:ming build 遇 with unsafe 显式回退源码模式(AOT 不可用 + 原因;无 app.bytecode.json)',
+    bld.status === 0 && (bld.stderr ?? '').includes('AOT 不可用')
+    && (bld.stderr ?? '').includes('with unsafe') && (bld.stderr ?? '').includes('已回退源码模式')
+    && fs.existsSync(path.join(bp, 'dist', 'app.ming')) && !fs.existsSync(path.join(bp, 'dist', 'app.bytecode.json')),
+    'status=' + bld.status + ' stderr=' + JSON.stringify((bld.stderr ?? '').slice(0, 200)));
+
+  // 11) 既有 C 输出不变抽查:非 unsafe 程序不发射 ming_mem_alloc/unsafe;cc 与 VM 输出一致
+  const baseU = mkU('c5_baseline.ming', [
+    'fn add(a: i64, b: i64) -> i64 { return a + b; }',
+    'fn main() with io {',
+    '    let mut v = [1, 2, 3];',
+    '    v.push(4);',
+    '    let m = {"a": 1, "b": 2};',
+    '    print(str(add(v[0], m["b"])));',
+    '    print(str(1.5 + 2.0));',
+    '    print("ab".replace("b", "c"));',
+    '}',
+    '',
+  ].join('\n'));
+  const baseEmDir = path.join(dir, 'c5-baseline-emit');
+  const baseEm = spawnSync(process.execPath, [MING, 'cc', baseU, '--emit-c', '--out', baseEmDir], { encoding: 'utf8', timeout: 60000 });
+  const baseSrc = readC58(baseEmDir);
+  const baseJs = runMing(['run', baseU]);
+  // v0.54 审查 M4:字节级回归——固定非 unsafe 程序的渲染后 C 内容指纹。
+  // 源文件是绝对路径,发射的 C 会把它写进 panic 位置字符串;先归一化为 <file>,
+  // 使指纹跨机器/跨 OS 稳定(相对路径运行与归一化后的绝对路径运行逐字节相同)。
+  const baseAbsEsc = baseU.split('\\').join('\\\\');
+  const baseNorm = baseSrc.split(baseAbsEsc).join('<file>').split(baseU).join('<file>');
+  const baseSha = createHash('sha256').update(baseNorm, 'utf8').digest('hex');
+  const BASE_C_SHA = 'c62b5c0d13435318b676258ce2885a356c0ce763523e88c03c64bd68daf162ab';
+  if (hasCC58) {
+    const baseC = ccRun58(baseU, path.join(dir, 'c5-baseline-run'));
+    check('v58.11:既有 C 输出不变抽查(非 unsafe 程序不发射 ming_mem_alloc/std.mem;cc 输出与 VM 逐字一致;渲染 C 指纹逐字节不变)',
+      baseEm.status === 0 && !baseSrc.includes('ming_mem_alloc') && !baseSrc.includes('std.mem')
+      && baseJs.code === 0 && baseC.status === 0 && baseC.stdout === baseJs.stdout
+      && baseSha === BASE_C_SHA,
+      'emit=' + baseEm.status + ' markers=' + baseSrc.includes('ming_mem_alloc') + '/' + baseSrc.includes('std.mem')
+      + ' js=' + JSON.stringify(baseJs.stdout) + ' cc=' + JSON.stringify((baseC.stdout ?? '').slice(0, 120))
+      + ' sha=' + baseSha);
+  } else {
+    check('v58.11:既有 C 输出不变抽查(无编译器,仅查发射无新增符号 + 渲染 C 指纹)',
+      baseEm.status === 0 && !baseSrc.includes('ming_mem_alloc') && !baseSrc.includes('std.mem')
+      && baseSha === BASE_C_SHA,
+      'emit=' + baseEm.status + ' markers=' + baseSrc.includes('ming_mem_alloc') + '/' + baseSrc.includes('std.mem')
+      + ' sha=' + baseSha);
+  }
+
+  // 12) Ptr 值语义/别名面:C5 明示"值拷贝的是地址本身,不是内存"——同一地址的两个 Ptr 变量,
+  //     经 a.store 后 b.load 可见(C 侧断言;tree/VM 在 alloc 处即 M4016,不可能观察该语义)
+  const aliasU = mkU('alias.ming', [
+    'fn main() with io, unsafe {',
+    '    unsafe {',
+    '        let a = std.mem.alloc(1);',
+    '        let b = a;',
+    '        a.store(7);',
+    '        print(str(b.load()));',
+    '        std.mem.free(a);',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const aliasChk = runMing(['check', aliasU]);
+  const aliasTree = runMing(['run', aliasU, '--tree']);
+  const aliasFirst = (aliasTree.stderr ?? '').split('\n')[0];
+  if (hasCC58) {
+    const aliasRun = ccRun58(aliasU, path.join(dir, 'c5-alias'));
+    check('v58.12:Ptr 值语义/别名面(值拷贝 = 地址本身;a.store 后 b.load 可见;C 侧 7;tree M4016)',
+      aliasChk.code === 0 && (aliasChk.stderr ?? '') === ''
+      && aliasRun.status === 0 && aliasRun.stdout === '7\n' && (aliasRun.stderr ?? '') === ''
+      && aliasTree.code === 101 && aliasFirst.includes('M4016[native-only-feature]'),
+      'check=' + aliasChk.code + ' cc=' + aliasRun.status + '/' + JSON.stringify(aliasRun.stdout)
+      + ' tree=' + aliasTree.code + ' first=' + JSON.stringify(aliasFirst));
+  } else {
+    check('v58.12:Ptr 值语义/别名面(无编译器:仅 check 0 诊断 + tree M4016)',
+      aliasChk.code === 0 && aliasTree.code === 101 && aliasFirst.includes('M4016[native-only-feature]'),
+      'check=' + aliasChk.code + ' tree=' + aliasTree.code + ' first=' + JSON.stringify(aliasFirst));
+  }
+
+  // 13) offset 链式与边界内访问:C 黄金 10/30/30(仍用 3 字节分配,不越界)
+  const chainU = mkU('offset_chain.ming', [
+    'fn main() with io, unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(3);',
+    '        p.store(10);',
+    '        p.offset(1).store(20);',
+    '        p.offset(1).offset(1).store(30);',
+    '        print(str(p.load()));',
+    '        print(str(p.offset(2).load()));',
+    '        print(str(p.offset(1).offset(1).load()));',
+    '        std.mem.free(p);',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const chainChk = runMing(['check', chainU]);
+  if (hasCC58) {
+    const chainRun = ccRun58(chainU, path.join(dir, 'c5-chain'));
+    check('v58.13:offset 链式(p.offset(1).offset(1).load())与边界内访问的 C 黄金(10/30/30)',
+      chainChk.code === 0 && (chainChk.stderr ?? '') === ''
+      && chainRun.status === 0 && chainRun.stdout === '10\n30\n30\n' && (chainRun.stderr ?? '') === '',
+      'check=' + chainChk.code + ' cc=' + chainRun.status + '/' + JSON.stringify(chainRun.stdout));
+  } else {
+    check('v58.13:offset 链式(无编译器:仅 check 0 诊断)', chainChk.code === 0 && (chainChk.stderr ?? '') === '',
+      'check=' + chainChk.code + ' stderr=' + JSON.stringify((chainChk.stderr ?? '').slice(0, 160)));
+  }
+
+  // 14) unsafe 效果传播:纯函数调用 with unsafe 函数 → M3029(效果名 unsafe);调用方声明后通过
+  const propBadU = mkU('prop_bad.ming', [
+    'fn danger(x: i64) -> i64 with unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        p.store(42);',
+    '        std.mem.free(p);',
+    '    }',
+    '    return x + 1;',
+    '}',
+    '',
+    'fn pure_caller(x: i64) -> i64 {',
+    '    return danger(x);',
+    '}',
+    '',
+    'fn main() with io {',
+    '    print(str(pure_caller(3)));',
+    '}',
+    '',
+  ].join('\n'));
+  const propOkU = mkU('prop_ok.ming', [
+    'fn danger(x: i64) -> i64 with unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        p.store(42);',
+    '        std.mem.free(p);',
+    '    }',
+    '    return x + 1;',
+    '}',
+    '',
+    'fn wrapper(x: i64) -> i64 with unsafe {',
+    '    return danger(x);',
+    '}',
+    '',
+    'fn main() with io, unsafe {',
+    '    print(str(wrapper(3)));',
+    '}',
+    '',
+  ].join('\n'));
+  const propBadR = runMing(['check', propBadU]);
+  const propOkR = runMing(['check', propOkU]);
+  const propBadErr = propBadR.stderr ?? '';
+  check('v58.14:unsafe 效果传播(纯函数调用 with unsafe → M3029 [unsafe];调用方声明后 0 诊断)',
+    propBadR.code === 1 && (propBadErr.match(/M3029/g) ?? []).length === 1
+    && propBadErr.includes('需要效果 [unsafe]') && propBadErr.includes('"pure_caller"') && propBadErr.includes('[纯函数]')
+    && propOkR.code === 0 && (propOkR.stderr ?? '') === '',
+    'bad=' + propBadR.code + ' M3029=' + (propBadErr.match(/M3029/g) ?? []).length + ' ok=' + propOkR.code
+    + ' stderr=' + propBadErr.slice(0, 300));
+
+  // ---------- 阶段 3(v0.54.0 独立审查 B1–B5)----------
+  // 15) B1 正例:unsafe 块内 return 是最后一条语句 → 函数必然终止,不得误报 M3017
+  const b1OkU = mkU('review_b1_ok.ming', [
+    'fn alloc1() -> Ptr[mut u8] with unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        p.store(7);',
+    '        return p;',
+    '    }',
+    '}',
+    '',
+    'fn main() -> i64 with unsafe {',
+    '    unsafe {',
+    '        let q = alloc1();',
+    '        let v = q.load();',
+    '        std.mem.free(q);',
+    '        return v as i64;',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const b1OkR = runMing(['check', b1OkU]);
+  check('v58.15:B1 unsafe 块终止流(块内 return 为最后语句 → 工厂函数 check 0 诊断,无 M3017)',
+    b1OkR.code === 0 && (b1OkR.stderr ?? '') === '',
+    'code=' + b1OkR.code + ' stderr=' + (b1OkR.stderr ?? '').slice(0, 300));
+
+  // 16) B1 反例:loop 内只有 unsafe { break; } → loop 以 unit 结束(i64/Ptr 都不接受)
+  const b1BadU = mkU('review_b1_bad.ming', [
+    'fn main() -> i64 with unsafe {',
+    '    let x: i64 = loop { unsafe { break; } };',
+    '    let p: Ptr[mut u8] = loop { unsafe { break; } };',
+    '    let _ = p.is_null();',
+    '    return x;',
+    '}',
+    '',
+  ].join('\n'));
+  const b1BadR = runMing(['check', b1BadU]);
+  const b1BadErr = b1BadR.stderr ?? '';
+  check('v58.16:B1 unsafe break 冒泡(loop { unsafe { break; } } 装 i64/Ptr → 2×M3002,初始化表达式是 ())',
+    b1BadR.code === 1 && (b1BadErr.match(/M3002/g) ?? []).length === 2
+    && b1BadErr.includes('初始化表达式是 ()') && b1BadErr.includes('i64') && b1BadErr.includes('Ptr[mut u8]'),
+    'code=' + b1BadR.code + ' M3002=' + (b1BadErr.match(/M3002/g) ?? []).length + ' stderr=' + b1BadErr.slice(0, 320));
+
+  // 17) B2:unsafe 块在 C 端必须是独立作用域——块内 let 遮蔽外层同名变量不得 redefinition
+  const b2U = mkU('review_b2_scope.ming', [
+    'fn main() -> i64 with io, unsafe {',
+    '    let x = 1;',
+    '    unsafe {',
+    '        let x = 2;',
+    '        print(str(x));',
+    '    }',
+    '    print(str(x));',
+    '    return 0;',
+    '}',
+    '',
+  ].join('\n'));
+  const b2Chk = runMing(['check', b2U]);
+  const b2Vm = runMing(['run', b2U, '--no-wasm']);
+  const b2EmDir = path.join(dir, 'b2-emit');
+  const b2Em = spawnSync(process.execPath, [MING, 'cc', b2U, '--emit-c', '--out', b2EmDir], { encoding: 'utf8', timeout: 60000 });
+  const b2Src = readC58(b2EmDir);
+  // 内层 x 必须出现在一对花括号内(C 作用域),而不是与 v_x=1 同层
+  const b2Scoped = /\{\s*\n\s*long long v_x = 2LL;/.test(b2Src) || /\{\s*long long v_x = 2LL;/.test(b2Src);
+  if (hasCC58) {
+    const b2C = ccRun58(b2U, path.join(dir, 'b2-run'));
+    check('v58.17:B2 unsafe 块 C 作用域(cc 输出 2/1 与 VM 一致;发射含 { 作用域块,不再 redefinition)',
+      b2Chk.code === 0 && (b2Chk.stderr ?? '') === ''
+      && b2Vm.code === 0 && b2Vm.stdout === '2\n1\n'
+      && b2Em.status === 0 && b2Scoped
+      && b2C.status === 0 && b2C.stdout === '2\n1\n' && (b2C.stderr ?? '') === '',
+      'chk=' + b2Chk.code + ' vm=' + b2Vm.code + '/' + JSON.stringify(b2Vm.stdout)
+      + ' cc=' + b2C.status + '/' + JSON.stringify(b2C.stdout) + ' scoped=' + b2Scoped
+      + ' stderr=' + JSON.stringify((b2C.stderr ?? '').slice(0, 160)));
+  } else {
+    check('v58.17:B2 unsafe 块 C 作用域(无编译器:check/VM + 发射含 { 作用域块)',
+      b2Chk.code === 0 && b2Vm.code === 0 && b2Vm.stdout === '2\n1\n' && b2Em.status === 0 && b2Scoped,
+      'chk=' + b2Chk.code + ' vm=' + b2Vm.code + '/' + JSON.stringify(b2Vm.stdout) + ' scoped=' + b2Scoped);
+  }
+
+  // 18) B3:块外把 Ptr 装进容器/构造器 → M3046;同一批构造放在 unsafe 块内 → 0 诊断
+  const b3Shape = (inside) => {
+    const ind = '    ';
+    const body = [
+      '    let q = make();',
+      ind + 'let _h = H { p: q };',
+      ind + 'let _o = Some(q);',
+      ind + 'let mut vv: Vec[Ptr[mut u8]] = [];',
+      ind + 'vv.push(q);',
+      ind + 'let _t = (q, 1);',
+      ind + 'let _a = take_h(H { p: q });',
+      ind + 'let _b = take_opt(Some(q));',
+      ind + 'let _c = take_t((q, 1));',
+      '    return 0;',
+    ];
+    const lines = inside
+      ? ['fn outside() -> i64 with unsafe {', '    let q = make();', '    unsafe {', ...body.slice(1, -1), '    }', '    return 0;', '}']
+      : ['fn outside() -> i64 with unsafe {', ...body, '}'];
+    return [
+      'struct H { p: Ptr[mut u8] }',
+      'fn make() -> Ptr[mut u8] with unsafe {',
+      '    unsafe {',
+      '        let p = std.mem.alloc(1);',
+      '        p.store(3);',
+      '        return p;',
+      '    }',
+      '}',
+      'fn take_h(h: H) -> i64 { return 0; }',
+      'fn take_opt(o: Option[Ptr[mut u8]]) -> i64 { return 0; }',
+      'fn take_t(t: (Ptr[mut u8], i64)) -> i64 { return 0; }',
+      ...lines,
+      'fn main() -> i64 with unsafe { return outside(); }',
+      '',
+    ].join('\n');
+  };
+  const b3OutU = mkU('review_b3_outside.ming', b3Shape(false));
+  const b3InU = mkU('review_b3_inside.ming', b3Shape(true));
+  const b3OutR = runMing(['check', b3OutU]);
+  const b3InR = runMing(['check', b3InU]);
+  const b3Err = b3OutR.stderr ?? '';
+  check('v58.18:B3 容器载荷逃逸(块外 H{}/Some/push/元组/传参 → 7×M3046;块内 0 诊断)',
+    b3OutR.code === 1 && (b3Err.match(/M3046/g) ?? []).length === 7
+    && b3Err.includes('结构体字段含 Ptr') && b3Err.includes('变体载荷含 Ptr')
+    && b3Err.includes('Vec 元素含 Ptr') && b3Err.includes('元组成分含 Ptr')
+    && b3InR.code === 0 && (b3InR.stderr ?? '') === '',
+    'out=' + b3OutR.code + ' M3046=' + (b3Err.match(/M3046/g) ?? []).length + ' in=' + b3InR.code
+    + ' inErr=' + JSON.stringify((b3InR.stderr ?? '').slice(0, 200)));
+
+  // 19) B4:unsafe 块内定义的闭包携带 unsafe 效果,不得洗成纯函数值;
+  //     块内直接调用该闭包仍允许(效果已由所在函数声明)
+  const b4BadU = mkU('review_b4_launder.ming', [
+    'fn pure_call(f: () -> u8) -> u8 { return f(); }',
+    'fn make() -> (() -> u8) with unsafe {',
+    '    let mut g: () -> u8 = () => 0;',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        p.store(42);',
+    '        g = () => p.load();',
+    '    }',
+    '    return g;',
+    '}',
+    'fn main() -> i64 with io, unsafe {',
+    '    let g = make();',
+    '    print(str(pure_call(g)));',
+    '    return 0;',
+    '}',
+    '',
+  ].join('\n'));
+  const b4OkU = mkU('review_b4_direct.ming', [
+    'fn run() -> u8 with unsafe {',
+    '    unsafe {',
+    '        let p = std.mem.alloc(1);',
+    '        p.store(5);',
+    '        let g = () => p.load();',
+    '        let v = g();',
+    '        std.mem.free(p);',
+    '        return v;',
+    '    }',
+    '}',
+    'fn main() -> i64 with io, unsafe {',
+    '    print(str(run()));',
+    '    return 0;',
+    '}',
+    '',
+  ].join('\n'));
+  const b4BadR = runMing(['check', b4BadU]);
+  const b4OkR = runMing(['check', b4OkU]);
+  const b4Err = b4BadR.stderr ?? '';
+  check('v58.19:B4 闭包洗效果(unsafe 闭包赋给纯函数类型 → M3029[unsafe];块内直接调用 0 诊断)',
+    b4BadR.code === 1 && (b4Err.match(/M3029/g) ?? []).length === 1
+    && b4Err.includes('[unsafe]') && b4Err.includes('效果只增不减')
+    && b4OkR.code === 0 && (b4OkR.stderr ?? '') === '',
+    'bad=' + b4BadR.code + ' M3029=' + (b4Err.match(/M3029/g) ?? []).length + ' ok=' + b4OkR.code
+    + ' stderr=' + b4Err.slice(0, 260));
+
+  // 20) B5:use std.mem / use std.math 短名在字节码编译器可解析(#27 全链路)
+  const b5MemU = mkU('review_b5_mem.ming', [
+    'use std.mem;',
+    'fn main() -> i64 with unsafe {',
+    '    unsafe {',
+    '        let p = mem.alloc(1);',
+    '        p.store(9);',
+    '        let v = p.load();',
+    '        mem.free(p);',
+    '        return v as i64;',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const b5MathU = mkU('review_b5_math.ming', [
+    'use std.math;',
+    'fn main() -> i64 with io {',
+    '    let x = math.sqrt(25.0);',
+    '    print(str(x));',
+    '    return 0;',
+    '}',
+    '',
+  ].join('\n'));
+  const b5MemTree = runMing(['run', b5MemU, '--tree']);
+  const b5MemVm = runMing(['run', b5MemU, '--no-wasm']);
+  const b5MathTree = runMing(['run', b5MathU, '--tree']);
+  const b5MathVm = runMing(['run', b5MathU, '--no-wasm']);
+  const b5MemFirst = (b5MemTree.stderr ?? '').split('\n')[0];
+  const b5MemVmFirst = (b5MemVm.stderr ?? '').split('\n')[0];
+  const b5MathOk = b5MathTree.code === 0 && b5MathTree.stdout === '5.0\n'
+    && b5MathVm.code === 0 && b5MathVm.stdout === '5.0\n'
+    && !(b5MathVm.stderr ?? '').includes('名字未解析');
+  let b5MemCcOk = true;
+  let b5MemCcDetail = 'no-cc';
+  if (hasCC58) {
+    const b5MemCc = ccRun58(b5MemU, path.join(dir, 'b5-mem-cc'));
+    b5MemCcOk = b5MemCc.status === 0 && (b5MemCc.stderr ?? '') === '';
+    b5MemCcDetail = 'cc=' + b5MemCc.status + '/' + JSON.stringify((b5MemCc.stderr ?? '').slice(0, 160));
+  }
+  check('v58.20:B5 use std.mem/std.math 短名(#27):mem 三路一致(tree/VM M4016,cc 跑通)+ math tree/VM 5.0',
+    b5MemTree.code === 101 && b5MemVm.code === 101
+    && b5MemFirst === b5MemVmFirst && b5MemFirst.includes('M4016[native-only-feature]')
+    && b5MathOk && b5MemCcOk,
+    'memTree=' + b5MemTree.code + ' memVm=' + b5MemVm.code + ' first=' + JSON.stringify(b5MemFirst)
+    + ' mathTree=' + b5MathTree.code + '/' + JSON.stringify(b5MathTree.stdout)
+    + ' mathVm=' + b5MathVm.code + '/' + JSON.stringify(b5MathVm.stdout)
+    + ' ' + b5MemCcDetail);
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

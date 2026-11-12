@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.53.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.54.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.53.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（628 项，含各版本分节 §1..§57；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（652 项，含各版本分节 §1..§58；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
 tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
@@ -126,8 +126,9 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 - **fmt 需两遍到定点**：注释瀑布按源行距保留空行,一次 `--write` 后注释占行可能触发再排;跑到 `fmt --check` 全绿为止(2026-11-12 已登记 plan.md #20)。
 - **strict-wasm 与解释器旗标互斥**：`--strict-wasm`（或 `MING_WASM_STRICT=1`）观测的正是 wasm 分层本身，与 `--tree`/`--no-wasm` 同时出现 → exit 1；strict 下 eligible>0 回落 → exit 2，非 strict 仍静默回落 exit 0（§57 v53.1-7 锁定）。
 - **模糊器覆盖不等于语义证明**：v0.51.6 起生成器已含 `+=/-=/*=`（含 while 内）；VM 复合赋值窥孔 bug 曾因早期生成器不生成 `+=` 漏网。语义可疑时仍要写最小 .ming 复现跑 `--tree` 对照，别只信模糊绿。
+- **unsafe 仅 C 原生可用**：`with unsafe`/`Ptr`/`std.mem` 在 tree/VM（以及 wasm 回落 VM）以 **M4016** panic（exit 101，消息逐字）；`ming cc` 是唯一真实执行者（C5 旗标仅 cc 路径传入）。`std.mem.alloc` 的 malloc 失败复用 **M4011**（不返回空指针）。悬垂/越界解引用是进程级 UB，Ming 不捕获——写 unsafe 测试时不要制造越界访问（§58 黄金均用 1–3 字节分配且界内）。
 
 ## 10. 当前状态与下一步
 
-- **v0.53.0**：628 项测试全绿；CI 矩阵（九组合 + C 腿 + nightly + 示例 fib strict 步）workflow 结构静态校验通过（实际矩阵以 GitHub Actions 记录为准，本机不代跑）；strict-wasm 三态（none/ok/fallback，回落 exit 2）；构建键修复（项目相对路径 + 内容 + Node 主版本；`build --json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes）；env -i launcher 验收；C 后端 `str` for-in 按 UTF-8 码点迭代；修复尾表达式函数的 wasm 模块校验回落（strict 暴露：函数级补零多压栈）；**v0.53.0 独立审查修复**（B1 同名文件构建键 fixture / B2 check strict fallback 保留 ok:false+diagnostics+proofs / B3 C 后端 for-in 遮蔽作用域 / M1 no-wasm 不报 wasm_status / M2 回落点名函数 / M12 wasm `/` 守卫 opcode 与 if 位置 / M6 env 剥离 / M7 build --json 纯 JSON / M9 CI 示例 strict）；ABI 哈希构建缓存、契约阶段 2 + QF_LIA 第一/二片此前已完成。
-- 下一步见 `docs/plan.md §4.2`：v0.54 `with unsafe` → v0.55 跨函数契约摘要。
+- **v0.54.0**：652 项测试全绿；**`with unsafe` 最小实现（C5）**——效果名 `unsafe` + 双门禁（签名 `with unsafe` → M3029 逐层传播；指针读写/`std.mem`/Ptr 实参必须在 `unsafe { ... }` 块内 → M3046）；`Ptr[mut u8]`/`Ptr[u8]`（元素仅 u8，load/store/offset/is_null，禁止索引/算术/插值/打印/JSON/Map 键/as）；`std.mem.alloc/free`（malloc 失败 M4011）；C5 后端（Ptr → `unsigned char*`/`const unsigned char*`、extern 槽接受/返回 Ptr、非 unsafe 程序 C 输出逐字不变）；tree/VM/wasm 回落 M4016（消息"unsafe 指针操作仅在 C 原生后端可用"，exit 101，三路首行一致）；`ming build` 遇 `with unsafe` 显式回退源码模式；Ptr 值语义例外（拷贝地址本身、别名可见）与悬垂/越界 UB 不捕获已写入 GUIDE §14.1；§58 共 20 项（含 Ptr 别名面、offset 链式 C 黄金、unsafe 效果传播、独立审查 B1–B5 回归）。**v0.54.0 独立审查修复（B1–B5 + M1–M6）**：B1 `UnsafeBlock` 接入控制流（`stmtTerminates`/`hasBreak`，块内 return 不误报 M3017，`loop { unsafe { break; } }` 为 unit）；B2 C 后端 unsafe 块独立作用域；B3 M3046 覆盖容器/构造器载荷逃逸（`typeContainsPtr` 递归：Vec/Map/Option/Result/元组/结构体/枚举）；B4 unsafe 闭包携带 `unsafe` 效果（不可洗成纯函数值）；B5 `use std.x [as y]` 短名在字节码编译器可解析（#27 已修），编译器未解析名输出带位置的 M4001 诊断；M1 Ptr 方法防御 M4016；M4 既有 C 渲染指纹回归；M6 示例比较退出码与 stderr 首行。新登记缺陷 #28（tree 块作用域泄漏，P1，待修）/ #29（launcher 源码模式 panic 无位置，P3）/ #30（extern fn 值存局部变量后 C 后端不支持调用，P2）。v0.53 可信构建基线（CI 矩阵/strict-wasm/构建键/env -i/C 码点 for-in）此前已完成。
+- 下一步见 `docs/plan.md §4.2`：v0.55 跨函数契约摘要。

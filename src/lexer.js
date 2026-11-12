@@ -8,12 +8,12 @@ export const KEYWORDS = new Set([
   'let', 'mut', 'fn', 'return', 'if', 'else', 'while', 'for', 'in', 'loop',
   'break', 'continue', 'match', 'use', 'pub', 'struct', 'enum', 'test',
   'true', 'false', 'as', 'const', 'with', 'trait', 'impl', 'self', 'extern',
-  'requires', 'ensures', 'invariant',
+  'requires', 'ensures', 'invariant', 'unsafe', // v0.54:unsafe 从保留字升为关键字(块语句)
 ]);
 
 // 保留字:v0.2 不使用,但禁止作为标识符,避免 AI 生成与未来版本冲突的代码。
 export const RESERVED = new Set([
-  'super', 'static', 'where', 'unsafe',
+  'super', 'static', 'where',
   'async', 'await', 'yield', 'defer', 'null', 'nil', 'var', 'class', 'interface',
   'try', 'catch', 'throw', 'switch', 'case', 'default', 'do', 'type', 'new',
   'macro', 'then', 'elif', 'foreach',

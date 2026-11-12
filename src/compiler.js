@@ -14,6 +14,16 @@ import { Interp } from './interp.js';
 import { resolveT, typeStr } from './checker.js';
 import { tryCompileWasm } from './wasm.js';
 
+// v0.54 审查 B5:编译器内部可预期的"名字/结构体未解析"错误携带源码位置,
+// 由 CLI 渲染为 file:line:col 诊断(而不是 Node 裸栈)。其余异常仍按 bug 上抛。
+export class CompileError extends Error {
+  constructor(message, span) {
+    super(message);
+    this.name = 'CompileError';
+    this.span = span ?? null;
+  }
+}
+
 export const OP = {
   CONST: 1,        // a=池下标                     → push pool[a]
   POP: 2,          //                              → 弹出
@@ -520,6 +530,12 @@ class BytecodeCompiler {
         this.emit(st, OP.SYNC_EXIT, 0, 0, s.span);
         return;
       }
+      case 'UnsafeBlock': {
+        // v0.54:unsafe 块只是类型层门禁;VM 执行指针操作时由 callStd / callMethod
+        // 以 M4016 诚实拒绝(C 后端阶段 2 兑现真实内存语义)
+        this.compileBlock(s.body, st, false);
+        return;
+      }
       case 'Loop': {
         const b = { breaks: [], continues: [] };
         (st.breakCtx ??= []).push(b);
@@ -637,7 +653,7 @@ class BytecodeCompiler {
     switch (e.nt) {
       case 'Ident': {
         const r = this.resolveName(st, e.name);
-        if (!r) throw new Error('编译错误:赋值目标未解析 ' + e.name);
+        if (!r) throw new CompileError('名字未解析:' + e.name + '(赋值目标)', e.span);
         this.emit(st, OP.SET, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
         return;
       }
@@ -863,7 +879,7 @@ class BytecodeCompiler {
           const imp = st.mod.imports.get(e.path[0]);
           if (imp?.local) def = imp.local.items.get(e.path[1])?.decl ?? null;
         }
-        if (!def) throw new Error('编译错误:结构体未找到 ' + e.path.join('.'));
+        if (!def) throw new CompileError('结构体未解析:' + e.path.join('.'), e.span);
         const names = e.fields.map(f => f.name);
         if ((def.invariants ?? []).length === 0) { for (const f of e.fields) this.compileExpr(f.value, st); } else { this.pushScope(st); const slots = new Map(); for (const f of e.fields) { this.compileExpr(f.value, st); const slot = this.declareLocal(st, f.name); this.emit(st, OP.ST, 0, slot, f.span); slots.set(f.name, slot); } for (const inv of def.invariants) { this.compileExpr(inv.expr, st); this.compileContractFail(st, '契约违反: invariant', inv.span ?? e.span, (st) => { this.emit(st, OP.CONST, this.poolAdd(V.bool(false)), 0, inv.span ?? e.span); }); } this.popScope(st); for (const f of e.fields) this.emit(st, OP.LD, 0, slots.get(f.name), f.span); }
         this.emit(st, OP.MAKESTRUCT, this.poolAdd({ __tag: 'structspec', v: { names, def } }), e.fields.length, e.span);
@@ -922,6 +938,14 @@ class BytecodeCompiler {
       this.emit(st, OP.LDFN, this.entryFnIdx.get(entry), 0, span);
       return;
     }
+    // v0.54 审查 B5:use std.x [as y] 的短名/别名是模块值(与树引擎 evalField 的
+    // import 分支对齐)。此前只有全限定 std.x.f 能编译,`use std.math; math.sqrt(...)`
+    // 在 run(VM)下抛 "名字未解析 math" —— check 通过但运行崩溃(#27)。
+    const imp = st.mod.imports.get(name);
+    if (imp?.std) {
+      this.emit(st, OP.CONST, this.pstr('__stdmod:' + imp.std), 0, span);
+      return;
+    }
     if (name === 'None') {
       this.emit(st, OP.CONST, this.noneIdx, 0, span);
       return;
@@ -940,7 +964,7 @@ class BytecodeCompiler {
       this.emit(st, OP.CONST, this.poolAdd({ __tag: 'typeobj', v: name }), 0, span);
       return;
     }
-    throw new Error('编译错误:名字未解析 ' + name);
+    throw new CompileError('名字未解析:' + name, span);
   }
 
   // 字段访问(非调用):p.x / std.math / Option(类型名)
@@ -963,7 +987,8 @@ class BytecodeCompiler {
         const imp = st.mod.imports.get(n);
         if (imp) {
           if (imp.std) {
-            this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__stdmod:' + n }), 0, e.span);
+            // v0.54 审查 B5:按真实模块名映射(use std.math as m 时别名不是模块名)
+            this.emit(st, OP.CONST, this.pstr('__stdmod:' + imp.std), 0, e.span);
             return;
           }
           const mEntry = imp.local.items.get(e.name);

@@ -24,7 +24,7 @@ function cstr(text) {
     .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 }
 
-const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', str: 'ming_str', vi64: 'ming_vec', mi64: 'ming_map', oi64: 'ming_opt', ri64: 'ming_res' };
+const CTYPE = { i64: 'long long', u64: 'unsigned long long', f64: 'double', bool: 'long long', str: 'ming_str', vi64: 'ming_vec', mi64: 'ming_map', oi64: 'ming_opt', ri64: 'ming_res', pu8: 'unsigned char*', pcu8: 'const unsigned char*' }; // v0.54/C5:bool 局部 + Ptr[mut u8]/Ptr[u8]
 const CSUF = { i64: 'LL', u64: 'ULL', f64: '' };
 const FMT = { i64: '%lld', u64: '%llu' };
 
@@ -50,6 +50,8 @@ function mingTyNum(t) {
   if (t.k === 'map' && t.kt?.k === 'str' && t.vt?.k === 'int' && t.vt?.bits === 64 && t.vt?.signed) return 'mi64';
   if (t.k === 'opt' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return 'oi64';
   if (t.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str') return 'ri64';
+  // v0.54/C5:Ptr[mut u8] → unsigned char*;Ptr[u8] → const unsigned char*
+  if (t.k === 'ptr' && t.el?.k === 'int' && t.el.bits === 8 && t.el.signed === false) return t.mut ? 'pu8' : 'pcu8';
   return null;
 }
 
@@ -90,11 +92,21 @@ function annoTarget(t) {
       if (ok?.k === 'int' && ok.bits === 64 && ok.signed && er?.k === 'str') return { k: 'res' };
       return null;
     }
+    // v0.54/C5:Ptr[mut u8] / Ptr[u8](元素仅 u8;mut 由 TMut 包装)
+    if ((n === 'Ptr') && t.args?.length === 1) {
+      let arg = t.args[0];
+      let mut = false;
+      if (arg?.nt === 'TMut') { mut = true; arg = arg.type; }
+      const el = annoTarget(arg);
+      if (el?.k === 'int' && el.bits === 8 && el.signed === false) return { k: 'ptr', mut };
+      return null;
+    }
     return ANNO_PRIM[n] ?? null;
   }
   if (t.k === 'int' || t.k === 'float') return { k: t.k, bits: t.bits, signed: !!t.signed };
   if (t.k === 'str') return { k: 'str' };
   if (t.k === 'vec') return { k: 'vec', el: t.el };
+  if (t.k === 'ptr') return { k: 'ptr', mut: !!t.mut }; // v0.54/C5
   return null;
 }
 
@@ -107,18 +119,21 @@ function annoTy(t) {
   if (a.k === 'map') return 'mi64';
   if (a.k === 'opt') return 'oi64';
   if (a.k === 'res') return 'ri64';
+  if (a.k === 'ptr') return a.mut ? 'pu8' : 'pcu8'; // v0.54/C5
   return mingTyNum(a);
 }
 
 // ---------- 发射器 ----------
 
 class CEmit {
-  constructor(check, compiled) {
+  constructor(check, compiled, opts = {}) {
     this.check = check;
     this.compiled = compiled;
+    this.opts = opts; // v0.54/C5:unsafe = C 专用资格扩展(由 ming cc 路径传入)
     this.modulesByFile = new Map(check.modules.map(m => [m.file, m]));
     this.usedConsts = new Map(); // const 名 → 'i64'|'u64'|'f64'|'str'(发射期收集,顶部统一定义)
     this.strLits = new Map();    // str 字面量 → 全局数组名
+    this.usesMemAlloc = false;   // v0.54/C5:仅在使用 std.mem.alloc 时发射 malloc 失败助手
     this.tmpSeq = 0;
   }
 
@@ -178,12 +193,23 @@ class CEmit {
       case 'Call': {
         const mn = this.mathNameOf(e.callee, ctx);
         if (mn) return 'f64';
+        // v0.54/C5:std.mem.alloc → Ptr[mut u8];free → unit(值位置无类型)
+        const memFn = this.memNameOf(e.callee, ctx);
+        if (memFn === 'alloc') return 'pu8';
+        if (memFn === 'free') return null;
         if (e.callee.nt === 'Field') {
           // 方法调用类型推断(C2 方法面;base 可为任意 str/Vec[i64] 表达式)
           const m = e.callee.name;
           let bt = null;
           if (e.callee.base.nt === 'Ident' && ctx.nameOf(e.callee.base.name)) bt = ctx.typeOf(e.callee.base.name);
           else bt = this.inferTy(e.callee.base, ctx);
+          // v0.54/C5:Ptr 方法(load → i64 载体(值语义 u8 提升);offset 保持 mut 性)
+          if (bt === 'pu8' || bt === 'pcu8') {
+            if (m === 'load') return 'i64';
+            if (m === 'is_null') return 'bool';
+            if (m === 'offset') return bt;
+            return null; // store → unit
+          }
           if (bt === 'str') {
             if (m === 'char_len' || m === 'byte_len') return 'i64';
             if (m === 'contains' || m === 'is_empty' || m === 'starts_with' || m === 'ends_with') return 'bool';
@@ -271,6 +297,18 @@ class CEmit {
     if (callee.base.nt === 'Ident' && callee.base.name === 'math' && !ctx.scopeHas('math')) return callee.name;
     if (callee.base.nt === 'Field' && callee.base.base.nt === 'Ident' && callee.base.base.name === 'std'
       && callee.base.name === 'math' && !ctx.scopeHas('std')) return callee.name;
+    return null;
+  }
+
+  // v0.54/C5:std.mem.alloc/free(std.mem.* 或 use std.mem [as 别名] 后的绑定.*;局部同名遮蔽时不识别)
+  memNameOf(callee, ctx) {
+    if (callee.nt !== 'Field') return null;
+    if (callee.base.nt === 'Ident' && !ctx.scopeHas(callee.base.name)) {
+      const imp = this.modulesByFile.get(ctx.modFile)?.imports?.get(callee.base.name);
+      if (imp?.std === 'mem') return callee.name;
+    }
+    if (callee.base.nt === 'Field' && callee.base.base.nt === 'Ident' && callee.base.base.name === 'std'
+      && callee.base.name === 'mem' && !ctx.scopeHas('std')) return callee.name;
     return null;
   }
 
@@ -643,6 +681,21 @@ class CEmit {
       const args = e.args.map(ar => this.emitExpr(ar, 'f64', ctx));
       return { call: `${MATH_CNAME[mn]}(${args.join(', ')})`, retTy: 'f64' };
     }
+    // v0.54/C5:std.mem.alloc/free(必须在 Field 方法分支之前:std.mem 不是局部值)
+    const memFn = this.memNameOf(e.callee, ctx);
+    if (memFn) {
+      const SPm = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
+      if (memFn === 'alloc' && e.args.length === 1) {
+        this.usesMemAlloc = true;
+        return { call: `ming_mem_alloc(${this.emitExpr(e.args[0], 'i64', ctx)}, ${SPm})`, retTy: 'pu8' };
+      }
+      if (memFn === 'free' && e.args.length === 1) {
+        const at = this.inferTy(e.args[0], ctx);
+        if (at !== 'pu8' && at !== 'pcu8') throw new Unsupported('std.mem.free 参数类型 ' + at);
+        return { call: `free(${this.emitExpr(e.args[0], at, ctx)})`, retTy: null };
+      }
+      throw new Unsupported('std.mem.' + memFn + '(C5 面:alloc/free)');
+    }
     // 方法调用:str / Vec[i64] 的 C2 方法面(纯方法允许任意 base 表达式;变异方法须局部)
     if (e.callee.nt === 'Field') {
       const m = e.callee.name;
@@ -655,13 +708,26 @@ class CEmit {
         baseIsIdent = true;
       } else {
         bt = this.inferTy(e.callee.base, ctx);
-        if (bt === 'str' || bt === 'vi64' || bt === 'mi64' || bt === 'oi64' || bt === 'ri64') {
+        if (bt === 'str' || bt === 'vi64' || bt === 'mi64' || bt === 'oi64' || bt === 'ri64' || bt === 'pu8' || bt === 'pcu8') {
           // 非 Ident base:求值一次入临时(方法体可能引用 baseText 两次,如 unwrap_or)
           const txt = this.emitExpr(e.callee.base, bt, ctx);
           baseText = this.newTmp(ctx, bt, txt);
         }
       }
       const SP = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
+      // v0.54/C5:Ptr 方法(load/store/offset/is_null);offset 保持 mut 性
+      if (bt === 'pu8' || bt === 'pcu8') {
+        if (m === 'load' && e.args.length === 0) return { call: `((long long)${baseText}[0])`, retTy: 'i64' };
+        if (m === 'store' && e.args.length === 1) {
+          if (bt === 'pcu8') throw new Unsupported('只读 Ptr 不能 store');
+          const at = this.inferTy(e.args[0], ctx);
+          const val = this.emitExpr(e.args[0], at === 'u64' ? 'u64' : 'i64', ctx);
+          return { call: `(${baseText}[0] = (unsigned char)(${val}))`, retTy: null };
+        }
+        if (m === 'offset' && e.args.length === 1) return { call: `(${baseText} + ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: bt };
+        if (m === 'is_null' && e.args.length === 0) return { call: `(${baseText} == NULL)`, retTy: 'bool' };
+        throw new Unsupported('Ptr.' + m + '(C5 面:load/store/offset/is_null)');
+      }
       if (bt === 'str') {
         if (m === 'char_len' && e.args.length === 0) return { call: `ming_str_chars(${baseText})`, retTy: 'i64' };
         if (m === 'byte_len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
@@ -844,7 +910,8 @@ class CEmit {
           if (!ty) throw new Unsupported('let 标注 ' + (s.type?.name ?? s.type?.k ?? '?') + '(C2 仅数值/str/Vec[i64])');
         } else {
           ty = this.inferTy(s.init, ctx);
-          if (!ty || ty === 'bool') throw new Unsupported('let 推导 ' + ty);
+          // v0.54/C5:bool 局部(C 载体 long long)支持——Ptr 黄金程序需要 let b = p.is_null()
+          if (!ty) throw new Unsupported('let 推导 ' + ty);
         }
         const v = this.emitExpr(s.init, ty, ctx);
         const name = ctx.declare(s.pat.name, ty);
@@ -884,6 +951,7 @@ class CEmit {
           return;
         }
         if (!['+=', '-=', '*=', '/=', '%=', '<<=', '>>='].includes(s.op)) throw new Unsupported('复合 ' + s.op);
+        if (dty === 'bool' || dty === 'pu8' || dty === 'pcu8') throw new Unsupported('复合赋值类型 ' + dty); // v0.54/C5
         const op = s.op[0];
         if (dty === 'str') {
           if (op !== '+') throw new Unsupported('str 复合 ' + s.op);
@@ -928,6 +996,15 @@ class CEmit {
         }
         if (ex.nt === 'If' || ex.nt === 'Loop') { this.emitStmt(ex, ctx); return; }
         throw new Unsupported('表达式语句 ' + ex.nt);
+      }
+      case 'UnsafeBlock': {
+        // v0.54/C5:unsafe 块是类型层门禁;C 端语义 = 普通块(块内指针操作见 Ptr 方法发射)
+        // v0.54 审查 B2:必须发射 C 作用域块——块内 let 遮蔽外层同名变量时,
+        // 裸 emitBlock 会把两个同名 long long 放在同一作用域 → redefinition 编译失败。
+        ctx.open('{');
+        this.emitBlock(s.body, ctx);
+        ctx.close('}');
+        return;
       }
       case 'If': {
         ctx.open(`if (${this.emitCond(s.cond, ctx)}) {`);
@@ -1085,6 +1162,12 @@ class CEmit {
         ctx.line(`{ unsigned char __fb[340]; printf("%.*s\\n", (int)ming_float_str(${v}, __fb), __fb); }`);
         return;
       }
+      if (it === 'bool') {
+        // v0.54/C5:str(bool) 与 displayStr 对齐(true/false)
+        const v = this.emitExpr(a.args[0], 'bool', ctx);
+        ctx.line(`printf("%s\\n", (${v}) ? "true" : "false");`);
+        return;
+      }
       throw new Unsupported('str(打印 ' + it + ')(Vec/Map 形态属 C4)@ 行 ' + (e.span?.line ?? '?'));
     }
     const t = this.inferTy(a, ctx);
@@ -1101,6 +1184,11 @@ class CEmit {
     if (t === 'f64') {
       const v = this.emitExpr(a, 'f64', ctx);
       ctx.line(`{ unsigned char __fb[340]; printf("%.*s\\n", (int)ming_float_str(${v}, __fb), __fb); }`);
+      return;
+    }
+    if (t === 'bool') {
+      const v = this.emitExpr(a, 'bool', ctx);
+      ctx.line(`printf("%s\\n", (${v}) ? "true" : "false");`);
       return;
     }
     throw new Unsupported('print ' + (t ?? a.nt) + '(Vec/Map 形态属 C4)');
@@ -1154,7 +1242,8 @@ class CEmit {
     // v0.39:eligible 为空也继续 —— 只有 main 的程序(main 本身带 io 不 eligible)
     // 只要 main 具备 AOT 形态就是合法的 C1 产物;main 形态不符由发射期报 Unsupported
     // v0.43(C3.5):sigExt3 = Result[i64,str] 进入 C 面;ffi = 效果 ⊆ {ffi} 的函数可编译
-    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true, sigExt3: true, ffi: true });
+    // v0.54/C5:unsafe 为 C 专用扩展(效果 ⊆ {ffi, unsafe} + Ptr 签名);wasm 路径不传
+    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true, sigExt3: true, ffi: true, unsafe: !!this.opts.unsafe });
     const fns = this.compiled.functions;
 
     // main(entry 模块的 main;无参)
@@ -1213,6 +1302,20 @@ class CEmit {
     });
     const constDefs = this.emitConstDefs();
     const strLits = this.emitStrLits();
+    // v0.54/C5:仅在程序实际使用 std.mem.alloc 时发射 —— 非 unsafe 程序的 C 输出逐字不变
+    const memRuntime = this.usesMemAlloc ? [
+      '/* v0.54/C5:std.mem.alloc —— malloc 失败即 panic(M4011;tree/VM 在 alloc 处已 M4016) */',
+      'static unsigned char* ming_mem_alloc(long long n, const char* f, int l, int c) {',
+      '    size_t sz = (size_t)n;',
+      '    void* p = malloc(sz ? sz : 1);',
+      '    if (!p) {',
+      '        fprintf(stderr, "%s:%d:%d: error M4011[alloc-quota-exceeded]: 内存分配失败:std.mem.alloc(%lld) 返回 NULL\\n", f, l, c, n);',
+      '        exit(101);',
+      '    }',
+      '    return (unsigned char*)p;',
+      '}',
+      '',
+    ] : [];
     // v0.42:extern fn(C4 FFI)—— 槽位声明 + 启动绑定
     const externs = [];
     for (const [, entry] of this.check.entry.items) {
@@ -1257,6 +1360,7 @@ class CEmit {
       '    return p;',
       '}',
       '',
+      ...memRuntime,
       'static ming_opt ming_opt_some(long long v) { ming_opt o; o.some = 1; o.v = v; return o; }',
       'static ming_opt ming_opt_none(void) { ming_opt o; o.some = 0; o.v = 0; return o; }',
       '',
@@ -1739,9 +1843,9 @@ class CEmit {
   }
 }
 
-export function tryEmitC(check, compiled) {
+export function tryEmitC(check, compiled, opts = {}) {
   try {
-    return new CEmit(check, compiled).run();
+    return new CEmit(check, compiled, opts).run();
   } catch (e) {
     if (e instanceof Unsupported) return null;
     throw e;
@@ -1749,6 +1853,7 @@ export function tryEmitC(check, compiled) {
 }
 
 // 抛错版(CLI 用:需要 Unsupported 的具体原因作为诊断消息)
-export function emitC(check, compiled) {
-  return new CEmit(check, compiled).run();
+// v0.54/C5:opts.unsafe = C 专用资格扩展(由 ming cc 路径传入)
+export function emitC(check, compiled, opts = {}) {
+  return new CEmit(check, compiled, opts).run();
 }

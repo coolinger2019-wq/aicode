@@ -97,7 +97,7 @@ export class Parser {
       const t = this.cur();
       if (t.kind === 'eof') return;
       if (topLevel && t.kind === 'kw' && ['fn', 'struct', 'enum', 'use', 'test', 'pub'].includes(t.val)) return;
-      if (!topLevel && t.kind === 'kw' && ['fn', 'let', 'return', 'while', 'for', 'loop', 'if', 'match', 'test'].includes(t.val)) return;
+      if (!topLevel && t.kind === 'kw' && ['fn', 'let', 'return', 'while', 'for', 'loop', 'if', 'match', 'test', 'unsafe'].includes(t.val)) return;
       if (t.kind === 'op' && t.val === '}') return;
       if (t.kind === 'op' && t.val === ';') { this.next(); return; }
       this.next();
@@ -305,7 +305,8 @@ export class Parser {
     if (this.atKw('with')) {
       this.next();
       for (;;) {
-        const eTok = this.expectId('效果名');
+        // v0.54:unsafe 是关键字也可作效果名(with unsafe);其余效果名保持标识符
+        const eTok = this.atKw('unsafe') ? this.next() : this.expectId('效果名');
         effects.push({ name: eTok.val, span: eTok.span });
         if (this.atOp(',')) { this.next(); continue; }
         break;
@@ -469,6 +470,12 @@ export class Parser {
           this.next();
           const body = this.parseBlock();
           return { nt: 'Loop', body, span: this.spanFrom(t) };
+        }
+        case 'unsafe': {
+          // v0.54:unsafe { ... } 是块语句(不是表达式值;不做 unsafe(expr) 形态)
+          this.next();
+          const body = this.parseBlock();
+          return { nt: 'UnsafeBlock', body, span: this.spanFrom(t) };
         }
         case 'fn': {
           const decl = this.parseFn(false, true);
@@ -645,6 +652,13 @@ export class Parser {
     const t = this.cur();
     let base = null;
     let wasParen = false;
+    // v0.54:Ptr[mut u8] 的可写性标记;解析器只负责语法,合法性由检查器判定
+    // (TMut 出现在 Ptr 之外 → resolveTypeAst 报 M3002)
+    if (t.kind === 'kw' && t.val === 'mut') {
+      this.next();
+      const inner = this.parseType();
+      return { nt: 'TMut', type: inner, span: t.span };
+    }
     if (t.kind === 'kw' && t.val === 'self') {
       this.next();
       if (this.atOp('[')) this.bail('M2002', 'Self 不带类型参数', this.cur().span);

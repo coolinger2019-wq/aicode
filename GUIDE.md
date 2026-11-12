@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.53.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测**)+ **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.54.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测**)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -508,13 +508,43 @@ fn stamped() with io, time {         // 多个效果用逗号分隔
 }
 ```
 
-- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
+- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)、`rand`(v0.25)、`crypto`(v0.34)、`ffi`(v0.42,extern fn)、`unsafe`(v0.54,受限指针块;仅 C 原生后端执行)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
 - **传播**:调用带效果的函数,调用方必须声明同样(或更多)的效果,否则 M3029;效果清单就是审计清单。
 - `main` 与 `test` 块是入口,声明自己需要的效果(main)或拥有全部效果(test)。
 - 闭包在**创建处**继承所在函数的效果(已知限制:存入数据结构的闭包在 v0.2 不追踪调用点效果)。
 - v0.2 仍然没有文件系统/网络/进程/随机数;后续版本以同样方式逐个开放为效果 + capability。
 
 这个机制对 AI 生成代码的价值:凡是没标 `io` 的函数,可以放心推理它只做计算;审查"这段代码会不会打印/读时间"不再需要读实现。
+
+### 14.1 受控不安全:`with unsafe` 与 `std.mem`(v0.54,C5)
+
+**原则:危险操作在签名里有一行字,在代码里有一个块;只有 C 原生后端真正执行。**
+
+```ming
+fn main() with io, unsafe {
+    unsafe {
+        let p = std.mem.alloc(2);   // Ptr[mut u8];失败 → M4011 panic(不伪装 null)
+        p.store(65);                // u8 值,无隐式转换
+        p.offset(1).store(66);      // offset 返回新 Ptr(保持 mut 性)
+        print(str(p.load()));       // 65(u8 提升为 i64 打印)
+        print(str(p.offset(1).load())); // 66
+        print(str(p.is_null()));    // false
+        std.mem.free(p);            // 谁分配谁释放(无 GC)
+    }
+    // 块外:只允许 let/赋值/return 传递与 p.is_null();读写与传参 → M3046
+}
+```
+
+- **双门禁**:所在函数必须声明 `with unsafe`(否则 M3029,效果逐层传播——调用 `with unsafe` 的函数同样要求调用方声明);指针读写、`std.mem.alloc/free`、Ptr 实参必须在 `unsafe { ... }` 块内(否则 M3046)。块外只允许 `let q = p;`、赋值、`return p;` 与 `p.is_null()`。**含 Ptr 的容器/元组/结构体/枚举载荷同样受门禁约束**:块外 `Some(q)`、`H { p: q }`、`(q, 1)`、`vv.push(q)`、`Map` 值等 → M3046(递归类型谓词 `typeContainsPtr`);含 Ptr 的容器传给普通函数也拒绝。泛型调用点按**实参类型**判定;泛型体内被擦除的 `T` 无法静态判定时跳过(类型擦除的已知边界)。
+- **闭包效果**:`unsafe { ... }` 块内定义的闭包,其函数类型携带 `unsafe` 效果——不能赋给纯函数类型变量、也不能传给纯函数参数(M3029);块内直接调用仍允许(所在函数已声明 `with unsafe`)。
+- **类型面**:`Ptr[mut u8]`(可写)/ `Ptr[u8]`(只读);元素类型**仅 u8**(`Ptr[i64]` 报错);两者精确匹配、无隐式转换,`Ptr[u8]` 只能来自 extern 签名(或显式标注的只读槽)。方法四个:`load() -> u8`、`store(u8)`、`offset(i64) -> Ptr`、`is_null() -> bool`。
+- **禁止面**(全部编译期拒绝):索引 `p[0]`(M3020)、算术与 `==`/`!=`(M3008)、字符串插值(M3012)、`print`/`debug`(M3002)、JSON(M3033)、Map 键(M3044)、`as` 转换(M3019)。移动用 `offset(n)`,空判断用 `is_null()`。
+- **只有 C 原生后端可用**:`ming cc` 是唯一执行者——`Ptr[mut u8]` → `unsigned char*`、`alloc/free` → `malloc/free`、extern 槽接受/返回 Ptr。tree/VM 在 `std.mem.alloc/free` 与 Ptr 方法处以 **M4016[native-only-feature]** panic("unsafe 指针操作仅在 C 原生后端可用",退出码 101,逐字一致);wasm 资格拒绝 `with unsafe`,主程序回落 VM 得到同一 M4016。`ming build` 遇 `with unsafe` 显式回退源码模式(AOT 不可用并说明原因)。
+- **分配失败**:`std.mem.alloc(n)` 在 `malloc` 返回 NULL 时 panic **M4011**(消息"内存分配失败:std.mem.alloc(n) 返回 NULL"),绝不返回"空指针"让程序继续。`alloc(0)` 在 C 侧分配 **1 字节**(`ming_alloc(n ? n : 1)`;malloc(0) 的返回值是否可解引用实现相关,Ming 不暴露该差异)。
+- **诚实声明(悬垂/越界 UB 不捕获)**:Ming 只保证类型与效果门禁;`free` 后再 load/store、越过分配边界的读写都是**进程级未定义行为**,运行时不会 panic、也不会被 Ming 捕获(与 C 同一底线)。安全写法 = 自己记账长度并在界内访问。
+- **Ptr 的值语义例外**:赋值/传参拷贝的是**地址本身**(不是内存)——同一地址的两个 Ptr 变量,经一个 `store` 另一个 `load` 可见(裸地址共享;§58 v58.12 锁定)。内存不是 Ming 值,这条例外是 C5 的明示语义。
+- **调用签名**:`std.mem.alloc(n: i64) -> Ptr[mut u8]`、`std.mem.free(p: Ptr[mut u8]) -> ()`,均带效果 `unsafe`。
+
 
 ## 15. 常量 const
 
@@ -886,6 +916,17 @@ fn main() with io {
 
 `join(a, b) -> str`、`base_name(p) -> str`、`dir_name(p) -> str`、`extension(p) -> str`(含点,如 ".txt")——无效果,可在纯函数中使用。
 
+### std.mem(能力:unsafe,v0.54;仅 C 原生后端)
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `alloc` | `(n: i64) -> Ptr[mut u8]` · 效果 `unsafe` | 分配 n 字节(元素 u8);**`n = 0` 实际分配 1 字节**(C 运行时 `ming_alloc(n ? n : 1)`,与 malloc(0) 的实现差异隔离);`malloc` 返回 NULL → panic **M4011**(不伪装 null) |
+| `free` | `(p: Ptr[mut u8]) -> ()` · 效果 `unsafe` | 释放;重复 free / free 后使用 = 进程级 UB,Ming 不捕获(诚实声明) |
+
+- 必须在 `unsafe { ... }` 块内使用(块外 M3046),所在函数必须声明 `with unsafe`(否则 M3029)。
+- tree/VM 在调用处以 M4016 诚实拒绝;wasm 不编译 unsafe 函数,回落 VM 同码;只有 `ming cc` 执行真实内存语义(Ptr → `unsigned char*`)。
+- Ptr 方法:`load()` / `store(u8)` / `offset(i64)` / `is_null()`;块外只允许 let/赋值/return 传递与 `is_null()`。完整门禁与禁止面见 §14.1。
+
 ### 数字类型方法
 
 - 整数/浮点共有:`abs() to_f32() to_f64() to_i8() ... to_u64()`(安全转换返回 `Option`)
@@ -903,7 +944,7 @@ fn main() with io {
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON;`--strict-wasm`(或 `MING_WASM_STRICT=1`,v0.53)把 eligible>0 的 wasm 回落变成可见失败(exit 2 并点名原因;与 `--tree`/`--no-wasm` 互斥),`--json` additive `wasm_status: none\|ok\|fallback` |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
 | `ming build`(项目模式 v0.38 / 缓存 v0.49 / 构建键 v0.53) | 项目检查通过后产出 **dist 可移植产物**:app.bytecode.json(或 app.ming 源码模式)+ runtime 拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑。**v0.49 起内容寻址缓存**:键 = 编译器版本 + 项目全部 .ming 源 + ming.toml(过包含保健全),命中且 dist 完整 → 跳过检查与编译;每次构建报告每模块**接口哈希**(签名/效果/契约规范化,排除函数体:`接口哈希:未变 N 个,变更 <文件>`);`--clean-cache` 清理缓存与 dist 并全量重建。**v0.53**:构建键条目改为**项目相对路径 + 内容**(修复嵌套目录重复与同名文件交换漏检)并注入 **Node 主版本**;`--json` additive 增加 `build_key/dist_hash/cache_hit/source_count/interface_hashes`。可复现承诺:**同 OS + 同 Node 主版本**下两次 `--clean-cache` 构建 `dist_hash` 相同(不承诺跨 OS 位级一致) |
-| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3 / v0.42 C4 / v0.53 str for-in) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;`str` for-in 按 **UTF-8 码点**迭代(v0.53,ASCII/CJK/emoji 与 tree/VM 逐字一致);`--static` 静态链接;extern fn FFI(C4)。**已声明覆盖范围**:上述 eligible 形态及其调用/for-in/match 组合;`for-in` 的 `str` 源支持 Ident 局部/参数,字面量/字段/const 源仍发射期拒绝;插值串、Result 返回值、结构体/数组 FFI 参数不在此列——**不支持的语句形态在 C 发射期显式拒绝**(报 `C1 不支持该程序形态` 并 exit 1),需另用 JS 引擎运行 |
+| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3 / v0.42 C4 / v0.53 str for-in / v0.54 C5 unsafe) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64] + **Ptr/unsafe 形态**)+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;`str` for-in 按 **UTF-8 码点**迭代(v0.53,ASCII/CJK/emoji 与 tree/VM 逐字一致);`--static` 静态链接;extern fn FFI(C4)。**C5(v0.54)**:`with unsafe` 是 C 专用资格扩展(效果 ⊆ {ffi, unsafe};wasm 路径不传该旗标)——`Ptr[mut u8]` → `unsigned char*`、`Ptr[u8]` → `const unsigned char*`,`std.mem.alloc/free` → `malloc/free`(失败 M4011),extern 槽接受/返回 Ptr;非 unsafe 程序的 C 输出逐字不变。**已声明覆盖范围**:上述 eligible 形态及其调用/for-in/match 组合;`for-in` 的 `str` 源支持 Ident 局部/参数,字面量/字段/const 源仍发射期拒绝;插值串、Result 返回值、结构体/数组 FFI 参数不在此列——**不支持的语句形态在 C 发射期显式拒绝**(报 `C1 不支持该程序形态` 并 exit 1),需另用 JS 引擎运行 |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:聚合 `ming check --json` 的诊断码频次;v0.51.6 起参数可为**文件或目录**(目录递归收 .ming,跳隐藏/node_modules/dist)+ `--top N` 限量,缺省 Top-10)——语法/检查改进的数据依据 |
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
@@ -1021,11 +1062,24 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;cc 差分腿覆盖 v0.41 声明形态,四种子 100%;`str` for-in 于 v0.53 补齐) |
 | v0.42(已完成) | **C4:with ffi 兑现**(extern "库" fn 声明,隐含 ffi 效果,调用方须 with ffi;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym 真调用,M4013 失败路径;ming cc --static) |
 | v0.43(已完成) | **ffi 字符串桥 + Result[i64,str] 进 C 面 + with unsafe 设计定稿**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点) |
-| 更远(北星对齐) | v0.54 `with unsafe`(C 原生指针最小面)→ v0.55 跨函数契约摘要;`mask`/async/eval/国密/RSA/形式化验证留待更远(见 plan §4.2) |
+| v0.54(已完成) | **`with unsafe` 最小实现(C5)**:Ptr[mut u8]/Ptr[u8]、load/store/offset/is_null、std.mem.alloc/free、M3029/M3046/M4016、C 原生执行;Ptr 别名面与 offset 链式黄金 |
+| 更远(北星对齐) | v0.55 跨函数契约摘要;`mask`/async/eval/国密/RSA/形式化验证留待更远(见 plan §4.2) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.54.0(2026-11-12)
+
+- **`with unsafe` 最小实现(plan §4.2.5,C5)**:效果名 `unsafe` + 双门禁——所在函数必须声明 `with unsafe`(否则 **M3029**,效果逐层传播),指针读写/`std.mem`/Ptr 实参必须在 `unsafe { ... }` 块内(否则 **M3046**);块外只允许 let/赋值/return 传递与 `p.is_null()`。**块形态**而非 `unsafe(expr)`:块界定危险操作的可见范围(design.md §6.10)。
+- **Ptr 类型面**:`Ptr[mut u8]` / `Ptr[u8]`,元素仅 u8,mut/非 mut 精确匹配无隐式转换;四个方法 `load() -> u8`、`store(u8)`、`offset(i64) -> Ptr`(保持 mut 性)、`is_null() -> bool`;禁止面全部静态拒绝——索引 M3020、算术与 `==`/`!=` M3008、插值 M3012、打印/debug M3002、JSON M3033、Map 键 M3044、`as` M3019。
+- **std.mem**:`alloc(i64) -> Ptr[mut u8]` / `free(Ptr[mut u8]) -> ()`,效果 `unsafe`;`malloc` 返回 NULL → **M4011** panic(不伪装 null);tree/VM 在调用处以 **M4016[native-only-feature]** panic(消息"unsafe 指针操作仅在 C 原生后端可用",退出码 101,逐字一致),wasm 资格拒绝 unsafe、主程序回落 VM 同码。
+- **C5 后端**:资格增加 C 专用 unsafe 扩展(效果 ⊆ {ffi, unsafe};仅 `ming cc` 路径传入,wasm 保持严格);`Ptr[mut u8]` → `unsigned char*`、`Ptr[u8]` → `const unsigned char*`;`alloc/free` → `malloc/free`;extern 槽接受/返回 Ptr(裸地址直传);`ming build` 遇 `with unsafe` 显式回退源码模式并说明原因;非 unsafe 程序的 C 输出逐字不变。
+- **Ptr 值语义例外(明示)**:赋值/传参拷贝的是**地址本身**,同一地址的两个 Ptr 经一个 store 另一个 load 可见(v58.12 锁定);悬垂/越界解引用是进程级 UB,**Ming 不捕获**(诚实声明)。
+- **审查/核对**:§58 对照 plan 任务 5 清单逐项补齐到 14 项(新增 v58.12 Ptr 别名面、v58.13 offset 链式 C 黄金、v58.14 unsafe 效果传播);既有缺陷 **#27**(`use std.math; math.sqrt(...)` check 通过但字节码编译器未解析 std 模块别名 → run 崩溃)与 C5 无关但实测存在,已在 v0.54.0 独立审查 B5 修复(§58 v58.20)。
+- **v0.54.0 独立审查修复(B1–B5 + M1–M6)**:B1 `UnsafeBlock` 接入控制流分析(`stmtTerminates`/`hasBreak`;块内 `return` 为最后语句不再误报 M3017,`loop { unsafe { break; } }` 类型为 unit 而非 never);B2 C 后端 `unsafe` 块发射独立 C 作用域(`{ ... }`),块内 `let` 遮蔽不再 redefinition;B3 M3046 覆盖**容器/构造器载荷逃逸**(`H { p: q }`、`Some(q)`、`vec.push(q)`、Map/元组/结构体字段;`typeContainsPtr` 递归判定,含 Ptr 的容器传给普通函数同样拒绝;泛型调用点按实参类型判定,泛型体内擦除跳过);B4 unsafe 块内定义的闭包其函数类型携带 `unsafe` 效果(不能赋给纯函数类型/传给纯参数),块内直接调用仍允许;B5 `use std.mem`/`use std.math`(含 `as` 别名)在字节码编译器可解析(#27 修复),编译器未解析名改为带 `file:line:col` 的 M4001 诊断(cc/build/run 不再裸栈)。M1 tree/VM 的 Ptr 方法调用统一 M4016 防御(不再 M4001);M2 README 能力矩阵口径 50 行;M3 design §6.10 "危险面"措辞改为"Ming 内指针操作的可见面;extern FFI 的 Ptr 槽受 `with ffi` 门禁约束";M4 固定非 unsafe 程序的 C 渲染指纹逐字节回归;M5 本页 C 面扩张与 `alloc(0)` 说明;M6 示例格式化后同时比较退出码与 stderr 首行。
+- **C 面扩张(v0.54 附带)**:bool 局部变量(`bool` → C `long long`)与 `str(bool)`(输出 `true`/`false`)在 `ming cc` 可用,与 VM 逐字一致;`std.mem.alloc(0)` 在 C 侧分配 **1 字节**(`ming_alloc(n ? n : 1)`),避免 malloc(0) 实现差异。以上均不改变既有非 unsafe 程序的 C 输出(§58 v58.11 指纹锁定)。
+- 测试:**652 项全绿**(§58 共 20 项 v58.*:类型面/负向/禁止面/门禁/块外 M3046/黄金 check+三路 M4016/C5 黄金/emit-c/alloc 失败/build 回退/既有 C 指纹/别名面/offset 链式/效果传播/审查 B1 正反例/审查 B2 作用域/审查 B3 载荷逃逸/审查 B4 闭包洗效果/审查 B5 std 短名);`fuzz --seed 44044 --count 25` 0 分歧;`proof_fuzz --count 100` 0 误报;`cc examples/unsafe_demo.ming` 输出 `65/66/false`。
 
 ### v0.53.0(2026-11-12)
 

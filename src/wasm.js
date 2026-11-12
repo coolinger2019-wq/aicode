@@ -309,6 +309,9 @@ export class WasmCompiler {
     const fns = this.compiled.functions;
     const numericOnly = !!opts.numericOnly;
     this.ffiEffectsAllowed = !!opts.ffi; // v0.43:C 后端允许效果 ⊆ {ffi} 的函数
+    // v0.54/C5:C 后端专用 unsafe 扩展(效果 ⊆ {ffi, unsafe} + Ptr 签名);
+    // wasm 路径不传该旗标 → 严格拒绝(不得改 wasm 资格语义)
+    this.unsafeEffectsAllowed = !!opts.unsafe;
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
@@ -360,6 +363,8 @@ export class WasmCompiler {
       if (ext2 && t?.k === 'map' && t.kt?.k === 'str' && t.vt?.k === 'int' && t.vt?.bits === 64 && t.vt?.signed) return true;
       if (ext2 && t?.k === 'opt' && t.el?.k === 'int' && t.el?.bits === 64 && t.el?.signed) return true;
       if (ext3 && t?.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str') return true;
+      // v0.54/C5:Ptr[u8]/Ptr[mut u8] 仅 C unsafe 扩展面(wasm 不传 opts.unsafe)
+      if (this.unsafeEffectsAllowed && t?.k === 'ptr' && t.el?.k === 'int' && t.el.bits === 8 && t.el.signed === false) return true;
       return false;
     };
     if (sig.ret?.k !== 'unit' && !numOk(sig.ret)) return false;
@@ -379,7 +384,8 @@ export class WasmCompiler {
       || (t?.k === 'vec' && numOkElem(t.el))
       || (t?.k === 'map' && t.kt?.k === 'str' && numOkElem(t.vt)) // v0.18
       || (ext2 && t?.k === 'opt' && numOkElem(t.el)) // v0.41(C 形参)
-      || (ext3 && t?.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str'); // v0.43(C 形参)
+      || (ext3 && t?.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str') // v0.43(C 形参)
+      || (this.unsafeEffectsAllowed && t?.k === 'ptr' && t.el?.k === 'int' && t.el.bits === 8 && t.el.signed === false); // v0.54/C5
     for (const p of sig.params) {
       if (!numOk(p.type)) return false;
     }
@@ -388,7 +394,10 @@ export class WasmCompiler {
     else return false;
     if (sig.effects?.size) {
       // v0.43:C 后端 opts.ffi 允许效果 ⊆ {ffi}(extern 调用;wasm 路径仍严格拒绝)
-      if (!this.ffiEffectsAllowed || ![...sig.effects].every(e => e === 'ffi')) return false;
+      // v0.54/C5:opts.unsafe 额外允许 unsafe(ffi/unsafe 各自独立放行,不互相隐含)
+      const effectOk = (e) => (e === 'ffi' && this.ffiEffectsAllowed)
+        || (e === 'unsafe' && this.unsafeEffectsAllowed);
+      if (![...sig.effects].every(effectOk)) return false;
     }
     return true;
   }

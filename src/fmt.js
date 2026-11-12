@@ -264,6 +264,11 @@ class Writer {
         this.indent++; this.blockBody(s.body); this.indent--;
         this.line('}');
         return;
+      case 'UnsafeBlock': // v0.54
+        this.line('unsafe {', s.span.line);
+        this.indent++; this.blockBody(s.body); this.indent--;
+        this.line('}');
+        return;
       case 'ExprStmt': {
         // 控制流表达式作为语句:match/块 后接 ";"(保留原样);尾表达式无 ";"
         if (s.expr.nt === 'If') { this.ifStmt(s.expr); return; }
@@ -345,6 +350,7 @@ export function typeAst(t) {
     }
     case 'TTuple': return `(${t.ts.map(typeAst).join(', ')})`;
     case 'TFn': return `(${t.ps.map(typeAst).join(', ')}) -> ${typeAst(t.ret)}`;
+    case 'TMut': return 'mut ' + typeAst(t.type); // v0.54:Ptr[mut u8]
     default: return '?';
   }
 }
@@ -471,6 +477,7 @@ function blockInline(be) {
     else if (s.nt === 'Assign') parts.push(`${expr(s.target)} ${s.op} ${expr(s.value)};`);
     else if (s.nt === 'While') { parts.push(`while ${expr(s.cond)} ${blockInline({ block: s.body })}`); }
     else if (s.nt === 'For') { parts.push(`for ${patAst(s.pat)} in ${expr(s.iter)} ${blockInline({ block: s.body })}`); }
+    else if (s.nt === 'UnsafeBlock') { parts.push(`unsafe ${blockInline({ block: s.body })}`); } // v0.54
     else parts.push('/* ? */');
   }
   if (be.block.tail) parts.push(expr(be.block.tail));

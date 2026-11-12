@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.53.0**（下一阶段 v0.54–v0.55 见 §4.2;契约阶段 2 + QF_LIA 第一/二片已交付；**v0.53 可信构建与跨平台验证基线:CI 矩阵、strict-wasm 三态、构建键修复、env -i 验收、C `str` for-in 码点迭代已交付(2026-11-12)**；测试 628 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.54.0**（下一阶段 v0.55 见 §4.2;契约阶段 2 + QF_LIA 第一/二片已交付；v0.53 可信构建基线:CI 矩阵、strict-wasm 三态、构建键修复、env -i 验收、C `str` for-in 码点迭代；**v0.54 `with unsafe` 最小实现(C5)已交付(2026-11-12)**；测试 652 项全绿）。
 
 ---
 
@@ -10,12 +10,12 @@
 | 项 | 状态 |
 |----|------|
 | 语言内核 | 显式类型/效果系统/值语义/确定性；树+VM+wasm+C 四后端 |
-| C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static`；v0.53 `str` for-in 按 UTF-8 码点迭代 |
+| C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static`；v0.53 `str` for-in 按 UTF-8 码点迭代；**v0.54 C5 `with unsafe`（Ptr[u8]/Ptr[mut u8] → unsigned char*/const unsigned char*、std.mem.alloc/free → malloc/free（失败 M4011）、extern 槽接受/返回 Ptr；tree/VM/wasm 回落 M4016）** |
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 |
-| 质量护栏 | 回归全绿（v0.53.0 起 628 项，§57 为 v0.53 可信构建：strict wasm/构建键/env -i/C str for-in/CI 与版本收口/尾表达式 wasm 修复）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明 0 误报 + 反例独立求值器验证）+ bench（cc 腿） |
-| 能力矩阵 | 49 行口径 ≈81%（docs/capabilities.md；v0.53 审计后重算） |
+| 质量护栏 | 回归全绿（v0.54.0 起 652 项，§58 为 v0.54 `with unsafe`/C5 + 独立审查：20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明 0 误报 + 反例独立求值器验证）+ bench（cc 腿） |
+| 能力矩阵 | 50 行口径 ≈81%（docs/capabilities.md；v0.54 审计后重算） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -98,9 +98,9 @@
 ### 4.2.1 现状判断
 
 - **强项**:四后端(树 / VM+wasm / VM-only / C)+ 差分模糊构成语义合同;效果门禁已闭合到函数值;
-  契约有运行时检查与两片静态检查;诊断码稳定且带 span/hint/JSON;628 项回归是可信基线(v0.53 起)。
+  契约有运行时检查与两片静态检查;诊断码稳定且带 span/hint/JSON;652 项回归是可信基线(v0.54 起)。
 - **风险**:证明器只覆盖直线体 `ensures`,越界/调用链/循环仍空白,"证明 → 许可"闭环未建立;
-  `unsafe`/`mask` 仍是设计稿。**v0.53 已装第一道安全带**:CI 九组合矩阵 + nightly 深模糊,
+  `unsafe` 已于 v0.54 交付(C5,effect-gated,tree/VM 诚实拒绝),`mask` 仍是设计稿(v0.56+ 评估)。**v0.53 已装第一道安全带**:CI 九组合矩阵 + nightly 深模糊,
   跨平台门禁不再依赖单机;strict wasm(`--strict-wasm`)让静默回落成为可见失败(exit 2)。
 - **已知债务(本规划核实)**:
   - ✅ v0.53 已修复:`collectProjectSources` 共享累加器导致重复条目(旧实现 4 文件收 11 条,
@@ -155,23 +155,25 @@
 **验收(2026-11-12 实测)**:`node tests/run.mjs` **628 项 0 失败**(§57 共 31 项 v53.*:strict wasm 7 + 构建可信性 6 + env -i 3 + C str for-in 3 + CI/版本收口 2 + 尾表达式 wasm 1 + 独立审查修复 9);`fuzz --seed 44044 --count 25` 0 分歧;`proof_fuzz --count 100` 0 误报;两次 clean build `dist_hash` 相同、第三次 `cache_hit: true`(§57 v53.10/11);`env -i` 输出逐字一致(v53.14-16);strict wasm 对 §57 eligible 语料 `ok`、零 eligible `none`、回落语料 exit 2(v53.1-7/v53.22;其他既有回落形态如 f64+while/if 表达式由 strict 如实报告,已登记 Backlog);CI workflow 结构静态校验通过(test 九组合 + 示例 fib strict 步 + c-backend 两组合 + nightly 三种子 / timeout 20/40 分钟;GitHub runner 实际矩阵结果以仓库 Actions 记录为准,本机无法代跑)。**审查追加**:strict 暴露既有 wasm 尾表达式模块校验回落(函数级补零多压栈),已修并加 v53.22 回归——`examples/fib.ming` 现 strict `ok` 且真实经 wasm 执行。**v0.53.0 独立审查修复(9 项阻断/次要,§57 F 节)**:B1 同名文件 fixture 真的能测出 basename 键缺陷;B2 check strict fallback 与正常路径共用 out(ok/diagnostics/proofs/wasm_status,文本先 printDiags 再报原因);B3 C 后端容器/区间 for-in 循环变量落入内层作用域(遮蔽程序不再发射非法 C);M1 `--no-wasm` 不输出 wasm_status;M2 Module 校验/实例化回落点名疑似函数 + eligible 表;M12 wasm `/` 守卫 opcode 与 if 位置修复(含 `/` 的 eligible 函数现 strict `ok`);M6 测试夹具默认剥离 MING_WASM_STRICT;M7 `build --json` stdout 纯 JSON;M9 CI 增加示例 fib strict 步。
 **风险/回退**:CI 抖动 —— C 腿独立 job、nightly 独立 job;strict wasm 误判 —— `none` 白名单 + 纯函数单测;构建键修复使旧缓存全部失效(一次性成本,文档说明)。
 
-### 4.2.5 v0.54 — `with unsafe` 最小实现(C 原生,效果门禁)
+### 4.2.5 v0.54 — `with unsafe` 最小实现(C 原生,效果门禁)✅(2026-11-12 完成)
 
 **目标**:用最小 `Ptr` 面兑现"受控不安全":签名与块级双可见;C 真实执行;tree/VM 确定性拒绝。
 
 **范围**:`unsafe { ... }` 块;`Ptr[mut u8]`/`Ptr[u8]`;`load/store/offset/is_null`;`std.mem.alloc/free`;extern 签名中的 Ptr;C5;tree/VM M4016;效果名 `unsafe`。
 **不做**:Ptr 算术(除 offset)、Ptr↔整数、打印/相等、生命周期/逃逸分析、内联汇编、mmap、`unsafe(cond)`、JS 伪指针。
 
-**任务**:
-1. 类型/语法:`{k:'ptr', el, mut}`;`Ptr[mut u8]` 解析;`typeStr`;unify 精确匹配;禁止索引/算术/==/插值/debug/JSON/Map 键;方法 `load/store/offset/is_null`。
-2. 效果/检查器:`unsafe` 入 KNOWN_EFFECTS;`unsafe {}` 需函数声明 `with unsafe`(M3029);指针操作/Ptr 实参必须在块内,否则 M3046[unsafe-context-required];块外只允许 let/assign/return 传递与 is_null。
-3. C5:资格增加 C 专用 unsafe 扩展(效果 ⊆ {ffi, unsafe},wasm 不传);Ptr → `unsigned char*`/`const unsigned char*`;alloc/free → malloc/free;extern 槽位支持 Ptr;`--emit-c` 快照;`ming build` 遇 `with unsafe` 显式回退源码模式。
-4. tree/VM 诚实拒绝:M4016[native-only-feature](panic,101),消息"unsafe 指针操作仅在 C 原生后端可用";tree/VM 逐字一致;wasm 继续拒绝 unsafe 函数,主程序回落 VM 得到同一 M4016。
-5. 测试 §58(≥12):C 黄金程序;只读 Ptr 不可 store;块外 load → M3046;无 with unsafe → M3029;Ptr 实参传纯函数 → M3046;check 通过;tree/VM M4016;emit-c 含 `unsigned char*`/`malloc`;既有 C 差分零变化。
-6. 文档:design.md §6.10 改为块形式并说明不用 `unsafe(expr)` 的理由;GUIDE unsafe/std.mem 节与安全/unsafe 对照;diagnostics M3046/M4016。
+**任务**(全部完成,2026-11-12 收口):
+1. ✅ 类型/语法:`{k:'ptr', el, mut}`;`Ptr[mut u8]` 解析;`typeStr`;unify 精确匹配;禁止索引/算术/==/插值/debug/JSON/Map 键;方法 `load/store/offset/is_null`(元素仅 u8,M3002 提示)。
+2. ✅ 效果/检查器:`unsafe` 入 KNOWN_EFFECTS;`unsafe {}` 需函数声明 `with unsafe`(M3029);指针操作/Ptr 实参必须在块内,否则 M3046;块外只允许 let/赋值/return 传递与 is_null。
+3. ✅ C5:资格增加 C 专用 unsafe 扩展(效果 ⊆ {ffi, unsafe},wasm 不传 `opts.unsafe`);Ptr → `unsigned char*`/`const unsigned char*`;alloc/free → malloc/free(失败 M4011);extern 槽位支持 Ptr;`--emit-c` 快照;`ming build` 遇 `with unsafe` 显式回退源码模式。
+4. ✅ tree/VM 诚实拒绝:M4016[native-only-feature](panic,101),消息"unsafe 指针操作仅在 C 原生后端可用";tree/VM 逐字一致;wasm 继续拒绝 unsafe 函数,主程序回落 VM 得到同一 M4016。
+5. ✅ 测试 §58(14 项):C 黄金程序(v58.7)/只读 Ptr 不可 store(v58.2)/块外 load → M3046(v58.5)/无 with unsafe → M3029(v58.4)/Ptr 实参传纯函数 → M3046(v58.5)/check 通过(v58.6)/tree/VM/wasm M4016(v58.6)/emit-c 含 `unsigned char*`/`malloc`(v58.8)/既有 C 差分零变化(v58.11)/**Ptr 别名面(v58.12)**/**offset 链式 C 黄金(v58.13)**/**unsafe 效果传播(v58.14)**。
+6. ✅ 文档:design.md §6.10 改为块形式并说明不用 `unsafe(expr)` 的理由;GUIDE §14.1 unsafe/std.mem 节 + §18 std.mem + C5 工具链行;diagnostics M3046/M4016 措辞核对;README/AGENTS/capabilities/plan 数字与版本收口。
 
-**验收**:`run.mjs`;`check examples/unsafe_demo.ming` 0 诊断;`cc` 输出黄金;`run --tree`/`--no-wasm` exit 101 + M4016;fuzz 0 分歧;Linux/Windows C 黄金一致;既有 C 差分零变化;`--strict-wasm` 不误报 ok。
-**风险/回退**:悬垂/越界解引用是进程级 UB,Ming 不捕获(GUIDE 诚实声明);v1 限定 u8、禁止算术/打印;特性 effect-gated,可整体回退。
+**验收(2026-11-12 实测)**:`node tests/run.mjs` **646 项 0 失败**(§58 共 14 项 v58.*);`check examples/unsafe_demo.ming` 0 诊断;`cc examples/unsafe_demo.ming` 输出 `65/66/false`;`run --tree`/`--no-wasm` exit 101 + M4016 首行逐字一致;`fuzz --seed 44044 --count 25` 0 分歧;`proof_fuzz --count 100` 0 误报;`fmt examples/unsafe_demo.ming --check` 通过;既有 C 差分零变化(v58.11 抽查 + 全量套件内 C 腿);`--strict-wasm` 对 unsafe 程序不误报 ok(未进 wasm 资格)。**Linux/Windows C 黄金一致**:本机 Windows(w64devkit gcc)实测;Linux 由 CI c-backend job 承载(本机无法代跑)。
+
+**v0.54.0 独立审查修复(2026-11-12,§58 v58.15–v58.20)**:B1 `UnsafeBlock` 接入控制流分析(`stmtTerminates`/`hasBreak`;块内 return 为最后语句不再误报 M3017;`loop { unsafe { break; } }` 类型为 unit,装 i64/Ptr → M3002);B2 C 后端 unsafe 块发射独立 C 作用域(遮蔽写法 cc 输出 2/1 与 VM 一致);B3 M3046 覆盖容器/构造器载荷逃逸(`typeContainsPtr` 递归:Vec/Map/Option/Result/元组/结构体字段/枚举载荷;泛型调用点按实参类型判定,泛型体内擦除跳过);B4 unsafe 块内闭包函数类型携带 `unsafe` 效果(赋给纯函数类型 → M3029,块内直接调用允许);B5 #27 修复(`use std.x [as y]` 短名在字节码编译器可解析;compileNamedValue 读 imports → `__stdmod:<真实模块名>`;编译器未解析名 → 带 file:line:col 的 M4001 诊断)。M1 Ptr 方法防御 M4016;M4 固定非 unsafe 程序 C 渲染指纹逐字节回归;M6 示例比较退出码 + stderr 首行。新登记 #28/#29/#30 见 §5.1。**验收实测**:`node tests/run.mjs` **652 项 0 失败**;`fuzz --seed 44044 --count 25` 0 分歧(一致 25,其中 C 腿 7);`proof_fuzz --count 100` 0 误报(反例验证 18/18);`cc examples/unsafe_demo.ming` 输出 `65/66/false`;tree/VM/wasm 回落 M4016 首行逐字一致(exit 101);B1 三例/B2 遮蔽 2/1/B3 块外 7×M3046 与块内 0/B4 M3029 反例/B5 `use std.mem` 三路与 `use std.math` 5.0 均实测。
+**风险/回退**:悬垂/越界解引用是进程级 UB,Ming 不捕获(GUIDE §14.1 诚实声明);v1 限定 u8、禁止算术/打印;特性 effect-gated,可整体回退。
 
 ### 4.2.6 v0.55 — QF_LIA 第三片:跨函数契约摘要
 
@@ -206,7 +208,7 @@
 
 | 项 | 处置 | 理由/前置 |
 |----|------|-----------|
-| `with unsafe` 实现 | **提升 v0.54** | 北星支柱;与 ffi 共用门禁;先有 v0.53 CI |
+| `with unsafe` 实现 | **✅ 已交付 v0.54(C5)** | 北星支柱;与 ffi 共用门禁;双门禁 M3029/M3046;tree/VM/wasm 回落 M4016;Ptr 带长度/`unsafe(cond)` 见下 |
 | `mask [效果]` | **降级 v0.56+** | 签名不再陈述真实效果;与资格/契约纯性冲突;需独立 ADR/审计 |
 | 污点即效应(`untrusted`) | 保留 v0.57+ | 安全工具高价值;需净化/传播规则;在 mask 之后 |
 | ffi 面扩大 | 拆分:Ptr 交集进 v0.54;struct/array 保留;`lib.fn` 运行时 API 删除 | extern fn 已覆盖可审计路径;动态符号破坏 AOT/审计 |
@@ -220,6 +222,7 @@
 | 循环/守卫敏感边界证明 | 新增 Backlog | `for i in 0..len { buf[i] }` 最高频;v0.52 只做直线体 |
 | Ptr 带长度 / Slice 只读视图 | 新增 Backlog | 零拷贝与证明联动先决条件 |
 | v0.53.0 独立审查新登记缺陷 | **记录,待修** | #23 tree for-in 遮蔽泄漏(P1)/ #24 VM 捕获闭包传 `v.map` TypeError(P1)/ #25 fuzz 恒 io、wasm 腿不真实执行(P2)/ #26 buildKey 不含编译器源码(P3);逐条见 §5.1 |
+| v0.54 收口新登记缺陷 | **已修(#27)/记录(#28–#30)** | #27 std 模块别名在字节码编译器解析失败 → v0.54.0 独立审查 B5 修复;新登记 #28 tree 块作用域泄漏(P1)/ #29 launcher 源码模式 panic 无位置(P3)/ #30 extern fn 值存局部变量后 C 后端不支持调用(P2);逐条见 §5.1 |
 
 ### 4.2.9 明确不做(v0.52–v0.55)
 
@@ -241,7 +244,7 @@
 |------|---------------------|----------|
 | v0.52 | 三态稳定(proven/violated/silent);proof 报告 additive;codegen 零改动 | §54 ≥12;proof fuzz 200 例 0 误报;fuzz 40 程序 0 分歧;无旗标 JSON 快照不变 |
 | v0.53 | strict wasm 无静默回落;`env -i` 可跑;构建键无重复/路径化;C str for-in 三引擎一致;CI workflow 结构静态校验(实际矩阵以 GitHub Actions 记录为准) | §57 ≥10(实测 31);两次 clean build dist_hash 相同;文档数字与实现一致 |
-| v0.54 | C unsafe 黄金通过;tree/VM 确定性 M4016;门禁闭合;无半开状态 | §58 ≥12;Linux/Windows C 黄金逐字一致;既有 C 差分 0 变化 |
+| v0.54 | C unsafe 黄金通过;tree/VM 确定性 M4016;门禁闭合;无半开状态 | §58 ≥12(实测 20,含独立审查回归);Linux/Windows C 黄金逐字一致(本机 Windows 实测;Linux 由 CI c-backend job 承载);既有 C 差分 0 变化 |
 | v0.55 | 跨函数 ensures 可证;前置条件不被跳过;无新码;codegen 零改动 | §59 ≥10;proof fuzz 300 例 0 误报/0 假反例;check ≤1.25x v0.52 |
 
 **跨版本共同门槛**:`node tests/run.mjs` 0 失败;`fuzz` 0 分歧;新增分节测试;GUIDE 修订记录 + README 路线图 + plan 已完成项移动;版本三处同步;诊断码三处登记;不留下未提交生成物;性能数字必须来自可复现命令(bench 仍为信息性)。
@@ -298,6 +301,21 @@
 | 24 | **VM 捕获闭包传入 `v.map` 触发 TypeError**(`Cannot read properties of null`);tree 正常;HEAD 可复现 | P1 | 待修(§4.2.8) |
 | 25 | **fuzz 生成的 main 恒带 io、wasm 腿从不真实执行**——差分实际只覆盖 VM 回落路径;建议生成纯 helper 由 main 调用,让 wasm 腿真正落地 | P2 | 待修(§4.2.8) |
 | 26 | **buildKey 不含编译器 `src/*.js`**,仅靠 VERSION 区分——编译器改动而版本号未变时可能脏命中(设计现状,记录在案) | P3 | 记录(§4.2.8) |
+
+### 新登记(2026-11-12,v0.54 收口)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 27 | **std 模块别名在字节码编译器解析失败**:`use std.math;` 后写 `math.sqrt(9.0)`(GUIDE §16 声明支持的别名形态)——`ming check` 0 诊断(检查器解析别名),但 `ming run` 在编译期抛 `Error: 编译错误:名字未解析 math` + Node 栈,退出码 1;`run --tree` 正常输出 `3.0`。与 v0.54 C5 无关,实测存在。**最小复现**:`use std.math;` + `fn main() with io { print(str(math.sqrt(9.0))); }` → `check` exit 0,`run` exit 1(`名字未解析 math`),`run --tree` exit 0 输出 `3.0`。根因方向:`src/compiler.js` 的 `compileNamedValue/compileIdentValue` 未把 `use` 导入的 std 模块短名注册为模块别名(全限定 `std.math.sqrt` 正常) | P1 | 已修(v0.54.0 独立审查 B5):`compileNamedValue` 读 `mod.imports` 的 `{std}` 绑定 → `__stdmod:<真实模块名>`;别名 `use std.x as y` 同样生效;编译器未解析名改为 `CompileError` + `file:line:col` 诊断(cc/build/run 不再裸栈);§58 v58.20 锁定 |
+
+### 新登记(2026-11-12,v0.54.0 独立审查;本轮记录,未修)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 28 | **tree 引擎块作用域泄漏(if/unsafe 块)**:`let x = 1; if c { let x = 2; }` / `unsafe { let x = 2; }` 之后,块外读到的仍是块内的新值(实测 `let x=1; unsafe { let x=2; print } print` → tree `2/2`,VM `2/1`;HEAD 可复现)——树引擎 execBlock 复用外层 env,块级 let 覆盖了外层绑定;违反"三引擎一致"硬规则。与 #23(for-in 遮蔽泄漏)同属 tree 作用域根因,待统一修复 | P1 | 待修(§4.2.8;本轮 B2 只修 C 后端作用域,v58.17 用 VM/cc 对照锁定,未改 tree) |
+| 29 | **launcher 源码模式 panic 仅裸码无位置**:`dist/ming-app.mjs` 在无 `app.bytecode.json`(源码回退模式)下 panic 时只打印 `M4xxx: 消息`,不含 `file:line:col` 与源码摘录;而直接 `ming run` 的 panic 首行带位置。诊断信息在回退产物中退化 | P3 | 待修(§4.2.8) |
+| 30 | **extern fn 值存局部变量后 C 后端不支持调用**:`let q = f; q(...)`(f 为 extern fn)在 C 后端 let 推导为 null,发射期拒绝/无法调用;直接 `f(...)` 正常。与 v0.54 无关,既有面 | P2 | 待修(§4.2.8) |
+
 
 ## 6. 过程纪律（所有版本适用）
 

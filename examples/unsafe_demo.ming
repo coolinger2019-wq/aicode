@@ -1,0 +1,17 @@
+// v0.54:with unsafe 最小指针面演示(alloc → store → load → offset → free)。
+// 类型层:Ptr[mut u8] 仅在 unsafe 块内可读写;块外只允许传递与 is_null。
+// 执行层:tree/VM 以 M4016 诚实拒绝;C 原生后端(ming cc)在 C5 兑现真实内存语义。
+fn main() with io, unsafe {
+    unsafe {
+        let p = std.mem.alloc(2);
+        p.store(65);
+        p.offset(1).store(66);
+        let first = p.load();
+        let second = p.offset(1).load();
+        let empty = p.is_null();
+        print(str(first));
+        print(str(second));
+        print(str(empty));
+        std.mem.free(p);
+    }
+}

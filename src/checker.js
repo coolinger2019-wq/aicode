@@ -8,6 +8,7 @@
 //   {k:'tuple',ts} {k:'fn',ps,ret}
 //   {k:'struct',name,def,targs} {k:'enum',name,def,targs}   — def 指向 Decl,按引用比较
 //   {k:'range',el}
+//   {k:'ptr',el,mut}   — v0.54:不透明指针(仅 el=u8;mut 区分 Ptr[mut u8]/Ptr[u8],无隐式转换)
 //   {k:'param',name}   — 泛型参数(检查体内)
 //   {k:'var',id}       — 推断变量,由 binds 解析
 
@@ -34,6 +35,8 @@ export function mkTuple(ts) { return { k: 'tuple', ts }; }
 export function mkFn(ps, ret, effects = new Set()) { return { k: 'fn', ps, ret, effects }; }
 export function mkRange(el) { return { k: 'range', el }; }
 export function mkJoin(el) { return { k: 'join', el }; }
+// v0.54:Ptr 类型面 {k:'ptr', el, mut};el 当前只允许 u8(检查器 resolveTypeAst 强制)
+export function mkPtr(el, mut = false) { return { k: 'ptr', el, mut: !!mut }; }
 
 export const INT_TYPES = {
   i8: tint(8, true), i16: tint(16, true), i32: tint(32, true), i64: tint(64, true),
@@ -67,6 +70,7 @@ function occurs(t, id, binds) {
     case 'tuple': return t.ts.some(x => occurs(x, id, binds));
     case 'fn': return t.ps.some(x => occurs(x, id, binds)) || occurs(t.ret, id, binds);
     case 'range': return occurs(t.el, id, binds);
+    case 'ptr': return occurs(t.el, id, binds);
     case 'struct': case 'enum': return (t.targs ?? []).some(x => occurs(x, id, binds));
     default: return false;
   }
@@ -106,6 +110,8 @@ export function unify(a, b, binds) {
     case 'bool': case 'str': case 'unit': case 'never': case 'json': return true; // v0.44:json 缺失曾被误判为不兼容(Json 值无法传参/赋值)
     case 'vec': return unify(a.el, b.el, binds);
     case 'range': return unify(a.el, b.el, binds);
+    // v0.54:Ptr 精确匹配——mut/非 mut 不同型,无隐式转换
+    case 'ptr': return a.mut === b.mut && unify(a.el, b.el, binds);
     case 'join': return unify(a.el, b.el, binds);
     case 'opt': return unify(a.el, b.el, binds);
     case 'res': return unify(a.ok, b.ok, binds) && unify(a.err, b.err, binds);
@@ -139,6 +145,7 @@ export function typeStr(t, binds = null) {
     case 'res': return `Result[${r(t.ok)}, ${r(t.err)}]`;
     case 'range': return `Range[${r(t.el)}]`;
     case 'join': return `Join[${r(t.el)}]`;
+    case 'ptr': return `Ptr[${t.mut ? 'mut ' : ''}${r(t.el)}]`; // v0.54
     case 'tuple': return t.ts.length === 0 ? '()' : `(${t.ts.map(r).join(', ')})`;
     case 'fn': { const base = `(${t.ps.map(r).join(', ')}) -> ${r(t.ret)}`; const es = [...(t.effects ?? [])]; return es.length ? base + ' with ' + es.join(', ') : base; }
     case 'param': return t.name;
@@ -161,6 +168,7 @@ export function isComparable(t, binds) {
   switch (t.k) {
     case 'fn': return false;
     case 'vec': return isComparable(t.el, binds);
+    case 'ptr': return false; // v0.54:Ptr 不支持 ==/!=(用 is_null)
     case 'map': return isComparable(t.kt, binds) && isComparable(t.vt, binds);
     case 'opt': return isComparable(t.el, binds);
     case 'res': return isComparable(t.ok, binds) && isComparable(t.err, binds);
@@ -180,7 +188,7 @@ export function isPrimitiveDisplay(t, binds) {
 // ===================== 效果系统 =====================
 // v0.2 已开放:io(stdout/stderr/stdin)、time(时钟)。
 // 副作用必须显式声明并逐层传播;声明为纯函数的代码在编译期即可证明无副作用。
-export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi']);
+export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi', 'unsafe']); // v0.54:unsafe
 
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
@@ -415,6 +423,13 @@ export const STD_MODULES = {
       mF('extension', [T_STR], T_STR),
     ],
   },
+  // v0.54:原生存取(能力 unsafe;C 后端兑现,tree/VM 运行时 M4016 诚实拒绝)
+  mem: {
+    fns: [
+      mF('alloc', [INT_TYPES.i64], mkPtr(INT_TYPES.u8, true), { effect: 'unsafe' }),
+      mF('free', [mkPtr(INT_TYPES.u8, true)], T_UNIT, { effect: 'unsafe' }),
+    ],
+  },
 };
 
 // ===================== 方法表(签名)=====================
@@ -476,6 +491,9 @@ export class Checker {
     this.implTraits = new Map();   // Map<def, Set<traitName>>
     this.implInfo = new Map();     // Map<def, Map<traitName, {tparams, bounds}>>
     this.methodEntries = [];       // 待检查体的 impl 方法(伪 fn entry)
+    // v0.54 审查 B3:容器/构造器载荷点已报 M3046 的 span(参数传递检查据此去重,
+    // 避免 "take(H { p: q })" 在字面量点与实参点各报一次)
+    this.ptrPayloadSpans = new Set();
   }
 
   // ---------- 加载 ----------
@@ -595,6 +613,22 @@ export class Checker {
             if (t.args.length) self.diagT(t.span, `基本类型 "${t.name}" 不带类型参数`);
             return PRIM_TYPES[t.name];
           }
+          // v0.54:Ptr[mut u8] / Ptr[u8](不透明指针;仅 u8 元素,无隐式转换)
+          if (parts.length === 1 && t.name === 'Ptr') {
+            if (t.args.length !== 1) {
+              self.diagT(t.span, `Ptr 需要 1 个类型参数,得到 ${t.args.length}(写法:Ptr[u8] 或 Ptr[mut u8])`);
+              return mkPtr(INT_TYPES.u8, false);
+            }
+            let argAst = t.args[0];
+            let mut = false;
+            if (argAst.nt === 'TMut') { mut = true; argAst = argAst.type; }
+            const el = go(argAst);
+            if (!(el?.k === 'int' && el.bits === 8 && el.signed === false)) {
+              self.diagT(argAst.span ?? t.span, `Ptr 的元素类型只支持 u8,得到 ${typeStr(el)}`);
+              return mkPtr(INT_TYPES.u8, mut);
+            }
+            return mkPtr(el, mut);
+          }
           if (parts.length === 1 && t.name === 'Vec') {
             if (t.args.length !== 1) self.diagT(t.span, `Vec 需要 1 个类型参数,得到 ${t.args.length}`);
             return mkVec(go(t.args[0]));
@@ -651,6 +685,11 @@ export class Checker {
           return mkTuple(t.ts.map(go));
         }
         case 'TFn': return mkFn(t.ps.map(go), go(t.ret));
+        case 'TMut': {
+          // v0.54:mut 只允许作为 Ptr 的元素修饰(如 let x: mut u8 非法)
+          self.diagT(t.span, '"mut" 只能用于 Ptr 的元素类型,例如 Ptr[mut u8]');
+          return go(t.type);
+        }
         default:
           self.diagT(t.span, '无法解析的类型');
           return T_UNIT;
@@ -1226,14 +1265,63 @@ export class Checker {
     scope.reportUnused(this.diags);
   }
 
+  // v0.54:unsafe {} 门禁——块只能出现在声明 with unsafe 的函数内;块内才允许指针读写/传递
+  // v0.54 审查 B4:只要在函数体内消费 unsafe 上下文,该消费就记入当前闭包的效果集
+  // (effectSink)。否则 unsafe 块里定义的闭包类型为 "() -> T"(纯),可被纯函数参数接收,
+  // 把指针操作洗成无效果调用——违反效果逐层传播合同。
+  requireUnsafeContext(ctx, span, what) {
+    if (ctx.effectSink) ctx.effectSink.add('unsafe');
+    if (ctx.inUnsafe) return true;
+    this.diags.push(err('M3046',
+      `${what} 必须在 unsafe {} 块内(所在函数需声明 "with unsafe")`,
+      span, CODE_HINTS.M3046));
+    return false;
+  }
+
+  // v0.54:Ptr 实参传递门禁——任何函数(除 extern)收到含 Ptr 的实参都必须在 unsafe 块内。
+  // allowPtr=true 用于 extern(签名可接受 Ptr)与 std.mem(已由 mem 专项检查覆盖,避免重复诊断)。
+  // v0.54 审查 B3:判定改为递归类型谓词(容器/元组/结构/枚举载荷都算"Ptr 逃逸"),
+  // 不再只看实参类型本身 k==='ptr'——否则 Vec[Ptr[mut u8]]/Option[Ptr]/含 Ptr 的结构体
+  // 可以把指针偷运出 unsafe 块。泛型形参(param/var)在调用点用**实参类型**判定;
+  // 泛型体内类型被擦除时无从静态判定,跳过(见 GUIDE §14.1)。
+  checkPtrArgs(args, argTs, ctx, calleeDesc, allowPtr = false) {
+    if (allowPtr || ctx.inUnsafe) return;
+    for (let i = 0; i < args.length; i++) {
+      const t = resolveT(argTs[i], new Map());
+      if (!typeContainsPtr(t)) continue;
+      const key = spanKey(args[i]?.span);
+      if (key && this.ptrPayloadSpans.has(key)) continue; // 构造点已报,不重复
+      this.diags.push(err('M3046',
+        `把 ${typeStr(t)} 实参传给${calleeDesc} 必须在 unsafe {} 块内(所在函数需声明 "with unsafe")`,
+        args[i]?.span, CODE_HINTS.M3046));
+    }
+  }
+
+  // v0.54 审查 B3:把含 Ptr 的值放进容器/元组/结构体/枚举变体,同样属于指针逃逸。
+  // site 是载荷位置的中文主语(如 "Vec 元素"/"结构体字段")。
+  checkPtrPayload(t, span, ctx, site) {
+    if (ctx.inUnsafe) return;
+    const r = t ? resolveT(t, new Map()) : null;
+    if (!typeContainsPtr(r)) return;
+    const key = spanKey(span);
+    if (key && this.ptrPayloadSpans.has(key)) return; // 同一表达式已报(嵌套构造/实参去重)
+    if (key) this.ptrPayloadSpans.add(key);
+    this.diags.push(err('M3046',
+      `${site}含 Ptr(${typeStr(r)}),必须在 unsafe {} 块内(所在函数需声明 "with unsafe")`,
+      span, CODE_HINTS.M3046));
+  }
+
   // 效果检查:调用方必须声明被调方需要的全部效果
-  checkEffects(ctx, required, span) {
+  // contextLabel:非调用场景(如 v0.54 的 unsafe 块)可覆盖消息主语,仍复用 M3029 与修复处方
+  checkEffects(ctx, required, span, contextLabel = null) {
     if (!required || !required.size) return;
     if (ctx.effectSink) for (const e of required) ctx.effectSink.add(e);
     const missing = [...required].filter(e => !ctx.effects?.has(e));
     if (!missing.length) return;
     const d = err('M3029',
-      `此调用需要效果 [${missing.join(', ')}],但函数 "${ctx.fnName ?? '?'}" 声明的是 [${[...(ctx.effects ?? [])].join(', ') || '纯函数'}]`,
+      contextLabel
+        ? `${contextLabel}需要效果 [${missing.join(', ')}],但函数 "${ctx.fnName ?? '?'}" 没有声明 "with ${missing.join(', ')}"(当前:[${[...(ctx.effects ?? [])].join(', ') || '纯函数'}])`
+        : `此调用需要效果 [${missing.join(', ')}],但函数 "${ctx.fnName ?? '?'}" 声明的是 [${[...(ctx.effects ?? [])].join(', ') || '纯函数'}]`,
       span, CODE_HINTS.M3029);
     // v0.44:结构化修复处方——在函数体 "{" 前补声明缺失效果
     const bodySpan = ctx.fnDecl?.body?.span;
@@ -1339,6 +1427,13 @@ export class Checker {
         // 结构化并发作用域块:需要 sync 效果;块体为语句序列(unit)
         this.checkEffects(ctx, new Set(['sync']), s.span);
         this.checkBlock(s.body, { ...ctx, inLoop: ctx.inLoop }, T_UNIT);
+        return;
+      }
+      case 'UnsafeBlock': {
+        // v0.54:块级效果门禁——先要求函数声明 with unsafe(M3029),块内才置 inUnsafe。
+        // 块本身不改变周围效果集:块内调用仍受 ctx.effects 约束(与普通代码一致)。
+        this.checkEffects(ctx, new Set(['unsafe']), s.span, 'unsafe {} 块');
+        this.checkBlock(s.body, { ...ctx, inUnsafe: true }, T_UNIT);
         return;
       }
       case 'ExprStmt': {
@@ -1463,7 +1558,24 @@ export class Checker {
       this.checkBinaryOp(s.op[0], targetT, valueT, s.span, binds);
     } else if (targetT && !unify(targetT, valueT, binds)) {
       this.diags.push(err('M3002', `赋值类型不匹配:目标是 ${typeStr(targetT, binds)},值是 ${typeStr(valueT, binds)}`, s.span));
+    } else if (targetT) {
+      // v0.54 审查 B4:unify(目标, 值) 的效果子集方向是"目标 ⊆ 值"(为实参→形参而设),
+      // 赋值需要的是"值 ⊆ 目标";否则闭包可把 unsafe 效果洗进纯函数类型变量。
+      this.checkFnEffectNarrowing(targetT, valueT, s.span);
     }
+  }
+
+  // 把闭包/函数值放进已声明的函数类型位置(赋值、结构体字段初始化)时,
+  // 值的效果集必须 ⊆ 目标效果集——效果只增不减。
+  checkFnEffectNarrowing(targetT, valueT, span) {
+    const tv = resolveT(targetT, new Map()), vv = valueT ? resolveT(valueT, new Map()) : null;
+    if (tv?.k !== 'fn' || vv?.k !== 'fn') return;
+    const have = tv.effects ?? new Set();
+    const extra = [...(vv.effects ?? new Set())].filter(e => !have.has(e));
+    if (!extra.length) return;
+    this.diags.push(err('M3029',
+      `把需要效果 [${extra.join(', ')}] 的 ${typeStr(vv)} 放进声明为 ${typeStr(tv)} 的位置(效果只增不减)`,
+      span, '目标函数类型没有声明这些效果;要么扩宽目标类型,要么把危险操作留在函数体内。'));
   }
 
   // 可变位置(左值)
@@ -1658,6 +1770,7 @@ export class Checker {
         const ts = e.elems.map(x => this.checkExpr(x, ctx));
         const tt = mkTuple(ts);
         this.checkJoinNotStored(tt, new Map(), e.span, '作为元组成分');
+        this.checkPtrPayload(tt, e.span, ctx, '元组成分'); // v0.54 审查 B3
         return tt;
       }
       case 'StructLit': return this.checkStructLit(e, ctx);
@@ -1668,7 +1781,10 @@ export class Checker {
       }
       case 'LoopExpr': {
         this.checkBlock(e.body, { ...ctx, inLoop: true }, T_UNIT);
-        return T_NEVER;
+        // v0.54 审查 B1:loop 内出现 break → 循环以 unit 结束(break 不携带值);
+        // 只有完全无 break 的 loop 才是 never。此前恒返回 never,`let x: i64 = loop { break; }`
+        // 会静默通过并把 unit 装进 i64。hasBreak 对 unsafe 块递归(见函数定义处)。
+        return hasBreak(e.body) ? T_UNIT : T_NEVER;
       }
       default:
         this.diags.push(err('M2001', `未支持的表达式 ${e.nt}`, e.span));
@@ -1697,7 +1813,9 @@ export class Checker {
         this.diags.push(err('M3003', `泛型函数 "${name}" 作为值使用前需要确定类型参数`, e.span, '直接调用它,让类型从实参推断。'));
         return null;
       }
-      return mkFn(entry.sig.params.map(p => p.type), entry.sig.ret, new Set(entry.sig.effects ?? []));
+      const ft = mkFn(entry.sig.params.map(p => p.type), entry.sig.ret, new Set(entry.sig.effects ?? []));
+      if (entry.extern) ft.extern = true; // v0.54:extern 函数值可接收 Ptr,不受 unsafe 块限制
+      return ft;
     }
     if (entry?.kind === 'const') {
       return entry.rtype ?? null;
@@ -1831,7 +1949,9 @@ export class Checker {
         this.diags.push(err('M3003', `泛型函数 "${name}" 作为值使用前需要确定类型参数`, span));
         return null;
       }
-      return mkFn(entry.sig.params.map(p => p.type), entry.sig.ret, new Set(entry.sig.effects ?? []));
+      const ft = mkFn(entry.sig.params.map(p => p.type), entry.sig.ret, new Set(entry.sig.effects ?? []));
+      if (entry.extern) ft.extern = true; // v0.54
+      return ft;
     }
     if (entry.kind === 'enum') {
       if (!entry.pub) this.visDiag(entry, name, span, fromMod);
@@ -1869,12 +1989,15 @@ export class Checker {
           this.diags.push(err('M3005', `函数 "${name}" 需要 ${localFn.params.length} 个参数,得到 ${e.args.length}`, e.span));
         }
         const binds = new Map();
+        const argTs = [];
         e.args.forEach((a, i) => {
           const t = this.checkExpr(a, ctx, localFn.params[i]?.type ?? undefined, true);
+          argTs.push(t);
           if (localFn.params[i] && !unify(t, localFn.params[i].type, binds)) {
             this.diags.push(err('M3002', `参数 #${i + 1}(${localFn.params[i].name})类型不匹配:期望 ${typeStr(localFn.params[i].type)},实际 ${typeStr(t, binds)}`, a.span));
           }
         });
+        this.checkPtrArgs(e.args, argTs, ctx, `函数 "${name}"`); // v0.54
         this.checkEffects(ctx, localFn.effects, callee.span);
         return localFn.ret;
       }
@@ -1945,6 +2068,8 @@ export class Checker {
       const pt = i < sig.params.length ? substTypes(sig.params[i].type, sig.tparams, paramMap) : null;
       argTs.push(this.checkExpr(e.args[i], ctx, pt ?? undefined));
     }
+    // v0.54:Ptr 实参传递门禁(extern 签名可接受 Ptr,不受块限制)
+    this.checkPtrArgs(e.args, argTs, ctx, `函数 "${entry.decl.name}"`, !!entry.extern);
     if (e.args.length !== sig.params.length) {
       this.diags.push(err('M3005', `函数 "${entry.decl.name}" 需要 ${sig.params.length} 个参数,得到 ${e.args.length}`, e.span,
         sig.params.length ? `签名: ${entry.decl.name}(${sig.params.map(p => typeStr(p.type)).join(', ')})` : null));
@@ -2586,6 +2711,7 @@ export class Checker {
     for (let i = 0; i < e.args.length; i++) {
       argTs.push(this.checkExpr(e.args[i], ctx, r.ps[i] ?? undefined));
     }
+    this.checkPtrArgs(e.args, argTs, ctx, '函数值', !!r.extern); // v0.54
     for (let i = 0; i < Math.min(e.args.length, r.ps.length); i++) {
       if (!unify(argTs[i], r.ps[i], binds)) {
         this.diags.push(err('M3002', `参数 #${i + 1} 类型不匹配:期望 ${typeStr(r.ps[i], binds)},实际 ${typeStr(argTs[i], binds)}`, e.args[i].span));
@@ -2601,6 +2727,10 @@ export class Checker {
       this.diags.push(err('M3005', `变体 ${ctor.enumT.name}.${ctor.variant} 需要 ${ctor.arity} 个值,得到 ${e.args.length}`, e.span));
     }
     const argTs = e.args.map(a => this.checkExpr(a, ctx, ctor.ps?.[0] ?? undefined));
+    // v0.54 审查 B3:Some(q)/Ok(q)/用户变体把 Ptr 装进载荷,同样不能在 unsafe 块外。
+    // 报在调用表达式 span 上,便于与 checkPtrArgs(直接作为实参)按 span 去重。
+    const ptrI = argTs.findIndex(t => typeContainsPtr(t ? resolveT(t, new Map()) : null));
+    if (ptrI >= 0) this.checkPtrPayload(argTs[ptrI], e.span, ctx, '变体载荷');
     if (ctor.ps) {
       for (let i = 0; i < Math.min(argTs.length, ctor.ps.length); i++) {
         if (!unify(argTs[i], ctor.ps[i], binds)) {
@@ -2632,6 +2762,8 @@ export class Checker {
       } else if (p === 'any') {
         const r = resolveT(argTs[i], binds);
         if (spec.noFn && r?.k === 'fn') this.diags.push(err('M3002', 'debug 不能用于函数值', e.args[i].span));
+        // v0.54:Ptr 不可打印/调试
+        if (r?.k === 'ptr') this.diags.push(err('M3002', `${typeStr(r)} 不能传给 debug(指针不可打印)`, e.args[i].span));
       } else if (p === 'eq') {
         if (i === 1 && !unify(argTs[0], argTs[1], binds)) {
           this.diags.push(err('M3002', `assert_eq 两侧类型不同:${typeStr(argTs[0], binds)} vs ${typeStr(argTs[1], binds)}`, e.span));
@@ -2783,25 +2915,32 @@ export class Checker {
       return T_BOOL;
     }
     if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
+    // v0.54:std.mem.alloc/free 是原生存取,必须在 unsafe 块内
+    if (f.mod === 'mem') this.requireUnsafeContext(ctx, e.callee?.span ?? e.span, `std.mem.${f.fn.name}`);
     const min = f.fn.min ?? f.fn.params.length;
     const max = f.fn.max ?? f.fn.params.length;
     if (e.args.length < min || e.args.length > max) {
       this.diags.push(err('M3005', `std.${f.mod}.${f.fn.name} 需要 ${min}${max !== min ? '-' + max : ''} 个参数,得到 ${e.args.length}`, e.span));
     }
     const binds = new Map();
+    const argTs = [];
     e.args.forEach((a, i) => {
       const p = f.fn.params[i];
       if (typeof p === 'string' && p === 'jsonval') {
         // JSON 兼容性静态检查(stringify 等)
         const t = this.checkExpr(a, ctx);
+        argTs.push(t);
         this.checkJsonCompatible(t, binds, a.span);
         return;
       }
       const t = this.checkExpr(a, ctx, p ?? undefined);
+      argTs.push(t);
       if (p && !unify(t, p, binds)) {
         this.diags.push(err('M3002', `参数 #${i + 1} 类型不匹配:期望 ${typeStr(p)},实际 ${typeStr(t, binds)}`, a.span));
       }
     });
+    // mem 的 Ptr 门禁已由上面的专项检查覆盖(allowPtr=true,避免重复诊断)
+    this.checkPtrArgs(e.args, argTs, ctx, `std.${f.mod}.${f.fn.name}`, f.mod === 'mem');
     return f.fn.ret;
   }
 
@@ -2855,6 +2994,8 @@ export class Checker {
 
     const mutNeeded = MUT_METHODS.has(name);
 
+    // Ptr 方法(v0.54):load/store/offset 需 unsafe 上下文;is_null 块外允许
+    if (r.k === 'ptr') return this.ptrMethod(r, name, args, ctx, callNode, expected, fieldCallee);
     // Vec 方法
     if (r.k === 'vec') return this.vecMethod(r, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
     if (r.k === 'map') return this.mapMethod(r, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
@@ -2905,13 +3046,16 @@ export class Checker {
           return sig.ret;
         }
         const mbinds = new Map();
+        const argTs = [];
         args.forEach((a, i) => {
           const pt = sig.params[i + 1].type;
           const t = this.checkExpr(a, ctx, pt, true);
+          argTs.push(t);
           if (!unify(t, pt, mbinds)) {
             this.diags.push(err('M3002', `方法 .${name}() 参数 #${i + 1} 类型不匹配:期望 ${typeStr(pt, mbinds)},实际 ${typeStr(t, mbinds)}`, a.span));
           }
         });
+        this.checkPtrArgs(args, argTs, ctx, `方法 ".${name}"`); // v0.54
         return sig.ret;
       }
       this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"`, fieldCallee.span,
@@ -2987,6 +3131,49 @@ export class Checker {
     return true;
   }
 
+  // v0.54:Ptr 值方法(不可索引/算术/比较/打印;offset 保持可写性)
+  ptrMethod(r, name, args, ctx, callNode, expected, fieldCallee) {
+    const span = fieldCallee.span, binds = new Map();
+    // v0.54 审查 B4:需要 unsafe 上下文的三个方法把 unsafe 记入闭包效果集。
+    // is_null 是块外也允许的纯判断,不污染闭包效果。
+    if (name !== 'is_null' && ctx.effectSink) ctx.effectSink.add('unsafe');
+    const aT = (i, exp) => this.checkExpr(args[i], ctx, exp);
+    switch (name) {
+      case 'load':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        this.requireUnsafeContext(ctx, span, '指针操作 ".load()"');
+        return INT_TYPES.u8;
+      case 'store': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        this.requireUnsafeContext(ctx, span, '指针操作 ".store()"');
+        if (!r.mut) {
+          this.diags.push(err('M3002', `${typeStr(r)} 是只读指针,不能 store(需要 Ptr[mut u8])`, span,
+            'std.mem.alloc 返回 Ptr[mut u8];只读指针只能 load/is_null/offset/传递。'));
+        }
+        const t = aT(0, INT_TYPES.u8);
+        if (!unify(t, INT_TYPES.u8, binds)) {
+          this.diags.push(err('M3002', `store 的值必须是 u8,实际是 ${typeStr(t, binds)}`, args[0].span));
+        }
+        return T_UNIT;
+      }
+      case 'offset': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        this.requireUnsafeContext(ctx, span, '指针操作 ".offset()"');
+        const t = aT(0, INT_TYPES.i64);
+        if (!unify(t, INT_TYPES.i64, binds)) {
+          this.diags.push(err('M3002', `offset 的偏移量必须是 i64,实际是 ${typeStr(t, binds)}`, args[0].span));
+        }
+        return mkPtr(r.el, r.mut); // 保持 mut 性
+      }
+      case 'is_null':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return T_BOOL; // 块外允许(仅空指针判断)
+      default:
+        this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"(Ptr 方法:load/store/offset/is_null)`, span));
+        return null;
+    }
+  }
+
   vecMethod(r, name, args, ctx, callNode, expected, mutNeeded, fieldCallee) {
     const T = r.el, binds = new Map();
     const span = fieldCallee.span;
@@ -3009,6 +3196,7 @@ export class Checker {
         if (mutNeeded) this.checkMutReceiver(fieldCallee.base, ctx, name, span);
         const t = aT(0, T);
         if (!unify(t, T, binds)) this.diags.push(err('M3002', `push 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t, binds)}`, args[0].span));
+        this.checkPtrPayload(t, args[0].span, ctx, 'Vec 元素'); // v0.54 审查 B3
         return T_UNIT;
       }
       case 'pop':
@@ -3106,6 +3294,7 @@ export class Checker {
         if (!unify(t0, INT_TYPES.i64, binds)) this.diags.push(err('M3002', `insert 的索引必须是 i64`, args[0].span));
         const t1 = aT(1, T);
         if (!unify(t1, T, binds)) this.diags.push(err('M3002', `insert 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
+        this.checkPtrPayload(t1, args[1].span, ctx, 'Vec 元素'); // v0.54 审查 B3
         return T_UNIT;
       }
       case 'remove': {
@@ -3120,6 +3309,7 @@ export class Checker {
         this.checkMutReceiver(fieldCallee.base, ctx, name, span);
         const t = aT(0, mkVec(T));
         if (!unify(t, mkVec(T), binds)) this.diags.push(err('M3002', `extend 的参数类型是 ${typeStr(mkVec(T), binds)},实际 ${typeStr(t, binds)}`, args[0].span));
+        this.checkPtrPayload(t, args[0].span, ctx, 'Vec 元素'); // v0.54 审查 B3
         return T_UNIT;
       }
       case 'clone':
@@ -3154,6 +3344,8 @@ export class Checker {
         this.checkMutReceiver(fieldCallee.base, ctx, name, span);
         const t0 = aT(0, K); if (!unify(t0, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)},实际 ${typeStr(t0, binds)}`, args[0].span));
         const t1 = aT(1, V); if (!unify(t1, V, binds)) this.diags.push(err('M3002', `map 值类型是 ${typeStr(V, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
+        this.checkPtrPayload(t0, args[0].span, ctx, 'Map 键'); // v0.54 审查 B3
+        this.checkPtrPayload(t1, args[1].span, ctx, 'Map 值');
         return T_UNIT;
       }
       case 'has':
@@ -3381,6 +3573,17 @@ export class Checker {
       this.diags.push(err('M3018', `泛型参数上不能做 "${op}" 运算(v0.1 泛型是参数化的;需要操作请具体化类型)`, span,
         'traits 与泛型约束计划于 v0.2。'));
       return l ?? null;
+    }
+    // v0.54:Ptr 禁止一切算术/比较/相等运算(移动用 p.offset(n),空判断用 p.is_null())
+    if (l?.k === 'ptr' || r?.k === 'ptr') {
+      if (op === '==' || op === '!=') {
+        this.diags.push(err('M3008', `Ptr 不支持 "${op}" 相等比较;用 p.is_null() 判断空指针`, span));
+      } else if (['<', '<=', '>', '>='].includes(op)) {
+        this.diags.push(err('M3008', `Ptr 不支持 "${op}" 比较`, span));
+      } else {
+        this.diags.push(err('M3008', `运算符 "${op}" 不支持 ${typeStr(l)} 与 ${typeStr(r)}(Ptr 只能用 offset(n) 移动)`, span));
+      }
+      return T_BOOL;
     }
     const both = (pred) => l && r && pred(l) && pred(r);
     const same = () => unify(l, r, binds);
@@ -3680,6 +3883,7 @@ export class Checker {
       }
     }
     if (elT) this.checkJoinNotStored(elT, binds, e.span, '作为 Vec 元素');
+    if (e.elems.length > 0) this.checkPtrPayload(elT, e.span, ctx, 'Vec 元素'); // v0.54 审查 B3
     return mkVec(elT ?? tvar());
   }
 
@@ -3711,6 +3915,10 @@ export class Checker {
       if (vt === null) vt = v; else if (!unify(v, vt, binds)) this.diags.push(err('M3002', `map 值类型不一致:${typeStr(vt, binds)} 与 ${typeStr(v, binds)}`, en.v.span));
     }
     if (vt) this.checkJoinNotStored(vt, binds, e.span, '作为 Map 值');
+    if (e.entries.length > 0) {
+      // v0.54 审查 B3:Map 字面量把 Ptr 装进键/值时同样属于逃逸(键本身另受 M3044 约束)
+      this.checkPtrPayload(typeContainsPtr(kt) ? kt : vt, e.span, ctx, 'Map 条目');
+    }
     if (!expected) this.checkMapKey(kt, e.span);
     return mkMap(kt ?? tvar(), vt ?? tvar());
   }
@@ -3746,6 +3954,7 @@ export class Checker {
     const sub = new Map(decl.tparams.map((n, i) => [n, tvars[i]]));
     const seen = new Set();
     const binds = new Map();
+    let ptrField = false; // v0.54 审查 B3:任一字段值为含 Ptr 的类型
     for (const f of e.fields) {
       seen.add(f.name);
       const fd = decl.fields.find(x => x.name === f.name);
@@ -3757,6 +3966,8 @@ export class Checker {
       const expected = substTypes(fd.rtype, decl.tparams, sub);
       const ft = this.checkExpr(f.value, ctx, expected, true);
       if (ft) unify(expected, ft, binds); // 绑定未定的类型参数
+      if (typeContainsPtr(ft)) ptrField = true;
+      this.checkFnEffectNarrowing(expected, ft, f.value.span);  // v0.54 审查 B4
     }
     const missing = decl.fields.filter(f => !seen.has(f.name)).map(f => f.name);
     if (missing.length) {
@@ -3789,7 +4000,9 @@ export class Checker {
         if (r && r.k !== 'bool') this.diags.push(err('M3014', `invariant 条件必须是 bool,实际是 ${typeStr(r)}`, inv.expr.span));
       }
     }
-    return { k: 'struct', name: decl.name, def: decl, mod: fromMod, targs };
+    const structT = { k: 'struct', name: decl.name, def: decl, mod: fromMod, targs };
+    if (ptrField) this.checkPtrPayload(structT, e.span, ctx, '结构体字段'); // v0.54 审查 B3
+    return structT;
   }
 
   checkLambda(e, ctx, expected) {
@@ -3925,8 +4138,19 @@ function stmtTerminates(s) {
   switch (s.nt) {
     case 'Return': case 'Break': case 'Continue': return true;
     case 'ExprStmt': return exprTerminates(s.expr);
+    // v0.54 审查 B1:unsafe 块是普通块的一部分,块内终止(return/break/continue/尾 loop)
+    // 同样决定函数/循环体的可达性——此前漏接导致 "块内 return 是最后语句" 误报 M3017,
+    // 且 loop { unsafe { break; } } 被当作必然终止(unreachable)而不是 unit。
+    case 'UnsafeBlock': return blockTerminates(s.body);
     default: return false;
   }
+}
+
+// 块是否必然终止:任一语句终止(尾表达式因此不可达)→ 终止;否则看尾表达式自身是否终止。
+function blockTerminates(b) {
+  if (!b) return false;
+  if (b.stmts.some(stmtTerminates)) return true;
+  return !!(b.tail && exprTerminates(b.tail));
 }
 
 function exprTerminates(e) {
@@ -3966,12 +4190,51 @@ function hasBreak(block) {
     if (s.nt === 'ExprStmt' && s.expr.nt === 'LoopExpr' && hasBreak(s.expr.body)) return true;
     if (s.nt === 'While' && hasBreak(s.body)) return true;
     if (s.nt === 'For' && hasBreak(s.body)) return true;
+    // v0.54 审查 B1:unsafe 块内的 break 属于外层循环(块本身不建立 break 目标)
+    if (s.nt === 'UnsafeBlock' && hasBreak(s.body)) return true;
   }
   if (block.tail && block.tail.nt === 'LoopExpr' && hasBreak(block.tail.body)) return true;
   return false;
 }
 
 // ===================== 辅助 =====================
+
+function spanKey(span) {
+  if (!span) return null;
+  return `${span.file ?? ''}:${span.line ?? 0}:${span.col ?? 0}`;
+}
+
+// v0.54 审查 B3:类型是否(递归地)含 Ptr 值。
+// 遍历类型结构(容器元素、元组元素、结构体字段、枚举载荷);用 seen 防止递归类型
+// (struct Node { next: Option[Node] })无限展开。类型参数(param/var)无法静态判定 → false,
+// 调用点传入的具体实参类型由调用方负责判定。
+export function typeContainsPtr(t, seen = new Set()) {
+  if (!t) return false;
+  switch (t.k) {
+    case 'ptr': return true;
+    case 'vec': case 'opt': case 'range': case 'join': return typeContainsPtr(t.el, seen);
+    case 'map': return typeContainsPtr(t.kt, seen) || typeContainsPtr(t.vt, seen);
+    case 'res': return typeContainsPtr(t.ok, seen) || typeContainsPtr(t.err, seen);
+    case 'tuple': return (t.ts ?? []).some(x => typeContainsPtr(x, seen));
+    case 'struct': {
+      const def = t.def;
+      if (!def?.fields?.length || seen.has(def)) return false;
+      const tps = def.tparams ?? [];
+      const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
+      const seen2 = new Set(seen).add(def);
+      return def.fields.some(f => f.rtype && typeContainsPtr(substTypes(f.rtype, tps, sub), seen2));
+    }
+    case 'enum': {
+      const def = t.def;
+      if (!def?.variants?.length || seen.has(def)) return false;
+      const tps = def.tparams ?? [];
+      const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
+      const seen2 = new Set(seen).add(def);
+      return def.variants.some(v => (v.rtypes ?? []).some(x => typeContainsPtr(substTypes(x, tps, sub), seen2)));
+    }
+    default: return false;
+  }
+}
 
 export function substTypes(t, tparams, sub) {
   if (!tparams?.length) return t;
@@ -3985,6 +4248,7 @@ export function substTypes(t, tparams, sub) {
     }
     switch (t.k) {
       case 'vec': return mkVec(go(t.el));
+      case 'ptr': return mkPtr(go(t.el), t.mut); // v0.54
       case 'map': return mkMap(go(t.kt), go(t.vt));
       case 'opt': return mkOpt(go(t.el));
       case 'res': return mkRes(go(t.ok), go(t.err));

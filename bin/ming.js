@@ -15,7 +15,7 @@ import { Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY } from '.
 import { findManifest, initProject } from '../src/manifest.js';
 import { startLsp } from '../src/lsp.js';
 import { startRepl } from '../src/repl.js';
-import { compile } from '../src/compiler.js';
+import { compile, CompileError } from '../src/compiler.js';
 import { serializeArtifact } from '../src/artifact.js';
 import { emitC } from '../src/cbackend.js';
 import { Unsupported, wasmLayerStatus } from '../src/wasm.js';
@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.53.0';
+export const VERSION = '0.54.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -516,6 +516,22 @@ function fail(msg, json) {
   return 1;
 }
 
+// v0.54 审查 B5:字节码编译器内部可预期错误(名字/结构体未解析)渲染为带位置的诊断,
+// 而不是 Node 裸栈。M4001 是既有 panic 码(内部错误),这里只补位置与处理建议。
+function compileErrorDiag(e) {
+  return new Diagnostic('M4001', SEVERITY.ERROR,
+    '内部错误(字节码编译器):' + e.message,
+    e.span, '这是编译器缺陷(检查器已通过但字节码编译器无法降级);请附最小复现报告。');
+}
+
+// 输出编译错误诊断;返回 1(供 cc/build/run 的 catch 分支直接 return)。
+function reportCompileError(e, json) {
+  const d = compileErrorDiag(e);
+  if (json) process.stdout.write(JSON.stringify({ ok: false, exit_code: 1, diagnostics: [d.toJson()] }, null, 2) + '\n');
+  else process.stderr.write(formatDiag(d, process.stderr.isTTY) + '\n');
+  return 1;
+}
+
 // ---------- 项目模式:无文件参数时,从 cwd 向上找 ming.toml ----------
 function projectEntry(cmd, rest, json) {
   if (rest.length > 0) return { files: rest, proj: null };
@@ -806,6 +822,7 @@ function cmdBuild(flags) {
     }
     // AOT 资格:无 sync(spawn 子任务需源码编译)、无用户 trait/impl 方法分发
     let aotErr = null;
+    let aotCompileErr = null; // v0.54 审查 B5:字节码编译器的内部错误不再静默回退
     try {
       // v0.43 修复:效果在 entry.sig.effects(entry 本身无 effects 字段)——此前恒 false,
       // spawn 程序误进 AOT,运行期 worker 读 '<artifact>' 源路径 → ENOENT
@@ -814,13 +831,24 @@ function cmdBuild(flags) {
         return eff instanceof Set && eff.has('sync');
       }));
       if (usesSync) throw new Error('程序使用 sync 并发(spawn 子任务由源码编译)');
+      // v0.54/C5:with unsafe 是 C 原生限定(tree/VM 以 M4016 拒绝)——AOT 字节码产物
+      // 基于 VM,不能兑现指针语义,故显式回退源码模式并说明原因
+      const usesUnsafe = checkResult.modules.some(m => [...m.items.values()].some(e => {
+        const eff = e.sig?.effects ?? e.effects;
+        return eff instanceof Set && eff.has('unsafe');
+      }));
+      if (usesUnsafe) throw new Error('程序使用 with unsafe 指针操作(C 原生限定,tree/VM 以 M4016 拒绝)');
       const compiled = compile(checkResult);
       const artifact = serializeArtifact(compiled, { baseDir: projectRoot });
       artifact.builtBy = VERSION;
       fs.writeFileSync(path.join(distDir, 'app.bytecode.json'), JSON.stringify(artifact));
     } catch (e) {
-      aotErr = e.message;
+      // v0.54 审查 B5:Unsupported/已知形态 → 回退源码模式;CompileError 是编译器缺陷,
+      // 用带文件/行的诊断显式失败,避免产出"看起来成功"的坏 dist。
+      if (e instanceof CompileError) aotCompileErr = e;
+      else aotErr = e.message;
     }
+    if (aotCompileErr) return reportCompileError(aotCompileErr, json);
     const launcher = [
       '#!/usr/bin/env node',
       '// Ming 可移植产物(v0.39):Node >= 18,零依赖;用法:node ming-app.mjs [-- args]',
@@ -942,11 +970,13 @@ function cmdCC(file, flags, opts, programArgs) {
   let emitted;
   try {
     const compiled = compile(result);
-    emitted = emitC(result, compiled);
+    // v0.54/C5:cc 路径显式开启 C 专用 unsafe 资格扩展(效果 ⊆ {ffi, unsafe};wasm 不传)
+    emitted = emitC(result, compiled, { unsafe: true });
   } catch (e) {
     if (e instanceof Unsupported) {
       return fail('C1 不支持该程序形态:' + e.message, json);
     }
+    if (e instanceof CompileError) return reportCompileError(e, json); // v0.54 审查 B5
     throw e;
   }
   const outDir = opts['out'] ?? 'ming-cc-out';
@@ -1035,5 +1065,12 @@ function main() {
 }
 
 // lsp 常驻:main 返回 null 时不退出进程
-const __code = main();
+// v0.54 审查 B5:编译器内部错误(run/test/check 路径)也按诊断格式输出,不裸栈。
+let __code;
+try {
+  __code = main();
+} catch (e) {
+  if (e instanceof CompileError) process.exit(reportCompileError(e, process.argv.includes('--json')));
+  throw e;
+}
 if (__code !== null) process.exit(__code);
