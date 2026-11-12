@@ -73,7 +73,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 ## 文档
 
 - **[AGENTS.md](AGENTS.md)** — AI 代理与本仓库协作的指南(硬规则、命令、提交规范、已知陷阱)
-- **[docs/plan.md](docs/plan.md)** — 实施计划(v0.52–v0.56 已交付;Backlog 与已知缺陷 #37–#46 跟踪,v0.56 已修 #22–#26/#28–#34/#36–#38)
+- **[docs/plan.md](docs/plan.md)** — 实施计划(v0.52–v0.56 已交付;Backlog 与已知缺陷 #37–#47 跟踪,v0.56 已修 #22–#26/#28–#34/#36–#38)
 - **[docs/references.md](docs/references.md)** — 参考语言跟踪(Jenny / Blood 的地址、要点与进度查看方式)
 - **[GUIDE.md](GUIDE.md)** — 使用指南(语法、类型、标准库、工具链、AI 使用建议)
 - **[docs/design.md](docs/design.md)** — 设计哲学与语言规范要点
