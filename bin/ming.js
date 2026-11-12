@@ -23,14 +23,14 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.51.6';
+export const VERSION = '0.52.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
-  ming check [file.ming...] [--json]
+  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index]
   ming test  [file.ming...] [--json] [--filter 名称]
   ming build [--json] [--clean-cache] [--with-source] [--no-dist]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
@@ -242,12 +242,16 @@ function panicDiag(p, result) {
 // ---------- check ----------
 function cmdCheck(files, flags) {
   const json = flags.has('json');
+  // v0.52 阶段 3:--proof-report 证明报告 + --warn-unproven-index W3105 观测旗标。
+  // 两旗标仅 check 消费;其他命令按既有风格忽略未知旗标(命令只读取自己认识的旗标)。
+  const proofReport = flags.has('proof-report');
+  const warnUnprovenIndex = flags.has('warn-unproven-index');
   if (!files.length) return fail('check 需要至少一个 .ming 文件', json);
   let allOk = true;
   const allDiags = [];
   const checked = [];
   for (const f of files) {
-    const checker = new Checker(f);
+    const checker = new Checker(f, null, { warnUnprovenIndex });
     try {
       const result = checker.run();
       for (const m of result.modules) cacheSourceLines(m.file, m.src);
@@ -261,12 +265,39 @@ function cmdCheck(files, flags) {
   const diags = sortDiags(allDiags);
   const hasError = diags.some(d => d.severity === SEVERITY.ERROR);
   if (hasError) allOk = false;
+  // --proof-report:证明摘要(additive;不带旗标时 JSON 与文本输出逐字不变)。
+  // 违反诊断(M3045)仍走既有诊断通道,proofs 字段与之共存不冲突。
+  const proofs = proofReport ? collectProofs(checked) : null;
   if (json) {
-    process.stdout.write(JSON.stringify({ ok: allOk, diagnostics: diagJson(diags) }, null, 2) + '\n');
+    const out = { ok: allOk, diagnostics: diagJson(diags) };
+    if (proofs) out.proofs = proofs;
+    process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     printDiags(diags, false);
+    if (proofs) {
+      for (const fn of proofs.functions) {
+        process.stdout.write(`${fn.file}:${fn.fn}: 义务 ${fn.total},proven ${fn.proven},violated ${fn.violated},unproven ${fn.unproven}\n`);
+      }
+    }
   }
   return allOk ? 0 : 1;
+}
+
+// v0.52 --proof-report:聚合 checker 的逐义务证明记录(有 Vec 索引义务的函数;零义务语料为空)。
+function collectProofs(checked) {
+  const functions = [];
+  const summary = { functions: 0, obligations: 0, proven: 0, violated: 0, unproven: 0 };
+  for (const r of checked) {
+    for (const rec of r.proofs ?? []) {
+      functions.push(rec);
+      summary.functions += 1;
+      summary.obligations += rec.total;
+      summary.proven += rec.proven;
+      summary.violated += rec.violated;
+      summary.unproven += rec.unproven;
+    }
+  }
+  return { summary, functions };
 }
 
 // ---------- test ----------
@@ -679,7 +710,7 @@ function cmdBuild(flags) {
     fs.rmSync(distDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
     fs.writeFileSync(path.join(distDir, '.ming-dist.json'), JSON.stringify({ tool: 'ming', version: VERSION }) + String.fromCharCode(10));
-    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js']) {
+    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js', 'prover.js']) {
       fs.copyFileSync(path.join(__dirname, '..', 'src', m), path.join(distDir, 'runtime', m));
     }
     // AOT 资格:无 sync(spawn 子任务需源码编译)、无用户 trait/impl 方法分发

@@ -3067,6 +3067,362 @@ fn main() with io, fs {
   check('v51.6:fmt 行尾注释一次到位(两遍逐字相等 + 空行保留)', repro1 === repro2 && repro1 !== reproSrc && repro1.includes('fn main() with io {\n\n    // 行尾注释\n    if 1 > 0 {'), JSON.stringify(repro1));
 }
 
+// ===================== 56. v0.52 阶段 1:prover 抽出(线性形式代数 + 差分约束求解;M3042/M3041 行为逐字不变)=====================
+{
+  const dir = path.join(TMP, 'v52prover');
+  fs.mkdirSync(dir, { recursive: true });
+  const mk = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+
+  // 1) 可证真不报(常量差整数判定)+ 非常量差(≤12 变量)经差分约束求解后静默放弃
+  //    (本阶段假设集为空:requires 不作为假设,非常量差与 v0.48 一样判 unknown)
+  const okF = mk('ok.ming', ['fn f(a: i64) -> i64 requires a > 0 ensures result >= a + 1 {', '    return a + 1;', '}', 'fn main() with io { print(str(f(3))); }', ''].join('\n'));
+  const rok = runMing(['check', okF]);
+  const solverF = mk('solver.ming', ['fn h(a: i64) -> i64 requires a > 0 ensures result > 0 {', '    return a;', '}', 'fn main() with io { print(str(h(3))); }', ''].join('\n'));
+  const rsolver = runMing(['check', solverF]);
+  check('v52:prover 可证真不报;非常量差(≤12 变量)经求解器静默', rok.code === 0 && !(rok.stderr ?? '').includes('M3042') && rsolver.code === 0 && !(rsolver.stderr ?? '').includes('M3042'), 'ok=' + rok.code + '/' + (rok.stderr ?? '').slice(0, 100) + ' solver=' + rsolver.code + '/' + (rsolver.stderr ?? '').slice(0, 100));
+
+  // 2) 可证违反:M3042 逐字不变(码名 + 消息 + 反例 + hint,与 §43 黄金一致)
+  const eqF = mk('eq.ming', ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 2 {', '    return a + 1;', '}', 'fn main() with io { print(str(f(3))); }', ''].join('\n'));
+  const req = runMing(['check', eqF]);
+  check('v52:M3042 逐字不变(码名 + 反例 a = 1 + hint)', req.code === 1
+    && (req.stderr ?? '').includes('error M3042[ensures-statically-false]: 函数 "f" 的 ensures 可静态证伪(反例:a = 1)')
+    && (req.stderr ?? '').includes('hint: 修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'), 'stderr=' + (req.stderr ?? '').slice(0, 220));
+
+  // 3) 超变量上限(13 > MAX_PROVER_VARS=12)静默放弃(too-many-vars → 不报、不误报)
+  const params = Array.from({ length: 13 }, (_, i) => 'a' + (i + 1) + ': i64').join(', ');
+  const sum = Array.from({ length: 13 }, (_, i) => 'a' + (i + 1)).join(' + ');
+  const bigF = mk('big.ming', ['fn k(' + params + ') -> i64 requires a1 > 0 ensures result > 0 {', '    return ' + sum + ';', '}', 'fn main() with io { print(str(k(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))); }', ''].join('\n'));
+  const rbig = runMing(['check', bigF]);
+  check('v52:ensures 13 变量超上限静默放弃(too-many-vars 不报)', rbig.code === 0 && !(rbig.stderr ?? '').includes('M3042'), 'code=' + rbig.code + ' stderr=' + (rbig.stderr ?? '').slice(0, 140));
+
+  // ---- v0.52 阶段 2:越界包含静态验证(requires 边界 → 索引义务;M3045/W3105,plan §4.2.3 任务 2+3)----
+  const mkB = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+  const clean = (r) => r.code === 0 && !(r.stderr ?? '').includes('M3045') && !(r.stderr ?? '').includes('W3105');
+
+  // 4) 可证真不误报:0 <= i 且 i < len$buf 两向可证(含 len$x 符号、mut i64 参数重赋值、buf.len()-1);
+  //    严格性:requires n <= buf.len() 不蕴含 i < len$buf → 未证明默认静默(不误报)
+  const bokF = mkB('bounds_ok.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn last(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '    return buf[buf.len() - 1];',
+    '}',
+    'fn shifted(buf: Vec[i64], n: i64) -> i64 requires n >= 1 && n <= buf.len() {',
+    '    let j = n - 1;',
+    '    return buf[j];',
+    '}',
+    'fn loose(buf: Vec[i64], n: i64) -> i64 requires n <= buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1)) + str(last([1, 2])) + str(shifted([1, 2], 2)) + str(loose([1, 2], 0))); }',
+    '',
+  ].join('\n'));
+  const brok = runMing(['check', bokF]);
+  check('v52.2:可证真不误报(义务两向可证;<= 严格性未证明静默)', clean(brok), 'code=' + brok.code + ' stderr=' + (brok.stderr ?? '').slice(0, 200));
+
+  // 5) 可证违反:M3045 + 反例(码名 + 索引原文 + 违反义务 + len$x 小值反例 + hint)
+  const bbadF = mkB('bounds_bad.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+    '',
+  ].join('\n'));
+  const brbad = runMing(['check', bbadF]);
+  check('v52.2:可证违反 M3045+反例(len$buf = 0, n = 0)', brbad.code === 1
+    && (brbad.stderr ?? '').includes('error M3045[index-bounds-violated]: 函数 "f" 的索引 "buf[n]" 可静态证明越界(违反义务:n < len$buf)(反例:len$buf = 0, n = 0)')
+    && (brbad.stderr ?? '').includes('hint: 让索引满足 n < len$buf 对所有满足 requires 的调用成立')
+    && (brbad.stderr ?? '').includes('该越界在运行时本会以 M4003 panic。'), 'code=' + brbad.code + ' stderr=' + (brbad.stderr ?? '').slice(0, 260));
+
+  // 6) mut Vec 参数放弃(push 改长度;非 mut Vec[i64] 之外的元素类型同样放弃):静默
+  const bmutF = mkB('bounds_mut.ming', [
+    'fn f(mut buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    buf.push(0);',
+    '    return buf[n];',
+    '}',
+    'fn g(s: Vec[str], i: i64) -> str requires i == s.len() {',
+    '    return s[i];',
+    '}',
+    'fn main() with io { print(str(f([1], 1))); print(g(["a"], 1)); }',
+    '',
+  ].join('\n'));
+  const brmut = runMing(['check', bmutF]);
+  check('v52.2:mut Vec / 非元素类型放弃(静默,不报 M3045)', clean(brmut), 'code=' + brmut.code + ' stderr=' + (brmut.stderr ?? '').slice(0, 200));
+
+  // 7) requires 负环(自相矛盾 → 函数不可达)→ 整函数跳过报告
+  const bcycF = mkB('bounds_cycle.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= buf.len() && n < buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([], 0))); }',
+    '',
+  ].join('\n'));
+  const brcyc = runMing(['check', bcycF]);
+  check('v52.2:requires 负环跳过(不可达 → 不报 M3045)', clean(brcyc), 'code=' + brcyc.code + ' stderr=' + (brcyc.stderr ?? '').slice(0, 200));
+
+  // 8) 非直线体放弃(if/复合赋值 → 后续义务不再收集):静默
+  const bnlF = mkB('bounds_nonlin.ming', [
+    'fn a(buf: Vec[i64], n: i64) -> i64 requires n >= 1 && n < buf.len() {',
+    '    if n > 2 { return buf[n - 1]; }',
+    '    return buf[n - 1];',
+    '}',
+    'fn b(buf: Vec[i64], mut n: i64) -> i64 requires n >= 0 && n < buf.len() {',
+    '    n += 1;',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(a([1, 2, 3], 3)) + str(b([1, 2], 1))); }',
+    '',
+  ].join('\n'));
+  const brnl = runMing(['check', bnlF]);
+  check('v52.2:非直线体(if/复合赋值)放弃(静默,不报 M3045)', clean(brnl), 'code=' + brnl.code + ' stderr=' + (brnl.stderr ?? '').slice(0, 200));
+
+  // ---- v0.52 阶段 3(收口,plan §4.2.3 任务 4+5+6):循环/别名/非线性放弃、警告旗标、
+  //      --proof-report 文本与 JSON、无旗标 JSON 快照、运行时仍 M4003 ----
+
+  // 9) 循环放弃(for/while 内义务不登记):静默,且 --warn-unproven-index 下也无 W3105
+  const bloopF = mkB('bounds_loop.ming', [
+    'fn f(buf: Vec[i64], mut n: i64) -> i64 requires n >= 0 && n < buf.len() {',
+    '    let mut s = 0;',
+    '    for i in 0..n { s += buf[i]; }',
+    '    while n > 0 { s += buf[n]; n -= 1; }',
+    '    return s;',
+    '}',
+    'fn main() with io { print(str(f([1, 2, 3], 2))); }',
+    '',
+  ].join('\n'));
+  const brloop = runMing(['check', bloopF]);
+  const brloopW = runMing(['check', bloopF, '--warn-unproven-index']);
+  check('v52.3:循环放弃(for/while 义务不登记;旗标下也无 W3105)', clean(brloop) && clean(brloopW), 'code=' + brloop.code + '/' + brloopW.code + ' stderr=' + (brloopW.stderr ?? '').slice(0, 200));
+
+  // 10) 别名/重绑定放弃(let b = buf → 形式不可计算 → 后续 b[n] 不登记):静默
+  const baliasF = mkB('bounds_alias.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && n < buf.len() {',
+    '    let b = buf;',
+    '    return b[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 1))); }',
+    '',
+  ].join('\n'));
+  const bralias = runMing(['check', baliasF]);
+  const braliasW = runMing(['check', baliasF, '--warn-unproven-index']);
+  check('v52.3:别名放弃(let b = buf 后 b[n] 不登记;旗标下也无 W3105)', clean(bralias) && clean(braliasW), 'code=' + bralias.code + '/' + braliasW.code + ' stderr=' + (braliasW.stderr ?? '').slice(0, 200));
+
+  // 11) 非线性索引静默(buf[n * n] → 形式 null → 未证明):默认静默,旗标下发 W3105(未证明而非违反)
+  const bnl2F = mkB('bounds_nonlinear.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && n < buf.len() {',
+    '    return buf[n * n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2, 3, 4], 1))); }',
+    '',
+  ].join('\n'));
+  const brnl2 = runMing(['check', bnl2F]);
+  const brnl2W = runMing(['check', bnl2F, '--warn-unproven-index']);
+  check('v52.3:非线性索引静默(默认不报 M3045/W3105)', clean(brnl2), 'code=' + brnl2.code + ' stderr=' + (brnl2.stderr ?? '').slice(0, 200));
+  check('v52.3:非线性索引旗标下 W3105(未证明:0 <= n * n; n * n < len$buf)', brnl2W.code === 0
+    && (brnl2W.stderr ?? '').includes('warning W3105[index-bounds-unproven]: 函数 "f" 的索引 "buf[n * n]" 无法静态证明在界内(未证明:0 <= n * n; n * n < len$buf)')
+    && !(brnl2W.stderr ?? '').includes('M3045'), 'code=' + brnl2W.code + ' stderr=' + (brnl2W.stderr ?? '').slice(0, 240));
+
+  // 12) 警告旗标:--warn-unproven-index 下未证明发 W3105(逐字消息,warning 不改退出码)
+  const bwarnF = mkB('bounds_warn.ming', [
+    'fn loose(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && n <= buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(loose([1, 2], 0))); }',
+    '',
+  ].join('\n'));
+  const brwarn = runMing(['check', bwarnF, '--warn-unproven-index']);
+  check('v52.3:警告旗标下 W3105 逐字消息(未证明:n < len$buf;退出码仍 0)', brwarn.code === 0
+    && (brwarn.stderr ?? '').includes('warning W3105[index-bounds-unproven]: 函数 "loose" 的索引 "buf[n]" 无法静态证明在界内(未证明:n < len$buf)'),
+    'code=' + brwarn.code + ' stderr=' + (brwarn.stderr ?? '').slice(0, 240));
+
+  // 13) 默认不发 W3105(同文件无旗标 → check 干净)
+  const brnowarn = runMing(['check', bwarnF]);
+  check('v52.3:默认不发 W3105(同文件无旗标 check 干净)', clean(brnowarn), 'code=' + brnowarn.code + ' stderr=' + (brnowarn.stderr ?? '').slice(0, 200));
+
+  // 14) 无 requires 不警告(无前置 → 无边界可依 → 静默;旗标下同样不发)
+  const bnoreqF = mkB('bounds_noreq.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 0))); }',
+    '',
+  ].join('\n'));
+  const brnoreq = runMing(['check', bnoreqF, '--warn-unproven-index']);
+  check('v52.3:无 requires 不警告(旗标下也无 W3105/M3045)', clean(brnoreq), 'code=' + brnoreq.code + ' stderr=' + (brnoreq.stderr ?? '').slice(0, 200));
+
+  // 15) 无旗标 JSON 快照:与 git HEAD 版本 CLI 输出逐字一致(证明 --proof-report/--warn-unproven-index/证明记录全 additive)
+  const jdir = path.join(TMP, 'v52jsnap');
+  fs.mkdirSync(jdir, { recursive: true });
+  const jf = (name, src) => { const p = path.join(jdir, name); fs.writeFileSync(p, src); return p; };
+  const jClean = jf('clean.ming', 'fn main() with io { print(str(1 + 2)); }\n');
+  const jDiag = jf('diag.ming', [
+    'fn f(a: i64) -> i64 requires a > 0 ensures result == a + 2 {',
+    '    return a + 1;',
+    '}',
+    'fn main() with io { print(str(f(3))); }',
+    '',
+  ].join('\n'));
+  const jPlain = jf('plain.ming', 'fn main() with io { let v: Vec[i64] = [3, 1]; let mut s = 0; for x in v { s += x; } print(str(s)); }\n');
+  // HEAD CLI 快照:bin/ming.js + src/*.js 逐文件 git show 到临时目录(只读,零依赖 tar)
+  const headDir = path.join(TMP, 'v52headcli');
+  fs.rmSync(headDir, { recursive: true, force: true });
+  fs.mkdirSync(path.join(headDir, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(headDir, 'src'), { recursive: true });
+  const gitShow = (p) => { const g = spawnSync('git', ['-C', ROOT, 'show', 'HEAD:' + p], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }); return (g.status === 0 && !g.error) ? g.stdout : null; };
+  const headReady = (() => {
+    const bin = gitShow('bin/ming.js');
+    if (!bin) return false;
+    fs.writeFileSync(path.join(headDir, 'bin', 'ming.js'), bin);
+    const ls = spawnSync('git', ['-C', ROOT, 'ls-tree', '--name-only', 'HEAD', 'src/'], { encoding: 'utf8' });
+    if (ls.status !== 0 || ls.error) return false;
+    for (const line of ls.stdout.split('\n')) {
+      const nm = line.trim();
+      if (!nm.endsWith('.js')) continue;
+      const data = gitShow(nm);
+      if (!data) return false;
+      fs.writeFileSync(path.join(headDir, nm), data);
+    }
+    return true;
+  })();
+  const jsonOf = (binPath, file) => { const r = spawnSync(process.execPath, [binPath, 'check', file, '--json'], { encoding: 'utf8', timeout: 30000 }); return r.stdout ?? ''; };
+  let headSame = headReady;
+  const headBin = path.join(headDir, 'bin', 'ming.js');
+  for (const f of [jClean, jDiag, jPlain]) if (headSame) headSame = jsonOf(headBin, f) === jsonOf(MING, f);
+  check('v52.3:无旗标 JSON 与 git HEAD 版本输出逐字一致(clean/diag/plain 三语料)', headSame, 'headReady=' + headReady);
+  // 黄金快照(路径归一化;对 HEAD 时代输出逐字节固化,HEAD 前移后仍守住无旗标 JSON 协议)
+  // 分隔符无关:仅 file 字段把 \ 与 / 归一后比较(POSIX 也能跑),其余字段逐字节不变
+  const normJson = (s) => JSON.stringify(JSON.parse(s), (k, v) => (typeof v === 'string' ? (k === 'file' ? v.split(TMP).join('<TMP>').split('\\').join('/') : v.split(TMP).join('<TMP>')) : v), 2) + '\n';
+  const GOLDEN_CLEAN = '{\n  "ok": true,\n  "diagnostics": []\n}\n';
+  const GOLDEN_DIAG = '{\n  "ok": false,\n  "diagnostics": [\n    {\n      "code": "M3042",\n      "name": "ensures-statically-false",\n      "severity": "error",\n      "message": "函数 \\"f\\" 的 ensures 可静态证伪(反例:a = 1)",\n      "file": "<TMP>/v52jsnap/diag.ming",\n      "line": 1,\n      "col": 36,\n      "endLine": 1,\n      "endCol": 59,\n      "hint": "修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。"\n    }\n  ]\n}\n';
+  check('v52.3:无旗标 JSON 黄金快照(clean 空 + diag M3042,路径归一化逐字节)',
+    normJson(jsonOf(MING, jClean)) === GOLDEN_CLEAN && normJson(jsonOf(MING, jDiag)) === GOLDEN_DIAG,
+    'clean=' + JSON.stringify(normJson(jsonOf(MING, jClean)).slice(0, 60)) + ' diag=' + JSON.stringify(normJson(jsonOf(MING, jDiag)).slice(0, 120)));
+
+  // 16) 运行时仍 M4003:requires 只约束部分调用面(n <= buf.len())→ check 干净,
+  //     但满足 requires 的实参仍可越界 → 默认引擎与树引擎都 M4003/101(证明只报告,不改运行时)
+  const bm4003F = mkB('bounds_m4003.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && n <= buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+    '',
+  ].join('\n'));
+  const brm4003c = runMing(['check', bm4003F]);
+  const brm4003 = runMing(['run', bm4003F]);
+  const brm4003t = runMing(['run', bm4003F, '--tree']);
+  check('v52.3:check 干净(未证明不报)但运行时仍 M4003(退出 101,双引擎一致)', clean(brm4003c)
+    && brm4003.code === 101 && (brm4003.stderr ?? '').includes('M4003')
+    && brm4003t.code === 101 && (brm4003t.stderr ?? '').includes('M4003'),
+    'check=' + brm4003c.code + '/' + (brm4003c.stderr ?? '').slice(0, 120) + ' run=' + brm4003.code + '/' + (brm4003.stderr ?? '').slice(0, 120) + ' tree=' + brm4003t.code + '/' + (brm4003t.stderr ?? '').slice(0, 120));
+
+  // 17) --proof-report 文本摘要:每函数一行统计;零义务语料零额外行;M3045 仍走诊断通道
+  const brepF = mkB('bounds_report.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn bad(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1))); }',
+    '',
+  ].join('\n'));
+  const brrep = runMing(['check', brepF, '--proof-report']);
+  check('v52.3:--proof-report 文本摘要(逐函数统计行;M3045 共存;退出 1)', brrep.code === 1
+    && (brrep.stderr ?? '').includes('error M3045[index-bounds-violated]')
+    && (brrep.stdout ?? '').includes(':get: 义务 1,proven 1,violated 0,unproven 0')
+    && (brrep.stdout ?? '').includes(':bad: 义务 1,proven 0,violated 1,unproven 0'),
+    'code=' + brrep.code + ' stdout=' + JSON.stringify((brrep.stdout ?? '').slice(0, 220)) + ' stderr=' + (brrep.stderr ?? '').slice(0, 160));
+  const brrep0 = runMing(['check', jPlain, '--proof-report']);
+  check('v52.3:--proof-report 零义务语料零额外行(stdout 逐字不变)', brrep0.code === 0 && brrep0.stdout === '', 'code=' + brrep0.code + ' stdout=' + JSON.stringify(brrep0.stdout));
+
+  // 18) --json --proof-report:additive proofs 字段(每函数统计 + 逐义务数组);无旗标 JSON 无 proofs 键
+  const brj = JSON.parse(runMing(['check', brepF, '--json', '--proof-report']).stdout);
+  const brjNoFlag = JSON.parse(runMing(['check', brepF, '--json']).stdout);
+  const pget = brj.proofs.functions.find((x) => x.fn === 'get');
+  const pbad = brj.proofs.functions.find((x) => x.fn === 'bad');
+  check('v52.3:--json --proof-report proofs 字段(summary + 逐义务 {file,fn,index,kind,obligation,反例})',
+    brj.proofs.summary.functions === 2 && brj.proofs.summary.obligations === 2
+    && brj.proofs.summary.proven === 1 && brj.proofs.summary.violated === 1 && brj.proofs.summary.unproven === 0
+    && pget && pget.total === 1 && pget.proven === 1
+    && pget.obligations[0].index === 'i' && pget.obligations[0].kind === 'proven'
+    && pget.obligations[0].obligation === '0 <= i && i < len$buf' && pget.obligations[0].counterexample === null
+    && pbad && pbad.obligations[0].kind === 'violated' && pbad.obligations[0].obligation === 'n < len$buf'
+    && pbad.obligations[0].counterexample === 'len$buf = 0, n = 0' && pbad.obligations[0].line === 5
+    && brj.diagnostics.some((d) => d.code === 'M3045'),
+    JSON.stringify(brj.proofs).slice(0, 300));
+  check('v52.3:无旗标 JSON 不含 proofs 键(纯 additive)', !('proofs' in brjNoFlag), JSON.stringify(Object.keys(brjNoFlag)));
+
+  // 19) 复合索引的索引原文完整性(.parser 的 Binary/Call 子节点 span 起点在操作符/实参括号;
+  //     证明报告/义务文本必须从完整 Index 跨度取方括号内文,不被截断)
+  const bidxF = mkB('bounds_idxtext.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 1 && n <= buf.len() {',
+    '    return buf[n - 1];',
+    '}',
+    'fn g(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    return buf[buf.len()];',
+    '}',
+    'fn main() with io { print(str(f([1, 2, 3], 2)) + str(g([1], 0))); }',
+    '',
+  ].join('\n'));
+  const bridx = JSON.parse(runMing(['check', bidxF, '--json', '--proof-report']).stdout);
+  const ifn = bridx.proofs.functions.find((x) => x.fn === 'f');
+  const ign = bridx.proofs.functions.find((x) => x.fn === 'g');
+  check('v52.3:复合索引原文完整(buf[n - 1] → "n - 1";buf[buf.len()] → "buf.len()";义务文本同步)',
+    ifn && ifn.obligations[0].index === 'n - 1' && ifn.obligations[0].kind === 'proven'
+    && ifn.obligations[0].obligation === '0 <= n - 1 && n - 1 < len$buf'
+    && ign && ign.obligations[0].index === 'buf.len()' && ign.obligations[0].kind === 'violated'
+    && ign.obligations[0].obligation === 'buf.len() < len$buf'
+    && ign.obligations[0].counterexample === 'len$buf = 0, n = 0'
+    && bridx.diagnostics.some((d) => d.code === 'M3045'),
+    JSON.stringify(bridx.proofs?.functions?.map((x) => x.obligations?.[0]) ?? null).slice(0, 300));
+
+  // 20) 反例过滤:requires 含被跳过但可求值的叶子时(% 不可编码为线性假设,但 evalContractExpr
+  //     可判定),M3045 反例枚举命中候选后按被跳过叶子过滤 —— 反例必须满足完整 requires,
+  //     取最小奇数解(len$buf = 1, n = 1;修复前会给出不满足奇偶约束的 len$buf = 0, n = 0);
+  //     过滤后无候选则退回"无反例"消息变体
+  const bmodF = mkB('bounds_mod.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() && n % 2 == 1 {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1], 1))); }',
+    '',
+  ].join('\n'));
+  const brmod = runMing(['check', bmodF]);
+  check('v52.4:反例过滤(被跳过 % 叶子 → 最小奇数解,M3045 逐字 len$buf = 1, n = 1)', brmod.code === 1
+    && (brmod.stderr ?? '').includes('error M3045[index-bounds-violated]: 函数 "f" 的索引 "buf[n]" 可静态证明越界(违反义务:n < len$buf)(反例:len$buf = 1, n = 1)')
+    && (brmod.stderr ?? '').includes('hint: 让索引满足 n < len$buf 对所有满足 requires 的调用成立'),
+    'code=' + brmod.code + ' stderr=' + (brmod.stderr ?? '').slice(0, 260));
+
+  // 21) 过滤后反例满足被跳过叶子(属性断言):反例 n 为奇数且 n == len$buf(完整 requires 成立)
+  const brmodJ = JSON.parse(runMing(['check', bmodF, '--json', '--proof-report']).stdout);
+  const modCex = brmodJ.proofs.functions.find((x) => x.fn === 'f')?.obligations?.[0]?.counterexample ?? null;
+  const modVals = {};
+  let modOk = typeof modCex === 'string' && modCex.length > 0;
+  for (const kv of modOk ? modCex.split(', ') : []) {
+    const [k, v] = kv.split(' = ');
+    if (!/^-?\d+$/.test(v ?? '')) { modOk = false; break; }
+    modVals[k] = BigInt(v);
+  }
+  check('v52.4:过滤后反例满足被跳过叶子(n 为奇数且 n == len$buf)', modOk
+    && modVals['n'] % 2n === 1n && modVals['n'] === modVals['len$buf'],
+    'cex=' + JSON.stringify(modCex));
+
+  // 22) W3105 噪声门控:文件已有 error 诊断时不再叠加 W3105 —— buf["k"] 索引类型错误语料
+  //     在 --warn-unproven-index 下只有 M3002、无 W3105(错误优先,告警不稀释)
+  const btypF = mkB('bounds_typerr.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && n <= buf.len() {',
+    '    return buf["k"];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 0))); }',
+    '',
+  ].join('\n'));
+  const brtypW = runMing(['check', btypF, '--warn-unproven-index']);
+  check('v52.4:W3105 门控(文件已有 M3002 error → 旗标下只有 M3002、无 W3105)', brtypW.code === 1
+    && (brtypW.stderr ?? '').includes('error M3002') && !(brtypW.stderr ?? '').includes('W3105'),
+    'code=' + brtypW.code + ' stderr=' + (brtypW.stderr ?? '').slice(0, 240));
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

@@ -1,0 +1,246 @@
+// prover.js — Ming 静态证明器(QF_LIA 限定子集,v0.52 起)。
+//
+// 职责:线性形式代数 + 差分约束求解(Bellman-Ford,BigInt 权重,变量 ≤ 12)+ 蕴含判定。
+//       纯函数模块:零依赖、不 import checker;AST 适配(表达式 → 线性形式)与诊断留在 checker。
+//
+// v0.52 阶段 1(v0.48 迁出 + 求解器新增):
+//   - linFromInt / linAdd / linMulConst / linIsConst / linEvalAt:自 checker.js 原样迁出,
+//     代数逐字不变(线性形式 {coeffs: Map<变量名, BigInt>, c: BigInt})。
+//   - solveDiffConstraints / proveImplication:差分约束求解与蕴含判定(v0.48 无此能力)。
+//     checker 的 M3042 叶判定已改为:常量差直接整数判定(与 v0.48 逐字等价),
+//     非常量差经 proveImplication(本阶段假设集为空 → 与 v0.48 "非常量 → unknown" 严格一致)。
+//
+// v0.52 已交付:checker.js 的边界证明遍(checkIndexBoundsStatically,M3045/W3105)以本模块为求解后端 —
+//   `x.len()` 引入 `len$x` 符号变量作为普通变量参与差分约束;requires 归一化为假设集
+//   (只允许 == / < / <= / > / >=,!= / || / 非线性叶子跳过 = 不作为假设);索引义务 0 <= i 与
+//   i < len$base 经 proveImplication(assumptions, goal) 两向判定;假设集 unsat(负环,含 cycle 证据)
+//   = requires 自相矛盾 → 整函数跳过报告。反例枚举与诊断留在 checker(本模块只管证明判定)。
+//
+// 保守性合同(全模块):任何不可编码/超限/未证明的情况一律返回"不证明",
+//       只会漏证(放弃判定),绝不会在不可证明时声称 proven —— 证明只报告,不改运行时语义。
+
+// ===================== 线性形式代数(v0.48 原样迁出) =====================
+// 线性形式:{ coeffs: Map<变量名, BigInt 系数>, c: BigInt 常数项 };系数 0 必须删除(规范形)。
+
+export function linFromInt(n) { return { coeffs: new Map(), c: n }; }
+
+export function linAdd(a, b, sign) {
+  const out = { coeffs: new Map(a.coeffs), c: a.c + sign * b.c };
+  for (const [k, v] of b.coeffs) {
+    const nv = (out.coeffs.get(k) ?? 0n) + sign * v;
+    if (nv === 0n) out.coeffs.delete(k); else out.coeffs.set(k, nv);
+  }
+  return out;
+}
+
+export function linMulConst(a, k) {
+  const out = { coeffs: new Map(), c: a.c * k };
+  for (const [kk, v] of a.coeffs) out.coeffs.set(kk, v * k);
+  return out;
+}
+
+export function linIsConst(f) { return f.coeffs.size === 0; }
+
+// 在候选参数值下求线性形式的具体值(用于反例)
+export function linEvalAt(f, vals) {
+  let v = f.c;
+  for (const [k, cf] of f.coeffs) v += cf * (vals.get(k) ?? 0n);
+  return v;
+}
+
+// ===================== 差分约束求解器 =====================
+
+// 变量数上限:超出即放弃判定(静默,不报错)
+export const MAX_PROVER_VARS = 12;
+
+// 锚点节点键(代表常量 0):Ming 标识符不含 \u0000,不会与变量名冲突。
+// 绝对约束(x <= c / x >= c)借助锚点改写为差分:x <= c ⟺ x - z <= c;x >= c ⟺ z - x <= -c。
+// 差分约束系统平移不变:相对系统有解 ⟺ 把解平移使 z = 0 后满足全部绝对约束,
+// 因此"含锚点边的相对系统不可满足 ⟺ 绝对语义不可满足",负环判定对两种读法一致。
+const SRC = '\u0000src';
+
+// {lhs, op, rhs} → `D <= c` 形式数组(D: 线性形式,c: BigInt;全 BigInt 整数语义)。
+//   '<=' → [D <= 0];'<' → [D <= -1](a < b ⟺ a - b <= -1);'>=' / '>' 取反对称;
+//   '==' 拆双向;'!=' 是析取,不可编码为差分约束 → 返回 null(保守跳过:只会漏证不会误证)。
+function toLePairs(lhs, op, rhs) {
+  const d = linAdd(lhs, rhs, -1n); // D = lhs - rhs
+  switch (op) {
+    case '<=': return [{ d, c: 0n }];
+    case '<': return [{ d, c: -1n }];
+    case '>=': return [{ d: linMulConst(d, -1n), c: 0n }];
+    case '>': return [{ d: linMulConst(d, -1n), c: -1n }];
+    case '==': return [{ d, c: 0n }, { d: linMulConst(d, -1n), c: 0n }];
+    default: return null; // '!=' 等 → 不可编码
+  }
+}
+
+// `D <= c`(D = 变量部分 + 常数 dc;即 Σcf·v <= K,c = K + dc)→ 边列表。
+// 返回 'ok'(edges 已追加)| 'drop'(恒真,丢弃)| 'constFalse'(常量矛盾)| 'skip'(不可编码)。
+// 可编码性:系数全为 ±1,且变量数 ≤ 2(2 变量时必须一正一负,即 x - y 形态):
+//   0 变量:常量事实 dc <= c —— 成立丢弃;不成立 → 系统矛盾
+//   1 变量:+1 → x <= K 边 SRC→x 权 K;-1 → -x <= K 边 x→SRC 权 K(⟺ x >= -K)
+//   2 变量:+1/-1 各一 → x - y <= K 边 y→x 权 K(边 u→v 权 w 编码 d_v - d_u <= w)
+// 系数非 ±1(如 2a)或同号双变量(如 a + b)不可编码 → 跳过(削弱系统只会漏证不会误证)。
+function encodeLe(d, c, edges) {
+  const K = c - d.c; // 变量部分右端常数
+  const vars = [...d.coeffs.entries()];
+  for (const [, cf] of vars) {
+    if (cf !== 1n && cf !== -1n) return 'skip';
+  }
+  if (vars.length === 0) {
+    return d.c <= c ? 'drop' : 'constFalse'; // 常量事实
+  }
+  if (vars.length === 1) {
+    const [x, cf] = vars[0];
+    if (cf === 1n) edges.push({ u: SRC, v: x, w: K }); // x - z <= K
+    else edges.push({ u: x, v: SRC, w: K }); // -x - z <= K ⟺ x >= z - K
+    return 'ok';
+  }
+  if (vars.length === 2) {
+    const [a, b] = vars;
+    if (a[1] === 1n && b[1] === -1n) edges.push({ u: b[0], v: a[0], w: K }); // x - y <= K
+    else if (a[1] === -1n && b[1] === 1n) edges.push({ u: a[0], v: b[0], w: K });
+    else return 'skip'; // 同号(如 x + y <= K)不可编码
+    return 'ok';
+  }
+  return 'skip'; // ≥3 变量不可编码
+}
+
+// 差分约束求解(Bellman-Ford,BigInt 权重,变量 ≤ MAX_PROVER_VARS)。
+// assumptions: [{lhs: 线性形式, op: '<='|'<'|'=='|'>='|'>', rhs: 线性形式}](绝对 BigInt 语义)
+// 启动:全 0 初始化等价于虚节点源点到每个变量权 0(plan.md §4.2.3)—— 该虚节点只服务于
+//       检测(不可达负环也能检出),不是约束系统的锚点;锚点是上面的 SRC(z)。
+// 返回:
+//   {kind:'sat'}                        —— 可满足(存在各变量赋值满足全部可编码约束)
+//   {kind:'unsat', cycle: [变量名...]}  —— 不可满足(负环;cycle 为环上变量,锚点不入列;
+//                                          常量事实矛盾时 cycle 为 [])
+//   {kind:'too-many-vars'}              —— 变量总数超 MAX_PROVER_VARS(按全部约束的并集计,
+//                                          含不可编码约束中的变量 —— 超限一律放弃,保守)
+// 跳过不可编码约束(如系数 2a、a+b、!=)会削弱系统 → 可能漏证,绝不会误证(保守方向)。
+export function solveDiffConstraints(assumptions) {
+  // 变量收集(确定性:按首次出现序)
+  const varNames = [];
+  const seenVars = new Set();
+  for (const a of assumptions) {
+    for (const side of [a.lhs, a.rhs]) {
+      for (const k of side.coeffs.keys()) {
+        if (!seenVars.has(k)) { seenVars.add(k); varNames.push(k); }
+      }
+    }
+  }
+  if (varNames.length > MAX_PROVER_VARS) return { kind: "too-many-vars" };
+
+  const nodes = [...varNames, SRC];
+  const nodeIdx = new Map(nodes.map((nm, i) => [nm, i]));
+  const edges = [];
+  let constFalse = false;
+  for (const a of assumptions) {
+    const pairs = toLePairs(a.lhs, a.op, a.rhs);
+    if (!pairs) continue; // '!=' 等不可编码 → 保守跳过
+    for (const { d, c } of pairs) {
+      if (encodeLe(d, c, edges) === 'constFalse') constFalse = true;
+    }
+  }
+  if (constFalse) return { kind: 'unsat', cycle: [] }; // 常量事实矛盾(无变量负环)
+
+  const n = nodes.length;
+  // 全 0 初始化 Bellman-Ford:n 轮内收敛 ⟺ 无负环;第 n 轮仍可松弛 ⟺ 负环 → 不可满足。
+  const dist = new Array(n).fill(0n);
+  const pred = new Array(n).fill(-1); // 前驱节点下标(负环提取用)
+  const relaxAll = () => {
+    const updated = [];
+    for (const e of edges) {
+      const nd = dist[nodeIdx.get(e.u)] + e.w;
+      const vi = nodeIdx.get(e.v);
+      if (nd < dist[vi]) {
+        dist[vi] = nd;
+        pred[vi] = nodeIdx.get(e.u);
+        updated.push(vi);
+      }
+    }
+    return updated;
+  };
+  for (let iter = 0; iter < n - 1; iter++) {
+    if (relaxAll().length === 0) break; // 本轮无松弛 → 已收敛,不可能有负环
+  }
+  // 终检轮:仍可松弛 → 负环 → 不可满足
+  const updated = relaxAll();
+  if (updated.length === 0) return { kind: 'sat' };
+
+  // 负环提取(信息性,供阶段 2 M3045 反例参考):从终检轮被更新的节点沿前驱回退,
+  // 首个重现节点即环入口;锚点 SRC 可能在环上但不入输出。
+  // 防御:链条异常中断(理论不可达)→ 返回 [](unsat 判定不受影响)。
+  const cycle = [];
+  for (let t = updated.length - 1; t >= 0 && cycle.length === 0; t--) {
+    const order = new Map();
+    let x = updated[t];
+    while (x >= 0 && pred[x] >= 0 && !order.has(x)) {
+      order.set(x, order.size);
+      x = pred[x];
+    }
+    if (x < 0 || !order.has(x)) continue; // 链条中断或未成环 → 换下一个起点
+    const start = x;
+    const ring = [start];
+    let y = pred[start];
+    while (y !== start && y >= 0 && ring.length <= n) {
+      ring.push(y);
+      y = pred[y];
+    }
+    if (y === start && ring.length <= n) {
+      for (const ni of ring) {
+        if (nodes[ni] !== SRC) cycle.push(nodes[ni]);
+      }
+      cycle.reverse(); // 沿前驱回退得到逆序,翻转为环的正向
+    }
+  }
+  return { kind: 'unsat', cycle };
+}
+
+// ===================== 蕴含判定 =====================
+
+// 判定 assumptions ⊨ goal 是否成立(供 checker M3042 叶判定与阶段 2 边界证明遍共用)。
+// 方法:goal 取反并入假设,求解;不可满足(负环/常量矛盾)⇒ goal 成立。
+// 取反规则(全 BigInt 整数语义):
+//   a <= b → 并入 a >= b + 1;a < b → 并入 a >= b;
+//   a != b → 取反是合取 a == b → 双向并入;a == b → 取反是析取,不可单次并入,
+//            而 goal 本身是合取(a <= b 且 a >= b)→ 逐向递归证明;
+//   a >= b / a > b:与 <= / < 对偶(交换两侧)。
+// 返回:
+//   {kind:'proven', cycle}  —— goal 在 assumptions 下成立(cycle 为不可满足性证据,信息性)
+//   {kind:'not-proven'}     —— 不成立或无法判定(保守:不证明就不放行)
+//   {kind:'too-many-vars'}  —— 变量超上限,放弃
+export function proveImplication(assumptions, goal) {
+  const verdict = (r) => {
+    if (r.kind === 'unsat') return { kind: 'proven', cycle: r.cycle };
+    if (r.kind === 'too-many-vars') return r;
+    return { kind: 'not-proven' };
+  };
+  switch (goal.op) {
+    case '==': {
+      const r1 = proveImplication(assumptions, { lhs: goal.lhs, op: '<=', rhs: goal.rhs });
+      if (r1.kind !== 'proven') return r1;
+      const r2 = proveImplication(assumptions, { lhs: goal.lhs, op: '>=', rhs: goal.rhs });
+      if (r2.kind !== 'proven') return r2;
+      return { kind: 'proven', cycle: [] }; // 双向各自成立,无单一负环证据
+    }
+    case '!=': {
+      return verdict(solveDiffConstraints([...assumptions,
+        { lhs: goal.lhs, op: '<=', rhs: goal.rhs },
+        { lhs: goal.lhs, op: '>=', rhs: goal.rhs },
+      ]));
+    }
+    case '<=': {
+      return verdict(solveDiffConstraints([...assumptions,
+        { lhs: goal.lhs, op: '>=', rhs: linAdd(goal.rhs, linFromInt(1n), 1n) },
+      ]));
+    }
+    case '<': {
+      return verdict(solveDiffConstraints([...assumptions,
+        { lhs: goal.lhs, op: '>=', rhs: goal.rhs },
+      ]));
+    }
+    case '>=': return proveImplication(assumptions, { lhs: goal.rhs, op: '<=', rhs: goal.lhs });
+    case '>': return proveImplication(assumptions, { lhs: goal.rhs, op: '<', rhs: goal.lhs });
+    default: return { kind: 'not-proven' }; // 未知 op:保守不证明
+  }
+}

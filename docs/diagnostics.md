@@ -89,6 +89,7 @@
 | W3102 | float-equality | 浮点 `==` 精度风险(常用 `abs(a-b) < eps`) |
 | W3103 | unreachable-code | 不可达代码 |
 | W3104 | test-literal-overfit | 测试断言中的字面量出现在实现函数的分支条件中(可能针对测试硬编码;W 级不阻断)(v0.44) |
+| W3105 | index-bounds-unproven | `--warn-unproven-index` 下:Vec 索引义务(`0 <= i` 且 `i < len$buf`)无法由 requires 线性边界静态证明(是"无法证明"而非"确定越界";循环/分支/非线性/mut Vec/无 requires 一律静默;文件已有 error 诊断时不叠加;默认不启用;v0.52) |
 
 ## M4xxx — 运行时 panic(退出码 101)
 
@@ -113,6 +114,7 @@
 | M3042 | ensures-statically-false | ensures 直线体符号执行可静态证伪(含反例)(v0.48,QF_LIA 第一片) |
 | M3043 | contract-not-pure | 契约表达式必须是纯表达式:requires/ensures/invariant 中调用 mut 方法(Vec/Map 原地方法或 mut self 方法)(v0.51) |
 | M3044 | invalid-map-key | Map 键类型必须是 int/float/bool/str(Vec/struct/enum 键无值语义相等)(v0.51.4) |
+| M3045 | index-bounds-violated | 静态边界证明(QF_LIA 第二片):在 requires 线性边界 + 直线体下,Vec 索引义务(`0 <= i` 或 `i < len$buf`,len$x 为非 mut `Vec[i64]` 参数的长度符号)被可证违反——所有满足 requires 的调用都会 M4003 panic;含小值反例(i64 参数 ∈ {-2..2}、len$x ∈ 0..8 确定性枚举;反例满足完整 requires——按被跳过但可求值的 requires 叶子过滤,无候选则不给反例)。未证明不报告;requires 自相矛盾(负环)整函数跳过;不改运行时语义(v0.52) |
 
 ## 约定
 

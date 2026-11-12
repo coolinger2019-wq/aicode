@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.51.5**（下一阶段 v0.52–v0.55 见 §4.2;代码审查 16 项全部修复；C 后端 UB 修复；构建可信性；契约纯性 + ensures 全路径；效果门禁函数值闭合；wasm 比较操作码修复；自举工具统一入口 ming tools；ABI 哈希构建缓存 + GCM 最小帧修复已交付；契约阶段 2 + QF_LIA 第一片 M3042 已完成；测试 534 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.52.0**（下一阶段 v0.53–v0.55 见 §4.2;契约阶段 2 + QF_LIA 第一片 M3042 已交付；**QF_LIA 第二片:越界包含静态验证 M3045/W3105 + --proof-report + proof_fuzz 已交付(2026-11-12,含独立审查 6 项修复)**；测试 597 项全绿）。
 
 ---
 
@@ -13,7 +13,7 @@
 | C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static` |
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`** |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 |
-| 质量护栏 | 回归全绿（v0.51.6 起 568 项，§54/§55 为复合赋值窥孔与工具纪律）+ 多后端差分模糊（四腿）+ bench（cc 腿） |
+| 质量护栏 | 回归全绿（v0.52.0 起 597 项，§56 为 v0.52 静态边界证明：prover 抽出/边界证明/收口观测/审查修复）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明 0 误报 + 反例独立求值器验证）+ bench（cc 腿） |
 | 能力矩阵 | 49 行口径 ≈82%（docs/capabilities.md） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
@@ -116,22 +116,23 @@
 | ADR-002 | `mask [效果]` 本阶段不做(v0.56+ 评估) | 会让纯签名执行 IO,破坏"签名即效果真相";wasm/C 资格与契约纯性都读 `sig.effects`;且无资源句柄类型/逃逸分析 | 本阶段由 C 后端补全替代;mask 需独立 ADR 与审计报告 |
 | ADR-003 | 边界证明不消除运行时检查 | 证明器尚未形式化验证;先积累 proof-vs-runtime 模糊证据;删检查属 codegen 语义变更 | v0.52/v0.55 冻结 `compiler/interp/vm/cbackend/artifact` |
 
-### 4.2.3 v0.52 — QF_LIA 第二片:越界包含静态验证(只证明,不改 codegen)
+### 4.2.3 v0.52 — QF_LIA 第二片:越界包含静态验证(只证明,不改 codegen)✅(2026-11-12 完成)
 
 **目标**:从 `requires` 的线性边界证明每个 `Vec` 索引点在界内;可证违反 → M3045 + 反例;未证明不阻断、不误报。
 
 **范围**:i64 参数、非 `mut` 的 `Vec` 参数、`requires` 中的 `buf.len()`、直线体(Let/Assign/Return/纯调用语句)、单个索引点。
 **不做**:循环、分支路径敏感、局部别名、`mut Vec`(push/pop 改长度)、通用 SMT、非线性、消除 M4003、任何 codegen 修改。
 
-**任务**:
-1. 抽出 `src/prover.js`:线性形式/差分约束(Floyd-Warshall 或 Bellman-Ford,变量 ≤12,BigInt 权重);checker 只留 AST 适配与诊断。先保证 §43 的 M3042 行为逐字不变。
-2. 边界证明遍:`x.len()` → `len$x`;比较归一化为 `x - y <= c`(严格 `<` 转 `c-1`;`==` 拆双向;`!=`/`||`/非线性跳过);索引点证明 `0 <= i` 与 `i < len$base`;假设集负环(不可达)时跳过。
-3. 诊断与反例:M3045[index-bounds-violated](error,含义务与反例;参数小值 + 长度 0..8 枚举);未证明仅在 `--warn-unproven-index` 下发 W3105[index-bounds-unproven]。
-4. 证明报告:`ming check --proof-report` 文本摘要;`--json --proof-report` 增加 additive 的 `proofs` 字段;不带旗标时 JSON 与 v0.51.5 逐字一致(快照测试)。
-5. 测试 §54(≥12 项):可证真/边界严格性/可证违反+反例/mut/循环/别名/非线性静默/警告旗标/无 requires 不警告/无旗标 JSON 不变/运行时仍 M4003。
-6. `tests/proof_fuzz.mjs`:对 proven 索引随机生成满足 requires 的实参并运行 tree/VM,断言无 M4003;对 violated 用独立线性求值器验证反例。文档:GUIDE 静态边界证明节、diagnostics M3045/W3105。
+**任务**(全部完成,三阶段由中断会话交接后收口):
+1. ✅ 抽出 `src/prover.js`:线性形式(v0.48 原样迁出)/差分约束(Bellman-Ford 全 0 初始化负环检测,变量 ≤12,BigInt 权重,锚点 SRC 编码绝对约束);checker 只留 AST 适配与诊断。§43 的 M3042 行为逐字不变(§56 黄金锁定)。
+2. ✅ 边界证明遍:`x.len()` → `len$x`(仅限被追踪的非 mut `Vec[i64]` 参数);比较归一化为差分约束(严格 `<` 转 `c-1`;`==` 拆双向;`!=`/`||`/非线性/系数非 ±1 保守跳过);索引点义务两向证明 `0 <= i` 与 `i < len$base`;假设集负环(requires 自相矛盾)整函数跳过。
+3. ✅ 诊断与反例:M3045[index-bounds-violated](error,含义务与反例;i64 参数 ∈ {-2..2}、len$x ∈ 0..8 确定性枚举,仅枚举相关变量);未证明仅在 `--warn-unproven-index` 下发 W3105[index-bounds-unproven](warning,不改退出码)。
+4. ✅ 证明报告:`ming check --proof-report` 文本摘要(逐函数 义务/proven/violated/unproven);`--json --proof-report` 增加 additive 的 `proofs` 字段(逐义务 {file,fn,index,kind,obligation,line,col,counterexample});不带旗标时 JSON 与 v0.51.6 逐字一致(HEAD CLI 对照 + 黄金快照双锁定)。
+5. ✅ 测试 §56(26 项 ≥ 12:原 23 项 + 审查修复 3 项):可证真/边界严格性(`<=` 不蕴含 `<`)/可证违反+反例/mut Vec 与 mut i64 重赋值/循环/别名/非线性静默/警告旗标 W3105 逐字/无 requires 不警告/无旗标 JSON 不变(HEAD 对照 + 快照 + proofs 键缺失)/运行时仍 M4003(双引擎 101)/负环跳过/--proof-report 文本与 JSON/复合索引原文完整;审查修复 3 项(反例过滤最小奇数解逐字 + 反例满足被跳过叶子属性 + 已有 error 文件 W3105 门控)。
+6. ✅ `tests/proof_fuzz.mjs`:模式 1(0 误报)——生成器保证实参满足 requires,凡 proven 义务断言 `run`/`run --tree` 退出 0 且无 M4003/M4015,可证类另断言必须 proven;模式 2(反例验证)——独立实现的线性求值器(不 import prover.js)验证 M3045 反例满足 requires 且越出义务侧;负控(不可编码 requires)必须静默。文档:GUIDE §6 契约与静态边界证明节 + 修订记录、diagnostics M3045/W3105、README 路线图/状态段。
 
-**验收**:`node tests/run.mjs`(§54 ≥12);`proof_fuzz --count 200` 0 误报;`fuzz --count 40` 0 分歧;`check --proof-report` 输出 proven;`git diff` 对 compiler/interp/vm/cbackend/artifact 为空;check 语料 ≤1.2x v0.51.5 基线(信息性)。
+**验收**(2026-11-12 实测,含审查修复后复测):`node tests/run.mjs` 597 项 0 失败(§56 26 项:23 项 + 审查修复 3 项);`proof_fuzz --count 200` 0 误报、反例验证 35/35(异种子抽查另过);`fuzz --seed 44044 --count 40` 0 分歧;`check --proof-report` 输出 proven/violated 逐函数统计;`git diff` 对 compiler/interp/vm/cbackend/artifact 为空;check 语料耗时 ≤1.2x v0.51.6 基线(信息性)。
+**审查修复**(2026-11-12 独立审查 6 项,全部落实):M3045 反例按被跳过但可求值的 requires 叶子过滤(满足完整 requires;无候选退回无反例消息)·`--warn-unproven-index` 下文件已有 error 不叠加 W3105·lenSeen 死代码删除·prover.js 头注释改写当前职责·GOLDEN_DIAG 快照分隔符无关化·diagnostics.md CRLF → LF。
 **风险/回退**:误报 M3045 —— 用"非 mut Vec + 直线体 + 假设一致 + 差分约束"四重门控;出问题关闭对应模式(保留 W3105 观测),运行时语义未动。
 
 ### 4.2.4 v0.53 — 可信构建与跨平台验证基线

@@ -91,14 +91,15 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.49.1** — **GCM 最小帧修复**(28B 而非 44B:短/空明文往返恢复;27B/12B 截断拒绝)+ nonce 唯一性回归 + nonce 管理指引——社区反馈(diviner)触发的边界测试
 - **v0.50** — **自举工具统一入口 `ming tools`**:patch/edit/diff/diag/wc/tree/... 缩短为一条命令(进程内路由,工具本体仍是 Ming);`--list` 命令表——把自举工具从"验证用"变成日用
 - **v0.50.1** — **wasm 比较操作码修复(P0)**:i64/f64 的 `<=`/`>=` 静默算错与 f64 模块整体回落修复;`--no-wasm` 恢复真 VM 路由——代码审查触发
-- **v0.51(当前)** — **效果门禁闭合**:函数类型携带 effects,`let g = noisy; g()` / 传参 / lambda 不再绕过 M3029(M3002 显示 `with io`)
+- **v0.51** — **效果门禁闭合**:函数类型携带 effects,`let g = noisy; g()` / 传参 / lambda 不再绕过 M3029(M3002 显示 `with io`)
 - **v0.51.1** — **契约纯性 + ensures 全路径**:M3043 禁止契约内 mut 方法;`?` 早退/嵌套 return 双引擎都执行 ensures;`--json` 增加 engine/wasm 字段
 - **v0.51.2** — **构建可信性**:AOT 产物纯 wire 化(无 AST/绝对路径泄漏)+ 源码回退复制全部模块 + 缓存内容哈希校验 + 接口哈希修正 + 非产物 dist 守卫
 - **v0.51.3** — **C 后端 UB 修复**:f64 大整数打印(%.1f)、符号扩展窄截断(ming_sext)、空模式 replace/pad 码点语义、trim 移除 ZWSP
 - **v0.51.4** — **检查器小缺陷**:访问器返回值语义副本、while let 恢复、元组穷尽性、泛型 arity 的 ReferenceError、Map 键类型 M3044
 - **v0.51.5** — **CLI 边界**:项目模式 `--` 参数透传、`-o` 短旗标、值旗标缺值/非整数硬报错——代码审查 16 项全部修复
-- **v0.51.6(当前)** — **自举工具优化 + 两个语言/工具链 P0**:9 个工具错误走 stderr、失败退出 1;wc 多文件、json_query 点路径、diaghot 目录展开+`--top`、batch_rename 幂等、tree 深度、`ming tools --` 透传;修复 VM 复合赋值窥孔(`x += N`(N≠1)误融 ±1,自举工具暴露)与 fmt 两处缺陷(if 表达式崩溃、else-if 悬挂非幂等),12 个工具全部 fmt 规范
-- **下一步方向** — 见 `docs/plan.md §4.2`:v0.52 越界包含静态证明 → v0.53 可信构建/CI → v0.54 `with unsafe`(C 原生)→ v0.55 跨函数契约摘要;`mask`/async/eval/国密留待更远
+- **v0.51.6** — **自举工具优化 + 两个语言/工具链 P0**:9 个工具错误走 stderr、失败退出 1;wc 多文件、json_query 点路径、diaghot 目录展开+`--top`、batch_rename 幂等、tree 深度、`ming tools --` 透传;修复 VM 复合赋值窥孔(`x += N`(N≠1)误融 ±1,自举工具暴露)与 fmt 两处缺陷(if 表达式崩溃、else-if 悬挂非幂等),12 个工具全部 fmt 规范
+- **v0.52.0(当前)** — **QF_LIA 第二片:越界包含静态验证(只证明,不改 codegen)**:prover.js 抽出(线性形式代数 + 差分约束 Bellman-Ford 负环求解);requires 线性边界下对每个 `buf[i]` 义务两向证明 `0 <= i && i < len$buf`——可证违反 → **M3045**(含小值反例),未证明默认静默(`--warn-unproven-index` 下 W3105);`--proof-report` 逐函数证明统计(文本/additive proofs JSON);循环/别名/非线性/mut Vec/无 requires 一律静默;**proven 不消除运行时 M4003**;tests/proof_fuzz.mjs(0 误报 + 反例独立求值器验证)
+- **下一步方向** — 见 `docs/plan.md §4.2`:v0.53 可信构建/CI → v0.54 `with unsafe`(C 原生)→ v0.55 跨函数契约摘要;`mask`/async/eval/国密留待更远
 
 ## 设计原则(全文见 design.md)
 
@@ -111,4 +112,4 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 ## 状态
 
-v0.51.6:字节码 VM + **WASM 分层** + **VM 复合赋值窥孔修复（`x += N`(N≠1) 曾误融 ±1）** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)。回归:568 项全绿。
+v0.52.0:字节码 VM + **WASM 分层** + **VM 复合赋值窥孔修复（`x += N`(N≠1) 曾误融 ±1）** + **C 后端 C1–C4(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;cc 差分腿 = 解释引擎全形态;--static)** + **ABI 哈希构建缓存(ming build:命中跳过检查+编译;接口哈希 ABI 防火墙;--clean-cache)** + **契约系统(requires/ensures/invariant:运行时 M4015 + 编译期 M3040/M3041/M3042 + 静态边界证明 M3045/W3105 与 --proof-report)** + **静态证明器(QF_LIA 限定子集:prover.js 线性形式 + 差分约束;proof_fuzz 0 误报)** + **自举工具 12 个(Ming 自写;v0.50 ming tools 统一入口)** + 正则 + 结构化并发 + **错误链(cause)** + **二进制 I/O + 任务超时/取消 + 资源熔断(--max-alloc/--max-ms)** + JSON + capability fs/net/sync/proc/env/rand/io + HTTP(响应头/超时可配)+ std.fmt(进制/精度/对齐)+ std.log + std.math 全函数(wasm 桥接)+ std.crypto(Hash/HMAC)+ std.bin(显式字节序)+ 字节流正则 + AES-CBC/GCM(最小帧 28B + nonce 唯一性回归)+ ming build 可移植产物 + 时间日期 + 线性句柄 + 泛型 impl + REPL + 项目管理 + LSP。能力矩阵见 docs/capabilities.md(49 行口径 ≈82%)。模糊基线:tests/fuzz.mjs(多后端差分,C 腿全形态)+ tests/proof_fuzz.mjs(静态边界证明:0 误报 + 反例验证)。回归:597 项全绿。

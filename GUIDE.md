@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.51.6** · 字节码 VM + WASM 分层 + **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044)+ **ABI 哈希构建缓存**(ming build;--clean-cache)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.52.0** · 字节码 VM + WASM 分层 + **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -227,6 +227,26 @@ nums.map((x) => x * 2)                    // 类型通常可从上下文推断
 
 - **闭包捕获是值拷贝**(创建时快照),之后与外部变量脱钩;捕获的变量不可在闭包内赋值。
 - 函数可以作为值传递:`nums.map(classify)`。
+
+### 契约与静态边界证明(v0.45 / v0.52)
+
+函数签名可以声明前置/后置契约,违反在运行时 panic(M4015,退出码 101):
+
+```ming
+fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {
+    return buf[i];
+}
+```
+
+- `requires` 在函数入口检查;`ensures result ...` 在每个返回点检查(`result` 绑定返回值);struct 字段可带 `invariant`(构造后与 `mut self` 方法退出后检查)。契约表达式必须**纯**:调用带效果的函数 → M3029,调用 mut 方法 → M3043。
+- 两片编译期静态检查:全部实参为整数字面量且可判定违反 requires → **M3041**;ensures 直线体可静态证伪 → **M3042**(各含反例)。
+
+**静态边界证明(v0.52,QF_LIA 第二片)**:在"非 mut `Vec[i64]` 参数 + i64 参数 + requires 中的 `buf.len()` 线性边界 + 直线体"范围内,检查器对每个 `buf[i]` 索引点证明 `0 <= i` 且 `i < len$buf`(`len$x` 是 Vec 参数的长度符号;线性形式 + 差分约束 Bellman-Ford 求解,变量 ≤ 12):
+
+- **三态**:两向可证 = proven(静默);任一方向被证伪 = **M3045[index-bounds-violated]**(error,含小值反例——反例满足完整 requires:枚举命中候选后按被跳过但可求值的 requires 叶子过滤,如 `requires n == buf.len() && n % 2 == 1` 下 `buf[n]` 的反例是最小奇数解 `len$buf = 1, n = 1`;无候选则不给反例);其余 = 未证明(默认静默)。
+- **放弃条件**(超范围一律静默,不误报是硬门槛):循环/分支体、mut Vec 参数、`||` / `!=` / 非线性叶子、别名重绑定(`let b = buf`)、requires 自相矛盾(负环 = 函数不可达)。
+- 旗标:`--warn-unproven-index` 把未证明义务以 **W3105[index-bounds-unproven]**(warning,不改退出码)逐条报出(文件已有 error 诊断时不再叠加 W3105);`--proof-report` 输出逐函数证明统计(文本),`--json --proof-report` 增加 additive 的 `proofs` 字段(逐义务含 index/kind/obligation/反例)。
+- **proven 不消除运行时检查**:M4003 边界 panic 原样保留——证明只报告,不改语义。
 
 ---
 
@@ -889,7 +909,7 @@ fn main() with io {
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
 | 自举工具 v0.51.6 优化(脚本化纪律) | 9 个工具**错误走 stderr、失败退出码 1**(此前 stdout + 退出 0);`wc` 多文件附 total 行(单文件格式不变);`json_query` 点路径(`servers.0.host`:obj 段用键、arr 段用下标)+ 类型化输出(字符串裸输出,其余 JSON 原貌)+ 一次多路径;`diaghot` 目录展开 + `--top N`;`batch_rename` **幂等**(已带前缀跳过,重复运行不再叠加);`tree` 可选深度参数;`todo_scan` 增扫 .mjs/.cjs;12 个工具全部 `ming fmt --check` 规范 |
 | `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
-| `ming check f.ming [--json]` | 只做静态检查 |
+| `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52) |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
 | `ming doc f.ming [--json]` | 提取 `///` 文档 |
@@ -1006,6 +1026,17 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.52.0(2026-11-12)
+
+- **QF_LIA 第二片:越界包含静态验证(只证明,不改 codegen;plan §4.2.3 三阶段收口)**:
+  - **阶段 1(prover 抽出)**:线性形式代数自 checker.js 原样迁出为独立纯函数模块 `src/prover.js`(checker 只留 AST 适配与诊断),新增**差分约束求解**——Bellman-Ford 全 0 初始化负环检测(BigInt 权重,变量 ≤ 12,锚点 SRC 编码绝对约束;系数非 ±1 / 同号双变量 / `!=` / `||` 一律保守跳过:只会漏证不会误证)。M3042/M3041 行为逐字不变(§43/§56 黄金锁定)。
+  - **阶段 2(边界证明遍)**:`len$x` 长度符号(`x.len()` 仅限被追踪的非 mut `Vec[i64]` 参数);requires 合取叶子归一化为差分约束假设集;直线体按求值序收集 `buf[i]` 索引义务;义务两向证明(`0 <= i` 与 `i < len$base`);假设集负环(requires 自相矛盾 → 函数不可达)整函数跳过。新码 **M3045[index-bounds-violated]**(error,含小值反例:i64 参数 ∈ {-2..2}、len$x ∈ 0..8 确定性枚举;反例满足完整 requires——命中候选后按被跳过但可求值的 requires 叶子用 evalContractExpr 过滤,无候选则不给反例)。
+  - **阶段 3(观测与收口)**:**W3105[index-bounds-unproven]**(warning,仅 `--warn-unproven-index` 下发,不改退出码);`--proof-report` 文本摘要 + `--json --proof-report` additive `proofs` 字段(逐义务 {file,fn,index,kind,obligation,line,col,counterexample});无旗标 JSON 与 v0.51.6 逐字一致(HEAD CLI 对照 + 黄金快照双锁定)。循环/分支、别名重绑定、非线性索引、mut Vec 参数、无 requires 一律静默;**proven 不消除运行时 M4003**(运行时语义零改动;compiler/interp/vm/cbackend/artifact 零 diff)。
+- **修复(接手中断会话的残留)**:复合索引的索引原文截断——parser 的 Binary/Call 子节点 span 起点在操作符/实参括号,`buf[n * n]` 曾截成 `* n`、`buf.len()` 截成 `()`;改为从完整 Index 跨度切方括号内文(嵌套括号安全),§56 新增逐字锁定。
+- **tests/proof_fuzz.mjs**(零依赖,自研 mulberry32 seeded RNG,`--seed/--count` 可调,默认 seed 固定 + count 200):**模式 1(误报检测)**生成"生成器保证实参满足 requires 的直线体索引程序",凡 proven 义务断言 `run` 与 `run --tree` 退出 0 且无 M4003/M4015;可证类模板另断言"必须 proven"(防证明能力退化使模糊器空转);不可证类断言不判 violated。**模式 2(反例验证)**生成可证违反形态,断言 M3045 必发,并用**文件内独立实现的线性求值器**(刻意不 import src/prover.js)验证反例:满足全部 requires 且使索引越出义务侧;负控(requires 含 `buf[n]` 的不可编码形态,必须静默)每 8 例 1 例。末尾汇总"误报 F / 反例验证 ok/N",失败退出 1。
+- 测试:597 项全绿(§56 v0.52 共 26 项:prover 抽出 3 + 边界证明 5 + 收口 15 + 审查修复 3);proof_fuzz 200 例 0 误报、反例验证 35/35;差分模糊 0 分歧;check 语料耗时 ≤ 1.2x v0.51.6 基线(信息性)。
+- **审查修复(独立审查 6 项,v0.52.0 收口前)**:M3045 反例追加过滤——枚举命中候选后按**被跳过但可求值**的 requires 叶子用 `evalContractExpr` 代入求值,仅保留全部为真的候选(反例满足完整 requires;如 `requires n == buf.len() && n % 2 == 1` 下反例从 `len$buf = 0, n = 0` 变为最小奇数解 `len$buf = 1, n = 1`),过滤后无候选退回"无反例"消息变体(§56 新增逐字 + 属性两项);`--warn-unproven-index` 下文件已有 error 诊断的文件不再叠加 W3105(§56 `buf["k"]` 门控检查);checker `lenSeen` 死代码删除;prover.js 头注释改写为当前职责;tests/run.mjs GOLDEN_DIAG 快照路径分隔符无关化(仅 file 字段 \ / 归一,POSIX 可跑);docs/diagnostics.md 行尾 CRLF → LF。冻结面(compiler/interp/vm/cbackend/artifact)零改动。
 
 ### v0.51.6(2026-11-12)
 

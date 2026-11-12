@@ -60,11 +60,13 @@ export const CODES = {
   M3042: 'ensures-statically-false',
   M3043: 'contract-not-pure',
   M3044: 'invalid-map-key',
+  M3045: 'index-bounds-violated',
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',
   W3103: 'unreachable-code',
   W3104: 'test-literal-overfit',
+  W3105: 'index-bounds-unproven',
   // ---- 运行时 M4xxx ----
   M4001: 'panic',
   M4002: 'integer-overflow',
@@ -88,6 +90,8 @@ export const CODE_HINTS = {
   M3029: '给函数签名添加效果声明:fn f() with io, time { ... }(效果必须显式写出并逐层传播)。',
   M4003: '用 `get(i)` 会返回 Option[T] 而不是 panic。',
   M4007: '用 `get(k)` 会返回 Option[V] 而不是 panic。',
+  M3045: '调整 requires 边界或索引表达式,使 0 <= i 且 i < len$buf 对所有满足 requires 的调用成立;或改用 buf.get(i) 返回 Option 而不是 panic。',
+  W3105: '这是"无法证明"而非"确定越界":证明器只处理 requires 线性边界下的直线体。可补充线性 requires(如 i < buf.len() && i >= 0),或改用 buf.get(i)。',
 };
 
 export class Diagnostic {

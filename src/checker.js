@@ -13,6 +13,7 @@
 
 import { err, warn, MingError, CODE_HINTS } from './diag.js';
 import { parse } from './parser.js';
+import { linFromInt, linAdd, linMulConst, linIsConst, linEvalAt, proveImplication, solveDiffConstraints } from './prover.js';
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 
@@ -462,9 +463,11 @@ class Module {
 // ===================== 检查器 =====================
 
 export class Checker {
-  constructor(entryFile, readFile = null) {
+  constructor(entryFile, readFile = null, options = null) {
     this.readFile = readFile ?? ((p) => nodeFs.readFileSync(p, 'utf8'));
     this.entryFile = entryFile;
+    this.options = options ?? {};  // v0.52:checker 选项(--warn-unproven-index 由阶段 3 接 CLI)
+    this.proofRecords = [];  // v0.52 阶段 3:边界证明逐义务记录(--proof-report 消费;只记录,不改诊断)
     this.modules = [];
     this.byPath = new Map();
     this.diags = [];
@@ -693,7 +696,7 @@ export class Checker {
     for (const m of this.modules) this.resolveSigs(m);
     for (const m of this.modules) this.resolveImpls(m);
     for (const m of this.modules) this.checkBodies(m);
-    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls };
+    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords };
   }
 
   resolveSigs(mod) {
@@ -862,6 +865,10 @@ export class Checker {
     // v0.48(M3042):ensures 直线体符号执行(QF_LIA 第一片)
     for (const [, entry] of mod.items) {
       if (entry.kind === 'fn' && !entry.poisoned) this.checkEnsuresStatically(entry);
+    }
+    // v0.52 阶段 2(M3045/W3105,QF_LIA 第二片):requires 线性边界的 Vec 索引越界静态证明
+    for (const [, entry] of mod.items) {
+      if (entry.kind === 'fn' && !entry.poisoned) this.checkIndexBoundsStatically(entry, mod);
     }
   }
 
@@ -1992,36 +1999,14 @@ export class Checker {
   // 变量追踪为参数的线性形式 {coeffs: Map<param,BigInt>, c: BigInt};
   // 遇非直线语句/非 i64 参数/非子集表达式 → 静默放弃(运行时 M4015 保留,语义不变);
   // 返回点以 `result` 绑定返回值形式求值 ensures:可证明为假 → M3042 + 反例。
-
-  // 线性形式代数
-  linFromInt(n) { return { coeffs: new Map(), c: n }; }
-  linAdd(a, b, sign) {
-    const out = { coeffs: new Map(a.coeffs), c: a.c + sign * b.c };
-    for (const [k, v] of b.coeffs) {
-      const nv = (out.coeffs.get(k) ?? 0n) + sign * v;
-      if (nv === 0n) out.coeffs.delete(k); else out.coeffs.set(k, nv);
-    }
-    return out;
-  }
-  linMulConst(a, k) {
-    const out = { coeffs: new Map(), c: a.c * k };
-    for (const [kk, v] of a.coeffs) out.coeffs.set(kk, v * k);
-    return out;
-  }
-  linIsConst(f) { return f.coeffs.size === 0; }
-  // 在候选参数值下求线性形式的具体值(用于反例)
-  linEvalAt(f, vals) {
-    let v = f.c;
-    for (const [k, cf] of f.coeffs) v += cf * (vals.get(k) ?? 0n);
-    return v;
-  }
+  // v0.52:线性形式代数与差分约束证明抽到 src/prover.js,此处只留 AST 适配与诊断。
 
   // 表达式 → 线性形式;子集之外返回 null(resultForm:`result` 绑定的形式)
   linOfExpr(e, varForms, resultForm) {
     switch (e.nt) {
       case 'IntLit': {
         if (e.bits !== 64 || typeof e.v !== 'bigint') return null;
-        return this.linFromInt(e.v);
+        return linFromInt(e.v);
       }
       case 'Ident': {
         if (e.name === 'result' && resultForm) return { coeffs: new Map(resultForm.coeffs), c: resultForm.c };
@@ -2032,22 +2017,22 @@ export class Checker {
       case 'Unary': {
         if (e.op !== '-') return null;
         const a = this.linOfExpr(e.expr, varForms, resultForm);
-        return a ? this.linMulConst(a, -1n) : null;
+        return a ? linMulConst(a, -1n) : null;
       }
       case 'Binary': {
         const op = e.op;
         if (op === '+') {
           const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
-          return (l && r) ? this.linAdd(l, r, 1n) : null;
+          return (l && r) ? linAdd(l, r, 1n) : null;
         }
         if (op === '-') {
           const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
-          return (l && r) ? this.linAdd(l, r, -1n) : null;
+          return (l && r) ? linAdd(l, r, -1n) : null;
         }
         if (op === '*') {
           const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
-          if (l && r && this.linIsConst(r)) return this.linMulConst(l, r.c);
-          if (l && r && this.linIsConst(l)) return this.linMulConst(r, l.c);
+          if (l && r && linIsConst(r)) return linMulConst(l, r.c);
+          if (l && r && linIsConst(l)) return linMulConst(r, l.c);
           return null;
         }
         return null; // / % 位运算移位 → 放弃
@@ -2062,11 +2047,11 @@ export class Checker {
     switch (e.nt) {
       case 'Ident': {
         if (e.name === 'result') {
-          if (this.linIsConst(resultForm)) return resultForm.c !== 0n ? 'true' : 'false';
+          if (linIsConst(resultForm)) return resultForm.c !== 0n ? 'true' : 'false';
           return 'unknown';
         }
         const f = varForms.get(e.name);
-        if (f && this.linIsConst(f)) return f.c !== 0n ? 'true' : 'false';
+        if (f && linIsConst(f)) return f.c !== 0n ? 'true' : 'false';
         return 'unknown';
       }
       case 'Unary': {
@@ -2087,19 +2072,46 @@ export class Checker {
         if (!['==', '!=', '<', '<=', '>', '>='].includes(op)) return 'unknown';
         const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
         if (!l || !r) return 'unknown';
-        const diff = this.linAdd(l, r, -1n); // L - R
-        if (!this.linIsConst(diff)) return 'unknown'; // 含参数 → 需要区间推理(v2)
-        const c = diff.c;
-        switch (op) {
-          case '==': return c === 0n ? 'true' : 'false';
-          case '!=': return c === 0n ? 'false' : 'true';
-          case '<': return c < 0n ? 'true' : 'false';
-          case '<=': return c <= 0n ? 'true' : 'false';
-          case '>': return c > 0n ? 'true' : 'false';
-          default: return c >= 0n ? 'true' : 'false';
+        const diff = linAdd(l, r, -1n); // L - R
+        // 常量差:直接整数判定(与 v0.48 逐字等价,零求解开销)
+        if (linIsConst(diff)) {
+          const c = diff.c;
+          switch (op) {
+            case '==': return c === 0n ? 'true' : 'false';
+            case '!=': return c === 0n ? 'false' : 'true';
+            case '<': return c < 0n ? 'true' : 'false';
+            case '<=': return c <= 0n ? 'true' : 'false';
+            case '>': return c > 0n ? 'true' : 'false';
+            default: return c >= 0n ? 'true' : 'false';
+          }
         }
+        // v0.52:非常量差交差分约束证明。假设集本阶段为空(requires 边界假设是阶段 2/3 的事):
+        // 空假设下任何含变量的单一约束皆可满足,各方向义务均不可证 → 'unknown',
+        // 与 v0.48 的"非常量 → unknown"严格一致;变量 >12 → too-many-vars → 同样静默。
+        return this.decideCmpByProof(diff, op);
       }
       default: return 'unknown';
+    }
+  }
+
+  // v0.52:非常量差的比较叶判定,经 prover 的差分约束证明(成立/证伪两向义务):
+  //   '<'  :true ⇔ 证 diff <= -1;false ⇔ 证 diff >= 0
+  //   '<=' :true ⇔ 证 diff <= 0; false ⇔ 证 diff >= 1
+  //   '>'  :true ⇔ 证 diff >= 1; false ⇔ 证 diff <= 0
+  //   '>=' :true ⇔ 证 diff >= 0; false ⇔ 证 diff <= -1
+  //   '==' :true ⇔ 双向(<= 0 且 >= 0)均证;false ⇔ 证 <= -1 或 >= 1(单向即可)
+  //   '!=' :与 '==' 对偶
+  // 阶段 2/3 传入非空假设集(.requires 归一化 + len$x 符号)后,同一义务表即可扩大可证面。
+  decideCmpByProof(diff, op) {
+    const le = (k) => proveImplication([], { lhs: diff, op: '<=', rhs: linFromInt(k) }).kind === 'proven';
+    const ge = (k) => proveImplication([], { lhs: diff, op: '>=', rhs: linFromInt(k) }).kind === 'proven';
+    switch (op) {
+      case '<': return le(-1n) ? 'true' : ge(0n) ? 'false' : 'unknown';
+      case '<=': return le(0n) ? 'true' : ge(1n) ? 'false' : 'unknown';
+      case '>': return ge(1n) ? 'true' : le(0n) ? 'false' : 'unknown';
+      case '>=': return ge(0n) ? 'true' : le(-1n) ? 'false' : 'unknown';
+      case '==': return (le(0n) && ge(0n)) ? 'true' : (le(-1n) || ge(1n)) ? 'false' : 'unknown';
+      default: return (le(-1n) || ge(1n)) ? 'true' : (le(0n) && ge(0n)) ? 'false' : 'unknown'; // '!='
     }
   }
 
@@ -2139,7 +2151,7 @@ export class Checker {
           const passR = !d.requires?.expr || (rr.ok && rr.v === true);
           if (passR) {
             // 用同一组值复核 ensures 数值(线性求值)
-            const resVal = this.linEvalAt(retForm, vals);
+            const resVal = linEvalAt(retForm, vals);
             const v2 = new Map(vals);
             v2.set('result', resVal);
             const rr2 = this.evalContractExpr(ens.expr, v2);
@@ -2192,6 +2204,305 @@ export class Checker {
       }
     };
     walkBodyForReturns(body);
+  }
+
+  // ---------- v0.52 阶段 2(M3045/W3105,QF_LIA 第二片):requires 边界的 Vec 索引越界静态证明 ----------
+  // 范围(超范围一律静默放弃,不误报是硬门槛):
+  //   i64 参数(含 mut,Assign(=) 更新其线性形式);非 mut 的 Vec[i64] 参数(基名 → len$x 符号);
+  //   requires 中可编码的合取叶子(==/</<=/>/>=;|| / != / 非线性 / 未知 len 的叶子跳过 = 不作为假设);
+  //   直线体(Let / Assign(= / Ident 目标)/ Return / 纯调用语句——与 M3042 遍历同口径);
+  //   单个索引点 buf[i](含作为表达式子项;按求值序内层先登记)。
+  // 保守性合同:假设集负环(unsat)= requires 自相矛盾 → 函数不可达 → 整函数跳过报告(语义不变);
+  //   义务两向证明:两向都成立 → 安全;任一被证伪 → M3045 + 小值反例(反例按被跳过的可求值
+  //   requires 叶子过滤,保证满足完整 requires;无候选则不给反例);其余未证明 → 默认静默,
+  //   仅在 options.warnUnprovenIndex(--warn-unproven-index)下发 W3105(文件已有 error 诊断时不叠加)。
+  // 只报告不改语义:运行时 M4003 保留;compiler/interp/vm/cbackend/artifact 零改动。
+
+  // 表达式 → 线性形式(变量:i64 参数名与 len$x 符号;子集之外 → null)。
+  // 与 M3042 的 linOfExpr 平行,额外支持 x.len()(仅限被追踪的非 mut Vec 参数)→ 新符号 len$x。
+  linOfBoundExpr(e, varForms, vecTracked) {
+    switch (e.nt) {
+      case 'IntLit': return (e.bits === 64 && typeof e.v === 'bigint') ? linFromInt(e.v) : null;
+      case 'Ident': {
+        const f = varForms.get(e.name);
+        return f ? { coeffs: new Map(f.coeffs), c: f.c } : null;
+      }
+      case 'Unary': {
+        if (e.op !== '-') return null;
+        const a = this.linOfBoundExpr(e.expr, varForms, vecTracked);
+        return a ? linMulConst(a, -1n) : null;
+      }
+      case 'Binary': {
+        const op = e.op;
+        if (op === '+' || op === '-') {
+          const l = this.linOfBoundExpr(e.l, varForms, vecTracked);
+          const r = this.linOfBoundExpr(e.r, varForms, vecTracked);
+          return (l && r) ? linAdd(l, r, op === '+' ? 1n : -1n) : null;
+        }
+        if (op === '*') {
+          const l = this.linOfBoundExpr(e.l, varForms, vecTracked);
+          const r = this.linOfBoundExpr(e.r, varForms, vecTracked);
+          if (l && r && linIsConst(r)) return linMulConst(l, r.c);
+          if (l && r && linIsConst(l)) return linMulConst(r, l.c);
+          return null;
+        }
+        return null; // / % 位运算移位比较等 → 放弃
+      }
+      case 'Call': {
+        // x.len():仅限被追踪的非 mut Vec 参数(局部 Vec / mut 参数 / 其他接收者 → 整体 unknown)
+        const cal = e.callee;
+        if (e.args?.length === 0 && cal?.nt === 'Field' && cal.name === 'len' && cal.base?.nt === 'Ident') {
+          const lv = vecTracked.get(cal.base.name);
+          if (lv) return { coeffs: new Map([[lv, 1n]]), c: 0n };
+        }
+        return null;
+      }
+      default: return null;
+    }
+  }
+
+  // 按 span 从模块源码切原文(单行直取;跨行逐段拼接;越界返回 null)
+  boundSourceText(src, span) {
+    if (!src || !span?.line || !span.file) return null;
+    const lines = src.split(/\r?\n/);
+    const l1 = span.line, l2 = span.endLine ?? span.line;
+    if (l1 < 1 || l2 < l1 || l2 > lines.length) return null;
+    if (l1 === l2) {
+      const line = lines[l1 - 1];
+      const a = Math.max(0, (span.col ?? 1) - 1);
+      const b = Math.min(line.length, Math.max(a, (span.endCol ?? 1) - 1));
+      return line.slice(a, b);
+    }
+    const out = [lines[l1 - 1].slice(Math.max(0, (span.col ?? 1) - 1))];
+    for (let i = l1; i <= l2 - 2; i++) out.push(lines[i]);
+    out.push(lines[l2 - 1].slice(0, Math.max(0, (span.endCol ?? 1) - 1)));
+    return out.join('\n');
+  }
+
+  checkIndexBoundsStatically(entry, mod) {
+    const d = entry.decl;
+    const sig = entry.sig;
+    if (!d.body || !d.requires?.expr || !sig) return; // 无 requires → 无边界可依(含 extern/测试;静默)
+
+    // 参数分类(签名序,确定性):i64 参数(含 mut);非 mut 的 Vec[i64] 参数 → len$x 符号
+    const i64Params = [];
+    const vecParamsAll = new Map(); // 原始集合(name → len$x;反例枚举用)
+    for (const p of sig.params) {
+      const t = p.type;
+      if (t?.k === 'int' && t.bits === 64 && t.signed) { i64Params.push(p.name); continue; }
+      if (!p.mut && t?.k === 'vec' && t.el?.k === 'int' && t.el.bits === 64 && t.el.signed) {
+        vecParamsAll.set(p.name, 'len$' + p.name);
+      }
+    }
+    if (vecParamsAll.size === 0) return; // 无可分析基 → 静默
+    const i64ParamSet = new Set(i64Params);
+
+    // 1) requires 归一化:合取叶子 → 差分约束假设(|| / != / 非线性 / 未知 len 的叶子跳过);
+    //    被跳过叶子另存 skippedLeaves —— M3045 反例枚举命中后按其过滤(第 4 步),保证反例满足完整 requires
+    const varForms = new Map();
+    for (const nm of i64Params) varForms.set(nm, { coeffs: new Map([[nm, 1n]]), c: 0n });
+    const vecTracked = new Map(vecParamsAll); // 直线体内的存活集合(名字重绑定即移除)
+    const assumptions = [];
+    const skippedLeaves = [];
+    const leaves = [];
+    const collectConj = (e) => {
+      if (e.nt === 'Binary' && e.op === '&&') { collectConj(e.l); collectConj(e.r); return; }
+      leaves.push(e);
+    };
+    collectConj(d.requires.expr);
+    for (const leaf of leaves) {
+      if (leaf.nt !== 'Binary' || !['==', '<', '<=', '>', '>='].includes(leaf.op)) { skippedLeaves.push(leaf); continue; } // || / 布尔叶子 → 跳过
+      const l = this.linOfBoundExpr(leaf.l, varForms, vecTracked);
+      const r = this.linOfBoundExpr(leaf.r, varForms, vecTracked);
+      if (!l || !r) { skippedLeaves.push(leaf); continue; } // 非线性 / 未知 len 等 → 该子句不作为假设
+      assumptions.push({ lhs: l, op: leaf.op, rhs: r });
+    }
+
+    // 2) 假设集负环(unsat)= requires 自相矛盾 → 函数不可达 → 整函数跳过报告(运行时语义不变);
+    //    变量超上限(too-many-vars)同样整函数放弃
+    if (solveDiffConstraints(assumptions).kind !== 'sat') return;
+
+    // 3) 直线体符号执行:按求值序收集索引义务;遇非直线语句 → 后续义务不再收集
+    const src = mod?.src ?? null;
+    const obligations = [];
+    const unproven = [];
+    let aborted = false;
+    const registerPoint = (e) => {
+      if (e.base.nt !== 'Ident') return;
+      const lenVar = vecTracked.get(e.base.name);
+      if (!lenVar) return; // 局部 Vec / mut Vec 参数 / 已重绑定名字 → 静默放弃
+      const form = this.linOfBoundExpr(e.index, varForms, vecTracked);
+      const bs = e.base.span ?? e.span;
+      const span = { file: bs.file, line: bs.line, col: bs.col, endLine: e.span?.endLine ?? bs.endLine, endCol: e.span?.endCol ?? bs.endCol };
+      // 索引原文:从完整 Index 跨度切方括号内文。不能用 e.index.span 直接切 —— parser 的
+      // Binary/Call 子节点 span 起点在操作符/实参括号(buf[n * n] 会截成 "* n"、buf.len() 截成 "()"),
+      // 而 Index span 覆盖 buf[...] 全程;取首个 '[' 之后、去掉结尾 ']' 即索引内文(嵌套括号安全)。
+      const fullIdx = this.boundSourceText(src, e.span) ?? '';
+      const br = fullIdx.indexOf('[');
+      const idxText = (br >= 0 && fullIdx.endsWith(']'))
+        ? fullIdx.slice(br + 1, -1)
+        : (this.boundSourceText(src, e.index.span) ?? '?');
+      const text = this.boundSourceText(src, span) ?? `${e.base.name}[…]`;
+      obligations.push({ baseName: e.base.name, lenVar, form, span, text, idxText });
+    };
+    // 表达式白名单下钻(全部无条件求值且不含嵌套语句);Lambda/Match/If/BlockExpr 等不下钻
+    const descend = (e) => {
+      if (!e || typeof e.nt !== 'string') return;
+      switch (e.nt) {
+        case 'Unary': descend(e.expr); return;
+        case 'Binary': descend(e.l); descend(e.r); return;
+        case 'Index': descend(e.base); descend(e.index); registerPoint(e); return;
+        case 'Field': descend(e.base); return;
+        case 'Call': descend(e.callee); for (const a of e.args ?? []) descend(a); return;
+        case 'As': case 'PostQ': descend(e.expr); return;
+        case 'StrLit': for (const p of e.parts ?? []) if (p.expr) descend(p.expr); return;
+        case 'VecLit': case 'TupleLit': for (const x of e.elems ?? []) descend(x); return;
+        case 'MapLit': for (const en of e.entries ?? []) { descend(en.k); descend(en.v); } return;
+        case 'StructLit': for (const f of e.fields ?? []) descend(f.value); return;
+        case 'Range': descend(e.lo); descend(e.hi); return;
+        default: return;
+      }
+    };
+    const walk = (block) => {
+      for (const st of block.stmts) {
+        if (st.nt === 'Return') {
+          if (st.value) descend(st.value);
+          aborted = true; // return 后不可达,结束本块(M3042 同口径)
+          return;
+        }
+        if (st.nt === 'Let' && st.pat?.nt === 'PIdent') {
+          descend(st.init);
+          const f = this.linOfBoundExpr(st.init, varForms, vecTracked);
+          if (!f) { aborted = true; return; } // 形式不可计算 → 后续义务 unknown(不报告)
+          varForms.set(st.pat.name, f);
+          if (vecTracked.has(st.pat.name)) vecTracked.delete(st.pat.name); // 名字重绑定:不再是原 Vec 参数
+          continue;
+        }
+        if (st.nt === 'Assign' && st.target?.nt === 'Ident' && st.op === '=') {
+          descend(st.value);
+          const f = this.linOfBoundExpr(st.value, varForms, vecTracked);
+          if (!f || !varForms.has(st.target.name)) { aborted = true; return; }
+          varForms.set(st.target.name, f);
+          if (vecTracked.has(st.target.name)) vecTracked.delete(st.target.name);
+          continue;
+        }
+        if (st.nt === 'ExprStmt') { descend(st.expr); continue; } // 纯调用/裸表达式语句
+        // 其余(复合赋值、下标赋值目标、If/While/Match、元组模式 let 等):无条件求值部分先收集,再放弃
+        if (st.nt === 'Assign') { descend(st.target); descend(st.value); }
+        aborted = true;
+        return;
+      }
+      if (!aborted && block.tail) descend(block.tail);
+    };
+    walk(d.body);
+
+    // 4) 义务判定:0 <= i 与 i < len$buf;两向证明(成立 / 违反),未证明默认静默
+    //    v0.52 阶段 3:逐义务结果同步记入 obResults(--proof-report 消费;诊断输出逐字不变)
+    const cmpHold = (x, op, y) => op === '==' ? x === y : op === '<=' ? x <= y : op === '<' ? x < y : op === '>=' ? x >= y : x > y;
+    const obResults = [];
+    for (const ob of obligations) {
+      const lf = { coeffs: new Map([[ob.lenVar, 1n]]), c: 0n };
+      if (!ob.form) {
+        const goals = [`0 <= ${ob.idxText}`, `${ob.idxText} < len$${ob.baseName}`];
+        unproven.push({ ob, goals });
+        obResults.push({ ob, kind: 'unproven', obligation: goals.join('; '), counterexample: null });
+        continue;
+      }
+      const lowOk = proveImplication(assumptions, { lhs: ob.form, op: '>=', rhs: linFromInt(0n) }).kind === 'proven';
+      const highOk = proveImplication(assumptions, { lhs: ob.form, op: '<', rhs: lf }).kind === 'proven';
+      if (lowOk && highOk) {
+        obResults.push({ ob, kind: 'proven', obligation: `0 <= ${ob.idxText} && ${ob.idxText} < len$${ob.baseName}`, counterexample: null });
+        continue; // 两向都成立 → 可证安全,不报告
+      }
+      const lowBad = !lowOk && proveImplication(assumptions, { lhs: ob.form, op: '<', rhs: linFromInt(0n) }).kind === 'proven';
+      const highBad = !highOk && proveImplication(assumptions, { lhs: ob.form, op: '>=', rhs: lf }).kind === 'proven';
+      if (!lowBad && !highBad) {
+        const goals = [];
+        if (!lowOk) goals.push(`0 <= ${ob.idxText}`);
+        if (!highOk) goals.push(`${ob.idxText} < len$${ob.baseName}`);
+        unproven.push({ ob, goals });
+        obResults.push({ ob, kind: 'unproven', obligation: goals.join('; '), counterexample: null });
+        continue;
+      }
+      const kind = lowBad ? 'low' : 'high';
+      const oblText = kind === 'low' ? `0 <= ${ob.idxText}` : `${ob.idxText} < len$${ob.baseName}`;
+      // 反例:i64 参数从 {-2,-1,0,1,2}、len$x 从 0..8 确定性枚举(签名序,首个变量最慢);
+      // 只枚举出现在已采纳假设或违反义务中的变量(≤3 个 i64 + ≤2 个 len,超限不给反例);
+      // 命中候选后按被跳过叶子过滤(evalContractExpr 代入求值)—— 反例必须满足完整 requires(v0.52.1)
+      const relVars = new Set();
+      for (const a of assumptions) for (const s of [a.lhs, a.rhs]) for (const k of s.coeffs.keys()) relVars.add(k);
+      for (const k of ob.form.coeffs.keys()) relVars.add(k);
+      if (kind === 'high') relVars.add(ob.lenVar);
+      const enumVars = [];
+      let nI64 = 0, nLen = 0;
+      for (const p of sig.params) {
+        if (i64ParamSet.has(p.name) && relVars.has(p.name)) { enumVars.push({ name: p.name, vals: [-2n, -1n, 0n, 1n, 2n] }); nI64++; }
+        else if (vecParamsAll.get(p.name) && relVars.has(vecParamsAll.get(p.name))) { enumVars.push({ name: vecParamsAll.get(p.name), vals: [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n] }); nLen++; }
+      }
+      let found = null;
+      if (nI64 <= 3 && nLen <= 2) {
+        const vals = new Map();
+        const idx = new Array(enumVars.length).fill(0);
+        for (;;) {
+          for (let i = 0; i < enumVars.length; i++) vals.set(enumVars[i].name, enumVars[i].vals[idx[i]]);
+          if (assumptions.every((a) => cmpHold(linEvalAt(a.lhs, vals), a.op, linEvalAt(a.rhs, vals)))) {
+            const iv = linEvalAt(ob.form, vals);
+            if (kind === 'low' ? iv < 0n : iv >= linEvalAt(lf, vals)) {
+              // 被跳过叶子逐一代入过滤:可求值(evalContractExpr ok)必须为真,不可求值不据此剔除;
+              // 全部候选被滤掉 → found 保持 null,退回"无反例"消息变体
+              if (skippedLeaves.every((sl) => { const r2 = this.evalContractExpr(sl, vals); return !r2.ok || r2.v === true; })) {
+                found = new Map(vals); break;
+              }
+            }
+          }
+          let carry = enumVars.length - 1; // 末位最快推进,确定性枚举序
+          while (carry >= 0) {
+            idx[carry]++;
+            if (idx[carry] < enumVars[carry].vals.length) break;
+            idx[carry] = 0; carry--;
+          }
+          if (carry < 0) break;
+        }
+      }
+      const parts = [];
+      if (found) for (const [k, v] of found) parts.push(`${k} = ${v}`);
+      const cex = parts.length ? `(反例:${parts.join(', ')})` : '';
+      const msgSuffix = d.requires.msg ? ';' + d.requires.msg : '';
+      obResults.push({ ob, kind: 'violated', obligation: oblText, counterexample: parts.length ? parts.join(', ') : null });
+      this.diags.push(err('M3045',
+        `函数 "${d.name}" 的索引 "${ob.text}" 可静态证明越界(违反义务:${oblText})${cex}${msgSuffix}`,
+        ob.span,
+        `让索引满足 ${oblText} 对所有满足 requires 的调用成立(调整 requires 边界或索引表达式);该越界在运行时本会以 M4003 panic。`));
+    }
+
+    // 5) 未证明清单:默认只收集;options.warnUnprovenIndex(--warn-unproven-index)下发 W3105。
+    //    噪声门控:该文件已有 error 诊断(如索引类型错误 M3002)时不再叠加 W3105 —— 错误优先,告警不稀释
+    if (this.options?.warnUnprovenIndex && unproven.length > 0) {
+      const file = unproven[0].ob.span.file ?? mod.file;
+      const hasError = this.diags.some((x) => x.severity === 'error' && (x.span?.file ?? null) === file);
+      if (!hasError) {
+        for (const u of unproven) {
+          this.diags.push(warn('W3105',
+            `函数 "${d.name}" 的索引 "${u.ob.text}" 无法静态证明在界内(未证明:${u.goals.join('; ')})`,
+            u.ob.span));
+        }
+      }
+    }
+
+    // 6) 证明记录(v0.52 阶段 3,--proof-report 消费):仅登记有索引义务的函数;纯只读视图,
+    //    不进诊断通道、不影响退出码 —— 与 M3045/W3105 共存而不冲突
+    if (obligations.length > 0) {
+      const file = obResults[0].ob.span.file ?? mod.file;
+      const rec = { file, fn: d.name, total: obligations.length, proven: 0, violated: 0, unproven: 0, obligations: [] };
+      for (const r of obResults) {
+        rec[r.kind]++;
+        rec.obligations.push({
+          file, fn: d.name, index: r.ob.idxText, kind: r.kind, obligation: r.obligation,
+          line: r.ob.span.line ?? null, col: r.ob.span.col ?? null, counterexample: r.counterexample,
+        });
+      }
+      this.proofRecords.push(rec);
+    }
   }
 
   // 契约表达式线性子集求值(IntLit/Ident/一元 - !/算术 +-*/%/比较/&& ||)。
