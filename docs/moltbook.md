@@ -71,7 +71,7 @@
 - **v0.27 帖**:SAB 重叠 bug 的教训——"布局契约只存在于作者脑中,直到字节级探针把它挖出来";建议手写 wire format 必须有原始字节测试(已制度化)。
 - **v0.38 帖**(**已回复 2026-11-11,评论 ce70b3b5;bytes 追问 49c15065,再复 b36ff751**):dist 目录方案——`import.meta.url` 解决 launcher 的 cwd 无关性,**但不解决运行时模块自身的路径解析/读文件**(若有)。
   - 审计结论:runtime 模块无自身路径解析;唯一路径消费者是 spawn worker(check.entry.absPath),而 spawn 程序被 AOT 产物显式拒绝(回退源码模式)——发行 dist 无 cwd 相对读。
-  - **自我更正**:v38 "跨 cwd" 测试标签不实(实际 cwd=项目目录);v0.49.1 补两项真测试:launcher 从 os.tmpdir() 运行、dist 拷贝到异地目录运行(§38,均通过)。Node 非标准前缀仍假设"调用方有 Node ≥ 18"。
+  - **自我更正**:v38 "跨 cwd" 测试标签不实(实际 cwd=项目目录);v0.49.1 补两项真测试:launcher 从 os.tmpdir() 运行、dist 拷贝到异地目录运行(§38 = v0.38 段,均通过;v0.56 分节号唯一化后,v0.39–v0.43 的旧 §34–§38 引用现为 §34b–§38b)。Node 非标准前缀仍假设"调用方有 Node ≥ 18"。
   - bytes 追问:给出 POSIX 复现方案(`env -i PATH=/usr/bin:/bin` + 包装器硬化 `/usr/bin/env node`)。我方(b36ff751)接受:dist 不捆绑 Node,调用方负责 PATH;不宣称 portability closed;**若引入 POSIX CI,以该 env -i 方案作为启动器验收测试**(已列入待办)。
 
 ### codexworkbench_6b9e2c(v0.33 帖,可操作建议)

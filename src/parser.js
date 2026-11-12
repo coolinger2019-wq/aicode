@@ -42,6 +42,7 @@ export class Parser {
     this.toks = tokens; this.file = file; this.pos = 0;
     this.diags = [];
     this.noStructLit = 0; // 上下文标志深度
+    this.contractClause = 0; // v0.56(#33):requires/ensures 子句表达式深度(该处 `{` 优先判为函数体)
   }
 
   peek(o = 0) { return this.toks[Math.min(this.pos + o, this.toks.length - 1)]; }
@@ -318,19 +319,22 @@ export class Parser {
     while (this.atKw('requires') || this.atKw('ensures')) {
       const kind = this.cur().val;
       const cStart = this.next();
-      const expr = this.parseExpr();
+      // v0.56(#33):契约子句内 `裸标识 {` 的 `{` 默认是函数体(见 parseContractExpr)
+      const expr = this.parseContractExpr();
       let msg = null;
+      let msgRaw = null; // v0.56(A3):else 字面量原始源文本(含引号),fmt 原样回写
       if (this.atKw('else')) {
         this.next();
         if (this.at('str')) {
           const t = this.next();
-          // str token 可能是插值;这里只取字面量文本
+          // str token 可能是插值;msg 只取字面量文本(插值消息运行时仍为 null,语义不变)
           msg = (t.extra && t.extra.parts) ? null : t.val;
+          msgRaw = t.extra?.raw ?? null;
         } else {
           this.bail('M2002', '契约 else 后期望字符串字面量', this.cur().span);
         }
       }
-      const c = { expr, msg, span: this.spanFrom(cStart) };
+      const c = { expr, msg, msgRaw, span: this.spanFrom(cStart) };
       if (kind === 'requires') requires = c; else ensures = c;
     }
     const body = this.parseBlock();
@@ -710,6 +714,34 @@ export class Parser {
 
   parseExpr() { return this.parseRange(); }
 
+  // v0.56(#33):requires/ensures 子句的表达式以裸标识结尾时,后面的 `{` 是函数体起点,
+  // 不是结构体字面量。有字段的字面量在 `{` 之后必有 `字段名 :`,空字面量 S {} 另行前瞻
+  // (见 bodyBraceAhead);其余形态一律按函数体处理。普通表达式位置的 S { x: 1 } 语义不变。
+  parseContractExpr() {
+    this.contractClause++;
+    try {
+      return this.parseExpr();
+    } finally {
+      this.contractClause--;
+    }
+  }
+
+  // 当前 `{`(已确认 atOp('{'))是否应判为函数体而非结构体字面量
+  bodyBraceAhead() {
+    if (this.contractClause === 0) return false;
+    const a = this.peek(1), b = this.peek(2);
+    if (a.kind === 'id' && b.kind === 'op' && b.val === ':') return false; // S { x: ... }
+    // 空结构体字面量 S {} 与空函数体同形:仅当 `}` 之后是"函数/块结束"
+    // (eof、外层 `}`、顶层声明关键字)时才判为函数体,其余按字面量(如 S {} 后接 { 体)。
+    if (a.kind === 'op' && a.val === '}') {
+      if (b.kind === 'eof') return true;
+      if (b.kind === 'op' && b.val === '}') return true;
+      if (b.kind === 'kw' && ['fn', 'extern', 'struct', 'enum', 'use', 'test', 'const', 'trait', 'impl', 'pub'].includes(b.val)) return true;
+      return false;
+    }
+    return true;
+  }
+
   parseRange() {
     const l = this.parseOr();
     if (this.atOp('..')) {
@@ -804,7 +836,7 @@ export class Parser {
         this.next();
         const nameTok = this.expectId('字段或方法名');
         // 类型名后跟 `{` → 结构体字面量(路径形式 geom.Point { ... })
-        if (this.atOp('{') && this.noStructLit === 0) {
+        if (this.atOp('{') && this.noStructLit === 0 && !this.bodyBraceAhead()) {
           const path = collectPath(e);
           if (path === null) {
             this.bail('M2001', `"{" 不能跟在字段访问之后;结构体字面量只能跟在类型名后`, this.cur().span);
@@ -867,7 +899,7 @@ export class Parser {
     }
     if (t.kind === 'id') {
       this.next();
-      if (this.atOp('{') && this.noStructLit === 0) {
+      if (this.atOp('{') && this.noStructLit === 0 && !this.bodyBraceAhead()) {
         return this.parseStructLitFrom([t.val], t);
       }
       return { nt: 'Ident', name: t.val, span: t.span };

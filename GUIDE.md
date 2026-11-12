@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.55.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测**)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **跨函数契约摘要** + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.56.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + **严格 wasm 语义修复:一元负号/break-continue 分支深度/for-in continue 自增/`%` 条件类型推导**)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -193,7 +193,7 @@ fn greet(name: str) {             // 无返回类型 = unit
 
 - 参数默认不可变;需要就地修改(修改的是副本)写 `mut`:`fn normalize(mut v: Vec[f64]) -> Vec[f64] { ... }`
 - **传参是深拷贝**:想"修改"外界数据,返回新值。
-- 本地函数可以嵌套声明并可递归,但不能捕获外层局部变量。
+- 本地函数(函数体内再声明 `fn`)暂不支持:v0.56 起检查器在声明处显式拒绝(**M3047**,error;VM/字节码编译器尚无本地函数编译路径)。请移到模块级或改用具名顶层函数(计划 v0.57 后恢复;此前"本地函数可递归"的表述已作废)。
 - `fn` 之间无需先声明后使用(模块内全量收集)。
 
 ### 效果声明(v0.2)
@@ -239,6 +239,7 @@ fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {
 ```
 
 - `requires` 在函数入口检查;`ensures result ...` 在每个返回点检查(`result` 绑定返回值);struct 字段可带 `invariant`(构造后与 `mut self` 方法退出后检查)。契约表达式必须**纯**:调用带效果的函数 → M3029,调用 mut 方法 → M3043。
+- 同类契约子句重复时**后者生效**(parser 现状,v0.56 已固化并锁定;fmt 归一化为最后一条,行为不变)。
 - 两片编译期静态检查:全部实参为整数字面量且可判定违反 requires → **M3041**;ensures 直线体可静态证伪 → **M3042**(各含反例)。
 
 **静态边界证明(v0.52,QF_LIA 第二片)**:在"非 mut `Vec[i64]` 参数 + i64 参数 + requires 中的 `buf.len()` 线性边界 + 直线体"范围内,检查器对每个 `buf[i]` 索引点证明 `0 <= i` 且 `i < len$buf`(`len$x` 是 Vec 参数的长度符号;线性形式 + 差分约束 Bellman-Ford 求解,变量 ≤ 12):
@@ -256,7 +257,7 @@ fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {
 - **范围与不覆盖**:不做循环/分支体、递归/互递归、高阶/效果函数、堆/别名、通用 SMT;不做运行时语义变更。调用链 f→g→h 的摘要按**被调方优先拓扑序**计算(Tarjan SCC 环检测,环上函数标记无摘要)。
 - **证明报告**:`--proof-report` 在既有逐义务行后为每个**可摘要函数**(纯函数 + 全 i64 参数/返回 + 非泛型/extern,见上)增加一行契约摘要:
   `<文件>:<fn>: 契约摘要 requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`
-  (调用点 = 该函数被调用时 `requires` 被可证满足 / 可证违反的次数;不可判定/不可编码不计入)。`--json --proof-report` 的 `proofs` 增加 additive `summaries: [{file, fn, requires_complete, ensures_proven, calls_proven, calls_violated}]`;**无旗标时输出与 v0.54.0 逐字一致**。
+  (调用点 = 该函数被调用时 `requires` 被可证满足 / 可证违反的次数;不可判定/不可编码不计入)。`--json --proof-report` 的 `proofs` 增加 additive `summaries: [{file, abs, fn, requires_present, requires_complete, ensures_present, ensures_proven, calls_proven, calls_violated}]`(`abs` = 模块绝对路径,v0.56 起报告按 `abs + fn` 去重:多入口共享模块只报一份,同显示名不同目录的模块各报一份);**无旗标时输出与 v0.54.0 逐字一致**。
 
 ---
 
@@ -962,7 +963,7 @@ fn main() with io {
 | `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
 | `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例)+ **v0.55 契约摘要**(文本每函数一行 `契约摘要 requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`;JSON `proofs.summaries`);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52);`--strict-wasm`(v0.53):检查通过后验证 wasm 分层,任一文件回落 → exit 2 并点名原因(与 `--tree`/`--no-wasm` 互斥;JSON additive `wasm_status`) |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
-| `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
+| `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI。**保留 `requires`/`ensures`/struct `invariant`(v0.56 起;此前会丢弃——修订记录已登记)** |
 | `ming doc f.ming [--json]` | 提取 `///` 文档 |
 
 - **退出码**:0 成功;1 有诊断;101 panic;2 工具链 bug 或 strict-wasm 可见回落(`--strict-wasm` 下 wasm 层 fallback;普通模式静默回落仍是 0)。`main -> i64` 自定义退出码。
@@ -980,7 +981,7 @@ fn main() with io {
 ```
 
 - 错误码稳定且可查:`docs/diagnostics.md`。M1xxx 词法、M2xxx 语法、M3xxx 类型、M4xxx 运行时、W3xxx 警告。
-- `ming fmt` 是唯一风格:4 空格、`;` 显式、注释保留。**不要手调格式,也不要为格式争论。**
+- `ming fmt` 是唯一风格:4 空格、`;` 显式、注释保留。**不要手调格式,也不要为格式争论。** fmt 保留 `requires`/`ensures`/struct `invariant`(v0.56 起;此前会丢弃——修订记录已登记);契约 `else` 插值消息已由 `msgRaw` 原样保留(v0.56.0 修,#39;运行时消息语义不变)。
 
 ### mingkit 文件工具箱(v0.27.1,用 Ming 自写)
 
@@ -1074,11 +1075,52 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.43(已完成) | **ffi 字符串桥 + Result[i64,str] 进 C 面 + with unsafe 设计定稿**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点) |
 | v0.54(已完成) | **`with unsafe` 最小实现(C5)**:Ptr[mut u8]/Ptr[u8]、load/store/offset/is_null、std.mem.alloc/free、M3029/M3046/M4016、C 原生执行;Ptr 别名面与 offset 链式黄金 |
 | v0.55(已完成) | **跨函数契约摘要(QF_LIA 第三片)**:纯函数 + 直线体 + 无环调用图的摘要引擎(Tarjan SCC);调用点线性前置证明(M3041 扩展)、调用后置条件假设、M3042 假设集扩展;`--proof-report` 契约摘要(文本 + additive `proofs.summaries`);无新诊断码 |
+| v0.56(已完成) | **引擎一致性与缺陷清零(质量版,无新语言面)**:tree 作用域模型统一(#23/#28;tree bench +5–32%)、VM 捕获闭包 + HOF(#24)、契约尾部裸标识(#33)、fmt 契约保真(#36)、wasm 四个语义修复(W1/W2/F1/F2)、fuzz 真实 wasm 腿(#25)、buildKey 编译器源指纹(#26,含 bin)、工具链 #22/#29/#30/#31/#32/#34;独立审查修复:契约作用域/u64 语义/fmt 契约破坏三修、#31 按模块身份去重、M3047 本地函数显式拒绝;复审 C1/C2(契约内嵌作用域基线/闭包 return);764 项全绿(§60 70 项);收口登记 #37–#47(#37/#38/#39 已修) |
 | 更远(北星对齐) | `mask` 效果屏蔽(v0.60 ADR 决策)/污点即效应(v0.60 研究项)/async 与服务端(v0.59 ADR 先行)/eval/国密/RSA/形式化验证留待更远(见 plan §4.3/§4.2.8 Backlog) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.56.0(2026-11-12)
+
+**主题:引擎一致性与缺陷清零(质量版,无新语言面;plan §4.3.3 收口)**
+
+- **引擎一致性(#23/#28/#24)**:
+  - **tree 作用域模型统一(#23 + #28,同一根因)**:树引擎每次进入块(if/while/for/loop/match arm/unsafe/sync scope)建立**子环境**(父链查找),`let` 只写当前块;for-in/while-let 循环变量每迭代为内层绑定,循环结束恢复外层。修复 for-in 循环变量遮蔽泄漏(`let i = 100; for i in 0..3 {}` 此前 tree 返回循环变量末值、VM 返回 100)与 if/unsafe 块作用域泄漏;tree/VM 逐字一致。**代价如实记录**:tree bench **+5–32%**(循环项最大——每次迭代新增环境分配,是语义修复的直接代价;VM/cc 不受影响)。
+  - **VM 捕获闭包 + HOF(#24)**:`vm.js` 的 `callClosure` 在经 `vecMethodImpl` 调用捕获闭包时漏传 `captures` → `Cannot read properties of null`(默认引擎 exit 2);一行修复,捕获/非捕获/多层闭包在 `map/filter` 类 HOF 上三引擎逐字一致。
+- **契约(#33/#36)**:
+  - **契约尾部裸标识歧义(#33)**:`requires/ensures` 子句改用专用解析模式 + struct literal 前瞻——`requires buf.len() == n {` 不再把 `n {` 当结构体字面量;普通表达式位置的 struct literal 与空结构体 `S {}` 用法不变,两写法(裸标识/加括号)等价。
+  - **fmt 契约保真(#36,P1 数据丢失)**:`ming fmt` 此前丢弃 `requires`/`ensures`/struct `invariant`;现逐字保留契约子句与 else 消息,幂等,既有规范文件零改写。契约 `else` 插值消息由 parser 以 `msgRaw` 保存原文(含引号)、fmt 原样回写(v0.56.0 修,#39;运行时 M4015 消息口径不变)。
+- **v0.56.0 独立审查 A 组(契约作用域 / u64 语义 / fmt 契约破坏)**:
+  - **B3 契约作用域**:body 的 `let a` 不再遮蔽 ensures 读到的形参(契约看形参值);形参名恰为 `result` 时 body 用形参、契约 `result` 恒指返回值;body 内 `let result`(含嵌套块)不泄漏进契约;mut 形参重赋值后契约看最终值(v0.49 语义);契约可调用模块级纯函数。三引擎 M4015 首行逐字一致(§60 v60.39–v60.43)。
+  - **u64 一元负号**:类型层拒绝(**M3008**;check/三引擎/C 腿一致),`-(a as i64)` 保持可用(§60 v60.44/v60.45)。
+  - **u64 二元减法下溢**:tree / VM-only 与 wasm/C 一致以 **M4002** panic(不再静默回绕);范围内减法保持(§60 v60.46)。
+  - **fmt 三处契约破坏修复**:lambda 立即调用保留 callee 括号(`((x: i64) => x + 1)(0)`);内联块未知语句 fmt 失败 exit 1 且 `--write` 不落盘(不再输出 `/* ? */`);契约 `else` 插值消息逐字保留;空结构体 `E {}` 与 `\r`/`\0`/控制字符转义规范化(§60 v60.47–v60.50)。
+- **v0.56.0 复审修复(阻塞回归 C1 / 既有缺陷 C2)**:
+  - **C1 ensures 自身作用域**:契约表达式内 `match` 臂变量、`if` 块内 `let` 重新可解析(编译器在 `compileContractExpr` 记录 `contractScopeBase`,只搜索该基线之上的契约内部作用域;函数体作用域与捕获仍不可见);契约内同名臂变量按词法遮蔽优先于形参(臂变量与形参同名时以臂变量为准,与 tree 一致);body 局部遮蔽形参、形参名 `result`、`let result`、mut 形参最终值语义不回归(§60 v60.54–v60.57/v60.59)。
+  - **C2 闭包/本地函数 return**:含 ensures 的函数体内闭包(或本地函数帧)的 `return` 不再把外层 ensures 编译进子帧(此前 VM 报 M4001);闭包自身返回不触发外层契约,外层出口仍执行 ensures(§60 v60.58)。
+  - tree 契约表达式内嵌块尾值重入 checkEnsures(M4005)为 HEAD 既有缺陷,登记 plan §5.1 #47(P3;§60 v60.55/v60.57 允许修复前 M4005)。
+- **wasm 严格模式语义修复(W1/W2/F1/F2,均 P1)**:
+  - **W1 一元负号**:`0 - x` 的栈序反了(实际返回 `x`);`-a`、负字面量比较、`(-a)+b` 三引擎一致。
+  - **W2 循环内语句 if 的 break/continue**:`br` 深度未计入 if 块 → 曾死循环;嵌套 while/if 内层 break 只跳出内层。
+  - **F1 for 体内 continue 跳过自增**:条件为外层变量时 `continue` 跳过 `__i` 自增 → 曾挂起;含循环变量条件 + break 组合亦一致。
+  - **F2 `inferNumType` 重复 case**:导致含 `%` 的条件类型推导回落;`%`/`*`/`-`/`/` 条件与运算现真实经 wasm 执行。
+  - 以上均有 `--strict-wasm` 存活 + `[wasm 参数]` + 无 `REJECT` 断言(§60 v60.24–v60.32)。
+- **验证与构建(#25/#26)**:
+  - **fuzz 真实 wasm 腿(#25)**:生成器新增"纯 helper(eligible)+ 带 io 的 main 调用"族;wasm 腿断言 `MING_WASM_DEBUG=1` 下 `[wasm] fn <名> OK` 且无回落,汇总新增 **"wasm 真实执行 N"** 计数(本机三种子实测 20/16/18)。
+  - **buildKey 编译器源指纹(#26/B2)**:构建键加入 `compilerSourceHash`(**src/*.js + bin/*.js** 排序内容 sha256;bin/ming.js 的 launcher/build 逻辑同样影响产物);`build --json` additive `compiler_hash`。敏感性回归:复制编译器到临时目录改 `src` 或单独改 `bin/ming.js` → `build_key` 变化,恢复 → 键恢复;旧缓存自然失效(§60 v60.22/v60.22b)。
+- **工具链(#22/#29/#30/#31/#32/#34)**:
+  - **#22** fmt `} else { // 注释` 头行尾注释一遍到定点(空行在注释前,二次 fmt 零输出;无头注释规范形态零漂移)。
+  - **#29** launcher 源码回退模式 panic 带 `file:line:col` + 源码摘录(与直接 `ming run` 对齐;AOT 字节码模式输出逐字不变)。
+  - **#30** extern fn 值经局部变量在 C 后端:选方案 (b) **发射期明确诊断**(不再"let 推导 null");VM 诚实 M4001。
+  - **#31/B1** `--proof-report` 去重按**模块身份**(record 自带 `abs` 绝对路径 + 函数名):多入口共享模块只报一份,同显示名不同目录的双模块(两处 `util.ming`)各报一份;文本行数/JSON 条目数一致,单入口行为不变(§60 v60.36/v60.51)。
+  - **#32** 无契约模块**跳过摘要构建**(有契约模块报告不变)。
+  - **#34** 测试分节号唯一化(重复的 34–38 → 34b–38b,补 §40;文件头索引说明),不改测试内容;plan/GUIDE 引用同步。
+- **v0.56.0 独立审查 B 组修复**:
+  - **B6 本地函数显式拒绝(M3047)**:VM/字节码编译器没有本地函数编译路径(此前默认 VM 直接 `TypeError`、本地函数作值使 tree/VM 分歧、契约被 tree 静默忽略);现在检查器在声明处统一报 **M3047[local-fn-unsupported]**(error),`check`/`run`/`run --tree`/`run --no-wasm`/`cc` 同一门禁;本地函数作值(`v.map(inc)`)与带契约形态由声明处同一诊断拦截(§60 v60.52)。GUIDE 的"本地函数可递归"表述已更正;恢复计划登记 plan §5.1 #44(v0.57 后)。
+- **测试**:764 项全绿(**§60 共 70 项** v60.*:tree 作用域 9 + VM 捕获闭包 3 + 契约歧义与 fmt 保真 13 + buildKey 3 + fuzz wasm 1 + wasm 语义修复 10 + 工具链 10 + 独立审查 A 组(契约作用域/u64/fmt)12 + B1/B6 2 + cc 对照 1 + 复审 C1/C2 6);既有 §1–§59 全绿。**验证复测**:`fuzz --seed 44044 --count 40` 40 程序一致 0 分歧(C 腿 6),wasm 真实执行 20;`proof_fuzz --mode all --count 100` 三模式 0 误报(模式 1 100 例、模式 2 反例 18/18、summaries 100 例/反例 24/24)。
+- **范围诚实声明**:本版无新语言面、无 codegen 语义变更(wasm 修复除外——修复的是错误语义);新增诊断码仅 **M3047[local-fn-unsupported]**(本地函数显式拒绝,见 B6)。wasm 仍有已知回落形态(不影响正确性,strict 模式可见):f64 局部/Map 字面量的 locals 索引偏移(#40;违规函数 REJECT,同模块其他函数仍可经 wasm 执行)、Map 形参 slotTypes 记 i64 致 for-in Map 回落(#41)、Vec 形参多枚/与 f64 形参组合时 locals 类型错位(#42;后位单个 Vec 形参实测 OK)、str 返回函数 retTy 映射 i64(#43)、值型 if 的 blocktype 编码失败(#45)、块尾 unit 上下文 if 按值编译致 `REJECT: if 无 else`(#46)——均已登记 plan §5.1,留待 v0.57+。
 
 ### v0.55.0(2026-11-12)
 
@@ -1307,7 +1349,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
   2. prelude 构造器(Some/None/Ok/Err)不再被 walkCalls 当作未解析调用 —— 此前带构造器的函数在不动点被整批降级(C 后端 ffi 函数即此遭遇);
   3. ri64 进方法 base 临时求值与防御零值清单。
 - **`with unsafe` 设计定稿**(design.md §6.10,不实现):块形态优先于函数形态;Ptr[mut u8]/Ptr[u8] 不透明指针;块内 load/store/offset/is_null 四操作;空指针 UB 诚实声明(--checked-ptr 调试模式);unsafe 函数永不进 wasm/C 快路径(效果门禁一致)。
-- 测试:411 项全绿(§38 新增五项:Result 四方一致/M4006 Err 首行对齐/ffi str 桥/JS M4001 拒绝/模糊快档)。
+- 测试:411 项全绿(§38b 新增五项:Result 四方一致/M4006 Err 首行对齐/ffi str 桥/JS M4001 拒绝/模糊快档;v0.56 分节号唯一化后,原 v0.39–v0.43 的 §34–§38 现为 §34b–§38b)。
 
 - **真 AOT 第一块(字节码产物,并入本版)**:新增 src/artifact.js——编译产物(函数指令流/常量池/span 表/wasm 分层)序列化为 app.bytecode.json(池内 `__tag` 包装值单列编码);`VMInterp.fromArtifact` 加载端跳过 Checker 与编译器直接执行(树引擎不支持产物);`ming build` 默认产出纯字节码 dist(无明文 .ming),`--with-source` 附源码;用户 trait/impl 方法分发由 serializeArtifact 显式拒绝并回退源码模式。修复:sync 回退检测此前查错字段(entry.effects 不存在,效果在 entry.sig.effects)——含 spawn 程序误进 AOT 后运行期 worker 读占位源路径 ENOENT。测试:413 项全绿(新增 AOT 无明文源/--with-source/sync 回退三项)。
 
@@ -1320,7 +1362,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
   - C 后端:dlopen/LoadLibrary + dlsym/GetProcAddress 启动绑定(`ming_ffi_bind`),调用点直调函数指针;库/符号缺失 → **M4013[ffi-load-failed]** 退出 101(诊断码启用)。签名限数值(i64/u64/f64),str/结构参数属后续扩展。
   - 设计取舍记录:§6.9 的运行时 `lib.fn(名, 签名)` API 延后 —— extern 声明形态符号编译期已知,AOT 友好且无需 Lib/Fn 句柄类型;`extern fn` 不进 wasm/C eligible(效果自动拒绝),与差分腿无交集。
 - **`ming cc --static`**:静态链接产物(gcc -static;工具链不支持时报错透传)。
-- 测试:406 项全绿(§37 新增五项:效果门禁 M3029/JS M4001 拒绝/C 后端 dlsym 调用/--static 产物/模糊快档)。
+- 测试:406 项全绿(§37b 新增五项:效果门禁 M3029/JS M4001 拒绝/C 后端 dlsym 调用/--static 产物/模糊快档)。
 
 ### v0.41.0(2026-11-10)
 
@@ -1333,7 +1375,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
   - 方法 base 统一为"非 Ident 求值一次入临时"(修复链式 `m.get(k).unwrap_or(0)` 的 oi64 base 无发射路径 + 双求值);`ming cc --no-run`(只构建不运行——运行退出码 = 程序退出码,差分工具据此分离构建与运行)。
 - **检查器第六处 valuePos 缺位**:内建调用实参(`str(if …)` 实参返回 unit)——checkExpr 值位置清单补齐内建 args。
 - **模糊器 cc 族拓宽(wide 形态)**:新增 mapx 形态(set 覆盖/has/get/len/for-in(k,v)/delete);option/f64 解锁进 cc 族;f64 形态直接 `print(str(f))`(floatStr 差分);生成器 `fabs` → `abs` 修正。四种子(20261109/39039/35035/40040/40041)全 100% 一致,C 腿 11-24 条/轮。
-- 测试:401 项全绿(§36 新增:C3 综合四方一致/unwrap None/M4007 缺键 panic 对齐/C3 宽形态模糊档)。
+- 测试:401 项全绿(§36b 新增:C3 综合四方一致/unwrap None/M4007 缺键 panic 对齐/C3 宽形态模糊档)。
 
 ### v0.40.0(2026-11-10)
 
@@ -1349,7 +1391,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
   2. match guard 语法错:写成 `模式 => 表达式 if 条件`(非法),Ming 的 guard 是 Rust 风格 `模式 if 条件 => 表达式`;
   3. 连带揭出检查器第五处 valuePos 缺位:一元负号操作数(if 表达式作 `-` 的操作数返回 unit)。
   四种子(20261109/35035/39039/40040)全 100% 一致,C 腿 14-24 条/轮,0 跳过。
-- 测试:397 项全绿(§35 新增:C2 综合四方一致/vec OOB/slice OOB panic 对齐/engdiff/str main 正向化 + 插值串拒绝)。
+- 测试:397 项全绿(§35b 新增:C2 综合四方一致/vec OOB/slice OOB panic 对齐/engdiff/str main 正向化 + 插值串拒绝)。
 
 ### v0.39.0(2026-11-10)
 
@@ -1364,7 +1406,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
   - valuePos 四处缺位:二元操作数、赋值右值、as 操作数、块尾表达式——if 表达式在这些位置被当作语句形式返回 unit(合法程序被拒)→ checkBinary/checkAssign/As/checkBlock(值上下文链)补传 valuePos。
 - **模糊器加深**(tests/fuzz.mjs):形态池新增 f64+std.math(经 as i64 饱和截断消费)/match 表达式(字面量臂+guard)/loop+break+continue/Option(unwrap_or 常态、偶发 unwrap 触发 M4006)/Vec 方法(push/pop/contains/reverse)/str 方法(pad_left/slice_chars/contains/replace)/区间 for/逻辑作为值;**cmp 形态修复**——bool 不能 `as i64`(M3019),v0.33 起的比较转 i64 形态恒被检查器拒绝(三后端一致拒绝 → 假通过零覆盖),改用 if 表达式惯用法;**C 第 4 差分腿**:约 40% 程序生成"cc 族"(纯数值,C1 面内),检测到编译器时四方对比,C1 拒绝 cc 族程序 = 发射器回归(记分歧);新增 `--dump N`(复现第 N 个程序)。
 - **`with ffi` 设计定稿**(design.md §6.9,不实现):效果即门禁(`ffi` 为预留效果名,v0.39 不开放,M3030 仍拒绝)、签名即文档(std.ffi.load → Result[Lib] + lib.fn(名, 签名))、v1 类型面(i64/u64/f64/bool + Ptr 句柄)、错误模型(加载失败 = Err;段错误 = 进程级,Ming 不捕获——诚实声明)、诊断码 M4013/M4014 预留。能力矩阵 49 行口径 ≈80%(FFI ❌→🟡,新增 C1 行)。
-- 测试:391 项(新增 v0.39 §34 十项:emit-c 快照/AOT 形态外拒绝/四方一致/panic 首行对齐 ×3/u64+as+类型级一致/编译器探测/模糊快速档;模糊档断言适配 C 腿输出)。基准:bench.mjs 增 cc 腿(无编译器自动跳过)。
+- 测试:391 项(新增 v0.39 §34b 十项:emit-c 快照/AOT 形态外拒绝/四方一致/panic 首行对齐 ×3/u64+as+类型级一致/编译器探测/模糊快速档;模糊档断言适配 C 腿输出)。基准:bench.mjs 增 cc 腿(无编译器自动跳过)。
 
 ### v0.38.1(2026-11-09)
 

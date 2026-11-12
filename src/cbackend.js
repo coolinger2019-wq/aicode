@@ -910,6 +910,15 @@ class CEmit {
           if (!ty) throw new Unsupported('let 标注 ' + (s.type?.name ?? s.type?.k ?? '?') + '(C2 仅数值/str/Vec[i64])');
         } else {
           ty = this.inferTy(s.init, ctx);
+          // v0.56(#30):extern fn 值存入局部变量后调用需要独立的 C 函数指针载体与调用
+          // 路径(签名相关的 typedef、ctx 类型、Call 分派与资格面都要扩展)。本版选择
+          // 明确诊断(而非把原因埋在“let 推导 null”里);直接调用 f(...) 不受影响。
+          if (!ty && s.init?.nt === 'Ident') {
+            const ent = this.resolveEntry(ctx, s.init.name);
+            if (ent?.kind === 'fn' && ent.extern) {
+              throw new Unsupported(`extern fn 值 "${s.init.name}":C 后端不支持把 extern fn 存入局部变量再调用;请直接调用 ${s.init.name}(...)(tree/VM 上该形态可解析,FFI 调用仍由 C 后端执行)`);
+            }
+          }
           // v0.54/C5:bool 局部(C 载体 long long)支持——Ptr 黄金程序需要 let b = p.is_null()
           if (!ty) throw new Unsupported('let 推导 ' + ty);
         }

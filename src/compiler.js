@@ -226,16 +226,23 @@ class BytecodeCompiler {
       entry,
     };
     // 参数槽
+    const paramSlots = new Map();
     for (const p of entry.sig?.params ?? []) {
-      st.scopes[0].set(p.name, st.nLocals++);
+      const slot = st.nLocals++;
+      st.scopes[0].set(p.name, slot);
+      paramSlots.set(p.name, slot);
     }
     // 契约:requires/ensures(v0.45)
     let resultSlot = null;
     if (decl.ensures) {
       resultSlot = st.nLocals++;
-      st.scopes[0].set('result', resultSlot);
+      // v0.56(A1):内部 result 槽不再写进名字映射——形参同名 result 时不会互相覆盖;
+      // ensures 由 compileContractExpr 的专用解析读取该槽。
     }
     st.resultSlot = resultSlot;
+    // v0.56(A1):合约名字解析白名单 = 形参 + result。函数体 let/本地 fn 不参与。
+    st.contractParams = paramSlots;
+    st.inContract = false;
     // requires 入口检查
     if (decl.requires) {
       this.compileExpr(decl.requires.expr, st);
@@ -251,7 +258,7 @@ class BytecodeCompiler {
       if (decl.ensures && resultSlot !== null) {
         this.emit(st, OP.DUP, 0, 0, decl.body.tail.span);
         this.emit(st, OP.ST, 0, resultSlot, decl.body.tail.span);
-        this.compileExpr(decl.ensures.expr, st);
+        this.compileContractExpr(decl.ensures.expr, st);
         this.compileContractFail(st, decl.ensures.msg ? `契约违反: ${decl.ensures.msg}` : '契约违反: ensures', decl.ensures.span ?? decl.span, (st) => { this.emit(st, OP.LD, 0, resultSlot, decl.ensures.span ?? decl.span); });
       }
     }
@@ -263,6 +270,20 @@ class BytecodeCompiler {
 
   emit(st, op, a, b, span, c = 0) {
     st.code.push([op, a, b, c, this.sp(span)]);
+  }
+
+  // v0.56(A1):编译 ensures 表达式——专用解析域:只有形参槽与 result 槽可见。
+  // (body 的 let/捕获/本地 fn 不得遮蔽契约中的同名名字;模块级 const/fn 仍经
+  //  compileNamedValue 解析,保持契约里调用纯函数的能力。)
+  compileContractExpr(expr, st) {
+    const saved = st.inContract;
+    const savedBase = st.contractScopeBase;
+    st.inContract = true;
+    // v0.56(C1):契约表达式自身压入的作用域(match 臂变量、if 块内 let)从当前
+    // 作用域栈深度起算;resolveName 只搜索该基线之上的槽,函数体作用域仍不可见。
+    st.contractScopeBase = st.scopes.length;
+    try { this.compileExpr(expr, st); }
+    finally { st.inContract = saved; st.contractScopeBase = savedBase; }
   }
   compileContractFail(st, msg, span, loadActual) {
     const jFalse = st.code.length;
@@ -291,6 +312,20 @@ class BytecodeCompiler {
 
   // 名字解析:局部槽 | 捕获下标 | null(交由运行时全局解析)
   resolveName(st, name) {
+    // v0.56(A1):契约表达式只解析形参槽与 result 槽(函数体局部/捕获不可见)。
+    // `result` 恒指返回值槽,即使形参也叫 result(形参槽仍用于函数体)。
+    if (st.inContract) {
+      if (name === 'result' && st.resultSlot != null) return { kind: 'local', slot: st.resultSlot };
+      // v0.56(C1):契约表达式自身的作用域(match 臂模式变量、if 块内 let 等)按词法
+      // 遮蔽优先于形参;基线以下(函数体/形参作用域)与 captures 一律不可见。
+      const base = st.contractScopeBase ?? st.scopes.length;
+      for (let i = st.scopes.length - 1; i >= base; i--) {
+        const v = st.scopes[i].get(name);
+        if (typeof v === 'number') return { kind: 'local', slot: v };
+      }
+      if (st.contractParams?.has(name)) return { kind: 'local', slot: st.contractParams.get(name) };
+      return null;
+    }
     for (let i = st.scopes.length - 1; i >= 0; i--) {
       if (st.scopes[i].has(name)) {
         return { kind: 'local', slot: st.scopes[i].get(name) };
@@ -415,10 +450,12 @@ class BytecodeCompiler {
         if (s.value) this.compileExpr(s.value, st);
         else this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, s.span);
         const ensures = st.entry?.decl?.ensures;
-        if (ensures && st.resultSlot !== null) {
+        // v0.56(C2):用 != null 判定——lambda/本地函数子状态的 resultSlot 为
+        // undefined/null 时不得把外层 ensures 编译进子帧。
+        if (ensures && st.resultSlot != null) {
           this.emit(st, OP.DUP, 0, 0, s.span);
           this.emit(st, OP.ST, 0, st.resultSlot, s.span);
-          this.compileExpr(ensures.expr, st);
+          this.compileContractExpr(ensures.expr, st);
           this.compileContractFail(st, ensures.msg ? `契约违反: ${ensures.msg}` : '契约违反: ensures', ensures.span ?? s.span, (st) => { this.emit(st, OP.LD, 0, st.resultSlot, ensures.span ?? s.span); });
         }
         this.emit(st, OP.RET, 0, 0, s.span);
@@ -567,6 +604,7 @@ class BytecodeCompiler {
           captures: null, // 本地函数不捕获
           mod: st.mod,
           entry: st.entry,
+          resultSlot: null, // v0.56(C2):本地函数是独立帧,不得执行外层 ensures
         };
         const pseudoSig = { params: d.params.map(p => ({ name: p.name })) };
         void pseudoSig;
@@ -790,10 +828,11 @@ class BytecodeCompiler {
         const jEnd = this.here(st) - 1;
         this.patch(st, jNone, this.here(st));
         const ensuresQ = st.entry?.decl?.ensures;
-        if (ensuresQ && st.resultSlot !== null) {
+        // v0.56(C2):同 Return——子帧(resultSlot 为 undefined/null)不执行外层 ensures。
+        if (ensuresQ && st.resultSlot != null) {
           this.emit(st, OP.DUP, 0, 0, e.span);
           this.emit(st, OP.ST, 0, st.resultSlot, e.span);
-          this.compileExpr(ensuresQ.expr, st);
+          this.compileContractExpr(ensuresQ.expr, st);
           this.compileContractFail(st, ensuresQ.msg ? `契约违反: ${ensuresQ.msg}` : '契约违反: ensures', ensuresQ.span ?? e.span, (st) => { this.emit(st, OP.LD, 0, st.resultSlot, ensuresQ.span ?? e.span); });
         }
         this.emit(st, OP.RET, 0, 0, e.span);
@@ -916,12 +955,14 @@ class BytecodeCompiler {
       this.emit(st, OP.LD, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
       return;
     }
-    // 本地函数绑定(fn:N)
-    for (let i = st.scopes.length - 1; i >= 0; i--) {
-      const v = st.scopes[i].get(name);
-      if (typeof v === 'string' && v.startsWith('fn:')) {
-        this.emit(st, OP.LDFN, Number(v.slice(3)), 0, e.span);
-        return;
+    // 本地函数绑定(fn:N)——v0.56(A1):契约域不可见函数体本地 fn
+    if (!st.inContract) {
+      for (let i = st.scopes.length - 1; i >= 0; i--) {
+        const v = st.scopes[i].get(name);
+        if (typeof v === 'string' && v.startsWith('fn:')) {
+          this.emit(st, OP.LDFN, Number(v.slice(3)), 0, e.span);
+          return;
+        }
       }
     }
     this.compileNamedValue(name, st, e.span);
@@ -1149,7 +1190,7 @@ class BytecodeCompiler {
     this.functions.push(null);
     const savedCur = this.curFnIdx;
     this.curFnIdx = idx;
-    const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry };
+    const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry, resultSlot: null }; // v0.56(C2):闭包是独立帧,不得执行外层 ensures
     for (const p of e.params) sub.scopes[0].set(p.name, sub.nLocals++);
     if (e.body.nt === 'BlockExpr') this.compileBlock(e.body.block, sub, true);
     else this.compileExpr(e.body, sub, true);

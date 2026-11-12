@@ -10,7 +10,7 @@ import { Checker } from '../src/checker.js';
 import { Interp, Panic } from '../src/interp.js';
 import { VMInterp } from '../src/vm.js';
 import { parse, attachDocs as attachDocsImpl } from '../src/parser.js';
-import { formatProgram } from '../src/fmt.js';
+import { formatProgram, FmtError } from '../src/fmt.js';
 import { Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY } from '../src/diag.js';
 import { findManifest, initProject } from '../src/manifest.js';
 import { startLsp } from '../src/lsp.js';
@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.55.0';
+export const VERSION = '0.56.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -348,37 +348,46 @@ function cmdCheck(files, flags) {
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     printDiags(diags, false);
-    if (proofs) printProofs(proofs, checked);
+    if (proofs) printProofs(proofs);
   }
   for (const why of strictReasons) process.stderr.write(`strict-wasm: ${why}\n`);
   if (wasmFallback) return 2;
   return allOk ? 0 : 1;
 }
 
-function printProofs(proofs, checked) {
+function printProofs(proofs) {
   for (const fn of proofs.functions) {
     process.stdout.write(`${fn.file}:${fn.fn}: 义务 ${fn.total},proven ${fn.proven},violated ${fn.violated},unproven ${fn.unproven}\n`);
   }
   // v0.55 阶段 3:契约摘要行(additive;仅 --proof-report)。requires=无 只在没有
   // requires 子句时出现;有子句但含不可线性编码叶子 → 不完整;ensures 同理。
-  for (const r of checked ?? []) {
-    for (const s of r.summaries ?? []) {
-      const req = !s.requires_present ? '无' : s.requires_complete ? '完整' : '不完整';
-      const ens = !s.ensures_present ? '无' : s.ensures_proven ? '已证' : '未证';
-      process.stdout.write(`${s.file}:${s.fn}: 契约摘要 requires=${req} ensures=${ens} 调用点=${s.calls_proven} 可证, ${s.calls_violated} 违反\n`);
-    }
+  // v0.56(#31):输出已去重的 proofs.summaries,多入口共享模块不再重复成行。
+  for (const s of proofs.summaries) {
+    const req = !s.requires_present ? '无' : s.requires_complete ? '完整' : '不完整';
+    const ens = !s.ensures_present ? '无' : s.ensures_proven ? '已证' : '未证';
+    process.stdout.write(`${s.file}:${s.fn}: 契约摘要 requires=${req} ensures=${ens} 调用点=${s.calls_proven} 可证, ${s.calls_violated} 违反\n`);
   }
 }
 
 // v0.52 --proof-report:聚合 checker 的逐义务证明记录(有 Vec 索引义务的函数;零义务语料为空)。
 // v0.55:同份报告 additive 增加契约摘要(summaries)——数据来自 checker 阶段 1/2 已建立的摘要表
 // 与调用点统计,不重复计算;无旗标时不构造、不输出。
+// v0.56(#31):多入口共享模块按"解析后绝对路径 + 函数名"去重——同一模块被 N 个入口加载时
+// 证明记录与摘要只报首次出现的一份(per-entry 调用点计数不再保留;可读性优先)。
+// v0.56(B1):去重键直接取记录自带的 abs(checker 的 Module.absPath),不再用展示路径反查:
+// 不同目录的 util.ming 在各自入口下展示路径同为 "util.ming",反查会跨目录误合并。
 function collectProofs(checked) {
   const functions = [];
   const summaries = [];
+  const seenProof = new Set();
+  const seenSummary = new Set();
   const summary = { functions: 0, obligations: 0, proven: 0, violated: 0, unproven: 0 };
+  const keyOf = (rec) => (rec.abs ?? path.resolve(rec.file)) + '\u0000' + rec.fn;
   for (const r of checked) {
     for (const rec of r.proofs ?? []) {
+      const key = keyOf(rec);
+      if (seenProof.has(key)) continue;
+      seenProof.add(key);
       functions.push(rec);
       summary.functions += 1;
       summary.obligations += rec.total;
@@ -387,8 +396,11 @@ function collectProofs(checked) {
       summary.unproven += rec.unproven;
     }
     for (const s of r.summaries ?? []) {
+      const key = keyOf(s);
+      if (seenSummary.has(key)) continue;
+      seenSummary.add(key);
       summaries.push({
-        file: s.file, fn: s.fn,
+        file: s.file, abs: s.abs, fn: s.fn,
         requires_present: s.requires_present,
         requires_complete: s.requires_complete,
         ensures_present: s.ensures_present,
@@ -466,7 +478,21 @@ function cmdFmt(files, flags) {
       failed++;
       continue;
     }
-    const formatted = formatProgram(program.items, comments);
+    // v0.56(A3):格式化失败必须显式报错并跳过落盘——先完整产出字符串,成功后才写文件
+    // (绝不输出占位符丢代码,也不会 --write 半写)。
+    let formatted;
+    try {
+      formatted = formatProgram(program.items, comments);
+    } catch (e) {
+      if (e instanceof FmtError) {
+        const sp = e.span;
+        const loc = sp ? `${sp.file ?? f}:${sp.line}:${sp.col}: ` : `${f}: `;
+        process.stderr.write(`${loc}error: fmt 失败: ${e.message}\n`);
+        failed++;
+        continue;
+      }
+      throw e;
+    }
     if (formatted !== src) {
       changed++;
       if (write) fs.writeFileSync(f, formatted, 'utf8');
@@ -596,6 +622,8 @@ function stripAst(node) {
     const out = {};
     for (const k of Object.keys(node)) {
       if (k === 'span' || k === 'docs' || k === 'nameSpan') continue;
+      // v0.56(A3):msgRaw 只是 fmt 用的原始文本(语义等价于 msg),不属于 ABI
+      if (k === 'msgRaw') continue;
       out[k] = stripAst(node[k]);
     }
     return out;
@@ -656,6 +684,31 @@ function hashTree(dir) {
   walk(dir);
   files.sort();
   return createHash('sha256').update(files.join(String.fromCharCode(10))).digest('hex');
+}
+
+// v0.56(#26):编译器源码指纹 = 构建缓存键的组成部分。
+// 版本号未变但编译器源码改动时,旧键必须失效(否则脏命中缓存继续用旧编译器产物)。
+// v0.56(B2):范围含 src/*.js 与 bin/*.js——bin/ming.js 的 launcher/build 逻辑同样影响产物
+// (本版 #29 正是它);只含 src 时改 bin 仍会脏命中。
+// 实现:相对路径排序后拼 "name\0content\0" 流式喂给 sha256(不逐文件进 JSON 对象,避免键序问题),
+// 取前 32 hex 与 build_key 风格一致。
+function compilerSourceHash() {
+  const root = path.join(__dirname, '..');
+  const files = [];
+  for (const dirName of ['bin', 'src']) {
+    const dir = path.join(root, dirName);
+    for (const n of fs.readdirSync(dir).filter(f => f.endsWith('.js')).sort()) {
+      files.push(dirName + '/' + n);
+    }
+  }
+  files.sort();
+  const hash = createHash('sha256');
+  for (const rel of files) {
+    hash.update(rel + '\u0000');
+    hash.update(fs.readFileSync(path.join(root, rel)));
+    hash.update('\u0000');
+  }
+  return hash.digest('hex').slice(0, 32);
 }
 
 // 项目根目录下全部 .ming 与 ming.toml(排除隐藏/dist/.ming-cache/node_modules)。
@@ -791,9 +844,12 @@ function cmdBuild(flags) {
   // 过包含保健全:任何源变化 → 键变化 → 重建;命中 → 跳过 check+compile(dist 已有效)
   // v0.53:注入 Node 主版本(同内容跨 Node 大版本不再假命中);sources 由修复后的
   // collectProjectSources 提供(相对路径 + 内容,无重复)
+  // v0.56(#26/B2):加入编译器源码指纹 src/*.js + bin/*.js——版本号未变而编译器/launcher 改动时键必须变化。
+  // 旧缓存键不含该字段 → 自然不命中并重建(不迁移旧缓存)。
   const sources = collectProjectSources(projectRoot);
+  const compilerHash = compilerSourceHash();
   const buildKey = createHash('sha256').update(JSON.stringify({
-    v: VERSION, node: process.versions.node.split('.')[0], manifest: proj.project ?? null, withSource: !!flags.has('with-source'), sources,
+    v: VERSION, node: process.versions.node.split('.')[0], compiler: compilerHash, manifest: proj.project ?? null, withSource: !!flags.has('with-source'), sources,
   })).digest('hex').slice(0, 32);
   let prevCache = null;
   try { prevCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { prevCache = null; }
@@ -802,7 +858,7 @@ function cmdBuild(flags) {
     // v0.53 --json additive:build_key/dist_hash/cache_hit/source_count/interface_hashes
     if (json) process.stdout.write(JSON.stringify({
       ok: true, project: proj.project.name, cache: 'hit', ms: Date.now() - t0,
-      build_key: buildKey, dist_hash: prevCache.distHash, cache_hit: true,
+      build_key: buildKey, compiler_hash: compilerHash, dist_hash: prevCache.distHash, cache_hit: true,
       source_count: sources.length, interface_hashes: Array.isArray(prevCache.modules) ? prevCache.modules : [],
     }, null, 2) + '\n');
     else process.stdout.write('缓存命中(键未变,跳过检查与编译;--clean-cache 清除)\n');
@@ -876,6 +932,7 @@ function cmdBuild(flags) {
       '#!/usr/bin/env node',
       '// Ming 可移植产物(v0.39):Node >= 18,零依赖;用法:node ming-app.mjs [-- args]',
       "import { VMInterp } from './runtime/vm.js';",
+      "import { Diagnostic, formatDiag, cacheSourceLines } from './runtime/diag.js';",
       "import * as fs from 'node:fs';",
       "import * as path from 'node:path';",
       "import { fileURLToPath } from 'node:url';",
@@ -884,6 +941,7 @@ function cmdBuild(flags) {
       "const bjson = path.join(here, 'app.bytecode.json');",
       "const mingFile = path.join(here, 'app.ming');",
       'let vm;',
+      'let srcResult = null;',
       'if (fs.existsSync(bjson)) {',
       '  const artifact = JSON.parse(fs.readFileSync(bjson, "utf8"));',
       '  vm = VMInterp.fromArtifact(artifact, {});',
@@ -896,6 +954,7 @@ function cmdBuild(flags) {
       "    process.stderr.write(errs.map(d => d.code + ': ' + d.message).join('\\n') + '\\n');",
       '    process.exit(1);',
       '  }',
+      '  srcResult = result;',
       '  vm = new VMInterp(result, {});',
       '}',
       'try {',
@@ -904,7 +963,18 @@ function cmdBuild(flags) {
       '  const { exitCode } = vm.runMain(pargs);',
       '  process.exit(exitCode);',
       '} catch (e) {',
-      "  if (e && typeof e.code === 'string') { process.stderr.write(e.code + ': ' + e.message + '\\n'); process.exit(101); }",
+      "  if (e && typeof e.code === 'string') {",
+      '    // v0.56(#29):源码回退模式的 panic 与 ming run 同款诊断(file:line:col + 码 +',
+      '    // 源码摘录);AOT 字节码模式的输出保持既有 `CODE: 消息` 逐字不变。',
+      '    if (srcResult && e.span) {',
+      '      const m = srcResult.modules.find(m => m.file === e.span.file) ?? srcResult.entry;',
+      '      if (m) cacheSourceLines(m.file, m.src);',
+      "      process.stderr.write(formatDiag(new Diagnostic(e.code, 'error', e.message, e.span), false) + '\\n');",
+      '    } else {',
+      "      process.stderr.write(e.code + ': ' + e.message + '\\n');",
+      '    }',
+      '    process.exit(101);',
+      '  }',
       '  throw e;',
       '}',
     ].join('\n');
@@ -956,7 +1026,7 @@ function cmdBuild(flags) {
       ok, project: proj.project.name, version: proj.project.version,
       entry: proj.project.entry, ms: msElapsed,
       diagnostics: diagJson(sorted),
-      build_key: buildKey, cache_hit: false, source_count: sources.length,
+      build_key: buildKey, compiler_hash: compilerHash, cache_hit: false, source_count: sources.length,
       dist_hash: distHashOut, interface_hashes: moduleHashes,
     }, null, 2) + '\n');
   }

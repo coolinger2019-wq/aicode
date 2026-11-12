@@ -726,6 +726,10 @@ export class WasmCompiler {
 
   declareLocal(ctx, name) {
     const slot = ctx.slots++;
+    // v0.56 F2 附带:槽类型表必须稠密。For 会在 declareLocal 之后按需改型(模式变量),
+    // 若中间槽未预填,数组出现空洞 → 展开成 undefined → locals 分组 opcodeOf 抛 TypeError。
+    // 缺省 'i64' 与原组装期 `?? 'i64'` 的既有行为一致。
+    while (ctx.slotTypes.length <= slot) ctx.slotTypes.push('i64');
     ctx.scopes[ctx.scopes.length - 1].set(name, slot);
     return slot;
   }
@@ -734,6 +738,13 @@ export class WasmCompiler {
   // 都让整模块 emit 抛错 → tryWasm 静默回落,wasm 层从未真正实例化。
   pushScope(ctx) { ctx.scopes.push(new Map()); }
   popScope(ctx) { ctx.scopes.pop(); }
+  // v0.56 W2 修复:进入 wasm 结构化块(语句/表达式 if)时,把 loopStack 中所有循环目标的
+  // br 相对深度 +1;离开时 -1。break/continue 的 br 深度此前只按循环自身的 block/loop
+  // 位置计算,漏掉了循环体内 if 的块——`while { if c { break; } }` 的 br 实际跳到 if 末尾,
+  // 循环继续 → 死循环;continue 则少跳过一段循环体。嵌套循环不受影响(新条目从自身的
+  // { brk: 1, cont: 0 } 起算,外层已累计的偏移只作用于外层条目)。
+  enterNestedBlock(ctx) { for (const t of ctx.loopStack) { t.brk += 1; t.cont += 1; } }
+  leaveNestedBlock(ctx) { for (const t of ctx.loopStack) { t.brk -= 1; t.cont -= 1; } }
   emitStore(ctx, op, align, off) { ctx.bytes.push(op); sleb(ctx.bytes, align); sleb(ctx.bytes, off); }
 
   // ---------- 语句 ----------
@@ -846,12 +857,15 @@ export class WasmCompiler {
         // 语句形式(分支为 unit)
         this.compileCond(s.cond, ctx);
         ctx.bytes.push(0x04); ctx.bytes.push(0x40);
+        // v0.56 W2:if 块是 br 深度的一层(break/continue 在分支内编译)
+        this.enterNestedBlock(ctx);
         this.compileBlockW(s.then, ctx, false);
         if (s.els) {
           ctx.bytes.push(0x05);
           if (s.els.nt === 'If') this.compileStmtW(s.els, ctx);
           else this.compileBlockW(s.els, ctx, false);
         }
+        this.leaveNestedBlock(ctx);
         ctx.bytes.push(0x0b);
         return;
       }
@@ -903,17 +917,25 @@ export class WasmCompiler {
         this.pushScope(ctx);
         const iSlot = this.declareLocal(ctx, '__i');
         const lenSlot = this.declareLocal(ctx, '__len');
-        // __i = 0;__len = len(h)
-        this.pushI64(ctx, 0n);
+        // __i = -1;__len = len(h)
+        // v0.56 F1:自增移到 loop 头,故初值 -1(第一轮头部 +1 后从 0 开始)。此前初值 0
+        // 且自增在循环尾,`continue` 的 br 0 直达 loop 头 → 跳过 __i += 1 → 死循环。
+        this.pushI64(ctx, -1n);
         this.localSet(ctx, iSlot);
         this.localGet(ctx, hSlot);
         if (isMapTy) { b.push(0x10); uleb(b, this.extraImportIdx('map_len')); }
         else { b.push(0x29); sleb(b, 3); sleb(b, 0); }
         this.localSet(ctx, lenSlot);
-        // 循环头:__i >= __len → break
+        // 循环头:__i += 1;__i >= __len → break
+        // v0.56 F1:自增位于 loop 头,continue 的 br 0(cont=0)回到头部先自增再判界,
+        // 不再跳过自增;brk 仍为 1(循环体内层 if 由 enterNestedBlock 递增),break 语义不变。
         ctx.loopStack.push({ brk: 1, cont: 0 });
         b.push(0x02); b.push(0x40);      // block
         b.push(0x03); b.push(0x40);      // loop
+        this.localGet(ctx, iSlot);
+        this.pushI64(ctx, 1n);
+        b.push(0x7c);                    // i64.add
+        this.localSet(ctx, iSlot);
         this.localGet(ctx, iSlot);
         this.localGet(ctx, lenSlot);
         b.push(0x59);                    // i >= len(i64 ge_s;len 非负等价无符号)
@@ -934,6 +956,10 @@ export class WasmCompiler {
           if (elem === 'i64') { b.push(0x29); sleb(b, 0); sleb(b, 0); }
           else { b.push(0x2b); sleb(b, 3); sleb(b, 0); }
           this.localSet(ctx, xSlot);
+          // v0.56 F2 附带:模式变量补 slot 类型(此前缺省 i64)→ 条件里出现循环变量
+          // (如 `if e % 2 == 0`)可推导。f64 保持不记型:既有 wasm locals 声明索引偏移
+          // (参数槽被重复计入)下 f64 局部无法安全记账,维持原有回落行为。
+          if (elem !== 'f64') ctx.slotTypes[xSlot] = elem;
         } else {
           // (k, v):__kh = map_key_at(h, i);k = __kh(str);v = map_get(h, __kh)
           this.localGet(ctx, iSlot);       // map_key_at(h, i) 的第二参
@@ -951,11 +977,7 @@ export class WasmCompiler {
           this.localSet(ctx, vSlot);
         }
         this.compileBlockW(s.body, ctx, false);
-        // __i += 1
-        this.localGet(ctx, iSlot);
-        this.pushI64(ctx, 1n);
-        b.push(0x7c);
-        this.localSet(ctx, iSlot);
+        // v0.56 F1:此处不再自增(已移到 loop 头);直接回 loop 头
         b.push(0x0c); uleb(b, 0);        // br 0 → loop
         b.push(0x0b);                    // end loop
         b.push(0x0b);                    // end block
@@ -1111,8 +1133,10 @@ export class WasmCompiler {
         }
         if (ty === 'u64') {
           // 无符号取负:0 - x 位型,无溢出概念
-          this.compileNum(e.expr, ctx, 'u64');
+          // v0.56 W1 修复:wasm i64.sub 的栈序是 [a, b] → a - b;此前先压 x 后压 0
+          // 实际执行 x - 0 = x(取负完全失效)。必须先压 0 再压 x。
           this.pushI64(ctx, 0n);
+          this.compileNum(e.expr, ctx, 'u64');
           b.push(0x7d);
           return;
         }
@@ -1124,8 +1148,10 @@ export class WasmCompiler {
         b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', e.span);
         b.push(0x0b);
-        this.localGet(ctx, ctx.scratch0);
+        // v0.56 W1 修复:同上——i64.sub 需要 [0, x] 才是 0 - x;此前栈序反了
+        // (实测 `return -a;` 经 wasm 返回 a,负字面量比较同样失真)。
         this.pushI64(ctx, 0n);
+        this.localGet(ctx, ctx.scratch0);
         b.push(0x7d);
         return;
       }
@@ -1134,11 +1160,14 @@ export class WasmCompiler {
       case 'If': {
         this.compileCond(e.cond, ctx);
         b.push(0x04); sleb(b, ty === 'f64' ? F64 : I64);
+        // v0.56 W2:表达式 if 的分支块同样是 br 深度的一层
+        this.enterNestedBlock(ctx);
         this.compileBlockW(e.then, ctx, ty);
         b.push(0x05);
         if (!e.els) throw new Unsupported('if 无 else');
         if (e.els.nt === 'If') this.compileNum(e.els, ctx, ty);
         else this.compileBlockW(e.els, ctx, ty);
+        this.leaveNestedBlock(ctx);
         b.push(0x0b);
         return;
       }
@@ -1258,13 +1287,19 @@ export class WasmCompiler {
         return 'm' + v;
       }
       case 'Binary': {
-        if (e.op === '+' ) { // str 拼接或数值
-          const l = this.inferNumType(e.l, ctx);
-          if (l === 'str') return 'str';
-        }
-        break;
+        // v0.56 F2:此前本 switch 有两个 'Binary' case——首个只处理 str `+` 后 break,
+        // 通用分支不可达 → 非 `+` 二元表达式(如 `i % 2`)推导 undefined,`if i % 2 == 0`
+        // 报"条件操作数 undefined"整模块回落。合并后规则:
+        //   - 比较/逻辑 → null(不能作为数值值)
+        //   - str + str → 'str'(拼接)
+        //   - i64/u64 二元运算 → 沿用左侧类型;其余(f64/容器/未知)→ null 回落。
+        //     f64 刻意不推导:既有 wasm locals 声明索引偏移缺陷未修,f64 局部代码
+        //     会令整模块校验失败 → 沉默失去其它函数的 wasm 覆盖,故维持逐函数回落。
+        if (['&&', '||', '==', '!=', '<', '<=', '>', '>='].includes(e.op)) return null;
+        const l = this.inferNumType(e.l, ctx);
+        if (e.op === '+' && l === 'str') return 'str';
+        return l === 'i64' || l === 'u64' ? l : null;
       }
-      case 'Binary': return ['&&', '||', '==', '!=', '<', '<=', '>', '>='].includes(e.op) ? null : this.inferNumType(e.l, ctx);
       case 'Call': {
         const mn1 = this.mathNameOf(e.callee, ctx);
         if (mn1) return MATH_IDX.has(mn1) ? 'f64' : null;

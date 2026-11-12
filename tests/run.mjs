@@ -1,5 +1,8 @@
 // tests/run.mjs — Ming 工具链回归测试(零依赖)。
 // 覆盖:示例黄金输出、诊断码回归、运行时 panic 行为、fmt 幂等性、JSON 协议、值语义。
+// 分节索引(v0.56 #34):分节号唯一、不复用。历史 v0.39–v0.43 块与更早的 v0.34–v0.38
+// 曾共用 34–38,现以 34b–38b 区分;§39 = v0.44,§40 = v0.45 契约系统(文档引用沿用)。
+// 后续新分节从 §60 起按序分配;`§N` 与 `N.` 是同一编号的两种写法,不另设第二套编号。
 
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -1536,7 +1539,8 @@ fn main() with io, fs {
   fs.rmSync(proj, { recursive: true, force: true });
 }
 
-// ===================== 34. v0.39:C 后端 C1(ming cc)=====================
+// ===================== 34b. v0.39:C 后端 C1(ming cc)=====================
+// (#34 去重,v0.56:原编号 34,与 v0.34 段重复;文档无 §34 指向本段,v0.34 段保持 34。)
 {
   const cdir = path.join(TMP, 'cc39');
   fs.mkdirSync(cdir, { recursive: true });
@@ -1656,7 +1660,8 @@ fn main() with io, fs {
   check('v39:模糊器加深形态(40 程序一致)', fuzz39.status === 0 && /分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
 }
 
-// ===================== 35. v0.40:C2(str/Vec[i64])+ engdiff 自举工具 =====================
+// ===================== 35b. v0.40:C2(str/Vec[i64])+ engdiff 自举工具 =====================
+// (#34 去重,v0.56:原编号 35,与 v0.35 段重复。)
 {
   const cdir = path.join(TMP, 'cc40');
   fs.mkdirSync(cdir, { recursive: true });
@@ -1747,7 +1752,8 @@ fn main() with io, fs {
   check('v40:模糊器 C2 面(40 程序多后端一致)', fuzz40.status === 0 && /分歧 0/.test(fuzz40.stdout ?? ''), 'code=' + fuzz40.status + ' tail=' + (fuzz40.stdout ?? '').slice(-150));
 }
 
-// ===================== 36. v0.41:C3(Map/Option/f64 打印)+ cc 全形态差分 =====================
+// ===================== 36b. v0.41:C3(Map/Option/f64 打印)+ cc 全形态差分 =====================
+// (#34 去重,v0.56:原编号 36,与 v0.36 段重复。)
 {
   const cdir = path.join(TMP, 'cc41');
   fs.mkdirSync(cdir, { recursive: true });
@@ -1824,7 +1830,8 @@ fn main() with io, fs {
   check('v41:模糊器 C3 全形态(40 程序多后端一致)', fuzz41.status === 0 && /分歧 0/.test(fuzz41.stdout ?? ''), 'code=' + fuzz41.status + ' tail=' + (fuzz41.stdout ?? '').slice(-150));
 }
 
-// ===================== 37. v0.42:C4 extern fn FFI(效果即门禁 + C 后端 dlsym)=====================
+// ===================== 37b. v0.42:C4 extern fn FFI(效果即门禁 + C 后端 dlsym)=====================
+// (#34 去重,v0.56:原编号 37,与 v0.37 段重复。)
 {
   const cdir = path.join(TMP, 'cc42');
   fs.mkdirSync(cdir, { recursive: true });
@@ -1869,7 +1876,8 @@ fn main() with io, fs {
   check('v42:模糊器快档(40 程序多后端一致)', fuzz42.status === 0 && /分歧 0/.test(fuzz42.stdout ?? ''), 'code=' + fuzz42.status + ' tail=' + (fuzz42.stdout ?? '').slice(-150));
 }
 
-// ===================== 38. v0.43:ffi str 桥 + Result 进 C 面 =====================
+// ===================== 38b. v0.43:ffi str 桥 + Result 进 C 面 =====================
+// (#34 去重,v0.56:原编号 38,与 v0.38 段重复。)
 {
   const cdir = path.join(TMP, 'cc43');
   fs.mkdirSync(cdir, { recursive: true });
@@ -2040,7 +2048,8 @@ fn main() with io, fs {
   check('v44:模糊器快档(40 程序多后端一致)', fuzz44.status === 0 && /分歧 0/.test(fuzz44.stdout ?? ''), 'code=' + fuzz44.status + ' tail=' + (fuzz44.stdout ?? '').slice(-150));
 }
 
-// ===================== §40 契约系统(v0.45 阶段 1) =====================
+// ===================== 40. 契约系统(v0.45 阶段 1)=====================
+// (v0.56 #34:原写作 "§40";统一为 "40." 以消除编号断档。GUIDE/plan 的 §40 引用不变。)
 {
   const okSrc = ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 1 {', '  return a + 1;', '}', 'fn main() with io { print(str(f(3))); }'].join('\n');
   const okFile = mingFile('contract_ok.ming', okSrc);
@@ -3548,7 +3557,7 @@ fn main() with io, fs {
   const bn1 = parseBuild53(bn1r.stdout);
   check('v53.8:嵌套目录 source_count=4 + fresh 键集固化 + interface_hashes 结构化',
     bn1r.status === 0 && bn1.ok === true && bn1.source_count === 4 && bn1.cache_hit === false && typeof bn1.dist_hash === 'string' && bn1.dist_hash.length > 0
-    && JSON.stringify(Object.keys(bn1).sort()) === JSON.stringify(['build_key', 'cache_hit', 'diagnostics', 'dist_hash', 'entry', 'interface_hashes', 'ms', 'ok', 'project', 'source_count', 'version'])
+    && JSON.stringify(Object.keys(bn1).sort()) === JSON.stringify(['build_key', 'cache_hit', 'compiler_hash', 'diagnostics', 'dist_hash', 'entry', 'interface_hashes', 'ms', 'ok', 'project', 'source_count', 'version'])
     && Array.isArray(bn1.interface_hashes) && bn1.interface_hashes.length === 1 && bn1.interface_hashes[0].file === 'app.ming' && /^[0-9a-f]{16}$/.test(bn1.interface_hashes[0].interfaceHash),
     'count=' + bn1.source_count + ' keys=' + JSON.stringify(Object.keys(bn1).sort()) + ' ifaces=' + JSON.stringify(bn1.interface_hashes));
 
@@ -3571,7 +3580,7 @@ fn main() with io, fs {
   const h3 = parseBuild53(build53(pn).stdout);
   check('v53.11:第三次构建 cache_hit true(hit 键集固化 + 键/哈希稳定)',
     h3.cache_hit === true && h3.cache === 'hit' && h3.build_key === cl2.build_key && h3.dist_hash === cl2.dist_hash && h3.source_count === 4
-    && JSON.stringify(Object.keys(h3).sort()) === JSON.stringify(['build_key', 'cache', 'cache_hit', 'dist_hash', 'interface_hashes', 'ms', 'ok', 'project', 'source_count']),
+    && JSON.stringify(Object.keys(h3).sort()) === JSON.stringify(['build_key', 'cache', 'cache_hit', 'compiler_hash', 'dist_hash', 'interface_hashes', 'ms', 'ok', 'project', 'source_count']),
     'hit=' + h3.cache_hit + ' keys=' + JSON.stringify(Object.keys(h3).sort()));
 
   // 12) 非 .ming 项目行为不变:空目录与仅清单(入口缺失)的失败逐字保留
@@ -3806,8 +3815,8 @@ fn main() with io, fs {
     'code=' + fibStrict.code + ' status=' + fibJ.wasm_status + ' dbg=' + JSON.stringify((fibDbg.stderr ?? '').slice(0, 200)));
 
   // B3:C 后端 for-in 循环变量的作用域泄漏——遮蔽外层同名变量时此前在函数作用域
-  // declare(v_ch_2)导致块外引用非法 C。只对比 VM/VM-only/cc:tree 引擎对 for-in 遮蔽
-  // 有独立既有泄漏缺陷(plan §4.2.8 #23),本例 tree 输出不同(已知分歧,不在此断言)。
+  // declare(v_ch_2)导致块外引用非法 C。v0.56 起 tree 的 for-in 遮蔽泄漏(#23)已修,
+  // 本用例把 tree 一并纳入断言(四路逐字一致)。
   const ccRunF = (f) => {
     const b = spawnSync(process.execPath, [MING, 'cc', f, '--no-run', '--out', ccOut57], { encoding: 'utf8', timeout: 180000 });
     const exe = path.join(ccOut57, path.basename(f).replace(/\.ming$/i, '') + (process.platform === 'win32' ? '.exe' : ''));
@@ -3856,14 +3865,17 @@ fn main() with io, fs {
   for (const [kind, src, want] of shadowCases) {
     const f = mingFile('v53-shadow-' + kind + '.ming', src);
     const vmR = runMing(['run', f]);
+    const treeR = runMing(['run', f, '--tree']);
     const noR = runMing(['run', f, '--no-wasm']);
     const ccR = ccBin57 ? ccRunF(f) : null;
     shadowOk = shadowOk && vmR.code === 0 && vmR.stdout === want + '\n'
+      && treeR.code === 0 && treeR.stdout === want + '\n'
       && noR.code === 0 && noR.stdout === want + '\n'
       && (!ccR || (ccR.build === 0 && ccR.code === 0 && ccR.stdout === want + '\n'));
-    shadowDetail.push(kind + ':vm=' + JSON.stringify(vmR.stdout) + ',no=' + JSON.stringify(noR.stdout) + (ccR ? ',cc=' + JSON.stringify(ccR.stdout) + '/b' + ccR.build : ',cc=skip'));
+    shadowDetail.push(kind + ':vm=' + JSON.stringify(vmR.stdout) + ',tree=' + JSON.stringify(treeR.stdout)
+      + ',no=' + JSON.stringify(noR.stdout) + (ccR ? ',cc=' + JSON.stringify(ccR.stdout) + '/b' + ccR.build : ',cc=skip'));
   }
-  check('v53.27:C for-in 遮蔽作用域(VM / VM-only / cc 一致;tree 已知分歧见 plan #23)', shadowOk, shadowDetail.join(' '));
+  check('v53.27:C for-in 遮蔽作用域(tree 已随 #23 修复;VM / tree / VM-only / cc 一致)', shadowOk, shadowDetail.join(' '));
 
   // M12:wasm `/` 守卫修复(0x83 i64.and → 0x71 i32.and,并把 if 移到两个比较之后)。
   // 修复前任何含 / 的 eligible 函数整模块校验失败 → 静默回落 JS VM。
@@ -5039,13 +5051,15 @@ fn main() with io, fs {
     'stdout=' + JSON.stringify((rsText.stdout ?? '').slice(0, 400)));
   const rsJson = JSON.parse(runMing(['check', chainOk, '--json', '--proof-report']).stdout);
   const sumOf = (j, fn) => j.proofs?.summaries?.find((s) => s.fn === fn);
-  check('v59.12:--json --proof-report 增加 summaries[{file,fn,requires_present,requires_complete,ensures_present,ensures_proven,calls_proven,calls_violated}]',
+  // v0.56(B1):additive `abs`(模块绝对路径)——报告按 abs+fn 去重;键序保持追加在 file 之后。
+  check('v59.12:--json --proof-report 增加 summaries[{file,abs,fn,requires_present,requires_complete,ensures_present,ensures_proven,calls_proven,calls_violated}]',
     Array.isArray(rsJson.proofs?.summaries)
     && ['h', 'g', 'f'].every((fn) => {
       const s = sumOf(rsJson, fn);
-      return s && s.requires_present === true && s.requires_complete === true
+      return s && typeof s.abs === 'string' && s.abs.length > 0
+        && s.requires_present === true && s.requires_complete === true
         && s.ensures_present === true && s.ensures_proven === true && s.calls_proven === 1 && s.calls_violated === 0
-        && JSON.stringify(Object.keys(s)) === JSON.stringify(['file', 'fn', 'requires_present', 'requires_complete', 'ensures_present', 'ensures_proven', 'calls_proven', 'calls_violated']);
+        && JSON.stringify(Object.keys(s)) === JSON.stringify(['file', 'abs', 'fn', 'requires_present', 'requires_complete', 'ensures_present', 'ensures_proven', 'calls_proven', 'calls_violated']);
     }),
     JSON.stringify(rsJson.proofs?.summaries ?? null).slice(0, 400));
 
@@ -5094,6 +5108,1375 @@ fn main() with io, fs {
   check('v59.12:无旗标无摘要输出(文本空 + JSON 无 proofs/summaries 键)',
     rsPlain.code === 0 && rsPlain.stdout === '' && !('proofs' in rsPlainJson) && !('summaries' in rsPlainJson),
     'stdout=' + JSON.stringify(rsPlain.stdout) + ' keys=' + JSON.stringify(Object.keys(rsPlainJson)));
+}
+
+
+// ===================== 60. v0.56:tree 引擎作用域模型统一(#23 for-in 遮蔽泄漏 / #28 块作用域泄漏)+ fmt 契约保真(#36)=====================
+// 根因:execBlock 复用调用方 env,For/WhileLet 直接写外层 env。修复后每次进入块建立子环境
+// (childEnv),let/模式变量只写本层;赋值经 lookupVar 找到 owner,外层 mut 变量天然穿透。
+{
+  const dir = path.join(TMP, 'v56');
+  fs.mkdirSync(dir, { recursive: true });
+  const mk = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+  // 三引擎对照:默认 VM+wasm / --no-wasm / --tree 的 stdout 必须与期望逐字一致
+  const tri = (name, src, expected) => {
+    const p = mk(name, src);
+    const vm = runMing(['run', p]);
+    const tree = runMing(['run', p, '--tree']);
+    const noWasm = runMing(['run', p, '--no-wasm']);
+    const ok = vm.code === 0 && tree.code === 0 && noWasm.code === 0
+      && vm.stdout === expected && tree.stdout === expected && noWasm.stdout === expected;
+    return {
+      ok,
+      detail: `vm=${vm.code}:${JSON.stringify(vm.stdout)} tree=${tree.code}:${JSON.stringify(tree.stdout)} `
+        + `vm-only=${noWasm.code}:${JSON.stringify(noWasm.stdout)} expected=${JSON.stringify(expected)}\n`
+        + `vm stderr=${(vm.stderr ?? '').slice(0, 200)}\ntree stderr=${(tree.stderr ?? '').slice(0, 200)}`,
+    };
+  };
+
+  // ---- v60.1:#23 for-in 数值范围遮蔽不泄漏(外层 i 保持原值)----
+  const r601 = tri('for_num_shadow.ming', [
+    'fn main() with io {',
+    '  let i = 100;',
+    '  let mut acc = 0;',
+    '  for i in 0..3 { acc += i; }',
+    '  print(str(i));',
+    '  print(str(acc));',
+    '}',
+    '',
+  ].join('\n'), '100\n3\n');
+  check('v60.1:for-in 数值范围循环变量遮蔽不外泄(外层 i=100;tree/VM/VM-only 逐字一致)', r601.ok, r601.detail);
+
+  // ---- v60.2:#23 for-in str / Vec 迭代同样不泄漏 ----
+  const r602 = tri('for_coll_shadow.ming', [
+    'fn main() with io {',
+    '  let s = "ab";',
+    '  let mut acc = "";',
+    '  for s in s { acc = acc + s + "-"; }',
+    '  print(s);',
+    '  print(acc);',
+    '  let v = [7, 8];',
+    '  for v in v { print(str(v)); }',
+    '  print(str(v.len()));',
+    '}',
+    '',
+  ].join('\n'), 'ab\na-b-\n7\n8\n2\n');
+  check('v60.2:for-in str/Vec 迭代遮蔽不外泄(外层 s 与 v 恢复;三引擎逐字一致)', r602.ok, r602.detail);
+
+  // ---- v60.3:#28 if 块 let 遮蔽(两分支形态;块外保持外层值)----
+  const r603 = tri('if_shadow.ming', [
+    'fn main() with io {',
+    '  let x = 1;',
+    '  if true { let x = 2; print(str(x)); } else { let x = 3; print(str(x)); }',
+    '  if false { let x = 4; } else { let x = 5; print(str(x)); }',
+    '  print(str(x));',
+    '}',
+    '',
+  ].join('\n'), '2\n5\n1\n');
+  check('v60.3:if 块 let 遮蔽不外泄(then/else 两分支;块外 x=1)', r603.ok, r603.detail);
+
+  // ---- v60.4:#28 match 臂块 let 遮蔽 ----
+  const r604 = tri('match_shadow.ming', [
+    'fn main() with io {',
+    '  let x = 1;',
+    '  match 3 {',
+    '    1 => { let x = 2; print(str(x)); }',
+    '    _ => { let x = 3; print(str(x)); }',
+    '  }',
+    '  print(str(x));',
+    '}',
+    '',
+  ].join('\n'), '3\n1\n');
+  check('v60.4:match 臂内 let 遮蔽不外泄(臂外 x=1;三引擎逐字一致)', r604.ok, r604.detail);
+
+  // ---- v60.5:#28 unsafe 块 let 遮蔽(块内无指针操作,三引擎可执行)----
+  const r605 = tri('unsafe_shadow.ming', [
+    'fn main() with io, unsafe {',
+    '  let x = 1;',
+    '  unsafe { let x = 2; print(str(x)); }',
+    '  print(str(x));',
+    '}',
+    '',
+  ].join('\n'), '2\n1\n');
+  check('v60.5:unsafe 块 let 遮蔽不外泄(块外 x=1;三引擎逐字一致)', r605.ok, r605.detail);
+
+  // ---- v60.6:#23 while-let 模式变量不逃逸(不得覆盖外层同名变量)----
+  const r606 = tri('whilelet_scope.ming', [
+    'fn main() with io {',
+    '  let mut x = 10;',
+    '  let mut q: Option[i64] = Some(4);',
+    '  while let Some(x) = q {',
+    '    print(str(x));',
+    '    q = None;',
+    '  }',
+    '  print(str(x));',   // 外层 x 必须仍是 10(HEAD tree 曾被末次模式绑定覆盖为 4)
+    '}',
+    '',
+  ].join('\n'), '4\n10\n');
+  check('v60.6:while-let 模式变量不逃逸(外层同名 x=10 不被覆盖;与 VM 一致)', r606.ok, r606.detail);
+
+  // ---- v60.7:嵌套块链式查找 + 外层赋值穿透 ----
+  const r607 = tri('nested_assign.ming', [
+    'fn main() with io {',
+    '  let mut x = 1;',
+    '  {',
+    '    x = 2;',         // 穿透到函数级 mut x
+    '    let x = 3;',     // 块内遮蔽
+    '    print(str(x));',
+    '    {',
+    '      let x = 4;',   // 再嵌套一层遮蔽
+    '      print(str(x));',
+    '    }',
+    '    print(str(x));',
+    '  }',
+    '  print(str(x));',     // 外层已被赋为 2
+    '}',
+    '',
+  ].join('\n'), '3\n4\n3\n2\n');
+  check('v60.7:嵌套块链式查找 + 外层赋值穿透(块内 3/4/3,块外 2)', r607.ok, r607.detail);
+
+  // ---- v60.8:闭包跨块捕获(与 VM 相同的按值快照 + 最近绑定语义)----
+  const r608 = tri('closure_block_capture.ming', [
+    'fn main() with io {',
+    '  let k = 10;',
+    '  let mut f: () -> i64 = () => 0;',
+    '  let mut g: () -> i64 = () => 0;',
+    '  {',
+    '    let k = 20;',
+    '    f = () => k;',   // 捕获块内最近绑定
+    '  }',
+    '  g = () => k;',      // 捕获块外层绑定
+    '  print(str(f()));',
+    '  print(str(g()));',
+    '}',
+    '',
+  ].join('\n'), '20\n10\n');
+  check('v60.8:闭包跨块捕获(最近绑定按值快照:f=20,g=10;与 VM 确定性语义一致)', r608.ok, r608.detail);
+
+  // ---- v60.9:#28 loop 块 let 遮蔽(execBlock 子环境覆盖 loop 体)----
+  const r609 = tri('loop_shadow.ming', [
+    'fn main() with io {',
+    '  let x = 1;',
+    '  loop {',
+    '    let x = 2;',
+    '    print(str(x));',
+    '    break;',
+    '  }',
+    '  print(str(x));',
+    '}',
+    '',
+  ].join('\n'), '2\n1\n');
+  check('v60.9:loop 块 let 遮蔽不外泄(块外 x=1;三引擎逐字一致)', r609.ok, r609.detail);
+
+  // ---- v60.10:#24 捕获闭包经 HOF(map)调用不再崩溃(默认 VM 崩溃的原始复现)----
+  const r610 = tri('closure_hof_map.ming', [
+    'fn main() with io {',
+    '  let k = 10;',
+    '  let v = [1, 2, 3];',
+    '  let w = v.map((x: i64) => x * k);',
+    '  print(str(w.get(0).unwrap()));',
+    '  print(str(w.get(2).unwrap()));',
+    '}',
+    '',
+  ].join('\n'), '10\n30\n');
+  check('v60.10:#24 捕获闭包经 map 调用(原 TypeError 复现;三引擎逐字一致)', r610.ok, r610.detail);
+
+  // ---- v60.11:#24 多层嵌套捕获(闭包返回闭包)经 HOF + 捕获值语义快照 ----
+  const r611 = tri('closure_hof_nested.ming', [
+    'fn main() with io {',
+    '  let k = 10;',
+    '  let mut m = 5;',
+    '  let f = (x: i64) => x * k + m;',
+    '  m = 99;',                       // 捕获后改外层:闭包读到创建时快照 5,不是 99
+    '  let mkadd = (a: i64) => (b: i64) => a + b + k;',
+    '  let add2 = mkadd(2);',
+    '  let w = [1, 2].map((x: i64) => add2(x));',
+    '  print(debug(w));',
+    '  print(str(f(2)));',
+    '}',
+    '',
+  ].join('\n'), '[13, 14]\n25\n');
+  check('v60.11:#24 嵌套捕获经 HOF(闭包返回闭包)+ 捕获值语义快照(f(2)=25 非 119)', r611.ok, r611.detail);
+
+  // ---- v60.12:#24 非捕获闭包/filter/fold/sort_by 与直接调用均不受影响 ----
+  const r612 = tri('closure_hof_misc.ming', [
+    'fn main() with io {',
+    '  let v = [1, 2, 3, 4];',
+    '  let ev = v.filter((x: i64) => x % 2 == 0);',
+    '  print(debug(ev));',
+    '  let g = (x: i64) => x + 1;',
+    '  print(str(g(41)));',
+    '  let k = 10;',
+    '  print(str(v.fold(0, (acc: i64, x: i64) => acc + x * k)));',
+    '  let mut a = [3, 1, 2];',
+    '  a.sort_by((x: i64, y: i64) => x - y);',
+    '  print(debug(a));',
+    '}',
+    '',
+  ].join('\n'), '[2, 4]\n42\n100\n[1, 2, 3]\n');
+  check('v60.12:#24 非捕获闭包 + filter/fold/sort_by + 直接调用(三引擎逐字一致)', r612.ok, r612.detail);
+
+  // ---- v60.13:#33 requires 以裸标识结尾(后跟函数体 `{`)----
+  const reqBareSrc = [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires buf.len() == n { return n; }',
+    'fn main() with io {',
+    '  print(str(f([1, 2, 3], 3)));',
+    '}',
+    '',
+  ].join('\n');
+  const reqBarePath = mk('contract_requires_bare.ming', reqBareSrc);
+  const reqBareCheck = runMing(['check', reqBarePath]);
+  const r613 = tri('contract_requires_bare_run.ming', reqBareSrc, '3\n');
+  check('v60.13:#33 requires 裸标识尾随可解析(check=0 且三引擎运行一致)',
+    reqBareCheck.code === 0 && r613.ok,
+    `check=${reqBareCheck.code} stderr=${(reqBareCheck.stderr ?? '').slice(0, 200)}\n${r613.detail}`);
+
+  // ---- v60.14:#33 ensures 裸标识尾随;加括号写法等价 ----
+  const r614 = tri('contract_ensures_bare.ming', [
+    'fn g(n: i64) -> i64 ensures result > n { return n + 1; }',
+    'fn h(n: i64) -> i64 ensures (result > n) { return n + 1; }',
+    'fn main() with io {',
+    '  print(str(g(1)));',
+    '  print(str(h(1)));',
+    '}',
+    '',
+  ].join('\n'), '2\n2\n');
+  check('v60.14:#33 ensures 裸标识尾随与括号写法等价(三引擎逐字一致)', r614.ok, r614.detail);
+
+  // ---- v60.15:#33 普通位置 struct literal 回归 + 契约内嵌(带字段)struct literal ----
+  const r615 = tri('contract_struct_lit.ming', [
+    'struct S { x: i64, }',
+    'fn mk(s: S) -> i64 { return s.x; }',
+    'fn mks() -> S { return S { x: 7 }; }',
+    'fn pos(s: S) -> i64 requires mk(S { x: s.x }) == s.x { return s.x; }',
+    'fn main() with io {',
+    '  let s = S { x: 1 };',
+    '  print(str(mk(S { x: 2 })));',
+    '  print(str(mks().x));',
+    '  print(str(pos(S { x: 3 })));',
+    '  print(str(s.x));',
+    '}',
+    '',
+  ].join('\n'), '2\n7\n3\n1\n');
+  check('v60.15:#33 struct literal 常态回归(构造/实参/返回/契约内嵌字段形态均可)', r615.ok, r615.detail);
+
+  // ---- v60.16:#33 空结构体字面量 S {} 与空函数体 {} 的消歧(契约尾随两种形态)----
+  const r616 = tri('contract_empty_brace.ming', [
+    'struct E {}',
+    'fn same(e: E) -> i64 requires e == E {} { return 1; }',
+    'fn req(b: bool) requires b {}',
+    'fn main() with io {',
+    '  req(true);',
+    '  print(str(same(E {})));',
+    '}',
+    '',
+  ].join('\n'), '1\n');
+  check('v60.16:#33 契约内 S {} 空字面量可解析,且空函数体 {}(尾随裸标识)不误判', r616.ok, r616.detail);
+
+  // ---- v60.17:#36 requires/ensures(+else 消息)fmt 保真 ----
+  const p6017 = mk('fmt_contract_fn.ming', [
+    'fn f(n: i64) -> i64 requires n > 0 else "n must be positive" ensures result > n else "result must exceed n" { return n + 1; }',
+    'fn main() with io {',
+    '  print(str(f(1)));',
+    '}',
+    '',
+  ].join('\n'));
+  const f6017 = runMing(['fmt', p6017]);
+  const sig6017 = (f6017.stdout.split('\n').find(l => l.startsWith('fn f(')) ?? '');
+  const want6017 = 'fn f(n: i64) -> i64 requires n > 0 else "n must be positive" ensures result > n else "result must exceed n" {';
+  check('v60.17:#36 requires/ensures(+else 消息)fmt 逐字保真',
+    f6017.code === 0 && sig6017 === want6017,
+    `code=${f6017.code} sig=${JSON.stringify(sig6017)}\nstderr=${(f6017.stderr ?? '').slice(0, 200)}`);
+  fs.writeFileSync(p6017, f6017.stdout, 'utf8');
+  const idem6017 = runMing(['fmt', p6017, '--check']);
+  const chk6017 = runMing(['check', p6017]);
+  const run6017 = runMing(['run', p6017]);
+  check('v60.17:fmt 后二次 fmt 幂等 + check 0 + 运行 2',
+    idem6017.code === 0 && chk6017.code === 0 && run6017.code === 0 && run6017.stdout === '2\n',
+    `idem=${idem6017.code} check=${chk6017.code} run=${run6017.code}:${JSON.stringify(run6017.stdout)}\n`
+    + `${(idem6017.stderr ?? '').slice(0, 150)}\n${(chk6017.stderr ?? '').slice(0, 150)}`);
+  // fmt 后的 requires 运行时仍以 M4015 拒绝(实参经调用返回,静态不可判定)
+  const p6017b = mk('fmt_contract_fn_viol.ming', [
+    'fn pick(x: i64) -> i64 { return x - 2; }',
+    'fn f(n: i64) -> i64 requires n > 0 else "n must be positive" { return n + 1; }',
+    'fn main() with io {',
+    '  let a = 1;',
+    '  print(str(f(pick(a))));',
+    '}',
+    '',
+  ].join('\n'));
+  const f6017b = runMing(['fmt', p6017b]);
+  fs.writeFileSync(p6017b, f6017b.stdout, 'utf8');
+  const run6017b = runMing(['run', p6017b]);
+  check('v60.17:fmt 后 requires 运行时仍 M4015(消息保真,exit 101)',
+    f6017b.code === 0 && run6017b.code === 101
+    && run6017b.stderr.includes('M4015') && run6017b.stderr.includes('n must be positive'),
+    `fmt=${f6017b.code} run=${run6017b.code} err=${(run6017b.stderr ?? '').split('\n')[0]}`);
+
+  // ---- v60.18:#36 struct invariant fmt 保真 + 运行时 invariant 违反仍 M4015 ----
+  const p6018 = mk('fmt_contract_invariant.ming', [
+    'struct S { x: i64, invariant x >= 0 }',
+    'fn main() with io {',
+    '  let k = 0;',
+    '  let s = S { x: k };',
+    '  print(str(s.x));',
+    '}',
+    '',
+  ].join('\n'));
+  const f6018 = runMing(['fmt', p6018]);
+  const hasField6018 = f6018.stdout.includes('    x: i64,\n');
+  const hasInv6018 = f6018.stdout.includes('    invariant x >= 0,\n');
+  check('v60.18:#36 struct invariant fmt 保真(字段行 + invariant 行,逗号规范)',
+    f6018.code === 0 && hasField6018 && hasInv6018,
+    `code=${f6018.code} out=${JSON.stringify(f6018.stdout)}`);
+  fs.writeFileSync(p6018, f6018.stdout, 'utf8');
+  const idem6018 = runMing(['fmt', p6018, '--check']);
+  const chk6018 = runMing(['check', p6018]);
+  const run6018 = runMing(['run', p6018]);
+  check('v60.18:invariant fmt 后二次 fmt 幂等 + check 0 + 正常运行',
+    idem6018.code === 0 && chk6018.code === 0 && run6018.code === 0 && run6018.stdout === '0\n',
+    `idem=${idem6018.code} check=${chk6018.code} run=${run6018.code}:${JSON.stringify(run6018.stdout)}\n`
+    + `${(idem6018.stderr ?? '').slice(0, 150)}\n${(chk6018.stderr ?? '').slice(0, 150)}`);
+  const p6018b = mk('fmt_contract_invariant_viol.ming', [
+    'struct S { x: i64, invariant x >= 0 }',
+    'fn main() with io {',
+    '  let k = -1;',
+    '  let s = S { x: k };',
+    '  print(str(s.x));',
+    '}',
+    '',
+  ].join('\n'));
+  const f6018b = runMing(['fmt', p6018b]);
+  fs.writeFileSync(p6018b, f6018b.stdout, 'utf8');
+  const run6018b = runMing(['run', p6018b]);
+  check('v60.18:fmt 后 invariant 违反运行时仍 M4015(exit 101)',
+    f6018b.code === 0 && run6018b.code === 101
+    && run6018b.stderr.includes('M4015') && run6018b.stderr.includes('invariant'),
+    `fmt=${f6018b.code} run=${run6018b.code} err=${(run6018b.stderr ?? '').split('\n')[0]}`);
+
+  // ---- v60.19:#36 多子句/换行缩进形态:parser 语义为"同类后者覆盖",fmt 归一化且行为不变 ----
+  const p6019 = mk('fmt_contract_multi.ming', [
+    'fn f(n: i64) -> i64',
+    '    requires n > 0',
+    '    requires n < 100',
+    '    ensures result > n',
+    '    ensures result < 101',
+    '{',
+    '    return n + 1;',
+    '}',
+    'fn main() with io {',
+    '  let a = 3;',
+    '  print(str(f(a)));',
+    '}',
+    '',
+  ].join('\n'));
+  const origRun6019 = runMing(['run', p6019]);
+  const f6019 = runMing(['fmt', p6019]);
+  const sig6019 = (f6019.stdout.split('\n').find(l => l.startsWith('fn f(')) ?? '');
+  const want6019 = 'fn f(n: i64) -> i64 requires n < 100 ensures result < 101 {';
+  const body6019 = f6019.stdout.includes('{\n    return n + 1;\n}');
+  check('v60.19:#36 多子句按 parser 语义归一(同类后者覆盖)、多行签名并回一行、块首无空行',
+    f6019.code === 0 && sig6019 === want6019 && body6019
+    && !f6019.stdout.includes('n > 0') && !f6019.stdout.includes('result > n'),
+    `code=${f6019.code} sig=${JSON.stringify(sig6019)} body=${body6019}\nout=${JSON.stringify(f6019.stdout)}`);
+  fs.writeFileSync(p6019, f6019.stdout, 'utf8');
+  const idem6019 = runMing(['fmt', p6019, '--check']);
+  const chk6019 = runMing(['check', p6019]);
+  const run6019 = runMing(['run', p6019]);
+  check('v60.19:fmt 前后 stdout/退出码一致(4/4, 0/0)+ 二次 fmt 幂等 + check 0',
+    origRun6019.code === 0 && origRun6019.stdout === '4\n'
+    && run6019.code === 0 && run6019.stdout === '4\n' && idem6019.code === 0 && chk6019.code === 0,
+    `orig=${origRun6019.code}:${JSON.stringify(origRun6019.stdout)} fmt=${run6019.code}:${JSON.stringify(run6019.stdout)} `
+    + `idem=${idem6019.code} check=${chk6019.code}\n${(chk6019.stderr ?? '').slice(0, 150)}`);
+
+  // ---- v60.20:#36 契约内复杂表达式(&&/调用/len()/result)语义不被 fmt 改写 ----
+  const p6020 = mk('fmt_contract_complex.ming', [
+    'fn is_even(k: i64) -> bool { return k % 2 == 0; }',
+    'fn pick0(buf: Vec[i64], n: i64) -> i64',
+    '  requires n > 0 && buf.len() == n && is_even(n)',
+    '  ensures result >= 0 && result < buf.len()',
+    '{',
+    '    return 0;',
+    '}',
+    'fn main() with io {',
+    '  print(str(pick0([2, 4], 2)));',
+    '}',
+    '',
+  ].join('\n'));
+  const origChk6020 = runMing(['check', p6020]);
+  const origRun6020 = runMing(['run', p6020]);
+  const f6020 = runMing(['fmt', p6020]);
+  const sig6020 = (f6020.stdout.split('\n').find(l => l.startsWith('fn pick0(')) ?? '');
+  const want6020 = 'fn pick0(buf: Vec[i64], n: i64) -> i64 requires n > 0 && buf.len() == n && is_even(n) ensures result >= 0 && result < buf.len() {';
+  fs.writeFileSync(p6020, f6020.stdout, 'utf8');
+  const chk6020 = runMing(['check', p6020]);
+  const run6020 = runMing(['run', p6020]);
+  const idem6020 = runMing(['fmt', p6020, '--check']);
+  check('v60.20:#36 复杂契约表达式 fmt 逐字保真且 fmt 前后 check/run 一致',
+    f6020.code === 0 && sig6020 === want6020
+    && origChk6020.code === 0 && chk6020.code === 0
+    && origRun6020.code === 0 && origRun6020.stdout === '0\n'
+    && run6020.code === 0 && run6020.stdout === '0\n' && idem6020.code === 0,
+    `fmt=${f6020.code} sig=${JSON.stringify(sig6020)} chk=${origChk6020.code}/${chk6020.code} `
+    + `run=${origRun6020.code}:${JSON.stringify(origRun6020.stdout)}/${run6020.code}:${JSON.stringify(run6020.stdout)} idem=${idem6020.code}\n`
+    + `${(f6020.stderr ?? '').slice(0, 200)}`);
+
+  // ---- v60.21:#26 buildKey 补编译器源码指纹——--json 含 compiler_hash 且两次构建稳定 ----
+  const bdir = path.join(TMP, 'v56-build-key');
+  fs.mkdirSync(bdir, { recursive: true });
+  fs.writeFileSync(path.join(bdir, 'ming.toml'), '[project]\nname = "v56bk"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.writeFileSync(path.join(bdir, 'app.ming'), 'fn main() with io { print("bk"); }\n');
+  const buildJ = (bin, cwd) => spawnSync(process.execPath, [bin, 'build', '--json'], { encoding: 'utf8', cwd, timeout: 120000 });
+  const bj1r = buildJ(MING, bdir);
+  const bj2r = buildJ(MING, bdir);
+  let bj1 = null, bj2 = null;
+  try { bj1 = JSON.parse(bj1r.stdout); bj2 = JSON.parse(bj2r.stdout); } catch { /* 断言处报错 */ }
+  check('v60.21:#26 build --json 含 compiler_hash(32 hex),两次构建稳定且缓存命中键一致',
+    bj1r.status === 0 && bj2r.status === 0 && !!bj1 && !!bj2
+    && /^[0-9a-f]{32}$/.test(bj1.compiler_hash ?? '') && bj1.compiler_hash === bj2.compiler_hash
+    && bj1.build_key === bj2.build_key && bj1.cache_hit === false && bj2.cache_hit === true,
+    `codes=${bj1r.status}/${bj2r.status} ch1=${(bj1?.compiler_hash ?? '').slice(0, 8)} ch2=${(bj2?.compiler_hash ?? '').slice(0, 8)} `
+    + `k1=${(bj1?.build_key ?? '').slice(0, 8)} k2=${(bj2?.build_key ?? '').slice(0, 8)} hit=${bj1?.cache_hit}/${bj2?.cache_hit}`);
+
+  // ---- v60.22:#26 敏感性——改编译器源码(版本号不变)→ build_key 变化;恢复 → 键恢复 ----
+  // v0.56(B2):指纹含 bin/*.js —— 单独改 bin/ming.js(launcher/build 逻辑)同样必须使键失效。
+  // 仓库零依赖,bin/ming.js + src/ + package.json 可整体复制后独立运行(与 env -i 验收同一思路)。
+  const ccopy = path.join(TMP, 'v56-compiler-copy');
+  const cbin = path.join(ccopy, 'bin', 'ming.js');
+  const csrc = path.join(ccopy, 'src');
+  fs.mkdirSync(path.join(ccopy, 'bin'), { recursive: true });
+  fs.copyFileSync(MING, cbin);
+  fs.cpSync(path.join(ROOT, 'src'), csrc, { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(ccopy, 'package.json'));
+  const sdir = path.join(TMP, 'v56-sensitivity-proj');
+  fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(path.join(sdir, 'ming.toml'), '[project]\nname = "v56sens"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.writeFileSync(path.join(sdir, 'app.ming'), 'fn main() with io { print("sens"); }\n');
+  const keyOf = (r) => { try { return JSON.parse(r.stdout).build_key ?? null; } catch { return null; } };
+  const sensT0 = Date.now();
+  const s1r = buildJ(cbin, sdir);
+  const s1 = keyOf(s1r);
+  const probe = path.join(csrc, 'fmt.js');
+  fs.appendFileSync(probe, '\n// v0.56(#26) compiler-hash sensitivity probe\n');
+  const s2r = buildJ(cbin, sdir);
+  const s2 = keyOf(s2r);
+  fs.copyFileSync(path.join(ROOT, 'src', 'fmt.js'), probe); // 恢复原字节
+  const s3r = buildJ(cbin, sdir);
+  const s3 = keyOf(s3r);
+  const sensMs = Date.now() - sensT0;
+  check('v60.22:#26 改 src/*.js(版本不变)→ build_key 变化;恢复源 → 键恢复(内容决定)',
+    s1r.status === 0 && s2r.status === 0 && s3r.status === 0
+    && !!s1 && !!s2 && !!s3 && s1 !== s2 && s3 === s1,
+    `ms=${sensMs} k1=${(s1 ?? '').slice(0, 8)} k2=${(s2 ?? '').slice(0, 8)} k3=${(s3 ?? '').slice(0, 8)} `
+    + `codes=${s1r.status}/${s2r.status}/${s3r.status} err=${(s2r.stderr ?? '').slice(0, 160)}`);
+
+  // ---- v60.22b(B2):单独改 bin/ming.js → build_key 变化;恢复 → 键恢复 ----
+  fs.appendFileSync(cbin, '\n// v0.56(B2) bin compiler-hash sensitivity probe\n');
+  const s4r = buildJ(cbin, sdir);
+  const s4 = keyOf(s4r);
+  fs.copyFileSync(MING, cbin); // 恢复原字节(再次运行即回归基线键)
+  const s5r = buildJ(cbin, sdir);
+  const s5 = keyOf(s5r);
+  check('v60.22b(B2):改 bin/ming.js(版本不变)→ build_key 变化;恢复 → 键恢复',
+    s4r.status === 0 && s5r.status === 0 && !!s4 && !!s5 && s4 !== s1 && s5 === s1,
+    `k1=${(s1 ?? '').slice(0, 8)} k4=${(s4 ?? '').slice(0, 8)} k5=${(s5 ?? '').slice(0, 8)} `
+    + `codes=${s4r.status}/${s5r.status} err=${(s4r.stderr ?? '').slice(0, 160)}`);
+
+  // ---- v60.23:#25 fuzz wasm eligible 族真实执行(计数 > 0 且 0 分歧;首程序固定 wasm 族)----
+  const fz56 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '4', '--seed', '56001'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v60.23:#25 fuzz 汇总含 wasm 真实执行计数(>0)且 0 分歧',
+    fz56.status === 0 && /wasm 真实执行 [1-9]\d* 程序/.test(fz56.stdout ?? '') && /分歧 0/.test(fz56.stdout ?? ''),
+    `code=${fz56.status} tail=${(fz56.stdout ?? '').slice(-180)} err=${(fz56.stderr ?? '').slice(0, 160)}`);
+
+  // ---- v60.24:W1 wasm 一元负号 `-a` 栈序(0 - x)——三引擎逐字一致 ----
+  // 根因:compileNum Unary 的 i64/u64 分支先压 x 后压 0,i64.sub 实际算 x - 0。
+  const r6024 = tri('wasm_neg.ming', [
+    'fn wf(a: i64) -> i64 { return -a; }',
+    'fn main() with io { print(str(wf(3))); print(str(wf(-3))); print(str(wf(0))); }',
+    '',
+  ].join('\n'), '-3\n3\n0\n');
+  check('v60.24:W1 wasm 一元负号 wf(a)=-a,a∈{3,-3,0} 三引擎逐字一致', r6024.ok, r6024.detail);
+
+  // ---- v60.25:W1 负字面量比较(两侧)+ (-a)+b 组合 ----
+  const r6025 = tri('wasm_neg_cmp.ming', [
+    'fn wneg(a: i64) -> i64 {',
+    '  let mut t = 0;',
+    '  if a > -5 { t = t + 1; } else { t = t + 2; }',
+    '  t = t + (-a);',
+    '  return t;',
+    '}',
+    'fn lhs(a: i64) -> i64 { if -5 < a { return 1; } return 0; }',
+    'fn comb(a: i64, b: i64) -> i64 { return (-a) + b; }',
+    'fn main() with io {',
+    '  print(str(wneg(3)) + " " + str(wneg(-7)) + " " + str(wneg(0)));',
+    '  print(str(lhs(3)) + " " + str(lhs(-7)));',
+    '  print(str(comb(3, 10)));',
+    '}',
+    '',
+  ].join('\n'), '-2 9 1\n1 0\n7\n');
+  check('v60.25:W1 负字面量参与比较(两侧)与 (-a)+b 组合三引擎一致', r6025.ok, r6025.detail);
+
+  // ---- v60.26:W2 while 体内 if 中的 break——br 深度必须计入 if 块 ----
+  // 修复前 wasm 的 br 1 只到 if 末尾 → 循环继续 → 死循环(runMing timeout 30s 捕获)。
+  const r6026 = tri('wasm_break.ming', [
+    'fn brk() -> i64 {',
+    '  let mut i = 0;',
+    '  while i < 5 { if i == 3 { break; } i += 1; }',
+    '  return i;',
+    '}',
+    'fn main() with io { print(str(brk())); }',
+    '',
+  ].join('\n'), '3\n');
+  check('v60.26:W2 while 体内 if break 跳出正确层级(三引擎一致,死循环由 30s 超时拦截)', r6026.ok, r6026.detail);
+
+  // ---- v60.27:W2 continue——任务形态(% 条件)+ wasm eligible 形态(== 条件)----
+  // 注:F2(v0.56)已修复 wasm inferNumType 的 Binary 重复 case,`%` 条件类型推导正常;
+  // 本用例同时断言 strict 存活(`[wasm] fn cont OK`,无 REJECT/实例化失败),不再只验回落一致。
+  const p6027a = mk('wasm_continue_task.ming', [
+    'fn cont() -> i64 {',
+    '  let mut i = 0; let mut s = 0;',
+    '  while i < 10 {',
+    '    i += 1;',
+    '    if i % 2 == 0 { continue; }',
+    '    if i > 6 { break; }',
+    '    s += i;',
+    '  }',
+    '  return s;',
+    '}',
+    'fn main() with io { print(str(cont())); }',
+    '',
+  ].join('\n'));
+  const r6027a = tri('wasm_continue_task.ming', fs.readFileSync(p6027a, 'utf8'), '9\n');
+  const r6027aStrict = runMing(['run', p6027a, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  check('v60.27a:W2 任务形态(% 条件 continue + break)三引擎一致且终止;strict 下 cont 真实经 wasm',
+    r6027a.ok && r6027aStrict.code === 0
+    && (r6027aStrict.stderr ?? '').includes('[wasm] fn cont OK')
+    && !(r6027aStrict.stderr ?? '').includes('REJECT') && !(r6027aStrict.stderr ?? '').includes('实例化失败'),
+    `${r6027a.detail}\nstrict=${r6027aStrict.code} dbg=${JSON.stringify((r6027aStrict.stderr ?? '').slice(0, 240))}`);
+  const r6027b = tri('wasm_continue.ming', [
+    'fn cont2() -> i64 {',
+    '  let mut i = 0; let mut s = 0;',
+    '  while i < 5 { i += 1; if i == 2 { continue; } s += i; }',
+    '  return s;',
+    '}',
+    'fn main() with io { print(str(cont2())); }',
+    '',
+  ].join('\n'), '13\n');
+  check('v60.27b:W2 wasm eligible continue(if i==2)语义正确且三引擎一致', r6027b.ok, r6027b.detail);
+
+  // ---- v60.28:W2 嵌套 while/if——内层 break 只跳出内层 ----
+  const r6028 = tri('wasm_nested_break.ming', [
+    'fn nested() -> i64 {',
+    '  let mut i = 0; let mut s = 0;',
+    '  while i < 3 {',
+    '    i += 1;',
+    '    if i == 2 {',
+    '      let mut j = 0;',
+    '      while j < 5 { if j == 1 { break; } j += 1; }',
+    '      s += j;',
+    '    }',
+    '    s += i;',
+    '  }',
+    '  return s;',
+    '}',
+    'fn main() with io { print(str(nested())); }',
+    '',
+  ].join('\n'), '7\n');
+  check('v60.28:W2 嵌套 while/if 内层 break 只跳出内层(外层继续;s=7)', r6028.ok, r6028.detail);
+
+  // ---- v60.29:W1/W2 wasm 存活断言——真正经 wasm 执行而非静默回落 ----
+  // MING_WASM_DEBUG=1 + --strict-wasm(回落 → exit 2):wf/brk/cont2/nested 全部 OK、
+  // 有 [wasm 参数](实际调用)、无 REJECT/实例化失败。
+  const p6029 = mk('wasm_live.ming', [
+    'fn wf(a: i64) -> i64 { return -a; }',
+    'fn brk() -> i64 { let mut i = 0; while i < 5 { if i == 3 { break; } i += 1; } return i; }',
+    'fn cont2() -> i64 { let mut i = 0; let mut s = 0; while i < 5 { i += 1; if i == 2 { continue; } s += i; } return s; }',
+    'fn nested() -> i64 {',
+    '  let mut i = 0; let mut s = 0;',
+    '  while i < 3 { i += 1; if i == 2 { let mut j = 0; while j < 5 { if j == 1 { break; } j += 1; } s += j; } s += i; }',
+    '  return s;',
+    '}',
+    'fn main() with io { print(str(wf(3)) + " " + str(brk()) + " " + str(cont2()) + " " + str(nested())); }',
+    '',
+  ].join('\n'));
+  const live6029 = runMing(['run', p6029, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  const liveErr = live6029.stderr ?? '';
+  const liveFns = ['wf', 'brk', 'cont2', 'nested'].map(n => liveErr.includes(`[wasm] fn ${n} OK`));
+  check('v60.29:W1/W2 函数真实经 wasm 执行(--strict-wasm 存活 + [wasm 参数] + 无 REJECT/实例化失败)',
+    live6029.code === 0 && live6029.stdout === '-3 3 13 7\n'
+    && liveFns.every(Boolean) && liveErr.includes('[wasm 参数]')
+    && !liveErr.includes('REJECT') && !liveErr.includes('实例化失败'),
+    `code=${live6029.code} stdout=${JSON.stringify(live6029.stdout)} fns=${JSON.stringify(liveFns)}\n`
+    + liveErr.slice(0, 400));
+
+  // ---- v60.30:F1 for-in 体内 continue(条件为外层变量)——不得跳过 __i 自增 ----
+  // 修复前 wasm 的 continue 直接 br 到 loop 头,跳过循环尾 __i += 1 → 死循环(超时拦截);
+  // 修复后自增在 loop 头,continue 回头部先自增再判界。fc 为 Vec 形参 helper(wasm eligible),
+  // main 另用 Vec 字面量覆盖默认/树/VM-only 三腿。
+  const src6030 = [
+    'fn fc(v: Vec[i64], k: i64) -> i64 {',
+    '  let mut s = 0;',
+    '  for x in v {',
+    '    if k == 0 { continue; }',
+    '    s += x;',
+    '  }',
+    '  return s;',
+    '}',
+    'fn main() with io {',
+    '  let v = [1, 2, 3];',
+    '  let mut t = 0;',
+    '  for y in [10, 20] {',
+    '    if t > 0 { continue; }',
+    '    t += y;',
+    '  }',
+    '  print(str(fc(v, 0)));',
+    '  print(str(fc(v, 1)));',
+    '  print(str(t));',
+    '}',
+    '',
+  ].join('\n');
+  const r6030 = tri('wasm_for_continue.ming', src6030, '0\n6\n10\n');
+  const p6030 = mk('wasm_for_continue_live.ming', src6030);
+  const live6030 = runMing(['run', p6030, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  const err6030 = live6030.stderr ?? '';
+  check('v60.30:F1 for-in 体内 continue(外层变量条件)三引擎一致且终止;fc 真实经 wasm 执行',
+    r6030.ok && live6030.code === 0 && live6030.stdout === '0\n6\n10\n'
+    && err6030.includes('[wasm] fn fc OK') && err6030.includes('[wasm 参数]')
+    && !err6030.includes('REJECT') && !err6030.includes('实例化失败'),
+    `${r6030.detail}\nlive=${live6030.code}:${JSON.stringify(live6030.stdout)}\n${err6030.slice(0, 300)}`);
+
+  // ---- v60.31:F1 for-in 体内 continue(条件含循环变量)+ break 组合 ----
+  // `if x % 2 == 0 { continue; }` 同时依赖 F2 类型推导(模式变量 slot 类型)与 F1 目标重定向;
+  // fcb 在 x>5 break,fb 在 x==4 break,均只跳出整个 for。
+  const src6031 = [
+    'fn fcb(v: Vec[i64]) -> i64 {',
+    '  let mut s = 0;',
+    '  for x in v {',
+    '    if x % 2 == 0 { continue; }',
+    '    if x > 5 { break; }',
+    '    s += x;',
+    '  }',
+    '  return s;',
+    '}',
+    'fn fb(v: Vec[i64]) -> i64 {',
+    '  let mut s = 0;',
+    '  for x in v {',
+    '    if x == 2 { continue; }',
+    '    if x == 4 { break; }',
+    '    s += x;',
+    '  }',
+    '  return s;',
+    '}',
+    'fn main() with io {',
+    '  let v = [1, 2, 3, 4, 6, 9];',
+    '  print(str(fcb(v)));',
+    '  print(str(fb(v)));',
+    '}',
+    '',
+  ].join('\n');
+  const r6031 = tri('wasm_for_continue_var.ming', src6031, '4\n4\n');
+  const p6031 = mk('wasm_for_continue_var_live.ming', src6031);
+  const live6031 = runMing(['run', p6031, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  const err6031 = live6031.stderr ?? '';
+  check('v60.31:F1 for-in continue(循环变量条件)+ break 三引擎一致;fcb/fb 真实经 wasm 执行',
+    r6031.ok && live6031.code === 0 && live6031.stdout === '4\n4\n'
+    && ['fcb', 'fb'].every(n => err6031.includes(`[wasm] fn ${n} OK`))
+    && err6031.includes('[wasm 参数]')
+    && !err6031.includes('REJECT') && !err6031.includes('实例化失败'),
+    `${r6031.detail}\nlive=${live6031.code}:${JSON.stringify(live6031.stdout)}\n${err6031.slice(0, 300)}`);
+
+  // ---- v60.32:F2 inferNumType 合并 Binary case——`%` 等条件真实经 wasm ----
+  // 修复前重复 case 使非 `+` 二元推导 undefined → "条件操作数 undefined" 整模块回落。
+  // 修复后 `i % 2 == 0`、`i * 2 - i / 2`、`i % 3` 的类型均正确推出,且 gm 实跑 wasm。
+  const src6032 = [
+    'fn gm(i: i64) -> i64 {',
+    '  let mut s = 0;',
+    '  if i % 2 == 0 { s += 1; }',
+    '  s += i * 2 - i / 2;',
+    '  let q = i % 3;',
+    '  if q == 0 { s += 10; }',
+    '  return s;',
+    '}',
+    'fn main() with io {',
+    '  print(str(gm(4)));',
+    '  print(str(gm(5)));',
+    '  print(str(gm(6)));',
+    '}',
+    '',
+  ].join('\n');
+  const r6032 = tri('wasm_mod_cond.ming', src6032, '7\n8\n20\n');
+  const p6032 = mk('wasm_mod_cond_live.ming', src6032);
+  const live6032 = runMing(['run', p6032, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  const err6032 = live6032.stderr ?? '';
+  check('v60.32:F2 `%`/`*`/`-`/`/` 条件与运算类型推导正确且 gm 真实经 wasm 执行(无 REJECT)',
+    r6032.ok && live6032.code === 0 && live6032.stdout === '7\n8\n20\n'
+    && err6032.includes('[wasm] fn gm OK') && err6032.includes('[wasm 参数]')
+    && !err6032.includes('REJECT') && !err6032.includes('实例化失败'),
+    `${r6032.detail}\nlive=${live6032.code}:${JSON.stringify(live6032.stdout)}\n${err6032.slice(0, 300)}`);
+
+  // ---- v60.33:#22 else/else-if 头行尾注释一遍到定点(HEAD 需两遍)----
+  const p6033 = mk('fmt_else_comment.ming', [
+    'fn main() with io {',
+    '    let x = 2;',
+    '    if x == 0 {',
+    '        print("a");',
+    '    } else if x == 1 { // 二号',
+    '        print("b");',
+    '    } else { // 兜底',
+    '        print("c");',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const f6033a = runMing(['fmt', p6033]);
+  const out6033 = f6033a.stdout;
+  fs.writeFileSync(p6033, out6033, 'utf8');
+  const f6033b = runMing(['fmt', p6033]); // 已到定点 → 无输出
+  const c6033 = runMing(['fmt', p6033, '--check']);
+  check('v60.33:#22 else/else-if 头行尾注释一遍到定点(空行在注释前,注释保留,二次 fmt 零输出)',
+    f6033a.code === 0
+    && out6033.includes('} else if x == 1 {\n\n        // 二号')
+    && out6033.includes('} else {\n\n        // 兜底')
+    && f6033b.code === 0 && f6033b.stdout === '' && c6033.code === 0,
+    `fmt=${f6033a.code} second=${JSON.stringify(f6033b.stdout)} check=${c6033.code}\n`
+    + `out=${JSON.stringify(out6033)}\n${(c6033.stderr ?? '').slice(0, 200)}`);
+  // 无头注释的 else 输出保持既有规范(头行后空行),验证修复不改变普通形态
+  const p6033b = mk('fmt_else_plain_v56.ming', [
+    'fn main() with io {',
+    '    if true {',
+    '        print("a");',
+    '    } else {',
+    '        print("b");',
+    '    }',
+    '}',
+    '',
+  ].join('\n'));
+  const plain6033 = runMing(['fmt', p6033b]);
+  check('v60.33:#22 无头注释的 else 规范形态零漂移(头行后保留空行)',
+    plain6033.code === 0 && plain6033.stdout.includes('} else {\n\n        print("b");'),
+    `code=${plain6033.code} out=${JSON.stringify(plain6033.stdout)}`);
+
+  // ---- v60.34:#29 源码回退 launcher panic 带 file:line:col + 源码摘录 ----
+  const pd6034 = path.join(dir, 'src-fallback-panic');
+  fs.mkdirSync(pd6034, { recursive: true });
+  fs.writeFileSync(path.join(pd6034, 'ming.toml'), '[project]\nname = "v56sf"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  const panic6034 = [
+    'fn main() with io, sync {',
+    '  let a = 10;',
+    '  let b = 0;',
+    '  print(str(a / b));',
+    '}',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(pd6034, 'app.ming'), panic6034);
+  const b6034 = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: pd6034, timeout: 120000 });
+  const fallback6034 = b6034.status === 0
+    && fs.existsSync(path.join(pd6034, 'dist', 'app.ming'))
+    && !fs.existsSync(path.join(pd6034, 'dist', 'app.bytecode.json'));
+  const r6034 = fallback6034
+    ? spawnSync(process.execPath, [path.join(pd6034, 'dist', 'ming-app.mjs')], { encoding: 'utf8', timeout: 60000 })
+    : { status: -1, stdout: '', stderr: '' };
+  const err6034 = r6034.stderr ?? '';
+  check('v60.34:#29 源码回退 launcher panic 含 file:line:col + M4004 + 源码摘录(exit 101)',
+    fallback6034 && r6034.status === 101
+    && /app\.ming:\d+:\d+: error M4004\[division-by-zero\]/.test(err6034)
+    && err6034.includes('print(str(a / b));'),
+    `build=${b6034.status} fallback=${fallback6034} run=${r6034.status}\n`
+    + `out=${JSON.stringify(r6034.stdout)} err=${JSON.stringify(err6034.slice(0, 400))}`);
+  // AOT 字节码模式输出逐字不变(仅 `CODE: 消息`,无位置前缀)
+  const pd6034b = path.join(dir, 'aot-panic');
+  fs.mkdirSync(pd6034b, { recursive: true });
+  fs.writeFileSync(path.join(pd6034b, 'ming.toml'), '[project]\nname = "v56ap"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.writeFileSync(path.join(pd6034b, 'app.ming'), [
+    'fn main() with io {',
+    '  let a = 10;',
+    '  let b = 0;',
+    '  print(str(a / b));',
+    '}',
+    '',
+  ].join('\n'));
+  const b6034b = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: pd6034b, timeout: 120000 });
+  const aot6034 = fs.existsSync(path.join(pd6034b, 'dist', 'app.bytecode.json'));
+  const r6034b = aot6034
+    ? spawnSync(process.execPath, [path.join(pd6034b, 'dist', 'ming-app.mjs')], { encoding: 'utf8', timeout: 60000 })
+    : { status: -1, stdout: '', stderr: '' };
+  check('v60.34:#29 AOT 字节码模式 panic 输出逐字不变(仍为 `M4004: 消息`)',
+    b6034b.status === 0 && aot6034 && r6034b.status === 101
+    && (r6034b.stderr ?? '').split('\n')[0] === 'M4004: 整数除零:10 / 0',
+    `build=${b6034b.status} aot=${aot6034} run=${r6034b.status} err=${JSON.stringify((r6034b.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v60.35:#30 extern fn 值经局部变量:C 后端明确诊断(选择方案 b)----
+  const p6035 = mk('cc_extern_value.ming', [
+    'extern "msvcrt" fn _abs64(x: i64) -> i64;',
+    'fn main() with io, ffi {',
+    '  let q = _abs64;',
+    '  print(str(q(-7)));',
+    '}',
+    '',
+  ].join('\n'));
+  const chk6035 = runMing(['check', p6035]);
+  const vm6035 = runMing(['run', p6035]);
+  const cc6035 = runMing(['cc', p6035, '--no-run', '--out', path.join(dir, 'cc-extern-value')]);
+  const ccErr6035 = cc6035.stderr ?? '';
+  check('v60.35:#30 extern fn 值经局部变量:C 后端明确诊断(不再"let 推导 null"),VM 诚实 M4001',
+    chk6035.code === 0
+    && vm6035.code === 101 && (vm6035.stderr ?? '').includes('ffi 调用需要 C 后端')
+    && cc6035.code === 1 && ccErr6035.includes('extern fn 值') && ccErr6035.includes('请直接调用')
+    && !ccErr6035.includes('let 推导 null'),
+    `check=${chk6035.code} vm=${vm6035.code} cc=${cc6035.code}\n`
+    + `vmErr=${JSON.stringify((vm6035.stderr ?? '').split('\n')[0])}\nccErr=${JSON.stringify(ccErr6035.split('\n')[0])}`);
+
+  // ---- v60.36:#31 多入口共享模块 proof-report 按绝对路径去重 ----
+  const d6036 = path.join(dir, 'report-dedupe');
+  fs.mkdirSync(d6036, { recursive: true });
+  fs.writeFileSync(path.join(d6036, 'shared.ming'), [
+    'pub fn inc(a: i64) -> i64 requires a > 0 ensures result > a {',
+    '    return a + 1;',
+    '}',
+    'pub fn pick(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(d6036, 'main.ming'), [
+    'use shared;',
+    'fn main() with io {',
+    '    print(str(shared.inc(1)));',
+    '    print(str(shared.pick([1, 2], 0)));',
+    '}',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(d6036, 'lib.ming'), [
+    'use shared;',
+    'pub fn use_it(v: Vec[i64]) -> i64 {',
+    '    return shared.inc(shared.pick(v, 0));',
+    '}',
+    '',
+  ].join('\n'));
+  const main6036 = path.join(d6036, 'main.ming');
+  const lib6036 = path.join(d6036, 'lib.ming');
+  const rep6036 = runMing(['check', main6036, lib6036, '--proof-report']);
+  const repLines6036 = (rep6036.stdout ?? '').split('\n');
+  const incLines6036 = repLines6036.filter(l => l.includes(':inc: 契约摘要'));
+  const pickLines6036 = repLines6036.filter(l => l.includes(':pick: 义务'));
+  let repJson6036 = null;
+  try { repJson6036 = JSON.parse(runMing(['check', main6036, lib6036, '--json', '--proof-report']).stdout); } catch { /* 断言处报错 */ }
+  const sumInc6036 = (repJson6036?.proofs?.summaries ?? []).filter(s => s.fn === 'inc');
+  const fnPick6036 = (repJson6036?.proofs?.functions ?? []).filter(f => f.fn === 'pick');
+  check('v60.36:#31 多入口共享模块 proof-report 去重(文本/JSON 摘要与义务各一份)',
+    rep6036.code === 0 && incLines6036.length === 1 && pickLines6036.length === 1
+    && sumInc6036.length === 1 && fnPick6036.length === 1,
+    `code=${rep6036.code} inc=${incLines6036.length} pick=${pickLines6036.length} `
+    + `jsonInc=${sumInc6036.length} jsonPick=${fnPick6036.length}\n`
+    + `out=${JSON.stringify((rep6036.stdout ?? '').slice(0, 300))}`);
+  const repOne6036 = runMing(['check', main6036, '--proof-report']);
+  let repOneJson6036 = null;
+  try { repOneJson6036 = JSON.parse(runMing(['check', main6036, '--json', '--proof-report']).stdout); } catch { /* 断言处报错 */ }
+  const oneLines6036 = (repOne6036.stdout ?? '').split('\n');
+  check('v60.36:#31 单入口行为不变(摘要/义务各一行,JSON 各一条)',
+    repOne6036.code === 0
+    && oneLines6036.filter(l => l.includes(':inc: 契约摘要')).length === 1
+    && oneLines6036.filter(l => l.includes(':pick: 义务')).length === 1
+    && (repOneJson6036?.proofs?.summaries ?? []).filter(s => s.fn === 'inc').length === 1
+    && (repOneJson6036?.proofs?.functions ?? []).filter(f => f.fn === 'pick').length === 1,
+    `code=${repOne6036.code} out=${JSON.stringify((repOne6036.stdout ?? '').slice(0, 300))}`);
+
+  // ---- v60.37:#32 无契约模块跳过摘要构建;有契约模块报告不变 ----
+  const many6037 = [];
+  for (let i = 0; i < 150; i++) many6037.push(`fn f${i}(x: i64) -> i64 { return x + ${i}; }`);
+  many6037.push('fn main() with io { print(str(f0(1))); }', '');
+  const p6037 = mk('nocontract_many.ming', many6037.join('\n'));
+  const t6037 = Date.now();
+  const rep6037 = runMing(['check', p6037, '--proof-report']);
+  const ms6037 = Date.now() - t6037;
+  let repJson6037 = null;
+  try { repJson6037 = JSON.parse(runMing(['check', p6037, '--json', '--proof-report']).stdout); } catch { /* 断言处报错 */ }
+  check('v60.37:#32 无契约模块跳过摘要构建(check 0 诊断;--proof-report 无摘要/证明条目)',
+    rep6037.code === 0 && (rep6037.stdout ?? '') === ''
+    && Array.isArray(repJson6037?.proofs?.summaries) && repJson6037.proofs.summaries.length === 0
+    && Array.isArray(repJson6037?.proofs?.functions) && repJson6037.proofs.functions.length === 0
+    && (repJson6037?.diagnostics ?? []).length === 0,
+    `code=${rep6037.code} ms=${ms6037} out=${JSON.stringify((rep6037.stdout ?? '').slice(0, 120))}`);
+  const repContract6037 = runMing(['check', path.join(d6036, 'shared.ming'), '--proof-report']);
+  check('v60.37:#32 有契约模块摘要报告不变(inc 摘要 + pick 义务各就位)',
+    repContract6037.code === 0
+    && (repContract6037.stdout ?? '').includes(':inc: 契约摘要 requires=完整 ensures=已证')
+    && (repContract6037.stdout ?? '').includes(':pick: 义务 1,proven 1,violated 0,unproven 0'),
+    `code=${repContract6037.code} out=${JSON.stringify((repContract6037.stdout ?? '').slice(0, 300))}`);
+
+  // ---- v60.38:#34 分节号唯一化(无重复 34–38;34b–38b 与 40 就位)----
+  const selfSrc6038 = fs.readFileSync(path.join(ROOT, 'tests', 'run.mjs'), 'utf8');
+  const heads6038 = [];
+  for (const line of selfSrc6038.split('\n')) {
+    const m = line.match(/^\/\/ ===================== ([0-9]+[a-z]?)\./);
+    if (m) heads6038.push(m[1]);
+  }
+  const dup6038 = heads6038.filter((h, i) => heads6038.indexOf(h) !== i);
+  check('v60.38:#34 分节号唯一(无重复;34b–38b + 40 已就位,§39/§40 文档引用不变)',
+    dup6038.length === 0
+    && ['34b', '35b', '36b', '37b', '38b', '39', '40', '41'].every(h => heads6038.includes(h)),
+    `dups=${JSON.stringify(dup6038)} heads=${JSON.stringify(heads6038.filter(h => /^3[4-9]|^40|^41/.test(h)))}`);
+
+  // ================= A 组(v0.56 独立审查):契约作用域 / u64 一元负号 / fmt 契约保真 =================
+  // 三引擎失败用例:exit 101 + M4015 + 关键实际值,且三份 stderr 逐字一致。
+  const triFail = (name, src, needle) => {
+    const p = mk(name, src);
+    const runs = [
+      runMing(['run', p]),
+      runMing(['run', p, '--tree']),
+      runMing(['run', p, '--no-wasm']),
+    ];
+    const first = (r) => (r.stderr ?? '').split('\n').find(l => l.includes('M4015')) ?? '';
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4015') && (r.stderr ?? '').includes(needle)
+      && r.stderr === runs[0].stderr && r.stdout === runs[0].stdout);
+    return { ok, detail: `codes=${JSON.stringify(runs.map(r => r.code))} stdout=${JSON.stringify(runs.map(r => r.stdout))}\n`
+      + `vm=${JSON.stringify(first(runs[0]))}\ntree=${JSON.stringify(first(runs[1]))}\nvm-only=${JSON.stringify(first(runs[2]))}` };
+  };
+  // C 腿可用性(与 §58 同款探测;无编译器时 C 断言跳过,保持绿)
+  const ccAvailA = (() => {
+    if (process.env.MING_CC && fs.existsSync(process.env.MING_CC)) return true;
+    for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(c)) return true;
+    }
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+  })();
+
+  // ---- v60.39(A1):body 的 `let a` 不得遮蔽形参——ensures 看形参值 ----
+  const r6039 = triFail('a1_param_shadow.ming', [
+    'fn f(a: i64) -> i64 ensures result > a { let a = 0; return 1; }',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'), '实际: 1');
+  check('v60.39(A1):`let a` 遮蔽形参不影响 ensures(1 > 5 违反;三引擎 M4015 逐字一致)', r6039.ok, r6039.detail);
+
+  // ---- v60.40(A1):形参名 result——函数体用形参,契约 result 恒指返回值 ----
+  const r6040a = tri('a1_param_result_ok.ming', [
+    'fn f(result: i64) -> i64 ensures result > 0 { return result; }',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'), '5\n');
+  const r6040b = triFail('a1_param_result_bad.ming', [
+    'fn f(result: i64) -> i64 ensures result > 0 { return result; }',
+    'fn main() with io { print(str(f(5))); print(str(f(-1))); }',
+    '',
+  ].join('\n'), '实际: -1');
+  check('v60.40(A1):形参名 result(VM 不再 TypeError;body=形参,契约=返回值)',
+    r6040a.ok && r6040b.ok, `${r6040a.detail}\n${r6040b.detail}`);
+
+  // ---- v60.41(A1):body 的 `let result` 不得被契约读取(契约 result=返回值) ----
+  const r6041 = triFail('a1_local_result.ming', [
+    'fn f(a: i64) -> i64 ensures result > 100 { let result = 200; return a; }',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'), '实际: 5');
+  check('v60.41(A1):body `let result` 与契约无关(实际返回值 5,不是 200;三引擎一致)', r6041.ok, r6041.detail);
+
+  // ---- v60.42(A1):mut 形参被重赋值 → 契约看形参最终值(v0.49 语义) ----
+  const r6042a = triFail('a1_mut_param_bad.ming', [
+    'fn f(mut a: i64) -> i64 ensures result > a { if a == 1 { a = 10; } return 5; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'), '实际: 5');
+  const r6042b = tri('a1_mut_param_ok.ming', [
+    'fn f(mut a: i64) -> i64 ensures result > a { if a == 1 { a = 2; } return 5; }',
+    'fn main() with io { print(str(f(1))); print(str(f(3))); }',
+    '',
+  ].join('\n'), '5\n5\n');
+  check('v60.42(A1):mut 形参重赋值后 ensures 看最终值(5>10 违反 / 5>2 与 5>3 通过)', r6042a.ok && r6042b.ok,
+    `${r6042a.detail}\n${r6042b.detail}`);
+
+  // ---- v60.43(A1):嵌套块局部 result + 契约调用模块级纯函数 ----
+  const r6043a = triFail('a1_nested_result.ming', [
+    'fn f(a: i64) -> i64 ensures result > 100 {',
+    '  if a > 0 { let result = 200; return a; }',
+    '  return a;',
+    '}',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'), '实际: 5');
+  const r6043b = tri('a1_module_fn.ming', [
+    'fn twice(x: i64) -> i64 { return x * 2; }',
+    'fn f(a: i64) -> i64 ensures result > twice(a) { let a = 0; return 6; }',
+    'fn main() with io { print(str(f(2))); }',
+    '',
+  ].join('\n'), '6\n');
+  check('v60.43(A1):嵌套块 `let result` 不泄漏进契约;契约可调用模块级纯函数且 body 局部不遮蔽',
+    r6043a.ok && r6043b.ok, `${r6043a.detail}\n${r6043b.detail}`);
+
+  // ---- v60.44(A2):u64 一元负号在类型层拒绝(M3008),四入口一致 ----
+  const p6044 = mk('u64_neg_reject.ming', [
+    'fn f(a: u64) -> u64 { return -a; }',
+    'fn main() with io { print(str(f(1u64))); }',
+    '',
+  ].join('\n'));
+  const chk6044 = runMing(['check', p6044]);
+  const run6044 = [[], ['--tree'], ['--no-wasm']].map(fl => runMing(['run', p6044, ...fl]));
+  const cc6044 = ccAvailA ? runMing(['cc', p6044]) : null;
+  const cast6044 = tri('u64_neg_cast_ok.ming', [
+    'fn f(a: u64) -> i64 { return -(a as i64); }',
+    'fn main() with io { print(str(f(3u64))); }',
+    '',
+  ].join('\n'), '-3\n');
+  check('v60.44(A2):u64 一元 "-" 检查器拒绝 M3008(check/三引擎/C 腿一致;`as i64` 存照)',
+    chk6044.code === 1 && (chk6044.stderr ?? '').includes('M3008') && (chk6044.stderr ?? '').includes('无符号')
+    && run6044.every(r => r.code === 1 && (r.stderr ?? '').includes('M3008'))
+    && (!cc6044 || (cc6044.code === 1 && (cc6044.stderr ?? '').includes('M3008')))
+    && cast6044.ok,
+    `check=${chk6044.code} runs=${JSON.stringify(run6044.map(r => r.code))} cc=${cc6044?.code}\n`
+    + `stderr=${JSON.stringify((chk6044.stderr ?? '').split('\n')[0])}\n${cast6044.detail}`);
+
+  // ---- v60.45(A2):i64 一元负号四引擎回归保持 ----
+  const p6045 = mk('i64_neg_four.ming', [
+    'fn f(a: i64) -> i64 { return -a; }',
+    'fn main() with io { print(str(f(3))); print(str(f(-3))); }',
+    '',
+  ].join('\n'));
+  const tri6045 = tri('i64_neg_three.ming', fs.readFileSync(p6045, 'utf8'), '-3\n3\n');
+  const cc6045 = ccAvailA ? runMing(['cc', p6045]) : null;
+  check('v60.45(A2):i64 一元负号三引擎逐字一致;C 腿(-3/3)',
+    tri6045.ok && (!cc6045 || (cc6045.code === 0 && cc6045.stdout === '-3\n3\n')),
+    `${tri6045.detail}\ncc=${cc6045 ? cc6045.code + ':' + JSON.stringify(cc6045.stdout) : 'skip(无编译器)'}`);
+
+  // ---- v60.46(A2):u64 二元减法下溢——tree/VM-only 也要 M4002(与 wasm/C 一致) ----
+  const p6046 = mk('u64_sub_underflow.ming', [
+    'fn f(a: u64) -> u64 { return 0u64 - a; }',
+    'fn main() with io { print(str(f(1u64))); }',
+    '',
+  ].join('\n'));
+  const run6046 = [[], ['--tree'], ['--no-wasm']].map(fl => runMing(['run', p6046, ...fl]));
+  const cc6046 = ccAvailA ? runMing(['cc', p6046]) : null;
+  const subOk6046 = tri('u64_sub_ok.ming', [
+    'fn f(a: u64) -> u64 { return 10u64 - a; }',
+    'fn main() with io { print(str(f(3u64))); print(str(f(10u64))); }',
+    '',
+  ].join('\n'), '7\n0\n');
+  check('v60.46(A2):u64 二元减法下溢三引擎 + C 腿全 M4002;范围内减法保持 7/0',
+    run6046.every(r => r.code === 101 && (r.stderr ?? '').includes('M4002'))
+    && (!cc6046 || (cc6046.code === 101 && (cc6046.stderr ?? '').includes('M4002')))
+    && subOk6046.ok,
+    `runs=${JSON.stringify(run6046.map(r => [r.code, ((r.stderr ?? '').match(/M\d{4}/) ?? [null])[0]]))} `
+    + `cc=${cc6046 ? cc6046.code + ':' + ((cc6046.stderr ?? '').match(/M\d{4}/) ?? [null])[0] : 'skip(无编译器)'}\n`
+    + `${subOk6046.detail}`);
+
+  // ---- v60.47(A3):lambda 立即调用 fmt 不丢括号(合法→非法 的契约破坏) ----
+  const p6047 = mk('fmt_lambda_call.ming', [
+    'fn f(a: i64) -> i64 requires ((x: i64) => x + 1)(0) == 1 { return a; }',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'));
+  const f6047 = runMing(['fmt', p6047]);
+  const sig6047 = (f6047.stdout.split('\n').find(l => l.startsWith('fn f(')) ?? '');
+  fs.writeFileSync(p6047, f6047.stdout, 'utf8');
+  const chk6047 = runMing(['check', p6047]);
+  const run6047 = runMing(['run', p6047]);
+  const idem6047 = runMing(['fmt', p6047, '--check']);
+  check('v60.47(A3):lambda 立即调用 fmt 保留 callee 括号 + fmt 后 check/run/幂等',
+    f6047.code === 0 && sig6047.includes('requires ((x: i64) => x + 1)(0) == 1')
+    && chk6047.code === 0 && run6047.code === 0 && run6047.stdout === '5\n' && idem6047.code === 0,
+    `fmt=${f6047.code} sig=${JSON.stringify(sig6047)} chk=${chk6047.code} run=${run6047.code}:${JSON.stringify(run6047.stdout)} `
+    + `idem=${idem6047.code}\n${(chk6047.stderr ?? '').slice(0, 200)}`);
+
+  // ---- v60.48(A3):blockInline 不支持的语句必须失败退出 1 且 --write 不落盘 ----
+  const p6048 = mk('fmt_blockinline_reject.ming', [
+    'fn main() with io {',
+    '  let f = () => { loop { break; } };',
+    '  f();',
+    '  print("ok");',
+    '}',
+    '',
+  ].join('\n'));
+  const before6048 = fs.readFileSync(p6048, 'utf8');
+  const f6048 = runMing(['fmt', p6048]);
+  const fw6048 = runMing(['fmt', p6048, '--write']);
+  const after6048 = fs.readFileSync(p6048, 'utf8');
+  check('v60.48(A3):fmt 遇内联块未知语句报错退出 1(file:line:col),不再输出 /* ? */,--write 不改写源文件',
+    f6048.code === 1 && f6048.stdout === '' && /:\d+:\d+: error: fmt 失败: fmt 不支持/.test(f6048.stderr ?? '')
+    && !f6048.stdout.includes('/* ? */')
+    && fw6048.code === 1 && after6048 === before6048,
+    `fmt=${f6048.code} write=${fw6048.code} unchanged=${after6048 === before6048}\n`
+    + `err=${JSON.stringify((f6048.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v60.49(A3):契约 else 的插值消息 fmt 逐字保留(运行语义不变:msg 仍为 null) ----
+  const p6049 = mk('fmt_interp_msg.ming', [
+    'fn f(n: i64) -> i64 requires n > 0 else "bad value: \\{n}" { return n; }',
+    'fn main() with io { print(str(f(3))); }',
+    '',
+  ].join('\n'));
+  const f6049 = runMing(['fmt', p6049]);
+  fs.writeFileSync(p6049, f6049.stdout, 'utf8');
+  const chk6049 = runMing(['check', p6049]);
+  const run6049 = runMing(['run', p6049]);
+  const idem6049 = runMing(['fmt', p6049, '--check']);
+  check('v60.49(A3):`else "bad value: \\{n}"` fmt 后逐字保留 + check/run/幂等',
+    f6049.code === 0 && f6049.stdout.includes('else "bad value: \\{n}"')
+    && chk6049.code === 0 && run6049.code === 0 && run6049.stdout === '3\n' && idem6049.code === 0,
+    `fmt=${f6049.code} out=${JSON.stringify(f6049.stdout.split('\n')[0])} chk=${chk6049.code} `
+    + `run=${run6049.code}:${JSON.stringify(run6049.stdout)} idem=${idem6049.code}\n`
+    + `${(chk6049.stderr ?? '').slice(0, 200)}`);
+
+  // ---- v60.50(A3):空结构体字面量规范为 E {} + 控制字符转义(仅 fmt 输出) ----
+  const p6050a = mk('fmt_empty_struct.ming', [
+    'struct E {}',
+    'fn f(e: E) -> i64 { return 1; }',
+    'fn main() with io { let e = E {  }; print(str(f(E {  }))); }',
+    '',
+  ].join('\n'));
+  const f6050a = runMing(['fmt', p6050a]);
+  fs.writeFileSync(p6050a, f6050a.stdout, 'utf8');
+  const chk6050a = runMing(['check', p6050a]);
+  const run6050a = runMing(['run', p6050a]);
+  const p6050b = mk('fmt_ctrl_str.ming', [
+    'fn main() with io { print("a\\rb\\0c\\u{1}d"); }',
+    '',
+  ].join('\n'));
+  const f6050b = runMing(['fmt', p6050b]);
+  fs.writeFileSync(p6050b, f6050b.stdout, 'utf8');
+  const chk6050b = runMing(['check', p6050b]);
+  const idem6050b = runMing(['fmt', p6050b, '--check']);
+  check('v60.50(A3):空结构体字面量 `E {}`(无双空格)+ \\r/\\0/控制字符按转义输出且 check/幂等',
+    f6050a.code === 0 && f6050a.stdout.includes('E {}') && !f6050a.stdout.includes('E {  }')
+    && chk6050a.code === 0 && run6050a.code === 0 && run6050a.stdout === '1\n'
+    && f6050b.code === 0 && f6050b.stdout.includes('"a\\rb\\0c\\u{1}d"')
+    && chk6050b.code === 0 && idem6050b.code === 0,
+    `empty=${f6050a.code} has=${f6050a.stdout.includes('E {}')} double=${f6050a.stdout.includes('E {  }')} `
+    + `chk=${chk6050a.code} run=${run6050a.code}:${JSON.stringify(run6050a.stdout)}\n`
+    + `ctrl=${f6050b.code} out=${JSON.stringify((f6050b.stdout.match(/print\\(.*\\)/) ?? [''])[0])} `
+    + `chk=${chk6050b.code} idem=${idem6050b.code}`);
+
+  // ---- v60.51(B1):同显示名不同目录的双模块各一份(按绝对路径去重,不跨目录误合并)----
+  // sub/a.ming 与 other/b.ming 都 `use util;` → 各自加载 sub/util.ming 与 other/util.ming,
+  // 两模块展示路径同为 "util.ming"(绝对路径不同)。旧实现按展示路径反查 abs → 两者合并成一份。
+  const d6051 = path.join(dir, 'dup-display');
+  fs.mkdirSync(path.join(d6051, 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(d6051, 'other'), { recursive: true });
+  const utilSrc6051 = [
+    'pub fn inc(a: i64) -> i64 requires a > 0 ensures result > a {',
+    '    return a + 1;',
+    '}',
+    'pub fn pick(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(d6051, 'sub', 'util.ming'), utilSrc6051);
+  fs.writeFileSync(path.join(d6051, 'other', 'util.ming'), utilSrc6051);
+  for (const m of ['sub', 'other']) {
+    fs.writeFileSync(path.join(d6051, m, m === 'sub' ? 'a.ming' : 'b.ming'), [
+      'use util;',
+      'pub fn run() -> i64 {',
+      '    return util.inc(util.pick([1, 2], 0));',
+      '}',
+      '',
+    ].join('\n'));
+  }
+  fs.writeFileSync(path.join(d6051, 'main.ming'), [
+    'use sub.a;',
+    'use other.b;',
+    'fn main() with io {',
+    '    print(str(a.run() + b.run()));',
+    '}',
+    '',
+  ].join('\n'));
+  const main6051 = path.join(d6051, 'main.ming');
+  const rep6051 = runMing(['check', main6051, '--proof-report']);
+  const outLines6051 = (rep6051.stdout ?? '').split('\n');
+  const incLines6051 = outLines6051.filter(l => l.includes('util.ming:inc: 契约摘要'));
+  const pickLines6051 = outLines6051.filter(l => l.includes('util.ming:pick: 义务'));
+  let repJson6051 = null;
+  try { repJson6051 = JSON.parse(runMing(['check', main6051, '--json', '--proof-report']).stdout); } catch { /* 断言处报错 */ }
+  const incSum6051 = (repJson6051?.proofs?.summaries ?? []).filter(s => s.fn === 'inc');
+  const pickFn6051 = (repJson6051?.proofs?.functions ?? []).filter(f => f.fn === 'pick');
+  const absSet6051 = new Set(pickFn6051.map(f => f.abs));
+  check('v60.51(B1):同显示名不同目录的 util.ming 各一份(文本 2 行/JSON 2 条,abs 不同)',
+    rep6051.code === 0 && incLines6051.length === 2 && pickLines6051.length === 2
+    && incSum6051.length === 2 && pickFn6051.length === 2 && absSet6051.size === 2,
+    `code=${rep6051.code} inc=${incLines6051.length} pick=${pickLines6051.length} `
+    + `jsonInc=${incSum6051.length} jsonPick=${pickFn6051.length} abs=${JSON.stringify([...absSet6051])}\n`
+    + `out=${JSON.stringify((rep6051.stdout ?? '').slice(0, 400))}`);
+
+  // ---- v60.52(B6):本地函数声明由检查器显式拒绝(M3047),三入口/三引擎不再崩溃 ----
+  const localCases6052 = [
+    ['top', [
+      'fn main() with io {',
+      '    fn twice(a: i64) -> i64 { return a * 2; }',
+      '    print(str(twice(3)));',
+      '}',
+      '',
+    ].join('\n')],
+    ['nested', [
+      'fn main() with io {',
+      '    if true {',
+      '        fn inner() -> i64 { return 7; }',
+      '        print(str(inner()));',
+      '    }',
+      '}',
+      '',
+    ].join('\n')],
+    ['value', [
+      'fn main() with io {',
+      '    fn inc(x: i64) -> i64 { return x + 1; }',
+      '    let w = [1, 2, 3].map(inc);',
+      '    print(str(w.len()));',
+      '}',
+      '',
+    ].join('\n')],
+    ['contract', [
+      'fn main() with io {',
+      '    fn inc(a: i64) -> i64 requires a > 0 ensures result > a { return a + 1; }',
+      '    print(str(inc(1)));',
+      '}',
+      '',
+    ].join('\n')],
+  ];
+  let localOk6052 = true;
+  const localDetail6052 = [];
+  for (const [kind, src] of localCases6052) {
+    const p = mk('local_fn_' + kind + '.ming', src);
+    const runs = [runMing(['check', p]), runMing(['run', p]), runMing(['run', p, '--tree']), runMing(['run', p, '--no-wasm'])];
+    // v0.56(C3):cc 入口同门禁断言(无编译器自动跳过)
+    const ccRun6052 = ccAvailA ? runMing(['cc', p]) : null;
+    if (ccRun6052) runs.push(ccRun6052);
+    const ok = runs.every(r => r.code === 1 && (r.stderr ?? '').includes('M3047[local-fn-unsupported]')
+      && (r.stderr ?? '').includes('本地函数') && !(r.stderr ?? '').includes('TypeError'));
+    if (!ok) localOk6052 = false;
+    localDetail6052.push(`${kind}:${JSON.stringify(runs.map(r => r.code))}`
+      + `:cc=${ccRun6052 ? ccRun6052.code : 'skip(无编译器)'}`
+      + `:${JSON.stringify((runs[0].stderr ?? '').split('\n')[0])}`);
+  }
+  check('v60.52(B6):本地函数(顶层/嵌套块/作值/带契约)check/run/--tree/--no-wasm 均 exit 1 + M3047,无 TypeError',
+    localOk6052, localDetail6052.join('\n'));
+
+  // ---- v60.53:块级 if 遮蔽的 cc 对照(§60 四引擎一致性;无 gcc 自动跳过)----
+  const p6053 = mk('block_shadow_cc.ming', [
+    'fn probe(c: i64) -> i64 {',
+    '    let x = 1;',
+    '    if c > 0 { let x = 2; }',
+    '    return x;',
+    '}',
+    'fn main() with io { print(str(probe(1))); print(str(probe(0))); }',
+    '',
+  ].join('\n'));
+  const vm6053 = runMing(['run', p6053]);
+  const cc6053 = ccAvailA ? runMing(['cc', p6053]) : null;
+  check('v60.53:if 块 let 遮蔽 cc 输出与 VM 一致(1/1;无 gcc 跳过)',
+    vm6053.code === 0 && vm6053.stdout === '1\n1\n'
+    && (!cc6053 || (cc6053.code === 0 && cc6053.stdout === '1\n1\n')),
+    `vm=${vm6053.code}:${JSON.stringify(vm6053.stdout)} `
+    + `cc=${cc6053 ? cc6053.code + ':' + JSON.stringify(cc6053.stdout) : 'skip(无编译器)'}`
+    + `${cc6053 ? '\n' + JSON.stringify((cc6053.stderr ?? '').slice(0, 200)) : ''}`);
+
+  // ---- v60.54(C1):ensures match 表达式自身压入的臂变量可解析(修复前 VM M4001 名字未解析 v)----
+  const r6054a = tri('c1_match_ok.ming', [
+    'fn f(a: i64) -> Result[i64, str] ensures match result { Ok(v) => v > 0, Err(_) => true } {',
+    '  return Ok(a);',
+    '}',
+    'fn g(a: i64) -> Option[i64] ensures match result { Some(v) => v > 0, None => true } {',
+    '  return Some(a);',
+    '}',
+    'fn main() with io {',
+    '  match f(5) { Ok(v) => print(str(v)), Err(_) => print("err") }',
+    '  match g(7) { Some(v) => print(str(v)), None => print("none") }',
+    '}',
+    '',
+  ].join('\n'), '5\n7\n');
+  const r6054b = triFail('c1_match_bad.ming', [
+    'fn f(a: i64) -> Result[i64, str] ensures match result { Ok(v) => v > 0, Err(_) => true } {',
+    '  return Ok(a);',
+    '}',
+    'fn main() with io {',
+    '  match f(-1) { Ok(v) => print(str(v)), Err(_) => print("err") }',
+    '}',
+    '',
+  ].join('\n'), '实际: Ok(-1)');
+  check('v60.54(C1):ensures match result 的臂变量可解析(Result 通过=5 / Option 通过=7 / 违反=Ok(-1);三引擎逐字一致)',
+    r6054a.ok && r6054b.ok, `${r6054a.detail}\n${r6054b.detail}`);
+
+  // ---- v60.55(C1):ensures if 块内 let 可解析(VM/VM-only 回归)----
+  // tree 侧同形态受 plan §5.1 #47(HEAD 既有:契约求值内嵌块尾值再次触发
+  // checkEnsures 重入)限制;测试允许"修复后 5"或"当前 M4005",不锁定缺陷。
+  const p6055 = mk('c1_if_let.ming', [
+    'fn f(a: i64) -> i64 ensures if a > 0 { let x = a; x > 0 } else { true } {',
+    '  return a;',
+    '}',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'));
+  const vm6055 = runMing(['run', p6055]);
+  const nw6055 = runMing(['run', p6055, '--no-wasm']);
+  const tree6055 = runMing(['run', p6055, '--tree']);
+  const treeKnown6055 = tree6055.code === 0
+    ? tree6055.stdout === '5\n'
+    : (tree6055.code === 101 && /M4005/.test(tree6055.stderr ?? ''));
+  check('v60.55(C1):ensures if 块内 let 可解析(VM/VM-only=5;tree 为 HEAD 既有 #47:M4005 或修复后 5)',
+    vm6055.code === 0 && vm6055.stdout === '5\n' && nw6055.code === 0 && nw6055.stdout === '5\n' && treeKnown6055,
+    `vm=${vm6055.code}:${JSON.stringify(vm6055.stdout)} vm-only=${nw6055.code}:${JSON.stringify(nw6055.stdout)} `
+    + `tree=${tree6055.code}:${JSON.stringify(tree6055.stdout)} first=${JSON.stringify((tree6055.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v60.56(C1):嵌套 match + 多个臂变量(b/e/v)在契约内可解析 ----
+  const r6056 = tri('c1_match_nested.ming', [
+    'fn f(a: i64, b: i64) -> Result[i64, str] ensures match result { Ok(v) => match v { 0 => b > 0, _ => v > b }, Err(e) => e.char_len() >= 0 } {',
+    '  if a > b { return Ok(a); }',
+    '  return Err("lo");',
+    '}',
+    'fn main() with io {',
+    '  match f(3, 0) { Ok(v) => print(str(v)), Err(e) => print(e) }',
+    '  match f(0, 0) { Ok(v) => print(str(v)), Err(e) => print(e) }',
+    '}',
+    '',
+  ].join('\n'), '3\nlo\n');
+  check('v60.56(C1):ensures 嵌套 match + 多臂变量(v/b/e)可解析(3/lo;三引擎逐字一致)', r6056.ok, r6056.detail);
+
+  // ---- v60.57(C1):match 臂块内 let 再嵌套 match(VM/VM-only 回归;tree 同 #47)----
+  const p6057 = mk('c1_arm_let.ming', [
+    'fn f(a: i64) -> Result[i64, str] ensures match result { Ok(v) => { let w = v * 2; match w { 0 => false, _ => w > 0 } }, Err(_) => true } {',
+    '  return Ok(a);',
+    '}',
+    'fn main() with io {',
+    '  match f(2) { Ok(v) => print(str(v)), Err(_) => print("err") }',
+    '}',
+    '',
+  ].join('\n'));
+  const vm6057 = runMing(['run', p6057]);
+  const nw6057 = runMing(['run', p6057, '--no-wasm']);
+  const tree6057 = runMing(['run', p6057, '--tree']);
+  const treeKnown6057 = tree6057.code === 0
+    ? tree6057.stdout === '2\n'
+    : (tree6057.code === 101 && /M4001|M4005/.test(tree6057.stderr ?? ''));
+  check('v60.57(C1):ensures 臂块内 let + 嵌套 match 可解析(VM/VM-only=2;tree 为 HEAD 既有 #47)',
+    vm6057.code === 0 && vm6057.stdout === '2\n' && nw6057.code === 0 && nw6057.stdout === '2\n' && treeKnown6057,
+    `vm=${vm6057.code}:${JSON.stringify(vm6057.stdout)} vm-only=${nw6057.code}:${JSON.stringify(nw6057.stdout)} `
+    + `tree=${tree6057.code}:${JSON.stringify(tree6057.stdout)} first=${JSON.stringify((tree6057.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v60.58(C2):含 ensures 的函数体内闭包 return——闭包不执行外层 ensures,外层出口仍检查 ----
+  const r6058a = tri('c2_lambda_return_ok.ming', [
+    'fn f(a: i64) -> i64 ensures result > 0 {',
+    '  let g: () -> i64 = () => { return 1; };',
+    '  let x = g();',
+    '  return a + x;',
+    '}',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'), '2\n');
+  const r6058b = triFail('c2_lambda_return_bad.ming', [
+    'fn f(a: i64) -> i64 ensures result > 0 {',
+    '  let g: () -> i64 = () => { return -5; };',
+    '  return a + g();',
+    '}',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'), '实际: -4');
+  check('v60.58(C2):闭包 return 不编译外层 ensures(闭包 -5 不触发;外层返回 -4 仍 M4015;三引擎一致)',
+    r6058a.ok && r6058b.ok, `${r6058a.detail}\n${r6058b.detail}`);
+
+  // ---- v60.59(C1):契约内臂变量与形参同名——词法遮蔽(臂变量优先,不得落到形参槽)----
+  const r6059 = triFail('c1_arm_shadow_param.ming', [
+    'fn f(v: i64) -> Result[i64, str] ensures match result { Ok(v) => v > 0, Err(_) => true } {',
+    '  return Ok(-5);',
+    '}',
+    'fn main() with io { match f(7) { Ok(x) => print(str(x)), Err(_) => print("err") } }',
+    '',
+  ].join('\n'), '实际: Ok(-5)');
+  check('v60.59(C1):契约内臂变量 v 遮蔽同名形参(v=-5 触发,不是形参 7;三引擎逐字一致)', r6059.ok, r6059.detail);
 }
 
 

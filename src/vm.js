@@ -934,7 +934,10 @@ export class VMInterp extends Interp {
 
   callClosure(clo, args, callSpan) {
     if (this.tree) return super.callClosure(clo, args, callSpan);
-    if (clo.t === 'vclose') return this.callCompiled(clo.fnIdx, args, callSpan, false);
+    // v0.56(#24):HOF(vecMethodImpl 等)经此处调用闭包;必须像 OP.CALL→callValue 一样
+    // 把闭包的捕获环境传给帧。此前漏传 → 帧 captures=null,闭包体 OP.LD(cap) 崩溃
+    // (TypeError: Cannot read properties of null)。仅修运行时帧解析,字节码/编译器不变。
+    if (clo.t === 'vclose') return this.callCompiled(clo.fnIdx, args, callSpan, false, clo.captures ?? []);
     return super.callClosure(clo, args, callSpan);
   }
 }

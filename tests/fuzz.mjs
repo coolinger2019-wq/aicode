@@ -6,6 +6,13 @@
 //         + "纯数值族"程序接入 C 后端第 4 腿(检测到 gcc/clang 时;C1 拒绝 = 发射器回归)
 //   v0.51.6:生成器补复合赋值形态(+=/-=/*=,含 while 循环内)——覆盖 VM 窥孔融合路径(#17 P0 bug 曾因从不生成 += 而漏网)
 //   v0.53:str 臂偶发 for ch in s { v += ch.char_len() as i64; }(UTF-8 码点迭代,C 腿自动覆盖)
+//   v0.56(#25):新增 wasm eligible 族——纯 i64 helper(无 io/无效果)+ 带 io 的 main 调用它,
+//               使 "VM+wasm" 腿真正执行 wasm(此前 main 恒带 io → main 永不 eligible,wasm 只在 VM 回落路径)。
+//               每次 wasm 族另起默认引擎子进程(MING_WASM_DEBUG=1 --strict-wasm)断言
+//               "[wasm] fn <helper> OK"、"[wasm 参数]"(实际调用)且无 REJECT/实例化失败。
+//   v0.56(3d):helper 增首参 Vec[i64](wasm 仅支持 Vec 形参在首位),新增 for-in 体内
+//               continue/break(F1)与 `%` 条件/while 内 `%` continue(F2)——两种形态修复前
+//               分别会挂起/整模块回落,现均应真实经 wasm 执行。
 // 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -52,8 +59,10 @@ const CCBIN = detectCC();
 
 // v0.53 审查修复:子进程默认剥离 MING_WASM_STRICT——开发者 shell 导出该变量后
 // 每条 run 腿都会以 strict 语义 exit 2,差分结果整批失真。模糊器观测的是默认静默回落行为。
+// v0.56(#25):同样剥离 MING_WASM_DEBUG——调试输出只在 wasm 存活断言子进程显式注入。
 const CHILD_ENV = { ...process.env };
 delete CHILD_ENV.MING_WASM_STRICT;
+delete CHILD_ENV.MING_WASM_DEBUG;
 
 // ---- 表达式生成:纯 i64;允许 panic(各后端须一致地 panic)----
 function genExpr(vars, depth) {
@@ -252,6 +261,115 @@ function genProgram(mode) {
   return lines.join('\n');
 }
 
+// ---- v0.56(#25):wasm eligible 族 ----
+// 纯 i64 helper(无 io/无效果;首参 Vec[i64],wasm 仅支持 Vec 形参在首位)+ 带 io 的 main
+// 构造 Vec 并调用、打印结果。形态池限制在 wasm 发射器**已实测可编译且可正确执行**的集合:
+//   数值运算(+ - * / % & | ^ << >>)、局部 let、复合赋值、语句 if/else-if、
+//   while(含体内语句 if)、一元负号/负字面量(v0.56 W1 修复后恢复)、
+//   循环体内 if 的 break/continue 与嵌套 while(v0.56 W2 修复后恢复)、
+//   for-in 体内 if 的 continue/break + `%` 条件(v0.56 3d F1/F2 修复后恢复)。
+// 实测剔除的形态(不修,仅记录;#25 要的是可编译族而不是扩大 wasm 面):
+//   - as 转换:emitBody 直接 REJECT("表达式 As");
+//   - if 表达式:plan §4.2.8 记录的已知回落形态(块类型索引);
+//   - f64 + while / Vec / Map / str:plan §4.2.8 记录的其他回落形态
+//     (f64 局部在既有 locals 声明索引偏移下无法安全记账,保持回落)。
+// 参数与常量刻意取小值,所有程序必终止且不溢出(wasm 族也要参与三腿逐字比对)。
+function genWasmStmt(s, lines) {
+  const kind = pick(['arith', 'arith', 'compound', 'bit', 'if', 'while', 'whileif', 'neg', 'wbreak', 'wcontinue', 'wnest', 'wmod', 'forcont']);
+  if (kind === 'arith') {
+    const form = pick([
+      `z = z + (a * ${int(1, 3)} - b);`,
+      `z = (z - a) * ${int(1, 3)} + b;`,
+      `z = z + (a + b * ${int(1, 3)});`,
+      `z = z - (a - b) * ${int(1, 2)};`,
+    ]);
+    lines.push('    ' + form);
+  } else if (kind === 'compound') {
+    lines.push(`    z ${pick(['+=', '-='])} ${pick(['a', 'b'])};`);
+    lines.push(`    z ${pick(['*= 2;', '*= 3;', '/= 3;', '/= 5;', '%= 97;'])}`);
+  } else if (kind === 'bit') {
+    lines.push(`    z = z ^ (a << ${int(1, 4)});`);
+    lines.push(`    z = z | (b & ${int(3, 15)});`);
+    if (rng() < 0.5) lines.push(`    z = z >> ${int(1, 3)};`);
+  } else if (kind === 'if') {
+    // v0.56 W1:负字面量阈值恢复(修复前 wasm 把 -c 编译成 c),两侧形态都生成
+    const c = int(-10, 20);
+    if (rng() < 0.4) {
+      lines.push(`    if z > ${c} { z = z - ${int(1, 5)}; } else if z > ${int(-10, c)} { z = z + ${int(1, 5)}; } else { z = z + ${int(1, 5)}; }`);
+    } else if (rng() < 0.3) {
+      lines.push(`    if -${int(1, 9)} < z { z = z - ${int(1, 5)}; } else { z = z + ${int(1, 5)}; }`);
+    } else {
+      lines.push(`    if z > ${c} { z = z - ${int(1, 5)}; } else { z = z + ${int(1, 5)}; }`);
+    }
+  } else if (kind === 'neg') {
+    // v0.56 W1:一元负号(此前 wasm 栈序反了 → 返回原值/负字面量比较失真;已修复)
+    const form = pick([
+      `z = z + (-a);`,
+      `z = (-b) + z;`,
+      `z = z - (-${int(1, 9)});`,
+      `z = z + (-${int(1, 9)});`,
+    ]);
+    lines.push('    ' + form);
+    lines.push(`    if z < -${int(1, 9)} { z = -z; }`);
+  } else if (kind === 'while') {
+    // 无 break/continue:while 体顶层语句发射正确
+    lines.push(`    let mut w${s} = 0;`);
+    lines.push(`    while w${s} < ${int(1, 4)} { z = z + (a % 3); z = z - ${int(0, 2)}; w${s} += 1; }`);
+  } else if (kind === 'whileif') {
+    lines.push(`    let mut w${s} = 0;`);
+    lines.push(`    while w${s} < ${int(1, 3)} { if w${s} > 1 { z = z - ${int(1, 4)}; } else { z = z + ${int(1, 4)}; } z = z + b; w${s} += 1; }`);
+  } else if (kind === 'wbreak') {
+    // v0.56 W2:循环体内 if 中的 break(br 深度此前未计入 if 块 → 死循环;已修复)
+    const k = int(2, 4);
+    lines.push(`    let mut wb${s} = 0;`);
+    lines.push(`    while wb${s} < ${k + int(1, 3)} { wb${s} += 1; if wb${s} == ${k} { break; } z = z + ${int(1, 4)}; }`);
+    lines.push(`    z = z + wb${s};`);
+  } else if (kind === 'wcontinue') {
+    // v0.56 W2:循环体内 if 中的 continue(此前 br 只到 if 末尾,循环体剩余部分未跳过;已修复)
+    const hi = int(4, 7);
+    const k = int(2, hi - 1);
+    lines.push(`    let mut wc${s} = 0;`);
+    lines.push(`    while wc${s} < ${hi} { wc${s} += 1; if wc${s} == ${k} { continue; } z = z + ${int(1, 3)}; }`);
+  } else if (kind === 'wnest') {
+    // v0.56 W2:嵌套 while/if——内层 break 只跳出内层,外层继续
+    const k = int(1, 3);
+    lines.push(`    let mut wi${s} = 0;`);
+    lines.push(`    while wi${s} < 3 { wi${s} += 1; if wi${s} == 2 { let mut wj${s} = 0; while wj${s} < ${k + 2} { if wj${s} >= ${k} { break; } wj${s} += 1; } z = z + wj${s}; } z = z + wi${s}; }`);
+  } else if (kind === 'wmod') {
+    // v0.56 3d F2:while 体内 `%` 条件 continue(修复前 inferNumType 非 + 二元推导
+    // undefined → "条件操作数 undefined" 整模块回落;合并 Binary case 后应真实经 wasm)
+    lines.push(`    let mut wm${s} = 0;`);
+    lines.push(`    while wm${s} < ${int(4, 7)} { wm${s} += 1; if wm${s} % 2 == 0 { continue; } z = z + wm${s}; }`);
+  } else if (kind === 'forcont') {
+    // v0.56 3d F1:for-in(Vec 形参)体内 continue/break——条件含循环变量,同时覆盖 F2。
+    // 修复前 continue 的 br 0 跳过循环尾 __i += 1 → 死循环;现应正常终止且三腿一致。
+    const lim = int(2, 4);
+    lines.push('    for e in vv {');
+    lines.push(`      if e % 2 == 0 { continue; }`);
+    lines.push(`      if e > ${lim} { break; }`);
+    lines.push(`      z = z + e * ${int(1, 2)};`);
+    lines.push('    }');
+  }
+}
+
+function genWasmProgram() {
+  const helper = 'wf';
+  // v0.56 3d:Vec 形参必须在首位(wasm 导出/桥接对 Vec 句柄位置敏感;放后位模块校验失败)。
+  const lines = [`fn ${helper}(vv: Vec[i64], a: i64, b: i64) -> i64 {`, '    let mut z = a + b;'];
+  const n = int(3, 6);
+  for (let s = 0; s < n; s++) genWasmStmt(s, lines);
+  lines.push('    return z;');
+  lines.push('}');
+  // 两次调用:重复经 wasm 导出执行为一次程序,同时覆盖不同实参
+  lines.push('fn main() with io {');
+  const vecLit = (cnt) => '[' + Array.from({ length: cnt }, () => int(1, 6)).join(', ') + ']';
+  lines.push(`    let v1 = ${vecLit(int(2, 5))};`);
+  lines.push(`    let v2 = ${vecLit(int(2, 5))};`);
+  lines.push(`    print(str(${helper}(v1, ${int(-9, 9)}, ${int(-9, 9)}) + ${helper}(v2, ${int(-9, 9)}, ${int(-9, 9)})));`);
+  lines.push('}');
+  return { src: lines.join('\n'), helper };
+}
+
 const norm = (r) => JSON.stringify([r.code, r.stdout, (r.stderr.match(/M\d{4}/) ?? [null])[0]]);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-fuzz-'));
 const prog = path.join(TMP, 'fuzz.ming');
@@ -259,14 +377,48 @@ const ccDir = CCBIN ? path.join(TMP, 'ccout') : null;
 if (ccDir) fs.mkdirSync(ccDir, { recursive: true });
 const ccSrc = path.join(TMP, 'ccfuzz.ming');
 
-let passed = 0, diverged = 0, skipped = 0, ccLegs = 0;
+let passed = 0, diverged = 0, skipped = 0, ccLegs = 0, wasmLive = 0;
 for (let i = 0; i < COUNT; i++) {
-  // v0.39:约 40% 生成 cc 族(纯数值,C 后端 C1 面内)——有编译器时跑第 4 腿
-  const mode = CCBIN && rng() < 0.4 ? 'cc' : 'wide';
-  const src = genProgram(mode);
+  // v0.56(#25):每轮先定族。首轮固定 wasm 族(COUNT>=1 必有真实 wasm 覆盖);
+  // 其余约一半按种子决定 → "wasm 真实执行"计数随种子变化且可复现。
+  const wasmFam = i === 0 || rng() < 0.5;
+  let mode = null, src = null, helper = null;
+  if (wasmFam) {
+    const g = genWasmProgram();
+    src = g.src;
+    helper = g.helper;
+    mode = 'wasm';
+  } else {
+    // v0.39:约 40% 生成 cc 族(纯数值,C 后端 C1 面内)——有编译器时跑第 4 腿
+    mode = CCBIN && rng() < 0.4 ? 'cc' : 'wide';
+    src = genProgram(mode);
+  }
   if (i === DUMP) { console.log(src); process.exit(0); }
   fs.writeFileSync(prog, src);
   const run = (extra) => spawnSync(process.execPath, [MING, 'run', prog, ...extra], { encoding: 'utf8', cwd: ROOT, timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024, env: CHILD_ENV });
+  // v0.56(#25):eligible 族存活断言——默认引擎 + MING_WASM_DEBUG=1(--strict-wasm 把
+  // 静默回落变成 exit 2)。必须看到 helper 编译 OK 且真正被调用([wasm 参数]);
+  // 出现 REJECT/实例化失败即判分歧(生成器形态回退到不可编译集合)。
+  if (wasmFam) {
+    const dbg = spawnSync(process.execPath, [MING, 'run', prog, '--strict-wasm'], {
+      encoding: 'utf8', cwd: ROOT, timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024,
+      env: { ...CHILD_ENV, MING_WASM_DEBUG: '1' },
+    });
+    const derr = dbg.stderr ?? '';
+    const live = dbg.status === 0
+      && derr.includes(`[wasm] fn ${helper} OK`)
+      && derr.includes('[wasm 参数]')
+      && !derr.includes('REJECT')
+      && !derr.includes('实例化失败');
+    if (!live) {
+      diverged++;
+      console.error(`\n=== 分歧 #${i} (seed=${SEED}, mode=wasm) —— wasm 存活断言失败 ===`);
+      console.error(src);
+      console.error('stderr:', derr.slice(0, 600));
+      break;
+    }
+    wasmLive++;
+  }
   const rt = run(['--tree']);
   const rw = run([]);
   const rj = run(['--no-wasm']);
@@ -304,5 +456,5 @@ for (let i = 0; i < COUNT; i++) {
   break;
 }
 fs.rmSync(TMP, { recursive: true, force: true });
-console.log(`模糊基线:种子 ${SEED},${COUNT} 程序,一致 ${passed}${CCBIN ? `(其中 C 腿 ${ccLegs})` : '(无编译器,C 腿未启用)'},分歧 ${diverged},跳过 ${skipped}`);
+console.log(`模糊基线:种子 ${SEED},${COUNT} 程序,一致 ${passed}${CCBIN ? `(其中 C 腿 ${ccLegs})` : '(无编译器,C 腿未启用)'},wasm 真实执行 ${wasmLive} 程序,分歧 ${diverged},跳过 ${skipped}`);
 process.exit(diverged ? 1 : 0);

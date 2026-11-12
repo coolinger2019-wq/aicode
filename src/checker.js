@@ -829,6 +829,11 @@ export class Checker {
         const t = this.constExprType(ast.expr, mod, visiting);
         const r = resolveT(t, new Map());
         if (ast.op === '!' && r?.k === 'bool') return T_BOOL;
+        // v0.56(A2):const 初始化式与普通表达式同一规则——无符号整数不可取负。
+        if (ast.op === '-' && r?.k === 'int' && !r.signed) {
+          this.diags.push(err('M3008', `一元 "-" 不支持无符号整数 ${typeStr(r)}(无符号取负无意义;先 "as i64" 再取负)`, ast.span));
+          return t;
+        }
         if (ast.op === '-' && (r?.k === 'int' || r?.k === 'float')) return t;
         this.diags.push(err('M3031', '常量表达式:一元运算只支持 - (数字) 与 ! (bool)', ast.span));
         return null;
@@ -1469,39 +1474,29 @@ export class Checker {
         return;
       }
       case 'FnStmt': {
-        // 本地函数:不能捕获外部局部变量;可递归;效果独立声明
+        // v0.56(B6):本地函数暂不支持。VM/字节码编译器尚无本地函数编译路径
+        // (VM 对任意本地函数声明直接 TypeError;本地函数作值把 tree/VM 分歧;契约被 tree 静默忽略),
+        // 因此在声明处统一显式拒绝(M3047),不再让默认引擎崩溃。计划 v0.57 后恢复(plan §5.1 #44)。
+        // 任何位置(函数体顶层/嵌套块)与非本地函数一样先经过 checkStmt,故一处拦截即覆盖全部形态;
+        // 本地函数作值(v.map(inc))/带契约形态也由声明处同一诊断拦截(不产生后续级联崩溃)。
+        // 仍登记签名(不检查函数体):调用点/作值处可按签名继续检查,避免 M3047 后叠加一串
+        // "找不到值 X" 的级联噪声——统一诊断只报一处声明错误。
         const d = s.decl;
         const tp = new Map(d.tparams.map(n => [n, { k: 'param', name: n }]));
         const effects = new Set();
         for (const e of d.effects ?? []) {
-          if (!KNOWN_EFFECTS.has(e.name)) {
-            this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
-            continue;
-          }
-          effects.add(e.name);
+          if (KNOWN_EFFECTS.has(e.name)) effects.add(e.name);
+          else this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
         }
-        const sig = {
+        ctx.scope.registerLocalFn(d.name, {
           tparams: d.tparams,
           params: d.params.map(p => ({ name: p.name, mut: !!p.mut, type: this.resolveTypeAst(p.type, ctx.mod, tp), span: p.span })),
           ret: d.ret ? this.resolveTypeAst(d.ret, ctx.mod, tp) : T_UNIT,
           effects,
-        };
-        const scope = new Scope(ctx.mod.rootScope, ctx.mod);
-        for (const p of sig.params) scope.bind(p.name, p.type, p.mut, p.span, true);
-        const inner = { mod: ctx.mod, scope, fnRet: sig.ret, inLoop: false, fnName: d.name, warnings: this.diags, genericNames: new Set(d.tparams), rootScopeOnly: true, effects };
-        const bt = this.checkBlock(d.body, inner, null);
-        const binds = new Map();
-        if (sig.ret.k === 'unit') {
-          if (!unify(bt, T_UNIT, binds) && bt.k !== 'never') {
-            this.diags.push(err('M3002', `函数 "${d.name}" 没有返回类型,但块产生了值`, d.body.span));
-          }
-        } else if (bt && bt.k === 'unit') {
-          this.diags.push(err('M3017', `函数 "${d.name}" 标注返回 ${typeStr(sig.ret)},但有的执行路径不返回值`, d.body.span));
-        } else if (bt && !unify(bt, sig.ret, binds) && bt.k !== 'never') {
-          this.diags.push(err('M3002', `函数 "${d.name}" 返回类型不匹配:声明 ${typeStr(sig.ret)},实际 ${typeStr(bt, binds)}`, d.body.span));
-        }
-        scope.reportUnused(this.diags);
-        ctx.scope.registerLocalFn(d.name, sig);
+        });
+        this.diags.push(err('M3047',
+          `本地函数 "${d.name}" 暂不支持:VM 后端尚未实现本地函数编译;请移到模块级或改用具名顶层函数(计划 v0.57 后恢复)`,
+          d.span ?? s.span));
         return;
       }
       default:
@@ -1757,6 +1752,13 @@ export class Checker {
         }
         if (r?.k === 'param') {
           this.diags.push(err('M3018', `泛型参数上不能做一元 "-" 运算(v0.1 泛型是参数化的)`, e.expr.span));
+          return t;
+        }
+        // v0.56(A2):无符号取负在任何引擎都没有一致语义(wasm/C 回绕、tree 负值、
+        // VM panic)——在类型层直接拒绝。先 "as i64" 再取负即可。
+        if (r?.k === 'int' && !r.signed) {
+          this.diags.push(err('M3008', `一元 "-" 不支持无符号整数 ${typeStr(r)}(无符号取负无意义;先 "as i64" 再取负)`, e.expr.span,
+            '先转换为 i64 再取负:-(x as i64)。'));
           return t;
         }
         if (r?.k === 'int' || r?.k === 'float') return t;
@@ -2501,7 +2503,21 @@ export class Checker {
   // v0.55 阶段 2:post 不再由 checker 独立预证,而是把 provenPostFor 作为第三参交给
   //   computeSummaries —— 它按拓扑序调用,回调拿到已算出的被调摘要,于是 post 的证明
   //   可以假设"已证被调 ensures"(requires 完整且当前路径可证才采用),形成链式证明。
+  // v0.56(#32):无任何 requires/ensures 的模块跳过摘要表构建——M3042/M3041/调用点后置
+  //   假设与 --proof-report 摘要都只消费带契约的函数;空表与现行为等价(报告不再为
+  //   无契约模块列出 "requires=无 ensures=无" 行)。调用点线性上下文(依赖实参而非契约)
+  //   保持不变,见 checkBodies。
   buildSummaries(mod) {
+    let hasContract = false;
+    for (const [, entry] of mod.items) {
+      if (entry.kind !== 'fn') continue;
+      if (entry.decl?.requires || entry.decl?.ensures) { hasContract = true; break; }
+    }
+    if (!hasContract) {
+      const empty = new Map();
+      this.summariesByMod.set(mod, empty);
+      return empty;
+    }
     const fns = [];
     const entryByName = new Map();
     for (const [, entry] of mod.items) {
@@ -2566,6 +2582,7 @@ export class Checker {
         const st = this.callStats.get(entry) ?? { proven: 0, violated: 0 };
         out.push({
           file: entry.decl.span?.file ?? mod.file,
+          abs: mod.absPath, // v0.56(B1):报告去重键的成分(展示路径可跨目录同名)
           fn: entry.decl.name,
           requires_present: entry.decl.requires != null,
           requires_complete: sum.requires !== null,
@@ -3339,7 +3356,9 @@ export class Checker {
     //    不进诊断通道、不影响退出码 —— 与 M3045/W3105 共存而不冲突
     if (obligations.length > 0) {
       const file = obResults[0].ob.span.file ?? mod.file;
-      const rec = { file, fn: d.name, total: obligations.length, proven: 0, violated: 0, unproven: 0, obligations: [] };
+      // v0.56(B1):记录携带模块绝对路径——多入口/同显示名不同目录时,报告去重按 abs+fn,
+      // 不能再用展示路径(file)反查(util.ming 会被跨目录误合并)。
+      const rec = { file, abs: mod.absPath, fn: d.name, total: obligations.length, proven: 0, violated: 0, unproven: 0, obligations: [] };
       for (const r of obResults) {
         rec[r.kind]++;
         rec.obligations.push({

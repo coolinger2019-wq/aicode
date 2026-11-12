@@ -246,10 +246,13 @@ export class Lexer {
       buf += this.adv();
     }
     flush(); // 冲刷插值之后的尾部字面量
+    // v0.56(A3):保存原始源文本(含引号;raw 字符串含 r 前缀),供 fmt 契约 else
+    // 消息逐字回写(插值消息不会因解码失败而被丢弃)。
+    const rawText = this.src.slice(m.i, this.i);
     if (parts.length === 0 || (parts.length === 1 && 'lit' in parts[0])) {
-      this.tokens.push(new Token('str', parts.map(p => p.lit ?? '').join(''), this.spanFrom(m)));
+      this.tokens.push(new Token('str', parts.map(p => p.lit ?? '').join(''), this.spanFrom(m), { raw: rawText }));
     } else {
-      this.tokens.push(new Token('str', null, this.spanFrom(m), { parts }));
+      this.tokens.push(new Token('str', null, this.spanFrom(m), { parts, raw: rawText }));
     }
   }
 

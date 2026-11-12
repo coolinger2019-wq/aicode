@@ -368,7 +368,10 @@ export function intBin(op, a, b, span = null) {
       }
       case '-': {
         const r = av - bv;
-        if (!Number.isSafeInteger(r)) return intBinSlow(op, a, b, span);
+        // v0.56(A2):快路径也要做 fit 检查——无符号 (0u64 - 1u64) 的结果是负数,
+        // 旧实现直接返回 V.int(-1, 64, false),导致 tree/VM 输出 -1 而 wasm/C
+        // 报 M4002。不 fit 时走 BigInt 精确路径(统一 panic)。
+        if (!Number.isSafeInteger(r) || !fits(r, bits, signed)) return intBinSlow(op, a, b, span);
         return V.int(r, bits, signed);
       }
       case '*': {
@@ -476,6 +479,8 @@ export class Interp {
     this.runStart = Date.now();
     this.capture = opts.capture ?? false;      // 测试模式:捕获 print
     this.ensuresStack = [];                    // v0.51:当前函数帧的 ensures(contract 覆盖所有返回路径)
+    // v0.56(A1):当前函数帧的合约环境(仅形参绑定;body 的 let 不得遮蔽契约变量)
+    this.contractEnvStack = [];
     this.captured = [];
     this.stdin = opts.stdin ?? null;           // 预读的 stdin 文本
     this.stdinPos = 0;
@@ -484,6 +489,9 @@ export class Interp {
     this.steps = 0;
     this.depth = 0;
     this.callStack = []; // {name, span}
+    // v0.56(#28):块是否需要独立环境(let/本地 fn 才引入绑定);按 AST 块缓存,
+    // 无绑定块(如循环体 total += i)直接复用父环境,避免每次进入块分配 Map。
+    this.blockScopeCache = new WeakMap();
   }
 
   write(s) {
@@ -499,6 +507,23 @@ export class Interp {
 
   // 模块环境:全局为空(模块项按名字解析),每个模块一个根 env
   rootEnv(mod) { return { vars: new Map(), parent: null, mod }; }
+
+  // v0.56(#23/#28):块作用域子环境。每次进入块(let 所在块/循环体/if/match 臂/unsafe 等)
+  // 建立一层;名字解析沿 parent 链(见 lookupVar),因此外层变量仍可见可赋值,
+  // 而块内 let 与循环变量只写本层,退出块即消失。localFns 不预置:FnStmt 按需在
+  // 本层创建,未创建时 lookupVar 沿 parent 查外层声明。
+  childEnv(env) { return { vars: new Map(), parent: env, mod: env.mod }; }
+
+  // v0.56(#28):块只在本层引入绑定(let / 本地 fn)时才需要独立环境;
+  // 无绑定块与父环境语义等价(赋值仍经 lookupVar 穿透),复用父环境以保持性能。
+  blockNeedsScope(block) {
+    let need = this.blockScopeCache.get(block);
+    if (need === undefined) {
+      need = block.stmts.some(s => s.nt === 'Let' || s.nt === 'FnStmt');
+      this.blockScopeCache.set(block, need);
+    }
+    return need;
+  }
 
   runMain(argv = []) {
     const entry = this.entry;
@@ -561,6 +586,9 @@ export class Interp {
     }
     this.callStack.push({ name: decl.name, span: callSpan });
     this.ensuresStack.push(decl.ensures ?? null);
+    // v0.56(A1):合约环境 = 形参帧 fenv。body 块环境是它的子环境,let 只写子层;
+    // mut 形参重赋值写回 fenv,因此合约看到形参最终值(v0.49 既有语义)。
+    this.contractEnvStack.push(fenv);
     try {
       this.step();
       if (decl.requires) {
@@ -573,6 +601,7 @@ export class Interp {
       this.depth--;
       this.callStack.pop();
       this.ensuresStack.pop();
+      this.contractEnvStack.pop();
       return v ?? UNIT;
     } catch (e) {
       // v0.30 修复:callStack 一直存在但从未接到 Panic.stack——"panic 输出 Ming 层调用栈"的
@@ -583,6 +612,7 @@ export class Interp {
       this.depth--;
       this.callStack.pop();
       this.ensuresStack.pop();
+      this.contractEnvStack.pop();
       if (e instanceof RetSig) return e.value;
       throw e;
     }
@@ -592,8 +622,13 @@ export class Interp {
   checkEnsures(env, tv, span) {
     const ens = this.ensuresStack[this.ensuresStack.length - 1];
     if (!ens) return;
-    env.vars.set('result', deepCopy(tv ?? UNIT));
-    const rv = this.evalExpr(ens.expr, env);
+    // v0.56(A1):契约名字解析只基于合约环境(形参帧),不接受 body 当前块环境——
+    // 否则 `let a = ...`/`let result = ...` 会遮蔽形参或返回值。result 写入合约
+    // 环境的独立子层,恒指返回值(形参同名也不影响)。
+    const base = this.contractEnvStack.length ? this.contractEnvStack[this.contractEnvStack.length - 1] : env;
+    const renv = this.childEnv(base);
+    renv.vars.set('result', deepCopy(tv ?? UNIT));
+    const rv = this.evalExpr(ens.expr, renv);
     if (!(rv.t === 'bool' && rv.v)) {
       throw new Panic('M4015', ens.msg ? `契约违反: ${ens.msg} (实际: ${debugStr(tv ?? UNIT)})` : `契约违反: ensures (实际: ${debugStr(tv ?? UNIT)})`, ens.span ?? span);
     }
@@ -644,10 +679,14 @@ export class Interp {
 
   // ---------- 语句 ----------
   execBlock(block, env, ctx) {
-    for (const s of block.stmts) this.execStmt(s, env, ctx);
+    // v0.56(#28):块体在子环境执行——let 只写本块;块尾表达式/return/ensures 亦在子环境
+    // 求值(沿 parent 可见外层变量)。if/match 臂/unsafe/sync scope/BlockExpr/循环体/函数体
+    // 全部经此入口,自动获得词法块作用域;无绑定块复用父环境(blockNeedsScope)。
+    const benv = this.blockNeedsScope(block) ? this.childEnv(env) : env;
+    for (const s of block.stmts) this.execStmt(s, benv, ctx);
     if (block.tail) {
-      const tv = this.evalExpr(block.tail, env);
-      this.checkEnsures(env, tv, block.tail.span);
+      const tv = this.evalExpr(block.tail, benv);
+      this.checkEnsures(benv, tv, block.tail.span);
       return tv;
     }
     return UNIT;
@@ -690,8 +729,11 @@ export class Interp {
           const v = this.evalExpr(s.expr, env);
           const binds = this.matchPattern(s.pat, v);
           if (!binds) break;
-          for (const [k, val] of binds) env.vars.set(k, deepCopy(val));
-          try { this.execBlock(s.body, env, ctx); }
+          // v0.56(#23):模式变量绑定到本次迭代的子环境,循环结束不外泄;
+          // 循环体 execBlock 在其下再建一层,沿 parent 链可见。
+          const ienv = this.childEnv(env);
+          for (const [k, val] of binds) ienv.vars.set(k, deepCopy(val));
+          try { this.execBlock(s.body, ienv, ctx); }
           catch (e) { if (e instanceof BrkSig) break; if (e instanceof ContSig) continue; throw e; }
         }
         return;
@@ -700,8 +742,11 @@ export class Interp {
         const it = this.evalExpr(s.iter, env);
         for (const item of this.iterate(it, s.iter.span)) {
           this.step();
-          this.bindPattern(s.pat, item, env);
-          try { this.execBlock(s.body, env, ctx); }
+          // v0.56(#23):循环变量每迭代为内层绑定(与 VM/compiler 的 pushScope 一致),
+          // 外层同名变量不被改写,循环结束不泄漏末次迭代值。
+          const ienv = this.childEnv(env);
+          this.bindPattern(s.pat, item, ienv);
+          try { this.execBlock(s.body, ienv, ctx); }
           catch (e) { if (e instanceof BrkSig) break; if (e instanceof ContSig) continue; throw e; }
         }
         return;

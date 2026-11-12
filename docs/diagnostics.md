@@ -1,4 +1,4 @@
-# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.55.0)
+# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.56.0)
 
 诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27-v0.30 无新增码(错误链复用既有码面,新增可选字段)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。
@@ -117,6 +117,7 @@
 | M3044 | invalid-map-key | Map 键类型必须是 int/float/bool/str(Vec/struct/enum 键无值语义相等)(v0.51.4) |
 | M3045 | index-bounds-violated | 静态边界证明(QF_LIA 第二片):在 requires 线性边界 + 直线体下,Vec 索引义务(`0 <= i` 或 `i < len$buf`,len$x 为非 mut `Vec[i64]` 参数的长度符号)被可证违反——所有满足 requires 的调用都会 M4003 panic;含小值反例(i64 参数 ∈ {-2..2}、len$x ∈ 0..8 确定性枚举;反例满足完整 requires——按被跳过但可求值的 requires 叶子过滤,无候选则不给反例)。未证明不报告;requires 自相矛盾(负环)整函数跳过;不改运行时语义(v0.52) |
 | M3046 | unsafe-context-required | v0.54:指针操作(`p.load/store/offset`、`std.mem.alloc/free`)、Ptr 实参传递给非 extern 函数,或把含 Ptr 的值装进容器/构造器(`Vec.push/insert/extend`、`Map.set`/Map 字面量、`Some/Ok/Err` 等变体、元组/结构体字面量;判定为递归类型谓词 `typeContainsPtr`,含 Ptr 的容器传给普通函数同样拒绝),出现在 `unsafe { ... }` 块外;所在函数还必须声明 `with unsafe`(缺效果声明报 M3029)。块外只允许 let/赋值/return 传递与 `p.is_null()` |
+| M3047 | local-fn-unsupported | v0.56:本地函数声明(`fn main() { fn twice(...) ... }`,函数体顶层或嵌套块)暂不支持——VM/字节码编译器尚无本地函数编译路径(此前默认 VM 直接 TypeError,本地函数作值使 tree/VM 分歧,契约被 tree 静默忽略)。检查器在声明处统一显式拒绝(error),`check`/`run`/`run --tree`/`cc` 同一门禁;本地函数作值(`v.map(inc)`)与带契约形态由声明处同一诊断拦截。修复方向:移到模块级顶层函数;计划 v0.57 后恢复(plan §5.1 #44) |
 
 ## 约定
 

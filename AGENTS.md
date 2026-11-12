@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.55.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.56.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.55.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（694 项，含各版本分节 §1..§59；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（764 项，含各版本分节 §1..§60；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
 tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
@@ -117,18 +117,18 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 
 ## 9. 已知陷阱
 
-- **wasm 静默回落**：`tryCompileWasm` 失败返回 null 不报错；排查用 `MING_WASM_DEBUG=1`，并要求 `[wasm] fn <名字> OK` 且无 `REJECT`；或加 `--strict-wasm`（回落 → exit 2 并点名函数/原因）。已知残留形态（f64+while、if 表达式块类型）见 plan §4.2.8 Backlog。
+- **wasm 静默回落**：`tryCompileWasm` 失败返回 null 不报错；排查用 `MING_WASM_DEBUG=1`，并要求 `[wasm] fn <名字> OK` 且无 `REJECT`；或加 `--strict-wasm`（回落 → exit 2 并点名函数/原因）。v0.56 已修 W1 一元负号 / W2 循环内 if 的 break-continue br 深度 / F1 for-in continue 自增 / F2 `inferNumType`；**剩余回落形态**（不影响语义，strict 可见）：#40 f64 局部/Map 字面量致 locals 索引偏移（违规函数 REJECT，同模块其他函数仍可经 wasm 执行）、#41 Map 形参 slotTypes、#42 多 Vec/与 f64 形参组合时 locals 类型错位（后位单个 Vec 形参实测 OK）、#43 str 返回 retTy、#45 值型 if blocktype 编码失败、#46 块尾 unit 上下文 if 按值编译（`REJECT: if 无 else`）——见 plan §4.3.8/§5.1。
 - **C 后端 panic 对齐**：`ming run` 的 panic stderr 含源码摘录与调用栈；C 侧只复刻**首行**（差分与测试均按首行比对）。
 - **CRLF**：C 产物用 `_setmode(_O_BINARY)` 关闭 CRLF 翻译；`.gitignore` 与会话工件保持干净。
 - **mingkit 转义**：只认 `\n \t \\` 一层；透明转义不存在，未知转义原样保留——嵌套 shell 时注意层数。
 - **`Json` 类型**：unify 曾有 json 缺失分支 bug（v0.44 修）；Json 值可赋值/传参，但结构体不自动序列化（M3033）。
 - **VM 操作数栈**：全帧共享 `valueStack`；`RET`/`?` 提前返回会截断到帧 `stackBase`（v0.44 修复 match-arm-return 残留）。
-- **fmt 需两遍到定点**：注释瀑布按源行距保留空行,一次 `--write` 后注释占行可能触发再排;跑到 `fmt --check` 全绿为止(2026-11-12 已登记 plan.md #20)。
+- **fmt 需两遍到定点**：注释瀑布按源行距保留空行,一次 `--write` 后注释占行可能触发再排;跑到 `fmt --check` 全绿为止(2026-11-12 已登记 plan.md #20)。v0.56 起 else/else-if 头行尾注释已一遍到定点(#22),且 `requires`/`ensures`/`invariant` 不再被 fmt 丢弃(#36);契约 `else` 插值消息已由 `msgRaw` 原样保留(v0.56.0 修,#39;运行时消息语义不变)。
 - **strict-wasm 与解释器旗标互斥**：`--strict-wasm`（或 `MING_WASM_STRICT=1`）观测的正是 wasm 分层本身，与 `--tree`/`--no-wasm` 同时出现 → exit 1；strict 下 eligible>0 回落 → exit 2，非 strict 仍静默回落 exit 0（§57 v53.1-7 锁定）。
 - **模糊器覆盖不等于语义证明**：v0.51.6 起生成器已含 `+=/-=/*=`（含 while 内）；VM 复合赋值窥孔 bug 曾因早期生成器不生成 `+=` 漏网。语义可疑时仍要写最小 .ming 复现跑 `--tree` 对照，别只信模糊绿。
 - **unsafe 仅 C 原生可用**：`with unsafe`/`Ptr`/`std.mem` 在 tree/VM（以及 wasm 回落 VM）以 **M4016** panic（exit 101，消息逐字）；`ming cc` 是唯一真实执行者（C5 旗标仅 cc 路径传入）。`std.mem.alloc` 的 malloc 失败复用 **M4011**（不返回空指针）。悬垂/越界解引用是进程级 UB，Ming 不捕获——写 unsafe 测试时不要制造越界访问（§58 黄金均用 1–3 字节分配且界内）。
 
 ## 10. 当前状态与下一步
 
-- **v0.55.0**：694 项测试全绿；**跨函数契约摘要（QF_LIA 第三片，plan §4.2.6）**——`src/prover.js` `computeSummaries`（Tarjan SCC 环检测 + 被调方优先拓扑序 + 硬门控：requires 不完整/环上 → ensures 不采用）；调用点线性前置证明（M3041 扩展，非字面量实参；可证违反 + 小值反例）；调用后置条件假设（被调 requires 完整且当前路径可证才采用其已证 ensures，`result` 绑定每次调用独有 `res$N` 符号；未证明前置条件绝不假设）；M3042 假设集扩展（本函数 requires + 已验证调用后置；反例须满足假设集；不可判定静默，运行时 M4015 保留）；`--proof-report` 新增契约摘要（文本 `requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>` + additive `proofs.summaries`（含 `requires_present/ensures_present`）；无旗标输出与 v0.54.0 逐字一致）；无新诊断码、codegen 零改动；`proof_fuzz --mode summaries --count 300` 可证 150 / 违反 75 / 静默 50 / 易误报 25 / 误报 0（反例独立验证 75/75）。**v0.55.0 独立审查修复**：B1 直线体共享判定（`exprIsLinear`/`stmtIsLinear`；If/Match/BlockExpr/Loop/Lambda 及含 Return/Assign/Break/Continue 的表达式不再被穿透，三 walker 统一；分支内形参重赋值不再产生错误摘要/误报 M3041/M3042/M3045）；B2 短路 `&&`/`||` 右侧不作为无条件调用点（左侧仍收集）；B3 M3041 反例按调用方 requires 上下文枚举（常量实参直报常量值）；B4 proof_fuzz summaries 增分支/重赋值/短路语料与摘要采用负控；M5 JSON 摘要新增 present 字段；M6 `+=/-=/*=` 常量复合赋值线性转移；M7 下界 requires 反例形态；N10 toLinear/computePost 注入 op 校验。v0.52–v0.55 路线已全部交付。
-- 下一步见 `docs/plan.md §4.3`（v0.56–v0.60 规划：v0.56 引擎一致性与缺陷清零 #23/#24/#28/#33 → v0.57 循环/守卫边界证明 → v0.58 LSP/Builder/doc → v0.59 服务端 ADR → v0.60 taint/mask ADR）与 `docs/plan.md §5.1` 已知缺陷 #23–#35；v0.52–v0.55 无待办计划任务。
+- **v0.56.0**（2026-11-12，质量版，无新语言面）：764 项测试全绿（§60 共 70 项）。**引擎一致性清零**：tree 作用域模型统一（#23/#28：execBlock 子环境 + for-in/while-let 每迭代内层绑定，tree/VM 逐字一致；tree bench +5–32%，循环项最大——语义修复代价）；VM 捕获闭包 + HOF 修复（#24：`callClosure` 漏传 `captures` 一行修复）。**契约**：尾部裸标识歧义（#33：requires/ensures 专用解析模式 + struct literal 前瞻）；fmt 契约保真（#36 P1 数据丢失：requires/ensures/invariant 及其 else 消息逐字保留、幂等、既有文件零改写；else 插值消息经 `msgRaw` 原样保留，#39 已修）。**wasm 四个严格模式语义修复**（均 P1）：W1 一元负号栈序、W2 循环内 if 的 break/continue br 深度、F1 for 体内 continue 跳过自增、F2 `inferNumType` 重复 case。**验证与构建**：fuzz 真实 wasm 腿（#25：eligible helper + `[wasm] fn OK` 断言，三种子计数 20/16/18）；buildKey 编译器源指纹（#26：`compilerSourceHash` + `build --json` additive `compiler_hash`；敏感性回归覆盖 src 与 bin）。**工具链**：#22/#29/#30/#31/#32/#34 已修。**v0.56 独立审查修复**：契约作用域（B3）、u64 一元负号 M3008、u64 减法四引擎 M4002、fmt 契约破坏三修；#31 去重改按模块身份（record `abs`，同显示名不同目录不合并）；#26 指纹补 `bin/*.js`；**M3047[local-fn-unsupported]** 本地函数声明显式拒绝（VM 不再 TypeError；#37/#38 由本诊断收口，恢复登记 plan §5.1 #44）。收口新登记 #37–#46（#37/#38 已修；#39 已修（msgRaw）；#40–#43 与新增 #45/#46 见 plan §5.1/§4.3.8）。**复审阻塞回归 C1/C2 已修**：ensures 自身作用域基线（match 臂变量/if 块 let 可解析，形参遮蔽按词法优先；§60 v60.54–v60.57/v60.59）、闭包/本地函数 return 不再把外层 ensures 编译进子帧（§60 v60.58）；tree 契约块重入为 HEAD 既有 #47（P3）。v0.52–v0.55 路线已全部交付。
+- 下一步见 `docs/plan.md §4.3`：**v0.57 循环/守卫敏感边界证明**（QF_LIA 第四片，`for i in 0..buf.len() { buf[i] }`）→ v0.58 LSP/Builder/doc → v0.59 服务端 ADR → v0.60 taint/mask ADR；已知缺陷 #37–#47 按 §4.3.8（#40–#43、#45–#47 待修；#44 为本地函数恢复项；#39 已修；wasm 剩余回落形态不影响语义正确性）。

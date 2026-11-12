@@ -5,6 +5,16 @@
 const IND = '  '; // 两级结构:每层 = 4 空格 = IND+IND?这里 IND 定义为 4 空格
 const INDENT = '    ';
 
+// v0.56(A3):格式化器遇到无法无损表达的 AST 时必须失败,不得输出占位符删代码。
+// cmdFmt 捕获后按 file:line:col 打印错误、退出 1,并保证不落盘。
+export class FmtError extends Error {
+  constructor(message, span = null) {
+    super(message);
+    this.name = 'FmtError';
+    this.span = span;
+  }
+}
+
 export function formatProgram(items, comments) {
   const w = new Writer(comments ?? []);
   let first = true;
@@ -118,7 +128,11 @@ class Writer {
     const params = it.params.map(p => p.self ? (p.mut ? 'mut self' : 'self') : (p.mut ? 'mut ' : '') + p.name + ': ' + typeAst(p.type)).join(', ');
     const ret = it.ret ? ' -> ' + typeAst(it.ret) : '';
     const eff = it.effects?.length ? ' with ' + it.effects.map(e => e.name).join(', ') : '';
-    this.line(`${pub}fn ${it.name}${tps}(${params})${ret}${eff} {`, it.span.line);
+    // v0.56(#36):契约保真——requires/ensures 此前被 fmt 静默丢弃(语义数据丢失)。
+    const ctr = contractSuffix(it);
+    // v0.56(#36):签名可能因契约多行;尾行取函数体 `{` 所在行,避免块首被误判为
+    // "源码空行"而多出一个空行(单行签名与旧行为逐字一致)。
+    this.line(`${pub}fn ${it.name}${tps}(${params})${ret}${eff}${ctr} {`, it.body?.span?.line ?? it.span.line);
     this.indent++;
     this.blockBody(it.body);
     this.indent--;
@@ -174,12 +188,19 @@ class Writer {
     this.docs(it);
     const pub = it.pub ? 'pub ' : '';
     const tps = it.tparams.length ? '[' + it.tparams.join(', ') + ']' : '';
-    if (it.fields.length === 0) { this.line(`${pub}struct ${it.name}${tps} {}`); return; }
+    const invs = it.invariants ?? [];
+    if (it.fields.length === 0 && invs.length === 0) { this.line(`${pub}struct ${it.name}${tps} {}`); return; }
     this.line(`${pub}struct ${it.name}${tps} {`, it.span.line);
     this.indent++;
-    for (const f of it.fields) {
-      this.flushComments(f.span.line, false);
-      this.line(`${f.name}: ${typeAst(f.type)},`, f.span.line);
+    // v0.56(#36):invariant 此前被 fmt 静默丢弃(数据丢失)。字段与 invariant 按源顺序
+    // 各占一行输出,逗号规范与字段一致(尾随逗号 parser 接受,保证一次到定点)。
+    const members = it.fields.map(f => ({ inv: false, node: f }))
+      .concat(invs.map(v => ({ inv: true, node: v })))
+      .sort((a, b) => a.node.span.line - b.node.span.line || a.node.span.col - b.node.span.col);
+    for (const m of members) {
+      const n = m.node;
+      this.flushComments(n.span.line, false);
+      this.line(m.inv ? `invariant ${expr(n.expr)},` : `${n.name}: ${typeAst(n.type)},`, n.span.line);
     }
     this.indent--;
     this.line('}');
@@ -297,15 +318,35 @@ class Writer {
     while (els) {
       if (els.nt === 'If') {
         this.lineEnd(`} else if ${expr(els.cond)} {`);
-        this.indent++; this.blockBody(els.then); this.indent--;
+        this.indent++;
+        // v0.56(#22):else/else-if 头行尾注释按块首独立注释规范输出(一遍到定点)
+        this.elseHeaderComment(els.span?.line);
+        this.blockBody(els.then); this.indent--;
         els = els.els;
       } else {
         this.lineEnd('} else {');
-        this.indent++; this.blockBody(els); this.indent--;
+        this.indent++;
+        this.elseHeaderComment(els.span?.line);
+        this.blockBody(els); this.indent--;
         els = null;
       }
     }
     this.line('}');
+  }
+
+  // v0.56(#22):`} else { // 注释` 形态。HEAD 第一遍把注释冲成 else 块首独立行时,
+  // 空行落在注释之后、语句之前;第二遍才把空行移到注释之前(注释占行使源行距从 1 变 2,
+  // preserveBlank 翻转)。这里在输出 else 头后直接把该行尾注释按"块首注释"的规范形态
+  // 输出:头行 → 空行 → 注释 → 语句(不空行),第一遍即得到 HEAD 两遍后的定点。
+  // 无头行注释时零动作(既有 else 输出逐字不变)。
+  elseHeaderComment(headerLine) {
+    if (headerLine == null || this.ci >= this.comments.length) return;
+    const c = this.comments[this.ci];
+    if (c.span.line !== headerLine) return;
+    this.blank();
+    this.flushComments(headerLine, false);
+    // 注释已被消费;把结束行推进到 else 头行,下一语句不再被 preserveBlank 判为跨两行
+    this.lastEndLine = Math.max(this.lastEndLine, headerLine);
   }
 
   // 不换行地接在上一行(else 链)
@@ -422,7 +463,9 @@ export function expr(e, minPrec = 0) {
     case 'Lambda': {
       const ps = e.params.map(p => p.type ? `${p.name}: ${typeAst(p.type)}` : p.name).join(', ');
       const body = e.body.nt === 'BlockExpr' ? blockInline(e.body) : expr(e.body);
-      return `(${ps}) => ${body}`;
+      // v0.56(A3):lambda 优先级最低;作为后缀调用 callee 等 minPrec>0 的位置必须加括号。
+      // 修复前 `((x: i64) => x + 1)(0)` 被输出为 `(x: i64) => x + 1(0)`(合法变非法)。
+      return wrap(e, 0, minPrec, `(${ps}) => ${body}`);
     }
     case 'If': {
       // v0.51.6 修复:e.then / e.els(块分支)是裸块 {stmts,tail},须包 {block} 再交给 blockInline——
@@ -443,9 +486,13 @@ export function expr(e, minPrec = 0) {
       return `match ${expr(e.scrutinee)} { ${arms.join(', ')} }`;
     }
     case 'BlockExpr': return blockInline(e);
-    case 'StructLit': return `${e.path.join('.')} { ${e.fields.map(f => `${f.name}: ${expr(f.value)}`).join(', ')} }`;
+    case 'StructLit': return e.fields.length
+      ? `${e.path.join('.')} { ${e.fields.map(f => `${f.name}: ${expr(f.value)}`).join(', ')} }`
+      : `${e.path.join('.')} {}`; // v0.56(A3):空结构体字面量 `E {}`(旧输出 `E {  }` 双空格)
     case 'LoopExpr': return `loop ${blockInline({ block: e.body })}`;
-    default: return '?';
+    default:
+      // v0.56(A3):未知表达式一律失败(绝不输出 `?` 丢语义)
+      throw new FmtError(`fmt 不支持表达式节点 ${e?.nt ?? String(e)}`, e?.span ?? null);
   }
 }
 
@@ -453,16 +500,42 @@ function wrap(e, myPrec, minPrec, s) {
   return myPrec < minPrec ? `(${s})` : s;
 }
 
+// v0.56(A3):控制字符补转义(仅格式化输出,不改语义)——\r/\0 用具名转义,
+// 其余 C0/DEL 用 \u{..}(lexer 支持)。原始字符串 r"..." 不转义(其内容按字面保留)。
+const STR_ESCAPES = { '\\': '\\\\', '"': '\\"', '\n': '\\n', '\t': '\\t', '\r': '\\r', '\0': '\\0' };
+function escapeStrLit(text) {
+  return text
+    .replace(/[\\"\n\t\r\0]/g, ch => STR_ESCAPES[ch])
+    .replace(/[\x00-\x1f\x7f]/g, ch => '\\u{' + ch.codePointAt(0).toString(16) + '}');
+}
 function strLit(e) {
   let s = (e.raw ? 'r' : '') + '"';
   for (const p of e.parts) {
     if ('lit' in p) {
-      s += p.lit.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+      s += e.raw ? p.lit : escapeStrLit(p.lit);
     } else {
       s += '\\{' + expr(p.expr) + '}';
     }
   }
   return s + '"';
+}
+
+// v0.56(#36):函数契约的规范后缀(requires 在前、ensures 在后,与 parser 语义一致)。
+// AST 形态:decl.requires/decl.ensures = { expr, msg, msgRaw, span } | null(parser 只保留
+// 每类最后一条,后者覆盖);msg 是已解码字符串(插值形态为 null)。v0.56(A3):msgRaw 保存
+// else 字面量的原始源文本(含引号,插值 `\{...}` 原样),fmt 优先原样输出——插值消息不再被丢。
+function contractSuffix(it) {
+  const parts = [];
+  const add = (kw, cl) => {
+    if (!cl) return;
+    const msg = cl.msgRaw != null
+      ? ' else ' + cl.msgRaw
+      : (cl.msg == null ? '' : ' else ' + strLit({ parts: [{ lit: cl.msg }] }));
+    parts.push(`${kw} ${expr(cl.expr)}${msg}`);
+  };
+  add('requires', it.requires);
+  add('ensures', it.ensures);
+  return parts.length ? ' ' + parts.join(' ') : '';
 }
 
 // 语句上下文里的块表达式(if/match 分支)由 stmt 处理;此处是表达式内联(闭包体等)
@@ -478,7 +551,8 @@ function blockInline(be) {
     else if (s.nt === 'While') { parts.push(`while ${expr(s.cond)} ${blockInline({ block: s.body })}`); }
     else if (s.nt === 'For') { parts.push(`for ${patAst(s.pat)} in ${expr(s.iter)} ${blockInline({ block: s.body })}`); }
     else if (s.nt === 'UnsafeBlock') { parts.push(`unsafe ${blockInline({ block: s.body })}`); } // v0.54
-    else parts.push('/* ? */');
+    // v0.56(A3):不支持内联的语句必须报错(带 span),旧实现输出 `/* ? */` 静默丢代码。
+    else throw new FmtError(`fmt 不支持表达式内联块中的语句 ${s.nt}(可改写为普通函数体或其他形态)`, s.span ?? be.block.span);
   }
   if (be.block.tail) parts.push(expr(be.block.tail));
   if (parts.length === 0) return '{}';
