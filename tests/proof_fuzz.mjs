@@ -23,9 +23,14 @@
 //     易误报  分支返回/分支内形参重赋值/match 重赋值/短路 &&/||(B1/B2 回归)→ 必须静默。
 //   反例验证复用本文件独立线性求值器(不 import src/prover.js)。汇总
 //   "可证 N / 违反 M / 静默 K / 易误报 T / 误报 0",失败退出 1。
+// 模式 loops(v0.57 QF_LIA 第四片,--mode loops):范围 for 内的 buf[i] 义务。
+//   每 8 例固定分布:4 proven(义务必须 proven + run/run --tree 无 M4003/M4015)/ 2 静默
+//   (放弃形态:无上界 requires、嵌套 for、while、非线性上界 → 0 诊断)/ 2 可证违反
+//   (M3045 必发;反例经独立求值器三重验证:满足 requires + 落在循环区间内 + 索引确实越出义务侧)。
+//   循环区间符号(i$0)与 len$buf 同款'$ 命名空间';反例枚举含循环符号,验证器据此复核。
 // 说明:M3045 语料无法用于运行时复核 —— `ming run` 先 check,M3045 直接拒绝执行(exit 1);
 //   因此"violated → 运行时必 M4003"由 §56 的运行时测试与差分模糊承担,本文件只做静态一致性。
-// 用法:node tests/proof_fuzz.mjs [--seed N] [--count N] [--mode default|1|2|summaries|all]
+// 用法:node tests/proof_fuzz.mjs [--seed N] [--count N] [--mode default|1|2|summaries|loops|all]
 //   默认 --mode default = 模式 1 + 模式 2(既有门禁口径不变);默认 --count 200(summaries 模式 300)。
 //   末尾汇总各模式统计;任一失败退出 1。
 
@@ -42,12 +47,13 @@ const opt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? Number
 const strOpt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : d; };
 const SEED = opt('seed', 20261112);
 const MODE = strOpt('mode', 'default');
-if (!['default', '1', '2', 'summaries', 'all'].includes(MODE)) {
-  process.stderr.write(`proof_fuzz:未知 --mode "${MODE}"(可用:default|1|2|summaries|all)\n`);
+if (!['default', '1', '2', 'summaries', 'loops', 'all'].includes(MODE)) {
+  process.stderr.write(`proof_fuzz:未知 --mode "${MODE}"(可用:default|1|2|summaries|loops|all)\n`);
   process.exit(1);
 }
 const RUN_M12 = MODE === 'default' || MODE === '1' || MODE === '2' || MODE === 'all';
 const RUN_SUM = MODE === 'summaries' || MODE === 'all';
+const RUN_LOOPS = MODE === 'loops'; // v0.57:范围 for 循环义务(独立模式;all 保持既有口径不变)
 // 默认 count 按模式:summaries 验收规模 300,既有模式保持 200(CI 门禁口径不变)。
 const COUNT = Math.max(1, opt('count', MODE === 'summaries' ? 300 : 200));
 
@@ -135,10 +141,40 @@ const M2 = [
 // 负控(requires 含 buf[n] 的不可编码形态):义务不可证 → 必须静默(不误报 M3045/W3105)。
 const M2CTRL = { params: [p('n')], body: ['return buf[n];'], req: 'n == buf.len() + buf[n]' };
 
+// ===================== loops 模式(v0.57):范围 for 内的 buf[i] 义务 =====================
+// cls:'P'=可证类(义务必须 proven,run/run --tree 必须安全);'S'=静默类(放弃形态,0 诊断);
+// 'V'=可证违反类(M3045 必发 + 反例独立三重验证)。
+// V 类模板另带:interval=[loSide, hiSide)(循环区间,独立求值器侧形式)、idx(索引侧形式,
+// loopSym 为 checker 的循环区间符号名)、side(违反方向)—— 反例须满足 requires 且
+// lo <= i$0 < hi 且索引确实越出义务侧(区间非空 = 违反不是空洞真)。
+const L1 = [
+  { cls: 'P', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 0..buf.len() {', '    return buf[i];', '}', 'return 0;'] },
+  { cls: 'P', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 1..buf.len() {', '    return buf[i];', '}', 'return 0;'] }, // 下界 1:>= 0 由 lo 推出
+  { cls: 'P', params: [p('n')], leaves: [ge0('n'), geC(LEN, 1n)], body: ['for i in n..buf.len() {', '    return buf[i];', '}', 'return 0;'] }, // requires n >= 0
+  { cls: 'P', params: [p('n')], leaves: [leLen('n'), geC(LEN, 1n)], body: ['for i in 0..n {', '    return buf[i];', '}', 'return 0;'] }, // requires n <= buf.len()
+  { cls: 'P', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 0..buf.len() - 1 {', '    return buf[i + 1];', '}', 'return 0;'] }, // 边界严格性:i+1 < len
+  { cls: 'P', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 0..buf.len() {', '    let j = i + 1 - 1;', '    return buf[j];', '}', 'return 0;'] }, // 循环内 let 移位
+  { cls: 'P', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 0..buf.len() {', '    buf[i];', '    continue;', '}', 'return 0;'] }, // continue 不破坏不变式
+  { cls: 'P', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 0..buf.len() {', '    buf[i];', '}', 'for j in 0..buf.len() {', '    buf[j];', '}', 'return 0;'] }, // 两个顺序循环
+  { cls: 'P', params: [p('n')], leaves: [ge0('n'), leLen('n'), geC(LEN, 1n)], prelude: ['fn g(x: i64) -> i64 requires x >= 0 { return x; }'], body: ['for i in 0..n {', '    buf[i];', '    let k = g(i);', '}', 'return 0;'] }, // 循环体内契约调用(摘要交互不回归)
+];
+const LS = [
+  { cls: 'S', params: [p('n')], leaves: [ge0('n'), geC(LEN, 1n)], body: ['for i in 0..n {', '    return buf[i];', '}', 'return 0;'] }, // 无 n <= len → 未证明,静默
+  { cls: 'S', params: [], leaves: [geC(LEN, 1n)], body: ['for i in 0..buf.len() {', '    for j in 0..buf.len() {', '        buf[i];', '    }', '}', 'return 0;'] }, // 嵌套 for → 放弃
+  { cls: 'S', params: [], leaves: [geC(LEN, 1n)], body: ['let mut k = 0;', 'while k < buf.len() {', '    k = k + 1;', '    buf[0];', '}', 'return 0;'] }, // while → 放弃
+  { cls: 'S', params: [p('n')], leaves: [ge0('n'), geC(LEN, 1n)], body: ['for i in 0..n * n {', '    return buf[i];', '}', 'return 0;'] }, // 非线性上界 → 放弃
+];
+const L2 = [
+  { cls: 'V', side: 'high', params: [], leaves: [ge0(LEN)], body: ['for i in buf.len()..buf.len() + 1 {', '    return buf[i];', '}', 'return 0;'], interval: [V(LEN), V(LEN, 1n, 1n)], idx: V('i$0') },
+  { cls: 'V', side: 'low', params: [], leaves: [ge0(LEN)], body: ['for i in 0 - 1..0 {', '    return buf[i];', '}', 'return 0;'], interval: [C(-1n), C(0n)], idx: V('i$0') },
+  { cls: 'V', side: 'high', params: [p('n')], leaves: [[V('n'), '>=', V(LEN)]], body: ['for i in n..n + 1 {', '    return buf[i];', '}', 'return 0;'], interval: [V('n'), V('n', 1n, 1n)], idx: V('i$0') },
+  { cls: 'V', side: 'low', params: [p('n')], leaves: [[V('n'), '==', C(0n)]], body: ['for i in n - 1..n {', '    return buf[i];', '}', 'return 0;'], interval: [V('n', 1n, -1n), V('n')], idx: V('i$0') },
+];
+
 function buildProgram(t, L, argVals, bufVals, reqOverride = null) {
   const req = reqOverride ?? (t.paren ? '(' + reqText(t.leaves) + ')' : reqText(t.leaves));
   const sig = ['buf: Vec[i64]', ...t.params.map((x) => (x.mut ? `mut ${x.name}: i64` : `${x.name}: i64`))].join(', ');
-  const lines = [`fn f(${sig}) -> i64 requires ${req} {`];
+  const lines = [...(t.prelude ?? []), `fn f(${sig}) -> i64 requires ${req} {`]; // prelude:loops 模式的契约辅助函数(既有模板无此字段,零影响)
   for (const b of t.body) lines.push('    ' + b);
   lines.push('}');
   const args = ['[' + bufVals.join(', ') + ']', ...t.params.map((x) => String(argVals[x.name]))];
@@ -405,6 +441,7 @@ const report = (mode, it, why, src) => {
 };
 let m1 = 0, m1Fail = 0, m1ProvenRuns = 0, m2ver = 0, m2ok = 0, m2ctrl = 0;
 let sOk = 0, sViol = 0, sSilent = 0, sTricky = 0, sFail = 0, sFalsePos = 0, sCexOk = 0, sLowShape = 0;
+let lpProv = 0, lpSilent = 0, lpViol = 0, lpViolOk = 0, lpFail = 0; // loops 模式(v0.57)
 const sSilentTags = { '递归': 0, '互递归': 0, '非线性': 0, '不可编码': 0 };
 
 try {
@@ -414,6 +451,7 @@ try {
     1: `模式 1 ${COUNT} 例`,
     2: `模式 2 ${M2N_ALL} 例`,
     summaries: `模式 summaries ${COUNT} 例`,
+    loops: `模式 loops ${COUNT} 例`,
     all: `模式 1 ${COUNT} 例 + 模式 2 ${M2N_ALL} 例 + 模式 summaries ${COUNT} 例`,
   }[MODE];
   process.stdout.write(`proof_fuzz:seed=${SEED} count=${COUNT}(${modeDesc})\n`);
@@ -589,6 +627,90 @@ try {
       if (why.length) { sFail++; report(label, it, why, src); } else sViol++;
     }
   }
+
+  // ---- 模式 loops:范围 for 循环义务(v0.57 QF_LIA 第四片)----
+  // 每 8 例固定分布:0-3 可证(义务必须 proven + 双引擎运行安全)/ 4-5 静默(放弃形态,0 诊断)/
+  // 6-7 可证违反(M3045 必发;反例独立求值器三重验证:requires 全满足、落在循环区间内(区间非空,
+  // 违反不是空洞真)、索引确实越出义务侧)。
+  if (RUN_LOOPS) {
+    for (let it = 0; it < COUNT; it++) {
+      const slot = it % 8;
+      const t = slot <= 3 ? pick(L1) : slot <= 5 ? pick(LS) : pick(L2);
+      const L = int(1, 8);
+      const bufVals = Array.from({ length: L }, () => BigInt(int(1, 99)));
+      const argVals = t.cls === 'V'
+        ? Object.fromEntries(t.params.map((x) => [x.name, 0n]))
+        : (sampleArgs(t, L) ?? Object.fromEntries(t.params.map((x) => [x.name, 0n])));
+      const src = buildProgram(t, L, argVals, bufVals);
+      const f = path.join(TMPDIR, `lp_${it}.ming`);
+      fs.writeFileSync(f, src);
+      const why = [];
+      const c = ming(['check', f, '--json', '--proof-report']);
+      if (t.cls === 'P') {
+        lpProv++;
+        if (c.code !== 0) why.push(`check 退出 ${c.code}(可证类不得 M3045 —— 误报):${(c.stderr ?? '').slice(0, 200)}`);
+        let proofs = null;
+        try { proofs = JSON.parse(c.stdout).proofs; } catch { why.push(`check stdout 非 JSON:${c.stdout.slice(0, 120)}`); }
+        const rec = proofs?.functions?.find((x) => x.fn === 'f');
+        if (proofs && !rec) why.push(' proofs 无函数记录(应含 f 的循环索引义务)');
+        if (rec) {
+          if (rec.obligations.length < 1) why.push(' 义务数为 0(可证类模板应采集到循环义务)');
+          for (const o of rec.obligations) {
+            if (o.kind === 'violated') why.push(` 可证类被判 violated —— 误报:${o.obligation}`);
+            else if (o.kind === 'proven') {
+              if (o.scope !== 'loop') why.push(` 义务 scope=${o.scope} ≠ loop(记录缺陷):${o.obligation}`);
+              for (const eng of [['run'], ['run', '--tree']]) {
+                const r = ming([...eng, f]);
+                if (r.code !== 0 || /M4003|M4015/.test(r.stderr ?? '')) {
+                  why.push(` 义务 proven 但 ${eng.join(' ')} 退出 ${r.code}/stderr 含 M4003|M4015 —— 误报:${(r.stderr ?? '').slice(0, 200)}`);
+                }
+              }
+            } else why.push(` 可证类义务未 proven(kind=${o.kind},obligation=${o.obligation})—— 证明能力回归`);
+          }
+        }
+      } else if (t.cls === 'S') {
+        lpSilent++;
+        if (c.code !== 0) why.push(`check 退出 ${c.code} ≠ 0(放弃形态不得报错):${(c.stderr ?? '').slice(0, 200)}`);
+        let proofs = null;
+        try { proofs = JSON.parse(c.stdout).proofs; } catch { /* 静默类只要求 0 诊断 */ }
+        if (proofs?.functions?.find((x) => x.fn === 'f')?.obligations?.some((o) => o.kind === 'violated')) {
+          why.push(' 静默类出现 violated 义务 —— 误报');
+        }
+      } else {
+        lpViol++;
+        if (c.code !== 1) why.push(`可证违反形态 check 退出 ${c.code} ≠ 1(M3045 未发)`);
+        let diags = null, proofs = null;
+        try { const j = JSON.parse(c.stdout); diags = j.diagnostics; proofs = j.proofs; } catch { why.push(`check stdout 非 JSON:${c.stdout.slice(0, 120)}`); }
+        if (diags && !diags.some((d) => d.code === 'M3045' && d.severity === 'error')) {
+          why.push(` JSON 诊断无 error M3045:${JSON.stringify(diags).slice(0, 200)}`);
+        }
+        const rec = proofs?.functions?.find((x) => x.fn === 'f');
+        const ob = rec?.obligations?.find((o) => o.kind === 'violated');
+        if (!ob) why.push(` proofs 无 violated 义务:${JSON.stringify(rec?.obligations?.map((o) => o.kind) ?? null)}`);
+        const vals = ob ? parseCex(ob.counterexample) : null;
+        if (!vals) why.push(` 反例缺失或不可解析:${JSON.stringify(ob?.counterexample ?? null)}`);
+        if (vals) {
+          // 独立求值器三重验证(不 import src/prover.js)
+          if (!t.leaves.every(([l, op, r]) => leafHolds(l, op, r, vals))) {
+            why.push(` 反例不满足 requires:${JSON.stringify(vals)}(叶子:${reqText(t.leaves)})`);
+          }
+          const iv = sideEval(t.idx, vals);
+          const inLo = leafHolds(t.interval[0], '<=', t.idx, vals);
+          const inHi = leafHolds(t.idx, '<', t.interval[1], vals);
+          if (!inLo || !inHi) why.push(` 反例不落在循环区间 [${sideText(t.interval[0])}, ${sideText(t.interval[1])}):i = ${iv},${JSON.stringify(vals)}`);
+          const lenV = vals[LEN];
+          const oob = t.side === 'low' ? iv < 0n : (lenV === undefined ? null : iv >= lenV);
+          if (oob === null) why.push(` 反例缺 ${LEN},无法验证 ${t.side} 侧越界:${JSON.stringify(vals)}`);
+          else if (!oob) why.push(` 反例未使索引越界(${t.side} 侧):idx=${iv},${JSON.stringify(vals)}`);
+          if (!why.length) lpViolOk++;
+        }
+      }
+      if (why.length) {
+        lpFail++;
+        report(t.cls === 'V' ? 'loops违反' : t.cls === 'P' ? 'loops可证' : 'loops静默', it, why, src);
+      }
+    }
+  }
 } finally {
   fs.rmSync(TMPDIR, { recursive: true, force: true });
 }
@@ -596,10 +718,12 @@ try {
 // ===================== 汇总 =====================
 if (RUN_M12) process.stdout.write(`\nproof_fuzz 汇总:模式 1 ${m1} 例,误报 ${m1Fail}(proven 运行验证 ${m1ProvenRuns} 例 × 双引擎);模式 2 反例验证 ${m2ok}/${m2ver},负控 ${m2ctrl} 例\n`);
 if (RUN_SUM) process.stdout.write(`\nproof_fuzz summaries 汇总:可证 ${sOk} / 违反 ${sViol} / 静默 ${sSilent} / 易误报语料 ${sTricky} / 误报 ${sFalsePos}(反例独立验证 ${sCexOk}/${sViol};下界 requires 形态 ${sLowShape};静默分类:递归 ${sSilentTags['递归'] ?? 0} / 互递归 ${sSilentTags['互递归'] ?? 0} / 非线性 ${sSilentTags['非线性'] ?? 0} / 不可编码 ${sSilentTags['不可编码'] ?? 0} / 分支返回 ${sSilentTags['分支返回'] ?? 0} / 分支重赋值 ${sSilentTags['分支重赋值'] ?? 0} / match重赋值 ${sSilentTags['match重赋值'] ?? 0} / 短路与 ${sSilentTags['短路与'] ?? 0} / 短路或 ${sSilentTags['短路或'] ?? 0})\n`);
+if (RUN_LOOPS) process.stdout.write(`\nproof_fuzz loops 汇总:可证 ${lpProv}(义务逐条双引擎运行验证)/ 静默 ${lpSilent} / 违反 ${lpViolOk}/${lpViol}(反例独立三重验证)/ 误报 ${lpFail}\n`);
 if (failures.length) {
   process.stderr.write(`\n失败清单(${failures.length}):\n` + failures.join('\n---\n') + '\n');
   process.exit(1);
 }
-if (RUN_SUM && !RUN_M12) process.stdout.write('proof_fuzz summaries:误报 0,反例独立验证全过 — 通过\n');
+if (RUN_LOOPS) process.stdout.write('proof_fuzz loops:误报 0,反例独立验证全过 — 通过\n');
+else if (RUN_SUM && !RUN_M12) process.stdout.write('proof_fuzz summaries:误报 0,反例独立验证全过 — 通过\n');
 else if (RUN_SUM) process.stdout.write('proof_fuzz:模式 1/2 与 summaries 全过 — 通过\n');
 else process.stdout.write('proof_fuzz:误报 0,反例验证全过 — 通过\n');

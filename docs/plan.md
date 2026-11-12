@@ -1,8 +1,8 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.56.0**（v0.52–v0.55 路线已全部交付；v0.53 可信构建基线:CI 矩阵、strict-wasm 三态、构建键修复、env -i 验收、C `str` for-in 码点迭代；v0.54 `with unsafe` 最小实现(C5)；v0.55 跨函数契约摘要；**v0.56 引擎一致性与缺陷清零已交付(2026-11-12)**：tree 作用域统一、VM 捕获闭包、契约解析/fmt 保真、wasm 四个语义修复、fuzz 真实 wasm 腿、buildKey 编译器源指纹(含 bin)；独立审查修复：契约作用域/u64 语义/fmt 契约破坏三修、#31 按模块身份去重、M3047 本地函数显式拒绝；复审 C1/C2（契约内嵌作用域基线/闭包 return）；测试 764 项全绿）。
-> **下一步规划见 §4.3（v0.57–v0.60,software-architect 精读,2026-11-12;v0.56 已收口）**。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.57.0**（v0.52–v0.56 路线已全部交付；**v0.57 循环/守卫敏感边界证明 + tools AOT 缓存 + 覆盖率/bench 观测已交付(2026-11-13)**：范围 for 内 `buf[i]` 义务两向证明(QF_LIA 第四片,义务 additive `scope: body|loop`,M3045/W3105 不变,proven 不消除 M4003)、ming tools 工具字节码 AOT 缓存(12 工具全缓存;热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明)、tests/coverage.mjs 覆盖率基线(93.0% 行 / 86.1% 函数)+ bench 基线；测试 791 项全绿）。
+> **下一步规划见 §4.3（v0.58–v0.60,software-architect 精读,2026-11-12;v0.57 已收口）**。
 
 ---
 
@@ -14,10 +14,10 @@
 | C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static`；v0.53 `str` for-in 按 UTF-8 码点迭代；**v0.54 C5 `with unsafe`（Ptr[u8]/Ptr[mut u8] → unsigned char*/const unsigned char*、std.mem.alloc/free → malloc/free（失败 M4011）、extern 槽接受/返回 Ptr；tree/VM/wasm 回落 M4016）** |
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
-| 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 |
-| 质量护栏 | 回归全绿（v0.56.0 起 764 项，§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 300 例 0 误报/0 假反例）+ bench（cc 腿） |
-| 能力矩阵 | 52 行口径 ≈81%（docs/capabilities.md；v0.56 新增 WASM 分层覆盖面行并重算：39✅ 6🟡 7❌，(39+6×0.5)/52=80.8%） |
-| 下一步 | **§4.3 v0.57：QF_LIA 第四片——循环/守卫敏感边界证明**（`for i in 0..buf.len() { buf[i] }` 最高频形态；v0.56 已清零 P1/P2 一致性缺陷） |
+| 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
+| 质量护栏 | 回归全绿（v0.57.0 起 **791 项**，§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比**）+ **v0.57 覆盖率基线**（tests/coverage.mjs；信息性不设门槛） |
+| 能力矩阵 | 52 行口径 ≈81%（docs/capabilities.md；v0.56 新增 WASM 分层覆盖面行并重算：39✅ 6🟡 7❌，(39+6×0.5)/52=80.8%；v0.57 契约/证明行补循环形态） |
+| 下一步 | **§4.3.5 v0.58：AI 协作体验与文本工程**（LSP 补全/跳转/符号、`std.str.Builder`、doc JSON 与 Release 打包） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -208,6 +208,7 @@
 | v0.54 | **M4016** | native-only-feature | tree/VM 执行指针操作/std.mem;panic 101 |
 | v0.55 | 无 | — | 复用 M3041/M3042 |
 | v0.56 | 无 | — | 无新码(引擎一致性/契约保真/wasm 语义修复均复用既有码) |
+| v0.57 | 无 | — | 无新码(循环义务复用 M3045/W3105,码与消息不变;义务记录 additive `scope: body\|loop`) |
 
 三处登记:`src/diag.js` CODES(+CODE_HINTS)、`docs/diagnostics.md`、`tests/run.mjs` 对应分节;GUIDE 修订记录同步;已发布码不改号。
 
@@ -226,7 +227,7 @@
 | 泛型单态化缓存 | 降级 | 无 bench 证据 |
 | async/eval/国密/交叉编译 | 保留远期 | 各自独立设计与安全评审 |
 | 证明携带 unsafe(`unsafe(cond)`) | 新增 Backlog | 需带长度 Ptr/Slice 与证明令牌 |
-| 循环/守卫敏感边界证明 | **v0.57 规划(§4.3.4)** | `for i in 0..len { buf[i] }` 最高频;v0.52 只做直线体 |
+| 循环/守卫敏感边界证明 | **✅ 已交付 v0.57(§4.3.4)** | `for i in 0..len { buf[i] }` 最高频;范围 for 体内义务两向证明(脏循环/嵌套/while 保守放弃;义务 `scope: body\|loop`) |
 | Ptr 带长度 / Slice 只读视图 | 新增 Backlog | 零拷贝与证明联动先决条件 |
 | v0.53.0 独立审查新登记缺陷 | **✅ 已清零(v0.56.0,§4.3.3)** | #23 tree for-in 遮蔽泄漏(P1)/ #24 VM 捕获闭包传 `v.map` TypeError(P1)/ #25 fuzz 恒 io、wasm 腿不真实执行(P2)/ #26 buildKey 不含编译器源码(P3);逐条见 §5.1 |
 | v0.54 收口新登记缺陷 | **✅ #27 已修(v0.54.0);#28/#29/#30 已修(v0.56.0)** | #27 std 模块别名在字节码编译器解析失败 → v0.54.0 独立审查 B5 修复;新登记 #28 tree 块作用域泄漏(P1)/ #29 launcher 源码模式 panic 无位置(P3)/ #30 extern fn 值存局部变量后 C 后端不支持调用(P2)——均于 v0.56.0 修复;逐条见 §5.1 |
@@ -262,7 +263,7 @@
 
 ## 4.3 v0.56–v0.60 规划（software-architect 精读，2026-11-12）
 
-> **规划基线(v0.56 规划时)**：v0.55.0；694 项回归全绿；四后端（tree / VM+wasm / VM-only / C）；CI 矩阵就位；能力矩阵 51 行 ≈81%。**v0.56 收口实测(2026-11-12)**:764 项回归全绿、§60 70 项、能力矩阵 52 行 ≈81%（新增 WASM 覆盖面行）。
+> **规划基线(v0.56 规划时)**：v0.55.0；694 项回归全绿；四后端（tree / VM+wasm / VM-only / C）；CI 矩阵就位；能力矩阵 51 行 ≈81%。**v0.56 收口实测(2026-11-12)**:764 项回归全绿、§60 70 项、能力矩阵 52 行 ≈81%（新增 WASM 覆盖面行）。**v0.57 收口实测(2026-11-13)**:791 项全绿、§61 27 项、覆盖率基线 93.0% 行/86.1% 函数、能力矩阵 52 行 ≈81%(无新增行)。
 > **规划立场**：本阶段的目标不是继续加语言面，而是**把已有能力做成可放心使用的工程品**——
 > 先清零语义一致性缺陷，再把证明推进到最高频的真实形态，然后补开发者体验与分发，
 > 最后才用 ADR 评估新的语义面（服务端/async、污点即效应、mask）。每版一个主题、可独立回退。
@@ -326,21 +327,21 @@
 
 **明确不做**：不新增语言关键字/语法；不改运行时检查；不做性能优化（除修复顺带）。
 
-### 4.3.4 v0.57 — QF_LIA 第四片：循环/守卫敏感边界证明
+### 4.3.4 v0.57 — QF_LIA 第四片：循环/守卫敏感边界证明 ✅(2026-11-13 完成)
 
 **目标**：把 v0.52 的直线体边界证明推进到**最高频真实形态**：范围 for 内的 `buf[i]`。
 
 **范围**：i64 范围 for（上界为常量或非 mut Vec 参数 `len()`）；循环体为直线体；单个索引点；非 mut `Vec[i64]` 参数；`while i < len` 的单条件守卫作为第二子目标（可选，不承诺）。**不做**：任意循环不变式注解、嵌套循环、循环内改长度、分支敏感、通用 SMT。
 
-**任务**
+**任务**(全部完成,2026-11-13 收口)
 
-1. **prover 扩展区间约束**：归纳变量 `i ∈ [lo, hi)`（lo/hi 为线性形式）；与既有差分约束合并求解；超范围/非线性 → 放弃。
-2. **checker 循环义务**：范围 for 的每次迭代假设 `i >= lo && i < hi`；上界能映射到 `len$buf` 时证明 `i < len$buf`；`0 <= i` 由 lo 决定；循环变量被重赋值/break 带值 → 保守放弃。
-3. **诊断复用**：可证违反 → M3045（不新增码）+ 反例；未证明默认静默，`--warn-unproven-index` 下 W3105；proof-report 增加 loop 义务统计（additive）。
-4. **测试 §61**（≥12）：`for i in 0..buf.len() { buf[i] }` proven；`for i in 0..n` + `requires n <= buf.len()` proven；`for i in 1..buf.len()` 边界严格性；上界 `n+1` 可证违反；循环内 `+=` 放弃；嵌套循环放弃；while 守卫静默/可证；proof_fuzz 增加 `--mode loops`（200 例 0 误报，独立求值器验证反例）。
-5. **文档**：GUIDE 静态边界证明节补循环形态与放弃条件；能力矩阵契约行更新。
+1. ✅ **prover 扩展区间约束**：实现落点为 checker 侧义务附加假设(extra)——循环变量绑定确定性符号 `i$<n>`,区间两条线性约束 `lo <= i$<n> < hi` 并入该义务假设集后与既有差分约束**同一求解器**合并求解;`prover.js` 求解器**零改动**(与"只报告不改 codegen"的 ADR-003 立场一致);超范围/非线性 → 放弃。
+2. ✅ **checker 循环义务**：范围 for 的每次迭代假设 `lo <= i$<n> < hi`(半开);上界映射到 `len$buf` 时即得 `i < len$buf`;`0 <= i` 由 lo 推出;循环变量被重赋值(类型层 M3004)/体内改写外层变量/藏分支(脏循环)→ 该 for 之后保守放弃。规划中的"break 带值"在 Ming 无此形态(break 不携带值),实测 break/continue 不破坏不变式 → **允许存在**(其后语句不可达即停止收集,已收集义务保留)。
+3. ✅ **诊断复用**：可证违反 → M3045(码/消息不变)+ 反例(枚举含循环符号 `i$N` ∈ {-2..10},≤2 个);未证明默认静默,`--warn-unproven-index` 下 W3105(循环义务同口径);proof-record 增加 additive `scope: 'body' | 'loop'` 义务统计。
+4. ✅ **测试 §61**（实测 27 项 ≥12）：A 组 v57.1–v57.19 覆盖 `for i in 0..buf.len()` proven / `for i in 1..len` 下界 / `for i in n..len` / `for i in 0..n` + `requires n <= buf.len()` / 未证明静默 + W3105 / 上界 `n+1` 可证违反(反例 `len$buf = 0, i$0 = 0`) / 低侧越界(`i$0 = -1`) / 循环变量重赋值 M3004 / 嵌套 for 放弃 / while 守卫静默 / `buf[i+1]` 位移 / 改写外层 mut 变量 for 后放弃 / 双循环 / break-continue / 空洞区间 / 契约调用不回归 / 混合 scope(loop+body);B 组 v57.20–v57.25(tools AOT 缓存)+ C 组 v57.26–v57.27(观测冒烟)见 §4.3.8;`proof_fuzz --mode loops --count 200` 0 误报(可证 100 / 静默 50 / 违反 50;违反类反例独立求值器**三重验证**:满足 requires + 落在循环区间内(区间非空)+ 索引确实越出义务侧;可证类逐条双引擎运行验证)。
+5. ✅ **文档**：GUIDE 静态边界证明节补循环形态与放弃路径、`ming tools` 行补 AOT 缓存、修订记录/路线图;能力矩阵契约/证明行补循环形态(随 2026-11-13 收口落盘)。
 
-**验收**：`run.mjs` 0 失败（§61 ≥12）；`proof_fuzz --mode loops --count 200` 0 误报；codegen 零改动（compiler/interp/vm/cbackend/artifact）；性能 ≤1.3x v0.55 基线（可复现命令）；既有 §56/§59 全绿。
+**验收(2026-11-13 实测)**：`node tests/run.mjs` **791 项 0 失败**（§61 共 27 项 ≥12）；`proof_fuzz --mode loops --count 200` 0 误报;codegen 零改动（compiler/interp/vm/cbackend/artifact 与 prover.js 求解器对 HEAD 无 diff）;性能:check examples 三文件语料 7 次中位 **132ms** vs HEAD(d438aff/v0.56.0)**137ms**(0.96x,≤1.3x 达标;同机 Node v24,信息性);既有 §56/§59 全绿。
 
 **风险/回退**：循环上界含调用/别名/重赋值 → 保守放弃；若证明器复杂度失控，退回“只支持 `0..len` 直接形态”，其余静默。
 
@@ -394,13 +395,13 @@
 
 | 项 | 内容 | 版本 | 说明 |
 |----|------|------|------|
-| 覆盖率观测 | `tests/coverage.mjs`（`NODE_V8_COVERAGE`，零依赖）报告 `src/*.js` 行覆盖 | ~~v0.56~~ **v0.57+** | v0.56 收口主题为缺陷清零,本项未交付(顺延);信息性指标，不设门槛；先建立基线再谈阈值 |
+| 覆盖率观测 | `tests/coverage.mjs`（`NODE_V8_COVERAGE`，零依赖）报告 `src/*.js` 行/函数覆盖 | **✅ v0.57 交付**(2026-11-13) | 首个基线 **93.0% 行 / 86.1% 函数**（15 文件;764 项插桩全绿 6.4 分钟,Node v24 win32-x64),写入 docs/coverage-baseline.md(含 range 近似口径说明);信息性指标，不设门槛；先建立基线再谈阈值。备注:工具"始终 exit 0"**非无条件**——`mkdtemp` 临时目录创建在 try 之外,失败会 exit 1(概率极低,信息性,不改代码,见 §5.1 备注登记) |
 | wasm 剩余回落形态 | #40 locals 声明索引偏移 nParams(f64 局部/Map 字面量致违规函数 REJECT,同模块其他函数仍可经 wasm 执行)/ #41 Map 形参 slotTypes 记 vi64 致 for-in Map 回落 / #42 Vec 形参多枚/与 f64 形参组合时 locals 类型错位(后位单个 Vec 形参实测 OK)/ #43 str 返回函数 retTy 映射 i64 致 str 返回回落 / #45 值型 if 的 blocktype 编码失败 / #46 块尾 unit 上下文 if 按值编译致 `REJECT: if 无 else` | **v0.57+**(单列 wasm 覆盖面) | 均不影响语义正确性(回落 JS VM;`--strict-wasm` 可见);修复需 wasm 局部/签名专项审查;逐条见 §5.1 |
-| bench 基线 | `tests/bench.baseline.json` + 阈值告警（如 cc/vm 比值回退 >20% 告警） | v0.57 | 仍不阻断 CI；数字必须可复现 |
-| checker 拆分 | 契约/证明适配从 checker.js（5.0k 行）迁到 `src/contracts.js`（纯重构，零行为变化） | v0.57–v0.58 择机 | 以全量回归绿为唯一验收；不追求行数指标 |
+| bench 基线 | `tests/bench.baseline.json` + 阈值告警（如 cc/vm 比值回退 >20% 告警） | **✅ v0.57 交付**(2026-11-13) | bench 输出 Δ基线列;cc/vm 加速比回退 >20% WARN 仍 exit 0(不阻断 CI);`--write-baseline` 刷新。备注:基线数字为**快照口径**(meta.date 标注时点,同机 + 同 Node 主版本对比;重跑 `--write-baseline` 刷新,见 §5.1 备注登记) |
+| checker 拆分 | 契约/证明适配从 checker.js（5.0k 行）迁到 `src/contracts.js`（纯重构，零行为变化） | v0.57–v0.58 择机 | 以全量回归绿为唯一验收；不追求行数指标;v0.57 覆盖率基线(checker 93.4% 行/90.1% 函数)可作重构安全性参考线 |
 | 文档结构 | GUIDE 1.1k 行补目录/交叉引用；不重写 | v0.58 | 降低 onboarding 摩擦 |
 | 安全审计 | unsafe/ffi 的“已声明覆盖/不覆盖清单”每 4 版复核一次 | v0.59/v0.60 | 与能力矩阵同步 |
-| `ming tools` 调用开销 | 每次调用重新 check+编译工具本体,超出 Node 基线约 **57ms**(宿主 coreutils ~15ms);AOT 缓存(键 = 版本 + 工具源哈希)目标 **<20ms** 额外开销 | v0.57 | 依据 `docs/usage-audit.md`(380 次宿主调用/10 次 ming tools/编辑替换率 7.4%);缓存落地后重跑审计对照 |
+| `ming tools` 调用开销 | 每次调用重新 check+编译工具本体,超出 Node 基线约 **57ms**(宿主 coreutils ~15ms);AOT 缓存(键 = 版本 + 工具源哈希)目标 **<20ms** 额外开销 | **✅ v0.57 交付**(2026-11-13) | 12 工具全缓存零回退(键 = VERSION + Node 主版本 + compilerSourceHash + 工具 basename + 源文本;原子写;span/declSpans 回填 panic 逐字对齐;旁路旗标不缓存;损坏自愈;`MING_TOOLS_DEBUG=1` 观测)。**实测净开销 ~25–30ms/次,目标 <20ms 未完全达标(如实注明)**;对无缓存路径净改进 12–19ms/次;剩余地板 = bin 顶层导入 ~9ms + 核心模块图 ~15ms,进一步需 src 级瘦身(另行登记);缓存落地后重跑审计对照**待办保留**(docs/usage-audit.md §4) |
 
 ### 4.3.9 明确不做（v0.56–v0.60）
 
@@ -416,7 +417,7 @@
 | 版本 | 完成判定（全部满足） | 量化门槛 |
 |------|---------------------|----------|
 | v0.56 | **✅(2026-11-12 实测)**:三引擎作用域/闭包/HOF 一致；契约尾部歧义修复；fmt 契约保真；fuzz 真实 wasm 腿；buildKey 含编译器源(src+bin)；存量 P1/P2 清零；独立审查 A/B 组修复(契约作用域/u64/fmt/#31/#26/M3047)；复审 C1/C2 修复(ensures 内嵌作用域/闭包 return)；#37/#38/#39 收口，新登记 #44–#47 见 §5.1 | §60 实测 70 项(≥15)；回归 **764 项**全绿(≥715)；fuzz 40 程序 0 分歧、wasm 真实执行 20(三种子 20/16/18)；buildKey 敏感性覆盖 src 与 bin；proof_fuzz 三模式 0 误报(实测模式 1 100 例/模式 2 反例 18/18/summaries 100 例 0 误报) |
-| v0.57 | 范围 for 内 `buf[i]` 可证明；codegen 零改动 | §61 ≥12；proof_fuzz loops 200 例 0 误报；性能 ≤1.3x v0.55 |
+| v0.57 | **✅(2026-11-13 实测)**:范围 for 内 `buf[i]` 两向可证明(循环符号 + 区间假设;脏循环/嵌套/while 保守放弃);tools AOT 缓存 12 工具全缓存零回退(热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明);覆盖率基线 93.0% 行/86.1% 函数;bench Δ基线 + 回退 WARN;codegen 零改动 | §61 实测 27 项(≥12);**791 项**全绿;proof_fuzz loops 200 例 0 误报(反例独立求值器三重验证);check 语料 0.96x HEAD(≤1.3x 达标);既有 §56/§59 全绿 |
 | v0.58 | LSP 补全/跳转/符号可用；Builder O(n)；doc JSON additive；Release 打包 | §62 ≥15；10 万次拼接 <1s（本机）；无旗标 doc 输出逐字不变；CI 绿 |
 | v0.59 | ADR-001 完成；若实现则最小 HTTP server 通过 | ADR 评审清单全勾；实现时 §63 ≥12 + 三引擎拒绝一致 |
 | v0.60 | ADR-002/003 完成；实现与否均有结论与理由 | ADR 评审清单全勾；实现时 §64 ≥12 |
@@ -432,7 +433,7 @@
 
 ## 5.1 已知缺陷(2026-11-11 code-review,已逐项复核)
 
-> 来源:两个 code-reviewer 子智能体 + 主会话复现。**状态:v0.50.1–v0.56.0 的已修复项逐行标注;#37–#43 中 #37/#38/#39 已于 v0.56.0 收口;新增 #44(待实现);#45–#47 未修。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
+> 来源:两个 code-reviewer 子智能体 + 主会话复现。**状态:v0.50.1–v0.56.0 的已修复项逐行标注;#37–#43 中 #37/#38/#39 已于 v0.56.0 收口;新增 #44(待实现);#45–#47 未修;v0.57 收口未动 #40–#43/#45–#47(wasm 回落形态与本地函数,见 §4.3.8)。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
 
 ### 已修复(v0.50.1–v0.51.6)
 
@@ -530,6 +531,12 @@
 | 45 | **wasm 值型 if 的 blocktype 编码失败**:表达式 `if`(值上下文)静默回落,`--strict-wasm` 可见——导致 W2 的 expr-if 声明不可达(未真实走 wasm) | P2 | 未修(wasm 块类型编码专项) |
 | 46 | **wasm 块尾 if(unit 上下文)按值编译** → `REJECT: if 无 else` 回落(常见 `while { …; if c { break; } }` 形态;导致 W2/F1 在尾 if 形态上未真实走 wasm) | P2 | 未修(wasm 语句/块尾判别专项) |
 | 47 | **tree 引擎 ensures 求值内嵌块尾值重入 checkEnsures**:契约表达式含带尾值的块(`if` 分支、`match` 臂块等)时,块尾求值再次触发同一函数的 checkEnsures,递归至 M4005,或二次求值时 `result` 被错误替换为块尾 bool 而报 `内部错误:match 无分支命中`。HEAD 可复现;VM/VM-only 正常(与本次 C1 编译器修复无关)。**最小复现**:`fn f(a: i64) -> i64 ensures if a > 0 { true } else { true } { return a; }` + `fn main() with io { print(str(f(5))); }` → `run --tree` M4005(exit 101),`run`/`run --no-wasm` 输出 5 | P3 | 未修(tree 契约求值重入专项;§60 v60.55/v60.57 记录已知行为,修复前不锁定 M4005 断言) |
+### 备注登记(2026-11-13,v0.57 收口;信息性,非缺陷)
+
+| # | 备注 | 级别 | 状态 |
+|---|------|------|------|
+| N-57.1 | `tests/coverage.mjs` 的"始终 exit 0"**非无条件**:`mkdtemp` 临时目录创建在 try 块之外,创建失败(权限/磁盘等)会以未捕获异常 exit 1——概率极低,信息性工具,本版不改代码 | 信息 | 已登记(§4.3.8 覆盖率行备注);docs/coverage-baseline.md 措辞已同步 |
+| N-57.2 | bench/coverage 基线数字为**快照口径**:`tests/bench.baseline.json` 带 `meta.date`、docs/coverage-baseline.md 标注时点(2026-11-13,Node v24,win32-x64);只作同口径纵向趋势对比,`bench --write-baseline` / 重跑 coverage.mjs 刷新 | 信息 | 已登记(两文件均已标注时点) |
 
 
 ## 6. 过程纪律（所有版本适用）

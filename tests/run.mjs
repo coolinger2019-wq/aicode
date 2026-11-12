@@ -6479,6 +6479,553 @@ fn main() with io, fs {
   check('v60.59(C1):契约内臂变量 v 遮蔽同名形参(v=-5 触发,不是形参 7;三引擎逐字一致)', r6059.ok, r6059.detail);
 }
 
+// ===================== 61. v0.57:循环边界证明(QF_LIA 第四片)+ tools AOT 缓存 + 覆盖率/bench 基线 =====================
+// A 组(v57.1–v57.19):范围 for(`for i in lo..hi`)体内 buf[i] 义务 —— 经
+//   `check --json --proof-report` 的 proofs 字段断言(义务 {kind, obligation, scope, counterexample};
+//   scope='loop' 循环体内 / 'body' 直线体)。义务/反例文本以实现实际输出校准;M3045 码/退出码/
+//   反例核心要素不放松。校准注:无 requires 的函数不进入边界分析(v0.52 既有行为),
+//   故 A8/A17 按实现口径补线性 requires。
+// B 组(v57.20–v57.25):ming tools AOT 缓存(缓存目录 <repo>/.ming-cache/tools,gitignored;
+//   观测旗标 MING_TOOLS_DEBUG=1,决策行走 stderr)。核心合同:冷/热 stdout/stderr/退出码逐字一致、
+//   panic 对齐、损坏自愈、旁路(--tree/--json)不缓存、ming run 直连不受影响。
+// C 组(v57.26–v57.27):覆盖率/bench 基线轻量冒烟(coverage 完整插桩运行为手动信息性项,不入门禁)。
+{
+  const dir = path.join(TMP, 'v57');
+  fs.mkdirSync(dir, { recursive: true });
+  const mk = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+
+  // ---- A 组公用:check --json --proof-report 解析 ----
+  const proofJson = (p, extra = []) => {
+    const r = runMing(['check', p, '--json', '--proof-report', ...extra]);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 断言处报错 */ }
+    return { r, j };
+  };
+  const oblsOf = (j, fn) => (j?.proofs?.functions ?? []).filter((f) => f.fn === fn).flatMap((f) => f.obligations);
+  const fRecsOf = (j, fn) => (j?.proofs?.functions ?? []).filter((f) => f.fn === fn);
+  const diagCodes = (j) => (j?.diagnostics ?? []).map((d) => d.code);
+  const bothEnginesOk = (p) => runMing(['run', p]).code === 0 && runMing(['run', p, '--tree']).code === 0;
+
+  // ---- v57.1(A1):`for i in 0..buf.len()` 的 buf[i] 义务 proven ----
+  const p571 = mk('a1_loop_0_len.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2]))); }',
+    '',
+  ].join('\n'));
+  const pj571 = proofJson(p571);
+  const ob571 = oblsOf(pj571.j, 'f');
+  check('v57.1:A1 loop_range_0_len_proven —— 恰 1 条义务 proven scope=loop(0 <= i && i < len$buf);run/run --tree exit 0',
+    pj571.r.code === 0 && ob571.length === 1
+    && ob571[0].kind === 'proven' && ob571[0].scope === 'loop'
+    && ob571[0].obligation === '0 <= i && i < len$buf'
+    && diagCodes(pj571.j).length === 0
+    && bothEnginesOk(p571),
+    `code=${pj571.r.code} obls=${JSON.stringify(ob571)} diags=${JSON.stringify(diagCodes(pj571.j))}`);
+
+  // ---- v57.2(A2):下界 1 由 lo 推出 —— `for i in 1..buf.len()` proven ----
+  const p572 = mk('a2_loop_1_len.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 1..buf.len() {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2]))); }',
+    '',
+  ].join('\n'));
+  const pj572 = proofJson(p572);
+  const ob572 = oblsOf(pj572.j, 'f');
+  check('v57.2:A2 loop_range_1_len_proven —— `for i in 1..buf.len()` 义务 proven scope=loop(0 <= i 由 lo 推出)',
+    pj572.r.code === 0 && ob572.length === 1
+    && ob572[0].kind === 'proven' && ob572[0].scope === 'loop'
+    && ob572[0].obligation === '0 <= i && i < len$buf',
+    `code=${pj572.r.code} obls=${JSON.stringify(ob572)}`);
+
+  // ---- v57.3(A3):非零下界参数 `for i in n..buf.len()` proven ----
+  const p573 = mk('a3_loop_n_len.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && buf.len() >= 1 {',
+    '  for i in n..buf.len() {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 1))); }',
+    '',
+  ].join('\n'));
+  const pj573 = proofJson(p573);
+  const ob573 = oblsOf(pj573.j, 'f');
+  check('v57.3:A3 loop_range_n_len_proven —— requires n >= 0 下 `for i in n..buf.len()` 义务 proven scope=loop',
+    pj573.r.code === 0 && ob573.length === 1
+    && ob573[0].kind === 'proven' && ob573[0].scope === 'loop'
+    && ob573[0].obligation === '0 <= i && i < len$buf',
+    `code=${pj573.r.code} obls=${JSON.stringify(ob573)}`);
+
+  // ---- v57.4(A4):上界参数 + requires n <= buf.len() —— `for i in 0..n` proven ----
+  const p574 = mk('a4_loop_0_n.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n <= buf.len() && buf.len() >= 1 {',
+    '  for i in 0..n {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+    '',
+  ].join('\n'));
+  const pj574 = proofJson(p574);
+  const ob574 = oblsOf(pj574.j, 'f');
+  check('v57.4:A4 loop_range_0_n_requires_proven —— requires n <= buf.len() 下 `for i in 0..n` 义务 proven scope=loop',
+    pj574.r.code === 0 && ob574.length === 1
+    && ob574[0].kind === 'proven' && ob574[0].scope === 'loop'
+    && ob574[0].obligation === '0 <= i && i < len$buf',
+    `code=${pj574.r.code} obls=${JSON.stringify(ob574)}`);
+
+  // ---- v57.5(A5):上界参数无上界要求 —— unproven 默认静默(exit 0、0 诊断) ----
+  const p575 = mk('a5_loop_0_n_unproven.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && buf.len() >= 1 {',
+    '  for i in 0..n {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 1))); }',
+    '',
+  ].join('\n'));
+  const plain575 = runMing(['check', p575]);
+  const pj575 = proofJson(p575);
+  const ob575 = oblsOf(pj575.j, 'f');
+  check('v57.5:A5 loop_range_0_n_unproven_silent —— check exit 0 无输出;proofs 义务 kind=unproven scope=loop',
+    plain575.code === 0 && plain575.stdout === '' && plain575.stderr === ''
+    && diagCodes(pj575.j).length === 0
+    && ob575.length === 1 && ob575[0].kind === 'unproven' && ob575[0].scope === 'loop',
+    `code=${plain575.code} out=${JSON.stringify(plain575.stdout)} err=${JSON.stringify(plain575.stderr)} obls=${JSON.stringify(ob575)}`);
+
+  // ---- v57.6(A6):--warn-unproven-index 下 A5 形态恰 1 条 W3105(消息含未证明义务) ----
+  const warn576 = runMing(['check', p575, '--warn-unproven-index']);
+  check('v57.6:A6 loop_w3105_flag —— 恰 1 条 W3105,消息含 无法静态证明在界内(未证明:i < len$buf)',
+    warn576.code === 0
+    && (warn576.stderr.match(/W3105/g) ?? []).length === 1
+    && (warn576.stderr ?? '').includes('无法静态证明在界内(未证明:i < len$buf)'),
+    `code=${warn576.code} w3105=${(warn576.stderr.match(/W3105/g) ?? []).length} err=${JSON.stringify((warn576.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v57.7(A7):上界 n+1 越界可证违反 —— M3045 + 反例(len$buf = 0, i$0 = 0) ----
+  const p577 = mk('a7_loop_violated_high.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 0 {',
+    '  for i in buf.len()..buf.len() + 1 {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const plain577 = runMing(['check', p577]);
+  const pj577 = proofJson(p577);
+  const ob577 = oblsOf(pj577.j, 'f');
+  const msg577 = (pj577.j?.diagnostics ?? [])[0]?.message ?? '';
+  check('v57.7:A7 loop_violated_high —— exit 1 恰 1 条 error M3045(违反义务:i < len$buf;反例 len$buf = 0, i$0 = 0)',
+    plain577.code === 1
+    && (plain577.stderr.match(/M3045/g) ?? []).length === 1
+    && JSON.stringify(diagCodes(pj577.j)) === '["M3045"]'
+    && pj577.j?.diagnostics?.[0]?.severity === 'error'
+    && msg577.includes('违反义务:i < len$buf')
+    && msg577.includes('(反例:len$buf = 0, i$0 = 0)')
+    && ob577.length === 1 && ob577[0].kind === 'violated' && ob577[0].scope === 'loop',
+    `code=${plain577.code} msg=${JSON.stringify(msg577)} obls=${JSON.stringify(ob577)}`);
+
+  // ---- v57.8(A8):常量低侧越界 `for i in 0 - 1..0` —— M3045 + 反例 i$0 = -1 ----
+  const p578 = mk('a8_loop_violated_low.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0 - 1..0 {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const pj578 = proofJson(p578);
+  const msg578 = (pj578.j?.diagnostics ?? [])[0]?.message ?? '';
+  check('v57.8:A8 loop_violated_low —— exit 1 M3045 低侧(违反义务:0 <= i;反例含 i$0 = -1)',
+    pj578.r.code === 1 && JSON.stringify(diagCodes(pj578.j)) === '["M3045"]'
+    && msg578.includes('违反义务:0 <= i')
+    && msg578.includes('i$0 = -1'),
+    `code=${pj578.r.code} msg=${JSON.stringify(msg578)}`);
+
+  // ---- v57.9(A9):参数低侧越界 `for i in n - 1..n` + requires n == 0 —— M3045 + 反例 n = 0, i$0 = -1 ----
+  const p579 = mk('a9_loop_violated_low_param.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == 0 {',
+    '  for i in n - 1..n {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1], 0))); }',
+    '',
+  ].join('\n'));
+  const pj579 = proofJson(p579);
+  const msg579 = (pj579.j?.diagnostics ?? [])[0]?.message ?? '';
+  check('v57.9:A9 loop_violated_low_param —— exit 1 M3045(违反义务:0 <= i;反例 n = 0 与 i$0 = -1)',
+    pj579.r.code === 1 && JSON.stringify(diagCodes(pj579.j)) === '["M3045"]'
+    && msg579.includes('违反义务:0 <= i')
+    && msg579.includes('n = 0') && msg579.includes('i$0 = -1'),
+    `code=${pj579.r.code} msg=${JSON.stringify(msg579)}`);
+
+  // ---- v57.10(A10):循环变量重赋值 → 保守放弃(只报 M3004,无 M3045) ----
+  const p5710 = mk('a10_loop_reassign.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() {',
+    '    i = 5;',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const pj5710 = proofJson(p5710);
+  check('v57.10:A10 loop_reassign_aborts —— 诊断恰为 [M3004],无 M3045;check exit 1',
+    pj5710.r.code === 1 && JSON.stringify(diagCodes(pj5710.j)) === '["M3004"]',
+    `code=${pj5710.r.code} diags=${JSON.stringify(diagCodes(pj5710.j))}`);
+
+  // ---- v57.11(A11):嵌套 for → 保守放弃(exit 0;proofs 无 f 记录) ----
+  const p5711 = mk('a11_loop_nested.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() {',
+    '    for j in 0..2 {',
+    '      return buf[i];',
+    '    }',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const pj5711 = proofJson(p5711);
+  check('v57.11:A11 loop_nested_abort —— check exit 0、0 诊断、proofs 无 f 记录(0 义务)',
+    pj5711.r.code === 0 && diagCodes(pj5711.j).length === 0 && fRecsOf(pj5711.j, 'f').length === 0,
+    `code=${pj5711.r.code} fRecs=${JSON.stringify(fRecsOf(pj5711.j, 'f'))}`);
+
+  // ---- v57.12(A12):while 守卫形态 → 静默放弃(exit 0、0 诊断) ----
+  const p5712 = mk('a12_loop_while.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 1 && n <= buf.len() {',
+    '  let mut i = 0;',
+    '  while i < n {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1], 1))); }',
+    '',
+  ].join('\n'));
+  const pj5712 = proofJson(p5712);
+  check('v57.12:A12 loop_while_abort —— check exit 0、0 诊断(while 不采集循环义务)',
+    pj5712.r.code === 0 && diagCodes(pj5712.j).length === 0,
+    `code=${pj5712.r.code} diags=${JSON.stringify(diagCodes(pj5712.j))}`);
+
+  // ---- v57.13(A13):索引表达式位移 `buf[i + 1]` 上界 len-1 —— proven ----
+  const p5713 = mk('a13_loop_shift.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() - 1 {',
+    '    return buf[i + 1];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const pj5713 = proofJson(p5713);
+  const ob5713 = oblsOf(pj5713.j, 'f');
+  check('v57.13:A13 loop_shift_proven —— `for i in 0..len-1` 的 buf[i+1] 义务 proven scope=loop',
+    pj5713.r.code === 0 && ob5713.length === 1
+    && ob5713[0].kind === 'proven' && ob5713[0].scope === 'loop'
+    && ob5713[0].obligation === '0 <= i + 1 && i + 1 < len$buf',
+    `code=${pj5713.r.code} obls=${JSON.stringify(ob5713)}`);
+
+  // ---- v57.14(A14):循环内改写外层 mut 变量 → for 后整体放弃(恰 1 条循环义务;buf[n] 不采集) ----
+  const p5714 = mk('a14_loop_mut_dirty.ming', [
+    'fn f(buf: Vec[i64], mut n: i64) -> i64 requires n >= 1 && n <= buf.len() && buf.len() >= 1 {',
+    '  for i in 0..n {',
+    '    n = n - 1;',
+    '    return buf[i];',
+    '  }',
+    '  return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+    '',
+  ].join('\n'));
+  const pj5714 = proofJson(p5714);
+  const ob5714 = oblsOf(pj5714.j, 'f');
+  check('v57.14:A14 loop_mut_dirty_stops_after —— 恰 1 条义务(proven scope=loop);for 后 buf[n] 不采集、无 M3045',
+    diagCodes(pj5714.j).length === 0 && ob5714.length === 1
+    && ob5714[0].kind === 'proven' && ob5714[0].scope === 'loop'
+    && ob5714[0].index === 'i',
+    `diags=${JSON.stringify(diagCodes(pj5714.j))} obls=${JSON.stringify(ob5714)}`);
+
+  // ---- v57.15(A15):两个顺序 for 各裸 buf[i];—— 2 条义务均 proven scope=loop;run 双引擎 exit 0 ----
+  const p5715 = mk('a15_loop_two.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() {',
+    '    buf[i];',
+    '  }',
+    '  for j in 0..buf.len() {',
+    '    buf[j];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2]))); }',
+    '',
+  ].join('\n'));
+  const pj5715 = proofJson(p5715);
+  const ob5715 = oblsOf(pj5715.j, 'f');
+  check('v57.15:A15 loop_two_loops_both_proven —— 2 条义务均 proven scope=loop(i/j);run/run --tree exit 0',
+    pj5715.r.code === 0 && ob5715.length === 2
+    && ob5715.every((o) => o.kind === 'proven' && o.scope === 'loop')
+    && ob5715[0].index === 'i' && ob5715[1].index === 'j'
+    && bothEnginesOk(p5715),
+    `code=${pj5715.r.code} obls=${JSON.stringify(ob5715)}`);
+
+  // ---- v57.16(A16):循环体内 break/continue 不破坏不变式 —— proven;run 双引擎 exit 0 ----
+  const p5716 = mk('a16_loop_break_continue.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() {',
+    '    buf[i];',
+    '    continue;',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1, 2]))); }',
+    '',
+  ].join('\n'));
+  const pj5716 = proofJson(p5716);
+  const ob5716 = oblsOf(pj5716.j, 'f');
+  check('v57.16:A16 loop_break_continue_ok —— `buf[i]; continue;` 义务 proven scope=loop;run/run --tree exit 0',
+    pj5716.r.code === 0 && ob5716.length === 1
+    && ob5716[0].kind === 'proven' && ob5716[0].scope === 'loop'
+    && bothEnginesOk(p5716),
+    `code=${pj5716.r.code} obls=${JSON.stringify(ob5716)}`);
+
+  // ---- v57.17(A17):空洞区间 [5,2) —— 义务空洞真 proven;run exit 0 ----
+  const p5717 = mk('a17_loop_empty_interval.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 0 {',
+    '  for i in 5..2 {',
+    '    return buf[i];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const pj5717 = proofJson(p5717);
+  const ob5717 = oblsOf(pj5717.j, 'f');
+  check('v57.17:A17 loop_empty_interval_vacuous —— 空区间义务 proven scope=loop;run exit 0',
+    pj5717.r.code === 0 && ob5717.length === 1
+    && ob5717[0].kind === 'proven' && ob5717[0].scope === 'loop'
+    && runMing(['run', p5717]).code === 0,
+    `code=${pj5717.r.code} obls=${JSON.stringify(ob5717)}`);
+
+  // ---- v57.18(A18):循环体内契约调用(带 requires 的 g)—— 无 M3041/M3045 误报 ----
+  const p5718 = mk('a18_loop_contract_call.ming', [
+    'fn g(x: i64) -> i64 requires x >= 0 { return x; }',
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 1 {',
+    '  for i in 0..buf.len() {',
+    '    let k = g(i);',
+    '    return buf[k];',
+    '  }',
+    '  return 0;',
+    '}',
+    'fn main() with io { print(str(f([1]))); }',
+    '',
+  ].join('\n'));
+  const pj5718 = proofJson(p5718);
+  check('v57.18:A18 loop_contract_call_no_regress —— 循环体内 let k = g(i) 后 check exit 0、0 诊断(无 M3041/M3045)',
+    pj5718.r.code === 0 && diagCodes(pj5718.j).length === 0,
+    `code=${pj5718.r.code} diags=${JSON.stringify(diagCodes(pj5718.j))}`);
+
+  // ---- v57.19(A19,补充):同函数两态 scope —— break 路径循环义务(loop)+ 循环后直线义务(body) ----
+  const p5719 = mk('a19_loop_mixed_scope.ming', [
+    'fn f(buf: Vec[i64]) -> i64 requires buf.len() >= 2 {',
+    '  for i in 0..buf.len() {',
+    '    buf[i];',
+    '    break;',
+    '  }',
+    '  return buf[0];',
+    '}',
+    'fn main() with io { print(str(f([1, 2]))); }',
+    '',
+  ].join('\n'));
+  const pj5719 = proofJson(p5719);
+  const ob5719 = oblsOf(pj5719.j, 'f');
+  check('v57.19:A19 loop_mixed_scope —— scope 字段两态:循环内 i=loop、循环后 0=body(均 proven);proven 义务 main 实跑双引擎 exit 0',
+    pj5719.r.code === 0 && diagCodes(pj5719.j).length === 0 && ob5719.length === 2
+    && ob5719[0].index === 'i' && ob5719[0].scope === 'loop' && ob5719[0].kind === 'proven'
+    && ob5719[1].index === '0' && ob5719[1].scope === 'body' && ob5719[1].kind === 'proven'
+    && bothEnginesOk(p5719),
+    `code=${pj5719.r.code} obls=${JSON.stringify(ob5719)}`);
+
+  // ---- B 组公用:tools AOT 缓存(仓库级 .ming-cache/tools;gitignored) ----
+  const B_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v57b-'));
+  const TOOLS_CACHE = path.join(ROOT, '.ming-cache', 'tools');
+  const cacheEntries = () => fs.existsSync(TOOLS_CACHE)
+    ? fs.readdirSync(TOOLS_CACHE).filter((x) => x.endsWith('.json'))
+    : [];
+  const clearToolCache = () => fs.rmSync(TOOLS_CACHE, { recursive: true, force: true });
+  const runTool = (args, env = {}) => runMing(['tools', ...args], { cwd: B_DIR, env });
+  const noDbg = { MING_TOOLS_DEBUG: '' }; // 显式关掉继承(防宿主 shell 泄漏 MING_TOOLS_DEBUG)
+  const wTxt = path.join(B_DIR, 'w.txt');
+  fs.writeFileSync(wTxt, 'alpha beta\nalpha\n', 'utf8'); // 2 行 3 词 17 字节
+
+  // ---- v57.20(B1):冷/热逐字一致(wc/patch 成功+0 处拒绝/json 正常+缺键/read)+ 二次运行 hit ----
+  clearToolCache();
+  const pOk = path.join(B_DIR, 'p_ok.txt');
+  const pZero = path.join(B_DIR, 'p_zero.txt');
+  const qJson = path.join(B_DIR, 'q.json');
+  fs.writeFileSync(pZero, 'aaa\n', 'utf8');
+  fs.writeFileSync(qJson, '{"a":{"b":1},"c":2}', 'utf8');
+  const b1Cases = [
+    { tag: 'wc', args: ['wc', wTxt] },
+    { tag: 'patch-ok', args: ['patch', pOk, 'hello', 'hi'], pre: () => fs.writeFileSync(pOk, 'hello\n', 'utf8') },
+    { tag: 'patch-zero', args: ['patch', pZero, 'zzz', 'qqq'] }, // 0 处拒绝:exit 1,不改文件
+    { tag: 'json-hit', args: ['json', qJson, 'a.b'] },
+    { tag: 'json-miss', args: ['json', qJson, 'x.y'] }, // 缺键:exit 1
+    { tag: 'read', args: ['read', wTxt] },
+  ];
+  const coldB1 = b1Cases.map((c) => { if (c.pre) c.pre(); return runTool(c.args, noDbg); });
+  const warmB1 = b1Cases.map((c) => { if (c.pre) c.pre(); return runTool(c.args, noDbg); });
+  const b1Same = b1Cases.every((c, i) => coldB1[i].code === warmB1[i].code
+    && coldB1[i].stdout === warmB1[i].stdout && coldB1[i].stderr === warmB1[i].stderr);
+  const b1CodesOk = coldB1[0].code === 0 && coldB1[1].code === 0 && coldB1[2].code === 1
+    && coldB1[3].code === 0 && coldB1[4].code === 1 && coldB1[5].code === 0;
+  const dbgB1 = runTool(['wc', wTxt], { MING_TOOLS_DEBUG: '1' });
+  check('v57.20:B1 tools 缓存冷/热逐字一致(6 例 code+stdout+stderr 全等;缓存恰 3 条目 wc/mingkit/json_query)且二次运行 [tools-cache] hit',
+    b1Same && b1CodesOk && cacheEntries().length === 3
+    && dbgB1.code === 0 && (dbgB1.stderr ?? '').includes('[tools-cache] hit'),
+    `same=${b1Same} codes=${JSON.stringify(coldB1.map((r) => r.code))} entries=${JSON.stringify(cacheEntries())} `
+    + `dbg=${JSON.stringify((dbgB1.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))}`);
+
+  // ---- v57.21(B2):缓存命中 panic 对齐(--max-steps 3 → M4001;stderr 逐字一致;exit 101) ----
+  clearToolCache();
+  const panicC = runTool(['wc', wTxt, '--max-steps', '3'], noDbg);
+  const panicW = runTool(['wc', wTxt, '--max-steps', '3'], noDbg);
+  const pwErrNorm = (panicW.stderr ?? '').replace(/\\/g, '/');
+  check('v57.21:B2 缓存命中 panic 对齐 —— 冷/热 stdout+stderr 逐字相等;M4001 首行(步数上限 3)+ at main 栈帧含 tools/wc.ming;exit 101',
+    panicC.code === 101 && panicW.code === 101
+    && panicC.stdout === panicW.stdout && panicC.stderr === panicW.stderr
+    && (panicW.stderr ?? '').split('\n')[0].includes('M4001')
+    && pwErrNorm.includes('执行步数超过上限 3')
+    && pwErrNorm.includes('at main') && pwErrNorm.includes('tools/wc.ming')
+    && cacheEntries().length >= 1,
+    `codes=${panicC.code}/${panicW.code} same=${panicC.stderr === panicW.stderr} `
+    + `err1=${JSON.stringify((panicW.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v57.22(B3):损坏缓存自愈(重建为可 JSON.parse 的产物;输出与 run 直连逐字一致) ----
+  clearToolCache();
+  const b3a = runTool(['wc', wTxt], noDbg);
+  const b3Entries = cacheEntries();
+  let b3Corrupted = false;
+  if (b3Entries.length === 1) {
+    fs.writeFileSync(path.join(TOOLS_CACHE, b3Entries[0]), '{corrupt', 'utf8');
+    b3Corrupted = true;
+  }
+  const b3b = runTool(['wc', wTxt], noDbg);
+  const b3Direct = runMing(['run', path.join(ROOT, 'tools', 'wc.ming'), '--', wTxt], { env: noDbg });
+  let b3Parsed = false;
+  try {
+    b3Parsed = b3Entries.length === 1 && b3Corrupted
+      && typeof JSON.parse(fs.readFileSync(path.join(TOOLS_CACHE, b3Entries[0]), 'utf8')) === 'object';
+  } catch { /* 保持 false,断言处报错 */ }
+  check('v57.22:B3 损坏缓存自愈 —— {corrupt 后冷跑重建:输出与 run 直连逐字一致、条目恢复可 JSON.parse',
+    b3Entries.length === 1 && b3Corrupted
+    && b3b.code === 0 && b3b.stdout === b3a.stdout && b3b.stderr === b3a.stderr
+    && b3Direct.code === 0 && b3b.stdout === b3Direct.stdout
+    && b3Parsed,
+    `entries=${JSON.stringify(b3Entries)} corrupted=${b3Corrupted} parsed=${b3Parsed} `
+    + `codes=${b3a.code}/${b3b.code}/${b3Direct.code} same=${b3b.stdout === b3Direct.stdout}`);
+
+  // ---- v57.23(B4):旁路(--tree/--json)不缓存;冷跑恰 +1;patch-all 与 patch 同键共享条目 ----
+  clearToolCache();
+  const b4tree = runTool(['wc', wTxt, '--tree'], noDbg);
+  const b4json = runTool(['wc', wTxt, '--json'], noDbg);
+  const b4EntriesAfterBypass = cacheEntries(); // 旁路运行后立即快照(后续 patch 会写缓存,不能再查实时)
+  const p4 = path.join(B_DIR, 'p4.txt');
+  fs.writeFileSync(p4, 'aaa\n', 'utf8');
+  const b4cold = runTool(['patch', p4, 'aaa', 'bbb'], noDbg);
+  const b4EntriesAfterCold = cacheEntries();
+  const b4all = runTool(['patch-all', p4, 'bbb', 'ccc'], noDbg);
+  const b4EntriesAfterAll = cacheEntries();
+  check('v57.23:B4 旁路不缓存(--tree/--json 后 0 条目)+ 冷跑恰 +1 + patch-all 与 patch 同键共享(仍 1 条;aaa→bbb→ccc 实际执行)',
+    b4tree.code === 0 && b4json.code === 0 && b4EntriesAfterBypass.length === 0
+    && b4cold.code === 0 && b4EntriesAfterCold.length === 1
+    && b4all.code === 0 && b4EntriesAfterAll.length === 1
+    && fs.readFileSync(p4, 'utf8').trim() === 'ccc',
+    `bypass codes=${b4tree.code}/${b4json.code} afterBypass=${JSON.stringify(b4EntriesAfterBypass)} `
+    + `afterCold=${JSON.stringify(b4EntriesAfterCold)} afterAll=${JSON.stringify(b4EntriesAfterAll)} p4=${JSON.stringify(fs.readFileSync(p4, 'utf8'))}`);
+
+  // ---- v57.24(B5):MING_TOOLS_DEBUG=1 决策行(冷 stored / 热 hit);无旗标无前缀且输出不变 ----
+  clearToolCache();
+  const b5cold = runTool(['wc', wTxt], { MING_TOOLS_DEBUG: '1' });
+  const b5warm = runTool(['wc', wTxt], { MING_TOOLS_DEBUG: '1' });
+  const b5off = runTool(['wc', wTxt], noDbg);
+  check('v57.24:B5 MING_TOOLS_DEBUG=1 决策行走 stderr(冷 stored、热 hit);无旗标无 [tools-cache] 前缀且 stdout 不变',
+    b5cold.code === 0 && b5warm.code === 0 && b5off.code === 0
+    && (b5cold.stderr ?? '').includes('[tools-cache] stored')
+    && (b5warm.stderr ?? '').includes('[tools-cache] hit')
+    && !(b5off.stderr ?? '').includes('[tools-cache]')
+    && b5cold.stdout === b5warm.stdout && b5cold.stdout === b5off.stdout,
+    `codes=${b5cold.code}/${b5warm.code}/${b5off.code} `
+    + `cold=${JSON.stringify((b5cold.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))} `
+    + `warm=${JSON.stringify((b5warm.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))}`);
+
+  // ---- v57.25(B6):ming run 直连工具路由不受缓存影响(直连不写缓存;输出与 tools 路由逐字一致) ----
+  clearToolCache();
+  const dTxt = path.join(B_DIR, 'd.txt');
+  fs.writeFileSync(dTxt, 'x\ny\n', 'utf8');
+  const b6direct = runMing(['run', path.join(ROOT, 'tools', 'wc.ming'), '--', dTxt], { env: noDbg });
+  const b6EntriesAfterDirect = cacheEntries();
+  const b6tools = runTool(['wc', dTxt], noDbg);
+  check('v57.25:B6 ming run 直连路由不受缓存影响 —— 直连后 0 缓存条目;stdout 与 tools 路由逐字一致',
+    b6direct.code === 0 && b6EntriesAfterDirect.length === 0
+    && b6tools.code === 0 && b6tools.stdout === b6direct.stdout && b6direct.stdout.trim() !== '',
+    `direct=${b6direct.code} entriesAfterDirect=${JSON.stringify(b6EntriesAfterDirect)} `
+    + `tools=${b6tools.code} same=${b6tools.stdout === b6direct.stdout}`);
+
+  // ---- v57.26(C1):coverage.mjs 存在 + 语法可加载 + 覆盖率基线文档存在 ----
+  // 完整插桩运行(NODE_V8_COVERAGE 跑全量回归,~7 分钟)为手动信息性项,不入门禁;
+  // 基线数字见 docs/coverage-baseline.md(plan §4.3.8:先建立基线再谈阈值)。
+  const covPath = path.join(ROOT, 'tests', 'coverage.mjs');
+  const covSyntax = spawnSync(process.execPath, ['--check', covPath], { encoding: 'utf8' });
+  const covBaselineDoc = path.join(ROOT, 'docs', 'coverage-baseline.md');
+  check('v57.26:C1 coverage.mjs 存在且语法可加载(--check exit 0)+ 覆盖率基线文档存在(完整插桩运行为手动信息性项)',
+    fs.existsSync(covPath) && covSyntax.status === 0 && fs.existsSync(covBaselineDoc),
+    `exists=${fs.existsSync(covPath)} check=${covSyntax.status} doc=${fs.existsSync(covBaselineDoc)} `
+    + `err=${JSON.stringify((covSyntax.stderr ?? '').slice(0, 200))}`);
+
+  // ---- v57.27(C2):bench 基线可解析(meta.date + items)且 bench.mjs 带基线对比输出(Δ基线) ----
+  const benchBaselinePath = path.join(ROOT, 'tests', 'bench.baseline.json');
+  let base5727 = null;
+  try { base5727 = JSON.parse(fs.readFileSync(benchBaselinePath, 'utf8')); } catch { /* 断言处报错 */ }
+  const benchEnv5727 = { ...process.env };
+  delete benchEnv5727.MING_WASM_STRICT; // 与 runMing 同口径:剥掉宿主可能泄漏的 strict 旗标
+  const benchR = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'bench.mjs')], {
+    encoding: 'utf8', cwd: ROOT, timeout: 300000, env: benchEnv5727,
+  });
+  const benchLines5727 = (benchR.stdout ?? '').split('\n').filter((l) => l.includes('基线'));
+  check('v57.27:C2 bench 基线存在可解析(meta.date + items 非空)且 bench.mjs exit 0 带 Δ基线对比输出',
+    base5727 && typeof base5727 === 'object'
+    && typeof base5727.meta?.date === 'string' && base5727.meta.date !== ''
+    && base5727.items && typeof base5727.items === 'object' && Object.keys(base5727.items).length >= 1
+    && benchR.status === 0
+    && benchLines5727.some((l) => l.includes('Δ基线'))
+    && benchLines5727.some((l) => l.includes('基线对比')),
+    `bench=${benchR.status} baselineDate=${JSON.stringify(base5727?.meta?.date)} `
+    + `items=${Object.keys(base5727?.items ?? {}).length} `
+    + `lines=${JSON.stringify(benchLines5727.slice(-2))}`);
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

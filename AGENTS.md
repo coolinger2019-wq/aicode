@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.56.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.57.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,9 +28,11 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.56.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（764 项，含各版本分节 §1..§60；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（791 项，含各版本分节 §1..§61；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
-tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
+tests/proof_fuzz.mjs 静态证明模糊器（边界证明 1/2 + summaries + v0.57 loops 模式；反例独立求值器）
+tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc；v0.57 基线对比 --write-baseline）
+tests/coverage.mjs   覆盖率观测（NODE_V8_COVERAGE；信息性不设门槛；基线见 docs/coverage-baseline.md）
 tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
                      edit 行级编辑（按行号，与 mingkit 按模式互补）· engdiff 三引擎差分 · diaghot 诊断热力图（目录展开 + --top）·
                      wc 行词字节（多文件 + total）· tree 目录树（深度可选）· find_files 按名查找 · json_query JSON 点路径（a.b.0.c）·
@@ -127,8 +129,9 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 - **strict-wasm 与解释器旗标互斥**：`--strict-wasm`（或 `MING_WASM_STRICT=1`）观测的正是 wasm 分层本身，与 `--tree`/`--no-wasm` 同时出现 → exit 1；strict 下 eligible>0 回落 → exit 2，非 strict 仍静默回落 exit 0（§57 v53.1-7 锁定）。
 - **模糊器覆盖不等于语义证明**：v0.51.6 起生成器已含 `+=/-=/*=`（含 while 内）；VM 复合赋值窥孔 bug 曾因早期生成器不生成 `+=` 漏网。语义可疑时仍要写最小 .ming 复现跑 `--tree` 对照，别只信模糊绿。
 - **unsafe 仅 C 原生可用**：`with unsafe`/`Ptr`/`std.mem` 在 tree/VM（以及 wasm 回落 VM）以 **M4016** panic（exit 101，消息逐字）；`ming cc` 是唯一真实执行者（C5 旗标仅 cc 路径传入）。`std.mem.alloc` 的 malloc 失败复用 **M4011**（不返回空指针）。悬垂/越界解引用是进程级 UB，Ming 不捕获——写 unsafe 测试时不要制造越界访问（§58 黄金均用 1–3 字节分配且界内）。
+- **契约循环义务（v0.57）**：静态边界证明覆盖范围 for（`for i in lo..hi`，循环变量确定性符号 `i$<n>` + 半开区间假设入义务假设集）；**proven 不消除运行时 M4003**，`--warn-unproven-index` 对循环义务同口径（W3105）。脏循环（体内重赋值循环变量/改写外层可见变量/藏分支）、嵌套 for、`while`/`loop`、区间不可线性化一律静默放弃——"义务未采集"不等于"义务已证明"，别在文档或结论里混用。
 
 ## 10. 当前状态与下一步
 
-- **v0.56.0**（2026-11-12，质量版，无新语言面）：764 项测试全绿（§60 共 70 项）。**引擎一致性清零**：tree 作用域模型统一（#23/#28：execBlock 子环境 + for-in/while-let 每迭代内层绑定，tree/VM 逐字一致；tree bench +5–32%，循环项最大——语义修复代价）；VM 捕获闭包 + HOF 修复（#24：`callClosure` 漏传 `captures` 一行修复）。**契约**：尾部裸标识歧义（#33：requires/ensures 专用解析模式 + struct literal 前瞻）；fmt 契约保真（#36 P1 数据丢失：requires/ensures/invariant 及其 else 消息逐字保留、幂等、既有文件零改写；else 插值消息经 `msgRaw` 原样保留，#39 已修）。**wasm 四个严格模式语义修复**（均 P1）：W1 一元负号栈序、W2 循环内 if 的 break/continue br 深度、F1 for 体内 continue 跳过自增、F2 `inferNumType` 重复 case。**验证与构建**：fuzz 真实 wasm 腿（#25：eligible helper + `[wasm] fn OK` 断言，三种子计数 20/16/18）；buildKey 编译器源指纹（#26：`compilerSourceHash` + `build --json` additive `compiler_hash`；敏感性回归覆盖 src 与 bin）。**工具链**：#22/#29/#30/#31/#32/#34 已修。**v0.56 独立审查修复**：契约作用域（B3）、u64 一元负号 M3008、u64 减法四引擎 M4002、fmt 契约破坏三修；#31 去重改按模块身份（record `abs`，同显示名不同目录不合并）；#26 指纹补 `bin/*.js`；**M3047[local-fn-unsupported]** 本地函数声明显式拒绝（VM 不再 TypeError；#37/#38 由本诊断收口，恢复登记 plan §5.1 #44）。收口新登记 #37–#46（#37/#38 已修；#39 已修（msgRaw）；#40–#43 与新增 #45/#46 见 plan §5.1/§4.3.8）。**复审阻塞回归 C1/C2 已修**：ensures 自身作用域基线（match 臂变量/if 块 let 可解析，形参遮蔽按词法优先；§60 v60.54–v60.57/v60.59）、闭包/本地函数 return 不再把外层 ensures 编译进子帧（§60 v60.58）；tree 契约块重入为 HEAD 既有 #47（P3）。v0.52–v0.55 路线已全部交付。
-- 下一步见 `docs/plan.md §4.3`：**v0.57 循环/守卫敏感边界证明**（QF_LIA 第四片，`for i in 0..buf.len() { buf[i] }`）→ v0.58 LSP/Builder/doc → v0.59 服务端 ADR → v0.60 taint/mask ADR；已知缺陷 #37–#47 按 §4.3.8（#40–#43、#45–#47 待修；#44 为本地函数恢复项；#39 已修；wasm 剩余回落形态不影响语义正确性）。
+- **v0.57.0**（2026-11-13，QF_LIA 第四片 + 工具链缓存 + 观测基线；无新语言面，prover.js 求解器与 codegen 零改动）：791 项测试全绿（§61 共 27 项：A 循环义务 19 + B tools 缓存 6 + C 观测冒烟 2）。**循环/守卫敏感边界证明**：范围 for 内 `buf[i]` 义务两向证明——循环变量确定性符号 `i$<n>`、半开区间假设 `lo <= i$<n> < hi` 入义务假设集；脏循环（体内重赋值循环变量/改写外层变量/藏分支）、嵌套 for、while/loop、区间不可线性化保守放弃；break/continue 不破坏不变式；反例枚举含循环符号（`i$0 = -1`）；义务记录 additive `scope: body|loop`；M3045/W3105 码与消息不变，proven 不消除 M4003；proof_fuzz `--mode loops` 200 例 0 误报（反例独立求值器三重验证）。**ming tools 工具 AOT 缓存**：12 工具全缓存零回退；缓存键 = VERSION + Node 主版本 + compilerSourceHash + 工具 basename + 源文本；原子写；span/declSpans 回填 panic 首行/摘录/栈帧逐字对齐；`--json`/`--tree`/strict-wasm 旁路不缓存、损坏自愈、`MING_TOOLS_DEBUG=1` 观测；bin 惰性导入 + enableCompileCache（`ming version` 地板 73→57ms）；**热缓存净 ~25–30ms/次——目标 <20ms 未完全达标如实注明**（剩余地板 = bin 顶层导入 ~9ms + 核心模块图 ~15ms，进一步需 src 级瘦身）。**观测基线**：tests/coverage.mjs 覆盖率首个基线 93.0% 行 / 86.1% 函数（docs/coverage-baseline.md；信息性不设门槛）；bench 基线（tests/bench.baseline.json + Δ基线列 + cc/vm 比值回退 >20% WARN 仍 exit 0 + `--write-baseline`）。独立审查两条 MINOR 已落地（v57.10 补 check 退出码断言、v57.19 补 proven 义务 main 实跑双引擎 exit 0）。v0.52–v0.56 路线已全部交付。
+- 下一步见 `docs/plan.md §4.3.5`：**v0.58 AI 协作体验与文本工程**（LSP 补全/跳转/符号、`std.str.Builder`、doc JSON 与 Release 打包）→ v0.59 服务端 ADR → v0.60 taint/mask ADR；已知缺陷 #37–#47 按 §4.3.8/§5.1 处置（#37–#39 已修；#40–#43、#45–#47 待修；#44 为本地函数恢复项；wasm 剩余回落形态不影响语义正确性）。

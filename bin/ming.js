@@ -6,24 +6,71 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { Checker } from '../src/checker.js';
-import { Interp, Panic } from '../src/interp.js';
-import { VMInterp } from '../src/vm.js';
-import { parse, attachDocs as attachDocsImpl } from '../src/parser.js';
-import { formatProgram, FmtError } from '../src/fmt.js';
-import { Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY } from '../src/diag.js';
-import { findManifest, initProject } from '../src/manifest.js';
-import { startLsp } from '../src/lsp.js';
-import { startRepl } from '../src/repl.js';
-import { compile, CompileError } from '../src/compiler.js';
-import { serializeArtifact } from '../src/artifact.js';
-import { emitC } from '../src/cbackend.js';
-import { Unsupported, wasmLayerStatus } from '../src/wasm.js';
-import { spawnSync } from 'node:child_process';
+import * as nodeModule from 'node:module';
 import { createHash } from 'node:crypto';
+// child_process 仅 cc 用:实测内建导入 ~1.6ms,对 tools/version 是纯开销 → 按命令惰性加载。
+let _spawnSync = null;
+async function lazySpawnSync() {
+  if (!_spawnSync) _spawnSync = (await import('node:child_process')).spawnSync;
+  return _spawnSync;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.56.0';
+export const VERSION = '0.57.0';
+
+// v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
+// 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
+// enableCompileCache 让 V8 跨进程复用代码缓存,second-run 起整个 CLI 提速 ~28ms。
+// 必须在任何 src 模块加载前调用 —— 因此 bin 的 src 导入全部惰性化(loadCore/lazy*),
+// 首个 await 之前模块体只有 builtin 导入。Node < 22.8 无此 API:跳过,行为不变。
+// 尊重用户显式配置:已设 NODE_COMPILE_CACHE 时不覆盖。缓存目录在 .ming-cache(gitignored)。
+try {
+  if (typeof nodeModule.enableCompileCache === 'function' && !process.env.NODE_COMPILE_CACHE) {
+    nodeModule.enableCompileCache(path.join(__dirname, '..', '.ming-cache', 'compile'));
+  }
+} catch { /* 编译缓存启用失败不影响任何功能(纯性能优化) */ }
+
+// 核心模块图(checker/interp/vm/parser/diag/compiler/artifact/wasm)按命令加载:
+// run/check/test/tools/build/cc 共用;doc/fmt 只需其中子集,但编译缓存命中后全图
+// 加载仅数 ms,不再细拆。绑定全部走这些 let,调用面在 main() 之后必然已加载完成。
+let Checker, Interp, Panic, VMInterp, parse, attachDocsImpl;
+let Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY;
+let compile, CompileError, serializeArtifact, deserializeArtifact, makeCheckLike;
+let Unsupported, wasmLayerStatus;
+let _core = null;
+async function loadCore() {
+  if (_core) return _core;
+  const [mChecker, mInterp, mVm, mParser, mDiag, mCompiler, mArtifact, mWasm] = await Promise.all([
+    import('../src/checker.js'),
+    import('../src/interp.js'),
+    import('../src/vm.js'),
+    import('../src/parser.js'),
+    import('../src/diag.js'),
+    import('../src/compiler.js'),
+    import('../src/artifact.js'),
+    import('../src/wasm.js'),
+  ]);
+  Checker = mChecker.Checker;
+  ({ Interp, Panic } = mInterp);
+  VMInterp = mVm.VMInterp;
+  parse = mParser.parse;
+  attachDocsImpl = mParser.attachDocs;
+  ({ Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY } = mDiag);
+  ({ compile, CompileError } = mCompiler);
+  ({ serializeArtifact, deserializeArtifact, makeCheckLike } = mArtifact);
+  ({ Unsupported, wasmLayerStatus } = mWasm);
+  _core = true;
+  return _core;
+}
+
+// 命令特有模块按命令加载(fmt/cbackend/lsp/repl/manifest 对 tools/version/run/check/test
+// 是纯开销;emitC/lsp/repl 另需自身模块)。
+let _fmtMod = null, _manifestMod = null, _lspMod = null, _replMod = null, _cbackendMod = null;
+async function lazyFmt() { if (!_fmtMod) _fmtMod = await import('../src/fmt.js'); return _fmtMod; }
+async function lazyManifest() { if (!_manifestMod) _manifestMod = await import('../src/manifest.js'); return _manifestMod; }
+async function lazyLsp() { if (!_lspMod) _lspMod = await import('../src/lsp.js'); return _lspMod; }
+async function lazyRepl() { if (!_replMod) _replMod = await import('../src/repl.js'); return _replMod; }
+async function lazyCbackend() { if (!_cbackendMod) _cbackendMod = await import('../src/cbackend.js'); return _cbackendMod; }
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -115,7 +162,8 @@ function sortDiags(diags) {
     (a.span?.col ?? 0) - (b.span?.col ?? 0));
 }
 
-function loadAndCheck(file, { json, silent = false } = {}) {
+async function loadAndCheck(file, { json, silent = false } = {}) {
+  await loadCore();
   const checker = new Checker(file);
   let result;
   try {
@@ -154,11 +202,14 @@ function strictWasmConflict(flags) {
 const STRICT_WASM_CONFLICT_MSG = '--strict-wasm 与 --tree/--no-wasm 互斥(strict 模式观测的正是 wasm 分层本身;先去掉 --tree/--no-wasm)';
 
 // ---------- run ----------
-function cmdRun(file, flags, opts, programArgs) {
+// v0.57 tools AOT:prebuilt 非空(缓存命中)时跳过 loadAndCheck 与 interp 构造,
+// 直接用调用方装配好的 VMInterp 运行;其余 runMain/panic/RangeError/内部错误路径
+// 与原逻辑完全共用 —— 输出与退出码逐字一致。
+async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
   const json = flags.has('json');
   if (!file) return fail('run 需要一个 .ming 文件', json);
   if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
-  const c = loadAndCheck(file, { json, silent: true });
+  const c = prebuilt ? { ok: true, result: prebuilt.result, diags: [] } : await loadAndCheck(file, { json, silent: true });
   if (!c.ok) {
     if (json) {
       process.stdout.write(JSON.stringify({ ok: false, exit_code: 1, diagnostics: diagJson(c.diags) }, null, 2) + '\n');
@@ -169,9 +220,10 @@ function cmdRun(file, flags, opts, programArgs) {
 
   // v0.53 strict:先判定 wasm 分层,回落 → 退出码 2(不运行);预编译产物传给 VM 避免双份 compile。
   // 非 strict 不进入此分支 —— 现状静默回落行为逐字不变。
+  // (prebuilt 仅来自 tools 缓存路径,strict 旗标下缓存路径整体回退,此分支不会进入。)
   let strictStatus = null;
   let strictCompiled = null;
-  if (strictWasmOn(flags) && !flags.has('tree')) {
+  if (strictWasmOn(flags) && !flags.has('tree') && !prebuilt) {
     strictCompiled = compile(result);
     strictStatus = wasmLayerStatus(result, strictCompiled);
     if (strictStatus.status === 'fallback') {
@@ -185,15 +237,20 @@ function cmdRun(file, flags, opts, programArgs) {
     }
   }
 
-  const interpOpts = {
-    capture: json,
-    noWasm: flags.has('no-wasm'),
-    maxSteps: opts['max-steps'] ? Number(opts['max-steps']) : Infinity,
-    maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
-    maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
-  };
-  if (strictStatus) interpOpts.precompiled = strictCompiled;
-  const interp = flags.has('tree') ? new Interp(result, interpOpts) : new VMInterp(result, interpOpts);
+  let interp;
+  if (prebuilt) {
+    interp = prebuilt.interp;
+  } else {
+    const interpOpts = {
+      capture: json,
+      noWasm: flags.has('no-wasm'),
+      maxSteps: opts['max-steps'] ? Number(opts['max-steps']) : Infinity,
+      maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
+      maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
+    };
+    if (strictStatus) interpOpts.precompiled = strictCompiled;
+    interp = flags.has('tree') ? new Interp(result, interpOpts) : new VMInterp(result, interpOpts);
+  }
   // v0.53 additive:run --json 的 wasm_status(vm 模式;tree 无 wasm 分层,键集保持不变)。
   // 非 strict 时仅 --json 输出才判定(惰性);strict 时复用运行前的判定(字符串化)。
   // --no-wasm:wasm 层未参与执行,不输出该字段(否则会被误读为"wasm 已跑过")。
@@ -289,7 +346,8 @@ function panicDiag(p, result) {
 }
 
 // ---------- check ----------
-function cmdCheck(files, flags) {
+async function cmdCheck(files, flags) {
+  await loadCore();
   const json = flags.has('json');
   // v0.52 阶段 3:--proof-report 证明报告 + --warn-unproven-index W3105 观测旗标。
   // 两旗标仅 check 消费;其他命令按既有风格忽略未知旗标(命令只读取自己认识的旗标)。
@@ -414,14 +472,15 @@ function collectProofs(checked) {
 }
 
 // ---------- test ----------
-function cmdTest(files, flags, opts) {
+async function cmdTest(files, flags, opts) {
+  await loadCore();
   const json = flags.has('json');
   const filter = opts.filter ?? null;
   if (!files.length) return fail('test 需要至少一个 .ming 文件', json);
   let totalPassed = 0, totalFailed = 0;
   const allResults = [];
   for (const f of files) {
-    const c = loadAndCheck(f, { json: false });
+    const c = await loadAndCheck(f, { json: false });
     if (!c.ok) { totalFailed++; continue; }
     const testOpts = { capture: true, noWasm: flags.has('no-wasm') };
     const interp = flags.has('tree') ? new Interp(c.result, testOpts) : new VMInterp(c.result, testOpts);
@@ -460,7 +519,8 @@ function cmdTest(files, flags, opts) {
 }
 
 // ---------- fmt ----------
-function cmdFmt(files, flags) {
+async function cmdFmt(files, flags) {
+  await loadCore();
   const write = flags.has('write');
   const check = flags.has('check');
   if (!files.length) return fail('fmt 需要至少一个 .ming 文件', false);
@@ -480,6 +540,7 @@ function cmdFmt(files, flags) {
     }
     // v0.56(A3):格式化失败必须显式报错并跳过落盘——先完整产出字符串,成功后才写文件
     // (绝不输出占位符丢代码,也不会 --write 半写)。
+    const { formatProgram, FmtError } = await lazyFmt();
     let formatted;
     try {
       formatted = formatProgram(program.items, comments);
@@ -507,7 +568,8 @@ function cmdFmt(files, flags) {
 }
 
 // ---------- doc ----------
-function cmdDoc(file, flags) {
+async function cmdDoc(file, flags) {
+  await loadCore();
   const json = flags.has('json');
   if (!file) return fail('doc 需要一个 .ming 文件', json);
   let src;
@@ -582,8 +644,9 @@ function reportCompileError(e, json) {
 }
 
 // ---------- 项目模式:无文件参数时,从 cwd 向上找 ming.toml ----------
-function projectEntry(cmd, rest, json) {
+async function projectEntry(cmd, rest, json) {
   if (rest.length > 0) return { files: rest, proj: null };
+  const { findManifest } = await lazyManifest();
   const found = findManifest(process.cwd());
   if (!found) return { files: [], proj: null };
   if (found.diags.length) {
@@ -599,8 +662,9 @@ function projectEntry(cmd, rest, json) {
 }
 
 // ---------- init ----------
-function cmdInit(name, flags) {
+async function cmdInit(name, flags) {
   const json = flags.has('json');
+  const { initProject } = await lazyManifest();
   const r = initProject(process.cwd(), name);
   if (json) {
     process.stdout.write(JSON.stringify({ ok: r.ok, ...(r.ok ? { manifest: r.manifestPath, entry: r.entryPath } : { error: r.message }) }, null, 2) + '\n');
@@ -793,7 +857,165 @@ function resolveTool(cmd) {
   return null;
 }
 
-function cmdTools(rest, flags, opts, dashRest) {
+// ---------- v0.57 tools AOT 缓存(docs/usage-audit.md §4 行动1;plan §4.3.8)----------
+// 动机:每次 ming tools 调用都重新 check+编译工具本体,超出 Node 启动基线约 57ms
+// (audit 快照:107ms vs 基线 49.8ms)。把"版本 + Node 主版本 + 编译器源码指纹 +
+// 工具文件名 + 工具源文本"寻址的字节码产物落盘到 .ming-cache/tools/<sha256>.json,
+// 命中直接 VMInterp.fromArtifact 执行,跳过 Checker/字节码编译/wasm 编译。
+// 行为合同(与未缓存路径逐字一致):
+//   * stdout/stderr/退出码完全一致 —— panic 对齐靠 span 文件重写 + 预填源码行缓存;
+//   * 任何不确定形态(受限旗标 / 读源失败 / check 失败或有诊断 / 多模块 / sync/unsafe /
+//     缓存缺失或损坏 / AOT 序列化失败)一律回退原路径且不写缓存,绝不吞错误;
+//   * 缓存键含 compilerSourceHash(编译器源码指纹)与 Node 主版本:工具链或运行时升级
+//     → 键变化 → 旧缓存自然失效,不会脏命中。
+// 并发说明:写缓存用临时文件 + rename 原子落盘,读端只会看到完整旧文件或完整新文件;
+// 同键并发写竞态下双方产物内容一致(同键同源),最后 rename 者胜出,均可完整读取
+// (单代理场景可接受)。缓存目录无淘汰:工具链升级产生新键,旧条目留待手工清理
+// (.ming-cache/ 已 gitignore,体积为每工具数百 KB 量级)。
+const TOOLS_CACHE_DIR = path.join(__dirname, '..', '.ming-cache', 'tools');
+// 观测旗标:MING_TOOLS_DEBUG=1 时把每次缓存决策(命中/未命中/回退原因)打到 stderr。
+// 默认关闭 —— 不影响任何命令的 stdout/stderr/退出码。
+const TOOLS_DEBUG = process.env.MING_TOOLS_DEBUG === '1';
+const toolsDbg = (msg) => { if (TOOLS_DEBUG) process.stderr.write(`[tools-cache] ${msg}\n`); };
+
+// 缓存键 = sha256(JSON.stringify({v, node, compiler, tool, src}))。
+// tool 取工具文件名(basename)而非命令别名:patch/patch-all/read/... 同源于 mingkit.ming,
+// 别名间共享同一产物条目,键义更稳定(命令别名表可增删而不影响键)。
+function toolCacheKey(toolFile, src) {
+  return createHash('sha256').update(JSON.stringify({
+    v: VERSION,
+    node: process.versions.node.split('.')[0],
+    compiler: compilerSourceHash(),
+    tool: path.basename(toolFile),
+    src,
+  })).digest('hex');
+}
+
+function writeToolCache(cacheFile, artifact) {
+  try {
+    fs.mkdirSync(TOOLS_CACHE_DIR, { recursive: true });
+    const tmp = `${cacheFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(artifact));
+    fs.renameSync(tmp, cacheFile);
+  } catch { /* 缓存写失败不影响本次运行(下次未命中重试) */ }
+}
+
+// 产物 → { interp, result }:反序列化后做三件事 ——
+//   1) 把 span 文件名(basename,序列化时剥离绝对路径)重写回工具绝对路径;
+//   2) 回填 decl.span(serializeArtifact 只存 {nt,name},vm runMain 初始帧取
+//      entry.decl.span 作 panic 调用栈首帧;declSpans 由探测期 checker 结果免费提取,
+//      additive 存入缓存 JSON,键含 src+编译器指纹 → 命中必同源,不会有陈旧 span);
+//   3) 预填源码行缓存 —— panic 诊断(文件:行:列 + 源码摘录 + 调用栈)与原路径逐字一致
+//      (spanOf 返回 compiled.spans 元素引用,就地重写即覆盖全部出口)。
+// result 是与 checker 结果同构的最小 panicDiag 依赖面(modules[{file,src}])。
+function toolArtifactToPrebuilt(artifact, toolFile, src, flags, opts) {
+  const compiled = deserializeArtifact(artifact);
+  const relName = path.basename(toolFile);
+  for (const sp of compiled.spans) {
+    if (sp && sp.file === relName) sp.file = toolFile;
+  }
+  if (Array.isArray(artifact.declSpans)) {
+    const byName = new Map(artifact.declSpans.map(d => [d.name, d.span]));
+    for (const fn of compiled.functions) {
+      const sp = byName.get(fn.name);
+      if (sp) fn.entry.decl.span = { ...sp };
+    }
+  }
+  cacheSourceLines(toolFile, src);
+  const interp = new VMInterp(makeCheckLike(compiled), {
+    capture: false, // json 旗标下缓存路径整体回退,此处恒非捕获
+    noWasm: flags.has('no-wasm'),
+    maxSteps: opts['max-steps'] ? Number(opts['max-steps']) : Infinity,
+    maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
+    maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
+    precompiled: compiled,
+  });
+  const result = {
+    entry: { file: toolFile, absPath: null, items: new Map() },
+    modules: [{ file: toolFile, src }],
+    diags: [],
+    methodImpls: null,
+  };
+  return { interp, result };
+}
+
+// 探测期从 checker 结果提取全部声明的 span(vm 初始帧的 panic 调用栈首帧用它;
+// serializeArtifact 不携带 decl,故 additive 存入缓存 JSON 由加载端回填)。
+function toolDeclSpans(checkResult) {
+  const out = [];
+  for (const m of checkResult.modules) {
+    for (const [name, e] of m.items) {
+      const sp = e?.decl?.span;
+      if (sp) out.push({ name, span: { file: sp.file, line: sp.line, col: sp.col, endLine: sp.endLine, endCol: sp.endCol } });
+    }
+  }
+  return out;
+}
+
+// 未命中探测:check + 资格判定 + 编译。返回 null = 不可缓存(交回原路径,输出由
+// 原路径逐字产生且不写缓存);返回 { compiled, checkResult } = 可缓存。
+function toolCacheProbe(file, flags) {
+  const checker = new Checker(file);
+  let checkResult;
+  try {
+    checkResult = checker.run();
+  } catch (e) {
+    if (e instanceof MingError) return null; // check 失败:原路径输出诊断(逐字)
+    throw e;
+  }
+  const diags = sortDiags(checkResult.diags);
+  // 有任何诊断(含警告)即不缓存:原路径每次调用都会经 loadAndCheck 打印诊断,
+  // 缓存路径无诊断可印 —— 为保逐字一致,只缓存零诊断工具。
+  if (diags.length) return null;
+  // 与 cmdBuild 相同的 AOT 资格判定:sync 子任务 worker 需源码编译;unsafe 仅 C 原生。
+  const hasEff = (eff) => checkResult.modules.some(m => [...m.items.values()].some(e => {
+    const s = e.sig?.effects ?? e.effects;
+    return s instanceof Set && s.has(eff);
+  }));
+  if (hasEff('sync') || hasEff('unsafe')) return null;
+  // 单模块假设:工具均为单文件(无本地 use)。产物 span 只保留 basename,
+  // 多模块会有同名歧义 → 多模块工具一律回退原路径。
+  if (checkResult.modules.length !== 1) return null;
+  try {
+    return { compiled: compile(checkResult), checkResult };
+  } catch {
+    return null; // 编译器拒绝:原路径按既有语义处理(含顶层 CompileError 报告)
+  }
+}
+
+// ming tools 实际运行分支的缓存入口。返回 null = 回退原路径(cmdRun 全量逻辑)。
+// 调用方(cmdTools)已 await loadCore():本函数与其下游同步函数可直接使用核心绑定。
+async function tryToolRun(file, flags, opts, programArgs) {
+  // 受限旗标回退原路径:--json(输出协议与计时在 cmdRun)、--tree(树引擎无产物形态)、
+  // strict-wasm(strict 观测的正是源码编译的 wasm 分层本身)。
+  if (flags.has('json') || flags.has('tree') || strictWasmOn(flags)) return null;
+  let src;
+  try { src = fs.readFileSync(file, 'utf8'); } catch { return null; } // 读不到:原路径报诊断
+  const cacheFile = path.join(TOOLS_CACHE_DIR, toolCacheKey(file, src) + '.json');
+  // 命中:产物加载 + 直接运行。任何加载失败(损坏 JSON / 版本不符 / 反序列化拒绝)
+  // 落入未命中自愈:重新 check+compile 并重写缓存。
+  try {
+    const artifact = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    toolsDbg(`hit ${path.basename(file)}`);
+    return await cmdRun(file, flags, opts, programArgs, toolArtifactToPrebuilt(artifact, file, src, flags, opts));
+  } catch (e) { toolsDbg(`miss ${path.basename(file)}: ${e?.message ?? e}`); }
+  const probe = toolCacheProbe(file, flags);
+  if (!probe) { toolsDbg(`fallback ${path.basename(file)}: probe 不可缓存(check 诊断/多模块/sync/unsafe)`); return null; }
+  try {
+    const artifact = serializeArtifact(probe.compiled, {}); // 无 baseDir:span 文件取 basename
+    artifact.builtBy = VERSION;
+    artifact.declSpans = toolDeclSpans(probe.checkResult); // panic 调用栈首帧对齐(见 toolArtifactToPrebuilt)
+    writeToolCache(cacheFile, artifact);
+    toolsDbg(`stored ${path.basename(file)} → ${path.basename(cacheFile)}`);
+    return await cmdRun(file, flags, opts, programArgs, toolArtifactToPrebuilt(artifact, file, src, flags, opts));
+  } catch (e) {
+    toolsDbg(`fallback ${path.basename(file)}: AOT 序列化失败 ${e?.message ?? e}`);
+    return null; // AOT 序列化失败:原路径运行,不缓存(与 build 的受限形态回退语义一致)
+  }
+}
+
+async function cmdTools(rest, flags, opts, dashRest) {
+  await loadCore();
   if (!rest.length || rest[0] === 'list' || flags.has('list')) {
     process.stdout.write(toolsUsage + '\n');
     return (flags.has('list') || rest.length) ? 0 : 1;
@@ -806,12 +1028,18 @@ function cmdTools(rest, flags, opts, dashRest) {
   }
   const file = path.join(__dirname, '..', 'tools', hit.file);
   // v0.51.6:`--` 之后的参数透传给工具(与 run/cc 一致),工具才能收到 --top 等自有选项
-  return cmdRun(file, flags, opts, [...hit.prefix, ...rest.slice(1), ...(dashRest ?? [])]);
+  const programArgs = [...hit.prefix, ...rest.slice(1), ...(dashRest ?? [])];
+  // v0.57 tools AOT:命中走产物加载(目标:超出 Node 基线额外开销 <20ms);
+  // 未命中/不可缓存回退原路径,行为逐字一致(见 tryToolRun 注释)。
+  const cached = await tryToolRun(file, flags, opts, programArgs);
+  if (cached !== null) return cached;
+  return cmdRun(file, flags, opts, programArgs);
 }
 
-function cmdBuild(flags) {
+async function cmdBuild(flags) {
+  await loadCore();
   const json = flags.has('json');
-  const { files, proj, error } = projectEntry('build', [], json);
+  const { files, proj, error } = await projectEntry('build', [], json);
   if (error) return fail(error, json);
   if (!files) return 1;
   if (!proj) return fail('build 需要 ming.toml(在项目目录运行,或 ming init)', json);
@@ -1035,7 +1263,7 @@ function cmdBuild(flags) {
 
 // ---------- cc:C 后端 C1(eligible 数值函数 → C + GCC/Clang -O2)----------
 // 探测顺序:MING_CC 环境变量 → PATH(gcc/clang/cc)→ 已知便携位置(w64devkit 等)
-function detectCCompiler(json) {
+function detectCCompiler(json, spawnSync) {
   const candidates = [];
   if (process.env.MING_CC) candidates.push(process.env.MING_CC);
   candidates.push('gcc', 'clang', 'cc');
@@ -1051,10 +1279,12 @@ function detectCCompiler(json) {
   return null;
 }
 
-function cmdCC(file, flags, opts, programArgs) {
+async function cmdCC(file, flags, opts, programArgs) {
+  await loadCore();
+  const spawnSync = await lazySpawnSync();
   const json = flags.has('json');
   if (!file) return fail('cc 需要一个 .ming 文件', json);
-  const c = loadAndCheck(file, { json, silent: true });
+  const c = await loadAndCheck(file, { json, silent: true });
   if (!c.ok) {
     if (json) process.stdout.write(JSON.stringify({ ok: false, exit_code: 1, diagnostics: diagJson(c.diags) }, null, 2) + '\n');
     return 1;
@@ -1064,6 +1294,7 @@ function cmdCC(file, flags, opts, programArgs) {
   try {
     const compiled = compile(result);
     // v0.54/C5:cc 路径显式开启 C 专用 unsafe 资格扩展(效果 ⊆ {ffi, unsafe};wasm 不传)
+    const { emitC } = await lazyCbackend();
     emitted = emitC(result, compiled, { unsafe: true });
   } catch (e) {
     if (e instanceof Unsupported) {
@@ -1083,7 +1314,7 @@ function cmdCC(file, flags, opts, programArgs) {
     else process.stdout.write(`已发射 C 源:${cFile}(eligible ${emitted.eligible.size} 个函数;--emit-c 不编译)\n`);
     return 0;
   }
-  const ccPath = detectCCompiler(json);
+  const ccPath = detectCCompiler(json, spawnSync);
   if (!ccPath) return fail('未找到 C 编译器(需要 gcc 或 clang;可设 MING_CC 指向编译器路径)', json);
   // v0.42:--static 静态链接(部署形态;工具链不支持时 gcc 报错透传)
   const build = spawnSync(ccPath, ['-O2', ...(flags.has('static') ? ['-static'] : []), cFile, '-o', exeFile], { encoding: 'utf8', timeout: 120000 });
@@ -1102,7 +1333,7 @@ function cmdCC(file, flags, opts, programArgs) {
 }
 
 // ---------- main ----------
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
   const { flags, opts, rest, dashRest, errors } = parseArgs(argv.slice(1));
@@ -1122,33 +1353,33 @@ function main() {
 
   switch (cmd) {
     case 'run': {
-      const { files, error } = projectEntry('run', rest, flags.has('json'));
+      const { files, error } = await projectEntry('run', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
       const programArgs = [...(files.length > 1 ? files.slice(1) : []), ...dashRest];
       const file = files[0];
       return cmdRun(file, flags, opts, programArgs);
     }
     case 'check': {
-      const { files, error } = projectEntry('check', rest, flags.has('json'));
+      const { files, error } = await projectEntry('check', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
       return cmdCheck(files, flags);
     }
     case 'test': {
-      const { files, error } = projectEntry('test', rest, flags.has('json'));
+      const { files, error } = await projectEntry('test', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
       return cmdTest(files, flags, opts);
     }
     case 'build': return cmdBuild(flags);
-    case 'tools': return cmdTools(rest, flags, opts, dashRest);
+    case 'tools': return await cmdTools(rest, flags, opts, dashRest);
     case 'cc': {
-      const { files, error } = projectEntry('cc', rest, flags.has('json'));
+      const { files, error } = await projectEntry('cc', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
       const programArgs = [...(files.length > 1 ? files.slice(1) : []), ...dashRest];
       return cmdCC(files[0], flags, opts, programArgs);
     }
     case 'init': return cmdInit(rest[0], flags);
-    case 'lsp': startLsp(); return null; // 常驻:不退出进程
-    case 'repl': startRepl(); return null; // 常驻:不退出进程
+    case 'lsp': (await lazyLsp()).startLsp(); return null; // 常驻:不退出进程
+    case 'repl': (await lazyRepl()).startRepl(); return null; // 常驻:不退出进程
     case 'fmt': return cmdFmt(rest, flags);
     case 'doc': return cmdDoc(rest[0], flags);
     default:
@@ -1159,11 +1390,12 @@ function main() {
 
 // lsp 常驻:main 返回 null 时不退出进程
 // v0.54 审查 B5:编译器内部错误(run/test/check 路径)也按诊断格式输出,不裸栈。
+// (CompileError 在核心模块加载前不可能发生;绑定未就绪时短路判定,避免 ReferenceError。)
 let __code;
 try {
-  __code = main();
+  __code = await main();
 } catch (e) {
-  if (e instanceof CompileError) process.exit(reportCompileError(e, process.argv.includes('--json')));
+  if (CompileError && e instanceof CompileError) process.exit(reportCompileError(e, process.argv.includes('--json')));
   throw e;
 }
 if (__code !== null) process.exit(__code);

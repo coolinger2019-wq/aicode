@@ -3072,6 +3072,10 @@ export class Checker {
   //   义务两向证明:两向都成立 → 安全;任一被证伪 → M3045 + 小值反例(反例按被跳过的可求值
   //   requires 叶子过滤,保证满足完整 requires;无候选则不给反例);其余未证明 → 默认静默,
   //   仅在 options.warnUnprovenIndex(--warn-unproven-index)下发 W3105(文件已有 error 诊断时不叠加)。
+  // v0.57(QF_LIA 第四片):范围 for(`for i in lo..hi`)体内的 buf[i] 义务 —— 循环变量绑定新符号
+  //   i$<n>,区间约束 lo <= i$<n> < hi 作为循环体内义务的附加假设(每迭代体入口成立:iter 入口求值
+  //   一次 + 循环变量每迭代重绑定;break/continue 不破坏不变式);放弃口径:嵌套 for / while / loop /
+  //   iter 非 Range / 区间不可线性化 / 体内重赋值循环变量 / 体内改写外层变量或藏分支(脏循环)。
   // 只报告不改语义:运行时 M4003 保留;compiler/interp/vm/cbackend/artifact 零改动。
 
   // 表达式 → 线性形式(变量:i64 参数名与 len$x 符号;子集之外 → null)。
@@ -3178,11 +3182,20 @@ export class Checker {
     //    变量超上限(too-many-vars)同样整函数放弃
     if (solveDiffConstraints(assumptions).kind !== 'sat') return;
 
-    // 3) 直线体符号执行:按求值序收集索引义务;遇非直线语句 → 后续义务不再收集
+    // 3) 直线体符号执行:按求值序收集索引义务;遇非直线语句 → 后续义务不再收集。
+    //    v0.57(QF_LIA 第四片):范围 for(`for i in lo..hi`,iter 为 Range 且 lo/hi 可线性化)
+    //    不再 abort —— 循环变量绑定新符号 i$<n>(确定性编号;$ 不是合法标识符字符,不会撞名),
+    //    区间两条线性约束 lo <= i$<n> < hi 作为该循环体内义务的附加假设(extra;每次迭代体入口
+    //    都成立 —— iter 在循环入口求值一次、循环变量每迭代重绑定,break/continue 不破坏不变式);
+    //    嵌套 for / while / loop / iter 非 Range / 区间不可线性化 / 体内重赋值循环变量 → 保守
+    //    放弃(与 v0.52 口径一致:已收集义务保留,其后不再收集)。体内 Assign 改写外层可见变量
+    //    或出现不可分析的分支语句 → for 之后整体放弃(脏循环:体内状态可能外泄且不可枚举)。
     const src = mod?.src ?? null;
     const obligations = [];
     const unproven = [];
     let aborted = false;
+    let loopSymN = 0; // 循环变量符号计数(i$0, i$1, …;遍历序,确定性)
+    let curExtra = null; // 当前循环的附加假设(registerPoint 采集时附着;循环外为 null)
     const registerPoint = (e) => {
       if (e.base.nt !== 'Ident') return;
       const lenVar = vecTracked.get(e.base.name);
@@ -3199,7 +3212,7 @@ export class Checker {
         ? fullIdx.slice(br + 1, -1)
         : (this.boundSourceText(src, e.index.span) ?? '?');
       const text = this.boundSourceText(src, span) ?? `${e.base.name}[…]`;
-      obligations.push({ baseName: e.base.name, lenVar, form, span, text, idxText });
+      obligations.push({ baseName: e.base.name, lenVar, form, span, text, idxText, extra: curExtra, scope: curExtra ? 'loop' : 'body' });
     };
     // 表达式白名单下钻(全部无条件求值且不含嵌套语句);Lambda/Match/If/BlockExpr 等不下钻
     const descend = (e) => {
@@ -3224,13 +3237,54 @@ export class Checker {
         default: return;
       }
     };
-    const walk = (block) => {
+    const walk = (block, loop) => {
       for (const st of block.stmts) {
-        // v0.55 修复(B1):非直线语句 → 停止后续索引义务收集(已收集的保留)
-        if (!this.stmtIsLinear(st)) { aborted = true; return; }
+        if (aborted) return;
+        // v0.57:循环体内的 break/continue 不破坏不变式(每次迭代体入口 i 仍满足区间),
+        // 允许存在;其后语句不可达,停止本块路径的义务收集(已收集的保留)。循环外照旧放弃。
+        if (loop && (st.nt === 'Break' || st.nt === 'Continue')) return;
+        // v0.57:范围 for(v0.55 修复 B1 口径的例外:For 语句不再一律 abort)
+        if (st.nt === 'For') {
+          if (loop) { aborted = true; return; } // 嵌套 for → 保守放弃(此前义务保留)
+          if (st.pat?.nt !== 'PIdent' || st.iter?.nt !== 'Range') { aborted = true; return; } // 非 PIdent 模式 / iter 非 Range → 放弃
+          // iter 在循环入口求值一次:先按循环前环境登记 lo/hi 内的索引义务,再线性化区间
+          descend(st.iter);
+          const loF = this.linOfBoundExpr(st.iter.lo, varForms, vecTracked);
+          const hiF = this.linOfBoundExpr(st.iter.hi, varForms, vecTracked);
+          if (!loF || !hiF) { aborted = true; return; } // 区间不可线性化 → 放弃
+          const sym = 'i$' + loopSymN;
+          loopSymN++;
+          const symForm = { coeffs: new Map([[sym, 1n]]), c: 0n };
+          const extra = [
+            { lhs: loF, op: '<=', rhs: symForm }, // lo <= i(每次迭代体入口成立)
+            { lhs: symForm, op: '<', rhs: hiF }, // i < hi(半开区间;hi 为 len$x 时即 i < len$buf)
+          ];
+          const preVar = new Map(varForms);
+          const preVec = new Map(vecTracked);
+          const lp = { name: st.pat.name, preNames: new Set(preVar.keys()), dirty: false };
+          const savedExtra = curExtra;
+          varForms.set(st.pat.name, symForm); // 体内循环变量绑定到区间符号(每迭代重绑定的内层作用域)
+          vecTracked.delete(st.pat.name); // 防御:循环变量与 Vec 参数同名时,体内不再按原 Vec 追踪
+          curExtra = extra;
+          walk(st.body, lp);
+          curExtra = savedExtra;
+          varForms.clear(); // 体内绑定不外泄(外层同名绑定按词法恢复)
+          for (const [k, v] of preVar) varForms.set(k, v);
+          vecTracked.clear();
+          for (const [k, v] of preVec) vecTracked.set(k, v);
+          if (aborted) return; // 体内 return / 重赋值循环变量 / 复合赋值等 → for 之后放弃(此前义务保留)
+          if (lp.dirty) { aborted = true; return; } // 体内改写外层变量或藏不可分析语句(分支等)→ for 之后保守放弃
+          continue; // break/continue 或干净直线体:不变式不受影响,for 之后继续收集
+        }
+        // v0.55 修复(B1):非直线语句 → 停止后续索引义务收集(已收集的保留);
+        // 循环体内命中时标记脏循环(分支可能改写外层变量)→ for 之后一并放弃
+        if (!this.stmtIsLinear(st)) {
+          if (loop) loop.dirty = true; else aborted = true;
+          return;
+        }
         if (st.nt === 'Return') {
           if (st.value) descend(st.value);
-          aborted = true; // return 后不可达,结束本块(M3042 同口径)
+          aborted = true; // return 后不可达,结束本块(M3042 同口径;循环体内命中同样放弃 for 之后)
           return;
         }
         if (st.nt === 'Let' && st.pat?.nt === 'PIdent') {
@@ -3243,8 +3297,13 @@ export class Checker {
         }
         if (st.nt === 'Assign' && st.target?.nt === 'Ident' && st.op === '=') {
           descend(st.value);
+          if (loop && st.target.name === loop.name) { aborted = true; return; } // 重赋值循环变量 → for 之后放弃(此前义务保留)
           const f = this.linOfBoundExpr(st.value, varForms, vecTracked);
-          if (!f || !varForms.has(st.target.name)) { aborted = true; return; }
+          if (!f || !varForms.has(st.target.name)) {
+            if (loop) loop.dirty = true; else aborted = true; // 不可编码赋值:外层状态不可知 → for 之后放弃
+            return;
+          }
+          if (loop && loop.preNames.has(st.target.name)) loop.dirty = true; // 循环内改写外层可见变量 → for 之后状态不可知
           varForms.set(st.target.name, f);
           if (vecTracked.has(st.target.name)) vecTracked.delete(st.target.name);
           continue;
@@ -3257,28 +3316,31 @@ export class Checker {
       }
       if (!aborted && block.tail) descend(block.tail);
     };
-    walk(d.body);
+    walk(d.body, null);
 
     // 4) 义务判定:0 <= i 与 i < len$buf;两向证明(成立 / 违反),未证明默认静默
     //    v0.52 阶段 3:逐义务结果同步记入 obResults(--proof-report 消费;诊断输出逐字不变)
+    //    v0.57:循环内义务的假设集 = 函数 requires + 所在循环的区间约束(ob.extra);
+    //    直线体义务的假设集不变(与 v0.56 逐字同一引用,零行为漂移)
     const cmpHold = (x, op, y) => op === '==' ? x === y : op === '<=' ? x <= y : op === '<' ? x < y : op === '>=' ? x >= y : x > y;
     const obResults = [];
     for (const ob of obligations) {
       const lf = { coeffs: new Map([[ob.lenVar, 1n]]), c: 0n };
+      const eff = ob.extra && ob.extra.length ? assumptions.concat(ob.extra) : assumptions;
       if (!ob.form) {
         const goals = [`0 <= ${ob.idxText}`, `${ob.idxText} < len$${ob.baseName}`];
         unproven.push({ ob, goals });
         obResults.push({ ob, kind: 'unproven', obligation: goals.join('; '), counterexample: null });
         continue;
       }
-      const lowOk = proveImplication(assumptions, { lhs: ob.form, op: '>=', rhs: linFromInt(0n) }).kind === 'proven';
-      const highOk = proveImplication(assumptions, { lhs: ob.form, op: '<', rhs: lf }).kind === 'proven';
+      const lowOk = proveImplication(eff, { lhs: ob.form, op: '>=', rhs: linFromInt(0n) }).kind === 'proven';
+      const highOk = proveImplication(eff, { lhs: ob.form, op: '<', rhs: lf }).kind === 'proven';
       if (lowOk && highOk) {
         obResults.push({ ob, kind: 'proven', obligation: `0 <= ${ob.idxText} && ${ob.idxText} < len$${ob.baseName}`, counterexample: null });
         continue; // 两向都成立 → 可证安全,不报告
       }
-      const lowBad = !lowOk && proveImplication(assumptions, { lhs: ob.form, op: '<', rhs: linFromInt(0n) }).kind === 'proven';
-      const highBad = !highOk && proveImplication(assumptions, { lhs: ob.form, op: '>=', rhs: lf }).kind === 'proven';
+      const lowBad = !lowOk && proveImplication(eff, { lhs: ob.form, op: '<', rhs: linFromInt(0n) }).kind === 'proven';
+      const highBad = !highOk && proveImplication(eff, { lhs: ob.form, op: '>=', rhs: lf }).kind === 'proven';
       if (!lowBad && !highBad) {
         const goals = [];
         if (!lowOk) goals.push(`0 <= ${ob.idxText}`);
@@ -3290,10 +3352,12 @@ export class Checker {
       const kind = lowBad ? 'low' : 'high';
       const oblText = kind === 'low' ? `0 <= ${ob.idxText}` : `${ob.idxText} < len$${ob.baseName}`;
       // 反例:i64 参数从 {-2,-1,0,1,2}、len$x 从 0..8 确定性枚举(签名序,首个变量最慢);
-      // 只枚举出现在已采纳假设或违反义务中的变量(≤3 个 i64 + ≤2 个 len,超限不给反例);
+      // v0.57:循环区间符号 i$N 从 {-2..10} 枚举(区间 [lo,hi) 由外层变量决定,小窗口覆盖典型
+      // 违反形态;是否满足区间由 eff 全量判定),创建序即枚举序(≤2 个,超限不给反例);
+      // 只枚举出现在有效假设集或违反义务中的变量(≤3 个 i64 + ≤2 个 len + ≤2 个循环符号);
       // 命中候选后按被跳过叶子过滤(evalContractExpr 代入求值)—— 反例必须满足完整 requires(v0.52.1)
       const relVars = new Set();
-      for (const a of assumptions) for (const s of [a.lhs, a.rhs]) for (const k of s.coeffs.keys()) relVars.add(k);
+      for (const a of eff) for (const s of [a.lhs, a.rhs]) for (const k of s.coeffs.keys()) relVars.add(k);
       for (const k of ob.form.coeffs.keys()) relVars.add(k);
       if (kind === 'high') relVars.add(ob.lenVar);
       const enumVars = [];
@@ -3302,13 +3366,19 @@ export class Checker {
         if (i64ParamSet.has(p.name) && relVars.has(p.name)) { enumVars.push({ name: p.name, vals: [-2n, -1n, 0n, 1n, 2n] }); nI64++; }
         else if (vecParamsAll.get(p.name) && relVars.has(vecParamsAll.get(p.name))) { enumVars.push({ name: vecParamsAll.get(p.name), vals: [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n] }); nLen++; }
       }
+      let nLoop = 0;
+      for (const k of [...relVars].filter((x) => /^i\$\d+$/.test(x)).sort()) {
+        if (nLoop >= 2) break;
+        enumVars.push({ name: k, vals: [-2n, -1n, 0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n] });
+        nLoop++;
+      }
       let found = null;
-      if (nI64 <= 3 && nLen <= 2) {
+      if (nI64 <= 3 && nLen <= 2 && nLoop <= 2) {
         const vals = new Map();
         const idx = new Array(enumVars.length).fill(0);
         for (;;) {
           for (let i = 0; i < enumVars.length; i++) vals.set(enumVars[i].name, enumVars[i].vals[idx[i]]);
-          if (assumptions.every((a) => cmpHold(linEvalAt(a.lhs, vals), a.op, linEvalAt(a.rhs, vals)))) {
+          if (eff.every((a) => cmpHold(linEvalAt(a.lhs, vals), a.op, linEvalAt(a.rhs, vals)))) {
             const iv = linEvalAt(ob.form, vals);
             if (kind === 'low' ? iv < 0n : iv >= linEvalAt(lf, vals)) {
               // 被跳过叶子逐一代入过滤:可求值(evalContractExpr ok)必须为真,不可求值不据此剔除;
@@ -3364,6 +3434,7 @@ export class Checker {
         rec.obligations.push({
           file, fn: d.name, index: r.ob.idxText, kind: r.kind, obligation: r.obligation,
           line: r.ob.span.line ?? null, col: r.ob.span.col ?? null, counterexample: r.counterexample,
+          scope: r.ob.scope ?? 'body', // v0.57:additive —— 'body' 直线体 / 'loop' 范围 for 循环体内
         });
       }
       this.proofRecords.push(rec);

@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "date": "2026-11-12",
+    "node": "v24.11.0",
+    "platform": "win32-x64",
+    "ming": "0.56.0",
+    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms),cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。"
+  },
+  "items": {
+    "fib(24) 递归": {
+      "treeMs": 218,
+      "vmMs": 87,
+      "speedup": 2.5,
+      "ccMs": 10.29,
+      "ccPerVm": 8.5
+    },
+    "循环累加 100 万": {
+      "treeMs": 281,
+      "vmMs": 188,
+      "speedup": 1.5,
+      "ccMs": 12.17,
+      "ccPerVm": 15.4
+    },
+    "高阶方法 10 万元素": {
+      "treeMs": 223,
+      "vmMs": 211,
+      "speedup": 1.1,
+      "ccMs": null,
+      "ccPerVm": null
+    },
+    "词频统计 2 万词": {
+      "treeMs": 120,
+      "vmMs": 126,
+      "speedup": 0.9,
+      "ccMs": null,
+      "ccPerVm": null
+    }
+  }
+}

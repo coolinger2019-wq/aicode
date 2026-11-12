@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.56.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + **严格 wasm 语义修复:一元负号/break-continue 分支深度/for-in continue 自增/`%` 条件类型推导**)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.57.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + 严格 wasm 语义修复)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -242,11 +242,12 @@ fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {
 - 同类契约子句重复时**后者生效**(parser 现状,v0.56 已固化并锁定;fmt 归一化为最后一条,行为不变)。
 - 两片编译期静态检查:全部实参为整数字面量且可判定违反 requires → **M3041**;ensures 直线体可静态证伪 → **M3042**(各含反例)。
 
-**静态边界证明(v0.52,QF_LIA 第二片)**:在"非 mut `Vec[i64]` 参数 + i64 参数 + requires 中的 `buf.len()` 线性边界 + 直线体"范围内,检查器对每个 `buf[i]` 索引点证明 `0 <= i` 且 `i < len$buf`(`len$x` 是 Vec 参数的长度符号;线性形式 + 差分约束 Bellman-Ford 求解,变量 ≤ 12):
+**静态边界证明(v0.52 直线体 / v0.57 范围 for,QF_LIA 第二/四片)**:在"非 mut `Vec[i64]` 参数 + i64 参数 + requires 中的 `buf.len()` 线性边界"范围内,检查器对每个 `buf[i]` 索引点证明 `0 <= i` 且 `i < len$buf`(`len$x` 是 Vec 参数的长度符号;线性形式 + 差分约束 Bellman-Ford 求解,变量 ≤ 12):
 
-- **三态**:两向可证 = proven(静默);任一方向被证伪 = **M3045[index-bounds-violated]**(error,含小值反例——反例满足完整 requires:枚举命中候选后按被跳过但可求值的 requires 叶子过滤,如 `requires n == buf.len() && n % 2 == 1` 下 `buf[n]` 的反例是最小奇数解 `len$buf = 1, n = 1`;无候选则不给反例);其余 = 未证明(默认静默)。
-- **放弃条件**(超范围一律静默,不误报是硬门槛):循环/分支体、mut Vec 参数、`||` / `!=` / 非线性叶子、别名重绑定(`let b = buf`)、requires 自相矛盾(负环 = 函数不可达)。
-- 旗标:`--warn-unproven-index` 把未证明义务以 **W3105[index-bounds-unproven]**(warning,不改退出码)逐条报出(文件已有 error 诊断时不再叠加 W3105);`--proof-report` 输出逐函数证明统计(文本),`--json --proof-report` 增加 additive 的 `proofs` 字段(逐义务含 index/kind/obligation/反例)。
+- **三态**:两向可证 = proven(静默);任一方向被证伪 = **M3045[index-bounds-violated]**(error,含小值反例——反例满足完整 requires:枚举命中候选后按被跳过但可求值的 requires 叶子过滤,如 `requires n == buf.len() && n % 2 == 1` 下 `buf[n]` 的反例是最小奇数解 `len$buf = 1, n = 1`;无候选则不给反例;v0.57 起反例枚举含循环符号,如 `i$0 = -1`);其余 = 未证明(默认静默)。`--json --proof-report` 的义务记录增加 additive `scope: 'body' | 'loop'`(v0.57;直线体义务仍为 `body`,范围 for 体内义务为 `loop`)。
+- **循环义务(v0.57,QF_LIA 第四片)**:范围 for(`for i in lo..hi`)体内的 `buf[i]` 义务同样两向证明——循环变量绑定确定性符号 `i$<n>`,每次迭代把半开区间假设 `lo <= i$<n> < hi` 并入该义务的假设集(上界映射到 `len$buf` 即得 `i < len$buf`;`0 <= i` 由 lo 推出,如 `for i in 1..buf.len()`;`buf[i + k]` 位移形态同口径)。break/continue 不破坏不变式(每次迭代体入口区间假设恒成立,其后语句不可达即停止收集);空洞区间(`for i in 5..2`)义务按假言成立 proven;嵌套 for 保守放弃。
+- **放弃条件**(超范围一律静默,不误报是硬门槛):`while` / `loop`、iter 非 Range / 区间不可线性化、脏循环(体内重赋值循环变量、改写外层可见变量、藏不可分析分支)——脏循环或体内 return 后该 for 之后的义务一并放弃(已收集的保留);mut Vec 参数、`||` / `!=` / 非线性叶子、别名重绑定(`let b = buf`)、requires 自相矛盾(负环 = 函数不可达)。
+- 旗标:`--warn-unproven-index` 把未证明义务以 **W3105[index-bounds-unproven]**(warning,不改退出码)逐条报出(文件已有 error 诊断时不再叠加 W3105;循环义务同口径);`--proof-report` 输出逐函数证明统计(文本),`--json --proof-report` 增加 additive 的 `proofs` 字段(逐义务含 index/kind/obligation/scope/反例)。
 - **proven 不消除运行时检查**:M4003 边界 panic 原样保留——证明只报告,不改语义。
 
 **跨函数契约摘要(v0.55,QF_LIA 第三片)**:对"纯函数 + 全 i64 参数/返回 + 直线体 + 无环调用图 + 可线性编码的单条 requires/ensures"建立函数摘要,让调用链上的 ensures 可证:
@@ -960,7 +961,7 @@ fn main() with io {
 | 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:聚合 `ming check --json` 的诊断码频次;v0.51.6 起参数可为**文件或目录**(目录递归收 .ming,跳隐藏/node_modules/dist)+ `--top N` 限量,缺省 Top-10)——语法/检查改进的数据依据 |
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
 | 自举工具 v0.51.6 优化(脚本化纪律) | 9 个工具**错误走 stderr、失败退出码 1**(此前 stdout + 退出 0);`wc` 多文件附 total 行(单文件格式不变);`json_query` 点路径(`servers.0.host`:obj 段用键、arr 段用下标)+ 类型化输出(字符串裸输出,其余 JSON 原貌)+ 一次多路径;`diaghot` 目录展开 + `--top N`;`batch_rename` **幂等**(已带前缀跳过,重复运行不再叠加);`tree` 可选深度参数;`todo_scan` 增扫 .mjs/.cjs;12 个工具全部 `ming fmt --check` 规范 |
-| `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
+| `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6 / AOT 缓存 v0.57) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义。**v0.57 工具 AOT 缓存**:首次调用把工具字节码产物写入 `.ming-cache/tools/`(gitignored;键 = VERSION + Node 主版本 + 编译器源码指纹 + 工具文件名 + 源文本,临时文件 + rename 原子落盘;patch/patch-all 等同源命令按 basename 共享条目),命中直接跑产物——span/declSpans 回填使 panic 首行/源码摘录/调用栈与源码路径**逐字一致**(冷/热 stdout/stderr/退出码全等);`--json`/`--tree`/strict-wasm 旁路不缓存(原路径逐字输出),`--no-wasm` 仍走缓存(旗标传入产物 VM);损坏缓存自愈重建;仅零诊断、单模块、无 sync/unsafe 效果的工具可缓存(12 个自举工具全部满足,`ming run` 直连工具不写缓存)。`MING_TOOLS_DEBUG=1` 在 stderr 打印每次缓存决策(`[tools-cache] hit/stored/...`)。**性能如实记录**:热缓存净开销 ~25–30ms/次(usage-audit 目标 <20ms 未完全达标;对无缓存路径净改进 12–19ms/次;剩余地板 = bin 顶层导入 ~9ms + 核心模块图 ~15ms,进一步需 src 级瘦身——登记 plan §4.3.8) |
 | `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例)+ **v0.55 契约摘要**(文本每函数一行 `契约摘要 requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`;JSON `proofs.summaries`);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52);`--strict-wasm`(v0.53):检查通过后验证 wasm 分层,任一文件回落 → exit 2 并点名原因(与 `--tree`/`--no-wasm` 互斥;JSON additive `wasm_status`) |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI。**保留 `requires`/`ensures`/struct `invariant`(v0.56 起;此前会丢弃——修订记录已登记)** |
@@ -1076,11 +1077,34 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.54(已完成) | **`with unsafe` 最小实现(C5)**:Ptr[mut u8]/Ptr[u8]、load/store/offset/is_null、std.mem.alloc/free、M3029/M3046/M4016、C 原生执行;Ptr 别名面与 offset 链式黄金 |
 | v0.55(已完成) | **跨函数契约摘要(QF_LIA 第三片)**:纯函数 + 直线体 + 无环调用图的摘要引擎(Tarjan SCC);调用点线性前置证明(M3041 扩展)、调用后置条件假设、M3042 假设集扩展;`--proof-report` 契约摘要(文本 + additive `proofs.summaries`);无新诊断码 |
 | v0.56(已完成) | **引擎一致性与缺陷清零(质量版,无新语言面)**:tree 作用域模型统一(#23/#28;tree bench +5–32%)、VM 捕获闭包 + HOF(#24)、契约尾部裸标识(#33)、fmt 契约保真(#36)、wasm 四个语义修复(W1/W2/F1/F2)、fuzz 真实 wasm 腿(#25)、buildKey 编译器源指纹(#26,含 bin)、工具链 #22/#29/#30/#31/#32/#34;独立审查修复:契约作用域/u64 语义/fmt 契约破坏三修、#31 按模块身份去重、M3047 本地函数显式拒绝;复审 C1/C2(契约内嵌作用域基线/闭包 return);764 项全绿(§60 70 项);收口登记 #37–#47(#37/#38/#39 已修) |
+| v0.57(已完成) | **循环/守卫敏感边界证明(QF_LIA 第四片)+ tools AOT 缓存 + 覆盖率/bench 观测**:范围 for 内 `buf[i]` 义务两向证明(循环符号 `i$<n>` + 区间假设入集;脏循环/嵌套/while 保守放弃;break-continue 不破坏不变式;义务 additive `scope: body\|loop`;M3045/W3105 不变,proven 不消除 M4003)、ming tools 工具字节码 AOT 缓存(12 工具全缓存零回退;热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明;MING_TOOLS_DEBUG 观测)、tests/coverage.mjs 零依赖覆盖率基线(93.0% 行 / 86.1% 函数)+ bench 基线(Δ基线对比 + 回退 >20% WARN);§61 27 项、791 项全绿;prover.js 求解器与 codegen 零改动 |
 | 更远(北星对齐) | `mask` 效果屏蔽(v0.60 ADR 决策)/污点即效应(v0.60 研究项)/async 与服务端(v0.59 ADR 先行)/eval/国密/RSA/形式化验证留待更远(见 plan §4.3/§4.2.8 Backlog) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.57.0(2026-11-13)
+
+**主题:QF_LIA 第四片——循环/守卫敏感边界证明 + ming tools AOT 缓存 + 覆盖率/bench 观测基线(plan §4.3.4/§4.3.8 收口;无新语言面,prover.js 求解器与 codegen 零改动)**
+
+- **A. 循环/守卫敏感边界证明(QF_LIA 第四片,plan §4.3.4)**:
+  - 范围 for(`for i in lo..hi`,lo/hi 可线性化,上界可为非 mut Vec 参数的 `len()`)体内的 `buf[i]` 义务两向证明:循环变量绑定确定性符号 `i$<n>`(`$` 不是合法标识符字符,不会撞名),每次迭代把半开区间假设 `lo <= i$<n> < hi` 并入该义务的假设集(iter 在循环入口求值一次 + 循环变量每迭代重绑定);`0 <= i` 由 lo 推出(如 `for i in 1..buf.len()`),`buf[i + k]` 位移形态同口径。
+  - break/continue 不破坏不变式(每次迭代体入口区间假设恒成立;其后语句不可达即停止收集,已收集义务保留);空洞区间(`for i in 5..2`)义务按假言成立 proven;两个顺序 for 各自独立证明。
+  - 放弃路径(一律静默,不误报是硬门槛):嵌套 for、`while`/`loop`、iter 非 Range、区间不可线性化、脏循环(体内重赋值循环变量 / 改写外层可见变量 / 藏不可分析分支)、体内 return / 复合赋值不可编码——脏循环与 return 后该 for 之后的义务一并放弃(已收集的保留);超 12 变量仍由求解器放弃。
+  - 诊断复用:可证违反 → **M3045**(码/消息不变)+ 反例(枚举含循环符号 `i$N` ∈ {-2..10},≤2 个);未证明默认静默,`--warn-unproven-index` 下 W3105(循环义务同口径);prover.js 求解器零改动。
+  - proof-record additive `scope: 'body' | 'loop'`(直线体义务仍为 body);**proven 不消除运行时 M4003**(语义不变)。
+- **B. ming tools 工具 AOT 缓存(docs/usage-audit.md §4 行动 1)**:
+  - 12 个自举工具全部可缓存零回退;缓存目录 `<repo>/.ming-cache/tools/`(gitignored);缓存键 = VERSION + Node 主版本 + `compilerSourceHash()`(src+bin)+ 工具文件名(basename;patch/patch-all 同源 mingkit 共享条目)+ 源文本;临时文件 + rename 原子落盘(读端只见完整文件)。
+  - 命中直接跑字节码产物:span 文件名重写回工具绝对路径 + `declSpans` 回填(缓存 JSON additive;键含源文本与编译器指纹,命中必同源)——panic 首行/源码摘录/调用栈与源码路径**逐字一致**;冷/热 stdout/stderr/退出码全等(§61 v57.20–v57.22)。
+  - 旁路与自愈:`--json`/`--tree`/strict-wasm 不缓存(原路径逐字输出);`--no-wasm` 仍走缓存(旗标传入产物 VM);损坏缓存自愈重建;仅零诊断、单模块、无 sync/unsafe 效果的工具可缓存;`ming run` 直连工具路由不受缓存影响、不写缓存(v57.25)。
+  - 启动面:bin 顶层惰性导入 + `node:module` `enableCompileCache`(`ming version` 地板 73→57ms)。
+  - **性能如实记录**:热缓存净开销 **~25–30ms/次**(usage-audit 目标 <20ms 未完全达标);对无缓存路径净改进 **12–19ms/次**;剩余地板 = bin 顶层导入 ~9ms + 核心模块图 ~15ms,进一步需 src 级瘦身(登记 plan §4.3.8 后续)。
+- **C. 覆盖率/bench 观测(plan §4.3.8)**:
+  - **覆盖率**:`tests/coverage.mjs`(NODE_V8_COVERAGE,零依赖;主进程 + 全部子进程并集;V8 顶层包装条目排除;解析失败容错;行覆盖为 range 近似口径——见 docs/coverage-baseline.md 的口径说明)。首个基线(2026-11-13,Node v24,win32-x64):**93.0% 行 / 86.1% 函数**(15 文件;764 项插桩全绿 6.4 分钟)。`vm.js` 函数覆盖 43.8% 是补测试线索;信息性指标,不设门槛,只作同口径纵向趋势对比。
+  - **bench 基线**:`tests/bench.baseline.json`(时点快照)+ bench 输出 Δ基线列;cc/vm 比值回退 >20% WARN(仍 exit 0,不阻断);`--write-baseline` 刷新基线。基线数字为快照口径,重跑刷新。
+- **测试**:791 项全绿(**§61 共 27 项**:A 组 v57.1–v57.19 循环义务 19 + B 组 v57.20–v57.25 tools 缓存 6 + C 组 v57.26–v57.27 观测冒烟 2;独立审查落地:v57.10 补 check 退出码断言、v57.19 补 proven 义务 main 实跑双引擎 exit 0)。`proof_fuzz --mode loops --count 200` 0 误报(可证 100 / 静默 50 / 违反 50;违反类反例独立求值器三重验证:满足 requires + 落在循环区间内(区间非空,违反不是空洞真)+ 索引确实越出义务侧;可证类逐条双引擎运行验证);`fuzz --seed 44044 --count 40` 0 分歧(wasm 真实执行 20);tools 缓存冷/热/直连(`ming run`)输出逐字一致(v57.20–v57.25)。
+- **范围诚实声明**:本版无新语言面;M3045/W3105 码与消息不变;新增字段一律 additive(义务 `scope`、缓存 JSON `declSpans`、`build --json` 不变);codegen(compiler/interp/vm/cbackend/artifact)与 prover.js 求解器零改动;tools 缓存延迟目标 <20ms 未完全达标(如实记录于上与 plan §4.3.8)。
 
 ### v0.56.0(2026-11-12)
 

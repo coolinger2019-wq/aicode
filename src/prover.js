@@ -24,6 +24,11 @@
 //       requires 不完整(含不可编码叶子)→ 摘要 ensures 不采用;环上函数标记 noSummary。
 //       阶段 1 只建立摘要表;阶段 2 增加第三参 computePost:按拓扑序现算 post,证明时
 //       可假设已证被调 ensures(调用后置条件注入),未提供时回退 fn.post。
+//
+// v0.57(QF_LIA 第四片):范围 for 的循环区间约束无需本模块改动 —— 循环变量符号 i$<n>
+//       ('$' 非合法标识符字符,不撞名)与区间两条线性约束 lo <= i$<n> < hi 只是普通变量与
+//       假设集条目,经 proveImplication 与既有 requires 假设合并求解;变量总数仍受
+//       MAX_PROVER_VARS 上限保护(超限 → too-many-vars → checker 侧静默,只会漏证)。
 
 // ===================== 线性形式代数(v0.48 原样迁出) =====================
 // 线性形式:{ coeffs: Map<变量名, BigInt 系数>, c: BigInt 常数项 };系数 0 必须删除(规范形)。
