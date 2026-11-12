@@ -18,6 +18,12 @@
 //
 // 保守性合同(全模块):任何不可编码/超限/未证明的情况一律返回"不证明",
 //       只会漏证(放弃判定),绝不会在不可证明时声称 proven —— 证明只报告,不改运行时语义。
+//
+// v0.55(QF_LIA 第三片):跨函数契约摘要 computeSummaries —— 纯数据接口,
+//       AST 不透明(toLinear 由 checker 注入);调用图 Tarjan SCC 环检测 + 被调方优先拓扑序;
+//       requires 不完整(含不可编码叶子)→ 摘要 ensures 不采用;环上函数标记 noSummary。
+//       阶段 1 只建立摘要表;阶段 2 增加第三参 computePost:按拓扑序现算 post,证明时
+//       可假设已证被调 ensures(调用后置条件注入),未提供时回退 fn.post。
 
 // ===================== 线性形式代数(v0.48 原样迁出) =====================
 // 线性形式:{ coeffs: Map<变量名, BigInt 系数>, c: BigInt 常数项 };系数 0 必须删除(规范形)。
@@ -243,4 +249,169 @@ export function proveImplication(assumptions, goal) {
     case '>': return proveImplication(assumptions, { lhs: goal.rhs, op: '<', rhs: goal.lhs });
     default: return { kind: 'not-proven' }; // 未知 op:保守不证明
   }
+}
+
+// ===================== v0.55:跨函数契约摘要 =====================
+
+// 线性约束的变量集合 ⊆ allowed(防御:摘要只允许形参名 + 'result' 符号)
+function constraintsVarsOk(cs, allowed) {
+  if (!Array.isArray(cs)) return false;
+  for (const c of cs) {
+    if (!c || !c.lhs || !c.rhs || typeof c.op !== 'string') return false;
+    for (const side of [c.lhs, c.rhs]) {
+      for (const k of side.coeffs.keys()) if (!allowed.has(k)) return false;
+    }
+  }
+  return true;
+}
+
+// N10(防御):注入的 toLinear / computePost 结果只允许差分约束可编码的比较 op;
+// 非法 op 视为不可编码(requires → 不完整门控,ensures → 不采用),不得进入求解器。
+const LINEAR_OPS = new Set(['==', '<', '<=', '>', '>=']);
+function constraintsOpsOk(cs) {
+  if (!Array.isArray(cs)) return false;
+  for (const c of cs) {
+    if (!c || typeof c.op !== 'string' || !LINEAR_OPS.has(c.op)) return false;
+  }
+  return true;
+}
+
+// 跨函数契约摘要(v0.55)。
+//
+// 输入 fns(纯数据;AST 对 prover 不透明):
+//   { name, params: [{name, ...}], requires: ast|null, ensures: ast|null,
+//     calls: [calleeName...],          // 直接调用边(声明序去重;表外名字忽略)
+//     post: [{lhs,op,rhs}]|null }      // 阶段 1 兼容字段:checker 预证的 ensures 线性合取
+//                                      // (变量 = 形参名 + 'result');提供 computePost 时忽略
+// toLinear(ast, varMap) 由 checker 注入:varMap = Map<形参名, 线性形式>;
+//   返回 [{lhs,op,rhs}] | null —— null 表示该契约表达式不能完整编码为线性约束合取
+//   (==/</<=/>/>= 的 && 合取;`true` 视为空合取;|| / != / ! / 非线性叶子一律 null)。
+// computePost(fn, summariesSoFar) 为 v0.55 阶段 2 的第三个可选回调:
+//   按拓扑序逐函数证明 post —— summariesSoFar 是已算出的摘要表(Map<name, summary>),
+//   因 Tarjan SCC 输出序为"被调方先于调用方",此时被调函数的 ensures 已在表中,
+//   checker 可把「本函数 requires + 已证被调 ensures(代入实参)」作为直线体证明的假设集。
+//   返回 [{lhs,op,rhs}] | null(变量仅允许形参名 + 'result';null = 未证明/不可编码)。
+//   仅对非环、requires 完整、声明了 ensures 的函数调用;未提供该回调时回退到 fn.post
+//   (阶段 1 行为,§59.1 直测用)。
+//
+// 返回 Map<name, {name, requires, ensures, noSummary, params}>:
+//   requires:  [线性约束] | null   null = requires 不完整(含不可编码叶子)
+//   ensures:   [线性约束] | null   null = 不可采用(调用方不得假设);[] = 无 ensures/空合取
+//   noSummary: true                该函数在环上(自递归/互递归)→ ensures 不采用
+//   params:    [形参名]            调用点把 ensures 的形参代入实参所需的形参序
+//
+// 硬门控(保守合同):
+//   1) requires 不完整 → ensures 必为 null(未编码的前置条件不能作为摘要的证明前提);
+//   2) ensures 仅在 checker 已静态证明(post 非 null)且变量仅含形参 + 'result' 时采用;
+//   3) 环上函数 ensures 必为 null(递归体的直线体结论不可外推)。
+// 拓扑序:Tarjan SCC 输出即"被调方先于调用方"的逆拓扑序;SCC 内按声明序,FNS 表内按
+//   声明序索引 —— 全程确定性,不依赖 Map 迭代顺序的偶然性。
+export function computeSummaries(fns, toLinear, computePost) {
+  // 1) 建表(声明序;重复名字保留首个 —— 与 checker 的重复声明诊断口径一致)
+  const byName = new Map();
+  const declOrder = [];
+  for (const fn of fns ?? []) {
+    if (!fn || typeof fn.name !== 'string' || byName.has(fn.name)) continue;
+    byName.set(fn.name, fn);
+    declOrder.push(fn.name);
+  }
+  const declIdx = new Map(declOrder.map((n, i) => [n, i]));
+
+  // 2) 调用边(只保留表内函数;去重保序 → 枚举确定性)
+  const edges = new Map();
+  for (const name of declOrder) {
+    const seen = new Set();
+    const es = [];
+    for (const c of byName.get(name).calls ?? []) {
+      if (typeof c !== 'string' || !byName.has(c) || seen.has(c)) continue;
+      seen.add(c);
+      es.push(c);
+    }
+    edges.set(name, es);
+  }
+
+  // 3) Tarjan SCC(迭代版;避免深调用链爆栈)。自环与 >1 节点的 SCC 即在环上。
+  const index = new Map(), low = new Map(), onStack = new Set(), sccStack = [];
+  const sccs = [];
+  let counter = 0;
+  for (const root of declOrder) {
+    if (index.has(root)) continue;
+    const callStack = [{ name: root, i: 0 }];
+    index.set(root, counter); low.set(root, counter); counter++;
+    sccStack.push(root); onStack.add(root);
+    while (callStack.length) {
+      const top = callStack[callStack.length - 1];
+      const es = edges.get(top.name);
+      if (top.i < es.length) {
+        const w = es[top.i++];
+        if (!index.has(w)) {
+          index.set(w, counter); low.set(w, counter); counter++;
+          sccStack.push(w); onStack.add(w);
+          callStack.push({ name: w, i: 0 });
+        } else if (onStack.has(w) && index.get(w) < low.get(top.name)) {
+          low.set(top.name, index.get(w));
+        }
+      } else {
+        callStack.pop();
+        if (callStack.length) {
+          const p = callStack[callStack.length - 1];
+          if (low.get(top.name) < low.get(p.name)) low.set(p.name, low.get(top.name));
+        }
+        if (low.get(top.name) === index.get(top.name)) {
+          const comp = [];
+          for (;;) {
+            const w = sccStack.pop();
+            onStack.delete(w);
+            comp.push(w);
+            if (w === top.name) break;
+          }
+          comp.sort((a, b) => declIdx.get(a) - declIdx.get(b));
+          sccs.push(comp);
+        }
+      }
+    }
+  }
+
+  // 4) 按 SCC 输出序(被调方先)构造摘要。Tarjan 的 SCC 输出序是凝缩图逆拓扑序:
+  //    若 u → v,则 v 的 SCC 先于 u 的 SCC 输出 —— 正是依赖优先顺序。
+  const out = new Map();
+  for (const comp of sccs) {
+    const cyclic = comp.length > 1 || edges.get(comp[0]).includes(comp[0]);
+    for (const name of comp) {
+      const fn = byName.get(name);
+      const paramNames = new Set();
+      for (const p of fn.params ?? []) if (p && typeof p.name === 'string') paramNames.add(p.name);
+      // requires:全部叶子可编码才非 null;null = 不完整(调用方不得假设 ensures)
+      let requires = null;
+      if (fn.requires == null) {
+        requires = [];
+      } else if (typeof toLinear === 'function') {
+        const varMap = new Map();
+        for (const pn of paramNames) varMap.set(pn, { coeffs: new Map([[pn, 1n]]), c: 0n });
+        const cs = toLinear(fn.requires, varMap);
+        // N10:非法 op(注入器缺陷/Bug)→ 视为不可编码,摘要 requires 不完整
+        if (constraintsVarsOk(cs, paramNames) && constraintsOpsOk(cs)) requires = cs;
+      }
+      // ensures:requires 完整 + 非环 + checker 已证 → 采用;否则 null(静默,不误证)
+      // v0.55 阶段 2:post 由 computePost(fn, out) 在拓扑序上现算 —— out 已含被调摘要,
+      // 于是 ensures 的证明可以假设"已证被调 ensures";回调未提供时回退 fn.post(阶段 1)。
+      let post = null;
+      if (!cyclic && requires !== null && fn.ensures != null) {
+        if (typeof computePost === 'function') post = computePost(fn, out);
+        else post = fn.post ?? null;
+      }
+      let ensures = null;
+      if (!cyclic && requires !== null) {
+        if (fn.ensures == null) {
+          ensures = []; // 无 ensures = 空后置条件(可采用,无约束)
+        } else if (!paramNames.has('result')) {
+          const allowed = new Set(paramNames);
+          allowed.add('result');
+          if (constraintsVarsOk(post, allowed) && constraintsOpsOk(post)) ensures = post;
+        }
+      }
+      out.set(name, { name, requires, ensures, noSummary: cyclic, params: [...paramNames] });
+    }
+  }
+  return out;
 }

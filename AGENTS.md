@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.54.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.55.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.54.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（652 项，含各版本分节 §1..§58；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（694 项，含各版本分节 §1..§59；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
 tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
@@ -130,5 +130,5 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 
 ## 10. 当前状态与下一步
 
-- **v0.54.0**：652 项测试全绿；**`with unsafe` 最小实现（C5）**——效果名 `unsafe` + 双门禁（签名 `with unsafe` → M3029 逐层传播；指针读写/`std.mem`/Ptr 实参必须在 `unsafe { ... }` 块内 → M3046）；`Ptr[mut u8]`/`Ptr[u8]`（元素仅 u8，load/store/offset/is_null，禁止索引/算术/插值/打印/JSON/Map 键/as）；`std.mem.alloc/free`（malloc 失败 M4011）；C5 后端（Ptr → `unsigned char*`/`const unsigned char*`、extern 槽接受/返回 Ptr、非 unsafe 程序 C 输出逐字不变）；tree/VM/wasm 回落 M4016（消息"unsafe 指针操作仅在 C 原生后端可用"，exit 101，三路首行一致）；`ming build` 遇 `with unsafe` 显式回退源码模式；Ptr 值语义例外（拷贝地址本身、别名可见）与悬垂/越界 UB 不捕获已写入 GUIDE §14.1；§58 共 20 项（含 Ptr 别名面、offset 链式 C 黄金、unsafe 效果传播、独立审查 B1–B5 回归）。**v0.54.0 独立审查修复（B1–B5 + M1–M6）**：B1 `UnsafeBlock` 接入控制流（`stmtTerminates`/`hasBreak`，块内 return 不误报 M3017，`loop { unsafe { break; } }` 为 unit）；B2 C 后端 unsafe 块独立作用域；B3 M3046 覆盖容器/构造器载荷逃逸（`typeContainsPtr` 递归：Vec/Map/Option/Result/元组/结构体/枚举）；B4 unsafe 闭包携带 `unsafe` 效果（不可洗成纯函数值）；B5 `use std.x [as y]` 短名在字节码编译器可解析（#27 已修），编译器未解析名输出带位置的 M4001 诊断；M1 Ptr 方法防御 M4016；M4 既有 C 渲染指纹回归；M6 示例比较退出码与 stderr 首行。新登记缺陷 #28（tree 块作用域泄漏，P1，待修）/ #29（launcher 源码模式 panic 无位置，P3）/ #30（extern fn 值存局部变量后 C 后端不支持调用，P2）。v0.53 可信构建基线（CI 矩阵/strict-wasm/构建键/env -i/C 码点 for-in）此前已完成。
-- 下一步见 `docs/plan.md §4.2`：v0.55 跨函数契约摘要。
+- **v0.55.0**：694 项测试全绿；**跨函数契约摘要（QF_LIA 第三片，plan §4.2.6）**——`src/prover.js` `computeSummaries`（Tarjan SCC 环检测 + 被调方优先拓扑序 + 硬门控：requires 不完整/环上 → ensures 不采用）；调用点线性前置证明（M3041 扩展，非字面量实参；可证违反 + 小值反例）；调用后置条件假设（被调 requires 完整且当前路径可证才采用其已证 ensures，`result` 绑定每次调用独有 `res$N` 符号；未证明前置条件绝不假设）；M3042 假设集扩展（本函数 requires + 已验证调用后置；反例须满足假设集；不可判定静默，运行时 M4015 保留）；`--proof-report` 新增契约摘要（文本 `requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>` + additive `proofs.summaries`（含 `requires_present/ensures_present`）；无旗标输出与 v0.54.0 逐字一致）；无新诊断码、codegen 零改动；`proof_fuzz --mode summaries --count 300` 可证 150 / 违反 75 / 静默 50 / 易误报 25 / 误报 0（反例独立验证 75/75）。**v0.55.0 独立审查修复**：B1 直线体共享判定（`exprIsLinear`/`stmtIsLinear`；If/Match/BlockExpr/Loop/Lambda 及含 Return/Assign/Break/Continue 的表达式不再被穿透，三 walker 统一；分支内形参重赋值不再产生错误摘要/误报 M3041/M3042/M3045）；B2 短路 `&&`/`||` 右侧不作为无条件调用点（左侧仍收集）；B3 M3041 反例按调用方 requires 上下文枚举（常量实参直报常量值）；B4 proof_fuzz summaries 增分支/重赋值/短路语料与摘要采用负控；M5 JSON 摘要新增 present 字段；M6 `+=/-=/*=` 常量复合赋值线性转移；M7 下界 requires 反例形态；N10 toLinear/computePost 注入 op 校验。v0.52–v0.55 路线已全部交付。
+- 下一步见 `docs/plan.md §4.2.8` Backlog（v0.56+ 评估 `mask`/污点即效应/证明携带 unsafe）与 `docs/plan.md §5.1` 已知缺陷 #23–#30；v0.52–v0.55 无待办计划任务。

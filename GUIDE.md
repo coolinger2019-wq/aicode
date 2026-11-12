@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.54.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测**)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.55.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测**)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **跨函数契约摘要** + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -228,7 +228,7 @@ nums.map((x) => x * 2)                    // 类型通常可从上下文推断
 - **闭包捕获是值拷贝**(创建时快照),之后与外部变量脱钩;捕获的变量不可在闭包内赋值。
 - 函数可以作为值传递:`nums.map(classify)`。
 
-### 契约与静态边界证明(v0.45 / v0.52)
+### 契约与静态边界证明(v0.45 / v0.52 / v0.55)
 
 函数签名可以声明前置/后置契约,违反在运行时 panic(M4015,退出码 101):
 
@@ -247,6 +247,16 @@ fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {
 - **放弃条件**(超范围一律静默,不误报是硬门槛):循环/分支体、mut Vec 参数、`||` / `!=` / 非线性叶子、别名重绑定(`let b = buf`)、requires 自相矛盾(负环 = 函数不可达)。
 - 旗标:`--warn-unproven-index` 把未证明义务以 **W3105[index-bounds-unproven]**(warning,不改退出码)逐条报出(文件已有 error 诊断时不再叠加 W3105);`--proof-report` 输出逐函数证明统计(文本),`--json --proof-report` 增加 additive 的 `proofs` 字段(逐义务含 index/kind/obligation/反例)。
 - **proven 不消除运行时检查**:M4003 边界 panic 原样保留——证明只报告,不改语义。
+
+**跨函数契约摘要(v0.55,QF_LIA 第三片)**:对"纯函数 + 全 i64 参数/返回 + 直线体 + 无环调用图 + 可线性编码的单条 requires/ensures"建立函数摘要,让调用链上的 ensures 可证:
+
+- **摘要门槛(硬门控)**:摘要 = `requires` 声明 + `ensures`,但 `ensures` **仅在 checker 已静态证明时**才作为后置条件采用;`requires` 不完整(含 `%` / `||` / `!=` / 非线性等不可编码叶子)或函数在环上(递归/互递归)→ 其 `ensures` 一律不采用——**未证明的前置条件绝不被假设**。
+- **调用点(任务 2/3)**:实参可线性化时,把被调 `requires` 的形参代入实参,在当前函数的 `requires` 假设下证明;可证违反 → **M3041**(含被调参数小值反例);可证满足 → 采用被调已证 `ensures`(把 `result` 绑定为每次调用独有的符号 `res$N` 加入假设集);未证明 → 该调用结果按 unknown 处理,依赖它的表达式不参与证明。形参被重赋值后入口 `requires` 假设作废(保守)。
+- **调用方 ensures(任务 4)**:在上述假设集下用 M3042 直线体验证;可证假 → **M3042** + 反例(反例须同时满足调用方 `requires` 与假设集);不可判定静默,运行时 M4015 保留。不新增诊断码。
+- **范围与不覆盖**:不做循环/分支体、递归/互递归、高阶/效果函数、堆/别名、通用 SMT;不做运行时语义变更。调用链 f→g→h 的摘要按**被调方优先拓扑序**计算(Tarjan SCC 环检测,环上函数标记无摘要)。
+- **证明报告**:`--proof-report` 在既有逐义务行后为每个**可摘要函数**(纯函数 + 全 i64 参数/返回 + 非泛型/extern,见上)增加一行契约摘要:
+  `<文件>:<fn>: 契约摘要 requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`
+  (调用点 = 该函数被调用时 `requires` 被可证满足 / 可证违反的次数;不可判定/不可编码不计入)。`--json --proof-report` 的 `proofs` 增加 additive `summaries: [{file, fn, requires_complete, ensures_proven, calls_proven, calls_violated}]`;**无旗标时输出与 v0.54.0 逐字一致**。
 
 ---
 
@@ -950,7 +960,7 @@ fn main() with io {
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
 | 自举工具 v0.51.6 优化(脚本化纪律) | 9 个工具**错误走 stderr、失败退出码 1**(此前 stdout + 退出 0);`wc` 多文件附 total 行(单文件格式不变);`json_query` 点路径(`servers.0.host`:obj 段用键、arr 段用下标)+ 类型化输出(字符串裸输出,其余 JSON 原貌)+ 一次多路径;`diaghot` 目录展开 + `--top N`;`batch_rename` **幂等**(已带前缀跳过,重复运行不再叠加);`tree` 可选深度参数;`todo_scan` 增扫 .mjs/.cjs;12 个工具全部 `ming fmt --check` 规范 |
 | `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
-| `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52);`--strict-wasm`(v0.53):检查通过后验证 wasm 分层,任一文件回落 → exit 2 并点名原因(与 `--tree`/`--no-wasm` 互斥;JSON additive `wasm_status`) |
+| `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例)+ **v0.55 契约摘要**(文本每函数一行 `契约摘要 requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`;JSON `proofs.summaries`);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52);`--strict-wasm`(v0.53):检查通过后验证 wasm 分层,任一文件回落 → exit 2 并点名原因(与 `--tree`/`--no-wasm` 互斥;JSON additive `wasm_status`) |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
 | `ming doc f.ming [--json]` | 提取 `///` 文档 |
@@ -1063,11 +1073,24 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.42(已完成) | **C4:with ffi 兑现**(extern "库" fn 声明,隐含 ffi 效果,调用方须 with ffi;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym 真调用,M4013 失败路径;ming cc --static) |
 | v0.43(已完成) | **ffi 字符串桥 + Result[i64,str] 进 C 面 + with unsafe 设计定稿**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点) |
 | v0.54(已完成) | **`with unsafe` 最小实现(C5)**:Ptr[mut u8]/Ptr[u8]、load/store/offset/is_null、std.mem.alloc/free、M3029/M3046/M4016、C 原生执行;Ptr 别名面与 offset 链式黄金 |
-| 更远(北星对齐) | v0.55 跨函数契约摘要;`mask`/async/eval/国密/RSA/形式化验证留待更远(见 plan §4.2) |
+| v0.55(已完成) | **跨函数契约摘要(QF_LIA 第三片)**:纯函数 + 直线体 + 无环调用图的摘要引擎(Tarjan SCC);调用点线性前置证明(M3041 扩展)、调用后置条件假设、M3042 假设集扩展;`--proof-report` 契约摘要(文本 + additive `proofs.summaries`);无新诊断码 |
+| 更远(北星对齐) | `mask` 效果屏蔽(v0.56+ 评估)/污点即效应/async/eval/国密/RSA/形式化验证留待更远(见 plan §4.2.8/§5 Backlog) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.55.0(2026-11-12)
+
+- **跨函数契约摘要(plan §4.2.6,QF_LIA 第三片)**:`src/prover.js` 新增 `computeSummaries`——纯数据接口(AST 不透明,`toLinear` 由 checker 注入),调用图用迭代 Tarjan SCC 检测环并输出"被调方优先"拓扑序;摘要 = `{requires, ensures, noSummary, params}`。**硬门控**:requires 不完整(含不可编码叶子)或函数在环上 → ensures 不采用;ensures 只在 checker 静态证明后才作为后置条件。
+- **调用点线性前置条件(M3041 扩展)**:实参可线性化(参数/局部变量的线性形式)时,代入被调 requires 并以当前函数 requires 为假设证明;可证违反 → M3041 + 被调参数小值反例;不可证/不可编码静默。字面量路径逐字不变。
+- **调用后置条件假设**:被调 requires 完整且当前路径可证时,把其已证 ensures 的形参代入实参、`result` 绑定每次调用独有的 `res$N` 符号加入假设集;未证明前置条件的调用结果按 unknown 处理(绝不凭空假设)。两次调用的符号独立(§59.11)。
+- **调用方 ensures 证明(M3042 扩展)**:假设集 = 本函数可编码 requires + 已验证调用后置条件;可证假 → M3042 + 反例(反例须满足 requires 与假设集,调用结果符号由等式传播/小值域枚举求出后数值复核);不可判定或假设集矛盾 → 静默,运行时 M4015 保留。**不新增诊断码**。
+- **证明报告**:`check --proof-report` 文本在逐义务行后为每个可摘要函数增加一行契约摘要(`requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`);`--json --proof-report` 的 `proofs` 增加 additive `summaries` 数组(`file/fn/requires_present/requires_complete/ensures_present/ensures_proven/calls_proven/calls_violated`;数据复用 checker 阶段 1/2 的摘要表与调用点统计,不重复计算)。**无旗标输出与 v0.54.0 逐字一致**。
+- **模糊测试**:`tests/proof_fuzz.mjs` 新增 `--mode summaries`(默认仍为模式 1/2,门禁口径不变;summaries 默认 count 300)——随机生成 2–4 函数直线链,自带独立线性求值器验证:可证语料 0 诊断、可证违反语料必报 M3041/M3042 且反例复核通过、递归/互递归/非线性/不可编码静默。
+- **v0.55.0 独立审查修复(B1–B4 + M5–M7 + N10)**:B1 直线体共享判定(`exprIsLinear`/`stmtIsLinear`)——If/Match/BlockExpr/Loop/Lambda 及含 Return/Assign/Break/Continue 的表达式不再被"穿透",三处 walker(M3042/M3041 调用点/v0.52 索引)统一,分支内形参重赋值不再产生错误摘要,if-return/match/裸块赋值后不再误报 M3041/M3042/M3045;B2 短路 `&&`/`||` 只收集左侧(右侧条件求值不作为无条件调用点);B3 M3041 反例加入调用方上下文(满足调用方 requires;常量实参直报常量值);B4 proof_fuzz summaries 增分支/重赋值/短路语料与摘要采用负控;M5 JSON 摘要新增 `requires_present/ensures_present`;M6 `+=/-=/*=` 常量复合赋值线性转移;M7 下界 requires 反例形态;N10 toLinear/computePost 注入 op 校验。登记 #31/#32(P3)。
+- **测试**:694 项全绿(§59 共 42 项 v59.*);`proof_fuzz --mode summaries --count 300` 可证 150 / 违反 75 / 静默 50 / 易误报 25 / 误报 0(反例独立验证 75/75);既有 `--count 100` 两模式通过;差分模糊 0 分歧;compiler/interp/vm/cbackend/artifact 零改动。
+- **范围诚实声明**:不做循环/分支体、递归/互递归、高阶/效果函数、堆/别名、通用 SMT;摘要只用于静态报告,不改变运行时 M4015/M4003。
 
 ### v0.54.0(2026-11-12)
 

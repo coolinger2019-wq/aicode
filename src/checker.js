@@ -14,7 +14,7 @@
 
 import { err, warn, MingError, CODE_HINTS } from './diag.js';
 import { parse } from './parser.js';
-import { linFromInt, linAdd, linMulConst, linIsConst, linEvalAt, proveImplication, solveDiffConstraints } from './prover.js';
+import { linFromInt, linAdd, linMulConst, linIsConst, linEvalAt, proveImplication, solveDiffConstraints, computeSummaries } from './prover.js';
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 
@@ -52,6 +52,11 @@ export function tvar(binds = null) {
 }
 let nextVarId = 0;
 export function resetVarIds() { nextVarId = 0; }
+
+// v0.55:调用结果符号前缀。Ming 标识符只允许 [A-Za-z0-9_],`$` 不会出现在用户标识符中
+// → 符号既不会与形参/局部变量冲突,也不会与 prover 的锚点 '\u0000src' 冲突。
+// 每个调用点按直线段遍历序编号(res$0, res$1, ...),保证确定性。
+const CALL_RESULT_SYM_PREFIX = 'res$';
 
 export function resolveT(t, binds) {
   while (t && t.k === 'var' && binds.has(t.id)) t = binds.get(t.id);
@@ -483,6 +488,16 @@ export class Checker {
     this.entryFile = entryFile;
     this.options = options ?? {};  // v0.52:checker 选项(--warn-unproven-index 由阶段 3 接 CLI)
     this.proofRecords = [];  // v0.52 阶段 3:边界证明逐义务记录(--proof-report 消费;只记录,不改诊断)
+    // v0.55:跨函数契约摘要表(module → Map<name, summary>)。阶段 1 只建立(任务 1),
+    // 调用后置条件假设(阶段 2)与 --proof-report 摘要统计(阶段 3)后续消费。
+    this.summariesByMod = new Map();
+    // v0.55:调用点线性上下文(Call AST 节点 → {argForms, assumptions})。
+    // 由 buildCallSiteLinear 在 checkFnBody 之前为每个函数建立一次;供 M3041 线性实参扩展。
+    this.callSiteLinear = new Map();
+    // v0.55 阶段 3(--proof-report 摘要):被调 entry → 调用点 requires 静态判定统计。
+    // 口径:该函数作为被调方时,调用点 requires 被可证满足(proven)或被可证违反(violated)的次数;
+    // 不可判定/不可编码不计入。统计只读,不进诊断通道。
+    this.callStats = new Map();
     this.modules = [];
     this.byPath = new Map();
     this.diags = [];
@@ -735,7 +750,7 @@ export class Checker {
     for (const m of this.modules) this.resolveSigs(m);
     for (const m of this.modules) this.resolveImpls(m);
     for (const m of this.modules) this.checkBodies(m);
-    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords };
+    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords, summaries: this.buildSummaryReport() };
   }
 
   resolveSigs(mod) {
@@ -888,6 +903,18 @@ export class Checker {
   }
 
   checkBodies(mod) {
+    // v0.55(任务 1 + 2):摘要表与调用点线性上下文都在函数体检查之前建立一次。
+    //   - 摘要表:按模块;在 M3042 遍之前(阶段 2 将有调用后置条件假设消费它);
+    //   - 调用点上下文:checkRequiresAtCallSite 的线性实参扩展需要"当前函数的参数/局部
+    //     线性形式",而它在 checkFnBody 内被调用 → 必须先于 checkFnBody 建立。
+    // 两者都只读 AST(不依赖类型检查结果),失败一律静默(不产诊断、不改既有行为)。
+    this.buildSummaries(mod);
+    for (const [, entry] of mod.items) {
+      if (entry.kind === 'fn' && !entry.poisoned) this.buildCallSiteLinear(entry);
+    }
+    for (const entry of this.methodEntries) {
+      if (entry.mod === mod) this.buildCallSiteLinear(entry);
+    }
     for (const [, entry] of mod.items) {
       if (entry.kind === 'fn' && entry.decl.body) {
         if (entry.poisoned) continue; // v0.46:解析恢复产物(真实错误已在解析期报告)
@@ -901,9 +928,9 @@ export class Checker {
     }
     // v0.44:测试字面量过拟合检查(实现分支条件中出现测试断言的字面量)
     this.checkTestLiteralOverfit(mod);
-    // v0.48(M3042):ensures 直线体符号执行(QF_LIA 第一片)
+    // v0.48(M3042):ensures 直线体符号执行(QF_LIA 第一片);v0.55 阶段 2 传入模块摘要表
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'fn' && !entry.poisoned) this.checkEnsuresStatically(entry);
+      if (entry.kind === 'fn' && !entry.poisoned) this.checkEnsuresStatically(entry, mod);
     }
     // v0.52 阶段 2(M3045/W3105,QF_LIA 第二片):requires 线性边界的 Vec 索引越界静态证明
     for (const [, entry] of mod.items) {
@@ -2095,7 +2122,8 @@ export class Checker {
     return resolved ?? ret;
   }
 
-  // v0.46(M3041,Jenny 反例风格):字面量实参代入 requires,静态可判定即编译期报错
+  // v0.46(M3041,Jenny 反例风格):字面量实参代入 requires,静态可判定即编译期报错。
+  // v0.55:全部实参为字面量时仍走本路径(行为逐字不变);否则尝试线性实参路径(见下)。
   checkRequiresAtCallSite(entry, e, sig) {
     const req = entry.decl.requires;
     if (!req?.expr) return;
@@ -2108,16 +2136,635 @@ export class Checker {
     const binds = new Map();
     for (let i = 0; i < sig.params.length; i++) {
       const v = litOf(e.args[i]);
-      if (v === undefined) return; // v1:全部实参都是整数字面量才判定;含变量/表达式交给运行时 M4015
+      if (v === undefined) { this.checkRequiresLinearAtCallSite(entry, e, sig, req); return; } // v0.55:字面量路径不可用 → 线性实参路径
       binds.set(sig.params[i].name, v);
     }
     const r = this.evalContractExpr(req.expr, binds);
-    if (!r.ok || r.v !== false) return; // 可判定且为假 → 报错;其余放弃判定
+    if (!r.ok) return;
+    if (r.v === true) { this.noteCallRequires(entry, 'proven'); return; }
+    if (r.v !== false) return; // 非 bool 形态(类型错误另有诊断)→ 不做契约判定
+    this.noteCallRequires(entry, 'violated');
     const parts = [];
     for (const [n, v] of binds) parts.push(`${n} = ${v}`);
     this.diags.push(err('M3041',
       `调用点静态违反契约:实参使 requires 不成立(反例:${parts.join(', ')})${req.msg ? ';' + req.msg : ''}`,
       e.span, '调整实参以满足前置条件;该错误在运行时本会以 M4015 出现。'));
+  }
+
+  // ========== v0.55(任务 1 + 2):跨函数契约摘要 + 调用点线性前置条件证明 ==========
+  // 阶段 1:摘要表建立(不消费 ensures)与 M3041 的线性实参扩展。
+  // 阶段 2(任务 3 + 4):调用点后置条件假设 —— 被调 requires 完整且当前假设下可证时,
+  //   把已证 ensures 代入实参、result 绑定本调用独有的 fresh 符号加入当前假设集;
+  //   无摘要/环/requires 不完整/实参非线性 → 结果变量 unknown(依赖它的表达式不参与证明)。
+  //   该假设集供 M3042(checkEnsuresStatically)与摘要 post 证明(provenPostFor)共用。
+  // 硬门槛:不得误报 —— 任何不可线性化/不可编码/未证明一律静默;
+  // 字面量路径(上面的 checkRequiresAtCallSite 主体)逐字不变。
+
+  // 契约表达式 → 线性约束合取(差分约束可编码形态)。
+  //   && 拆合取;叶子限 == / < / <= / > / >= 且两侧可经 linOfExpr 线性化;
+  //   BoolLit true 是空合取;|| / != / ! / % / 位运算 / 函数调用(len 等)/ 常量引用 → null。
+  // null = 不完整:调用方不得把它当作完整前置条件(摘要 ensures 也因此不采用)。
+  contractToLinearConj(ast, varMap) {
+    if (!ast) return [];
+    const leaves = [];
+    const collect = (e) => {
+      if (e?.nt === 'Binary' && e.op === '&&') { collect(e.l); collect(e.r); return; }
+      leaves.push(e);
+    };
+    collect(ast);
+    const out = [];
+    for (const leaf of leaves) {
+      if (leaf?.nt === 'BoolLit' && leaf.v === true) continue;
+      if (leaf?.nt !== 'Binary' || !['==', '<', '<=', '>', '>='].includes(leaf.op)) return null;
+      const l = this.linOfExpr(leaf.l, varMap);
+      const r = this.linOfExpr(leaf.r, varMap);
+      if (!l || !r) return null;
+      out.push({ lhs: l, op: leaf.op, rhs: r });
+    }
+    return out;
+  }
+
+  // requires → 差分约束假设集(只取可编码合取叶子;跳过 = 削弱假设,只漏证不误证)。
+  requiresAssumptions(expr, varForms) {
+    if (!expr) return [];
+    const out = [];
+    const collect = (e) => {
+      if (e?.nt === 'Binary' && e.op === '&&') { collect(e.l); collect(e.r); return; }
+      if (e?.nt !== 'Binary' || !['==', '<', '<=', '>', '>='].includes(e.op)) return;
+      const l = this.linOfExpr(e.l, varForms);
+      const r = this.linOfExpr(e.r, varForms);
+      if (!l || !r) return;
+      out.push({ lhs: l, op: e.op, rhs: r });
+    };
+    collect(expr);
+    return out;
+  }
+
+  // 线性形式代入:把 form 中的变量 x 按 sub 替换为线性形式(缺省变量保留)。
+  substLinearForm(form, sub) {
+    const out = { coeffs: new Map(), c: form.c };
+    for (const [k, cf] of form.coeffs) {
+      const r = sub.get(k);
+      if (r) {
+        const t = linMulConst(r, cf);
+        out.c += t.c;
+        for (const [kk, vv] of t.coeffs) {
+          const nv = (out.coeffs.get(kk) ?? 0n) + vv;
+          if (nv === 0n) out.coeffs.delete(kk); else out.coeffs.set(kk, nv);
+        }
+      } else {
+        const nv = (out.coeffs.get(k) ?? 0n) + cf;
+        if (nv === 0n) out.coeffs.delete(k); else out.coeffs.set(k, nv);
+      }
+    }
+    return out;
+  }
+
+  // v0.55(任务 3):调用表达式的线性结果形式 + 调用后置条件注入。
+  // ctx = {summaries, assumptions, calls, symCounter}(walkLinearBody 在启用摘要时建立)。
+  // 采用条件(缺一不可,否则返回 null = 结果 unknown,依赖它的表达式不参与证明):
+  //   1) 被调是本模块摘要表内的纯函数(非环;ensures 非 null 且有约束);
+  //   2) 实参个数匹配且全部可线性化(嵌套调用逐层解析);
+  //   3) 被调 requires 完整(摘要 requires 非 null)且每一条在当前假设下可证
+  //      —— 绝不假设未证明的前置条件(不可证 → 不采用 ensures)。
+  // 采用时:result 绑定本调用独有的 fresh 符号(遍历序编号,不与入口符号/其他调用冲突),
+  //   把 ensures 的线性约束按「形参 → 实参形式;result → fresh 符号」代入加入假设集。
+  resolveCallLinear(node, varForms, ctx) {
+    if (!ctx) return null;
+    const callee = node.callee;
+    if (callee?.nt !== 'Ident') return null; // 高阶/方法/闭包调用无摘要
+    const sum = ctx.summaries?.get(callee.name);
+    if (!sum || sum.noSummary || sum.ensures === null || sum.requires === null) return null;
+    const params = sum.params ?? [];
+    if (!Array.isArray(node.args) || node.args.length !== params.length) return null;
+    if (sum.ensures.length === 0) return null; // 无后置条件 → 结果无约束,按 unknown 处理
+    const argForms = [];
+    for (const a of node.args) {
+      const f = this.linOfExpr(a, varForms, undefined, ctx);
+      if (!f) return null; // 实参非线性 → 结果 unknown(不得凭空假设)
+      argForms.push(f);
+    }
+    // 3) 前置条件门控:requires 完整且当前路径可证
+    const sub = new Map();
+    for (let i = 0; i < params.length; i++) sub.set(params[i], argForms[i]);
+    for (const c of sum.requires) {
+      const goal = { lhs: this.substLinearForm(c.lhs, sub), op: c.op, rhs: this.substLinearForm(c.rhs, sub) };
+      if (proveImplication(ctx.assumptions, goal).kind !== 'proven') return null;
+    }
+    // 后置条件采用:result → fresh 符号(每次调用独立)
+    const sym = CALL_RESULT_SYM_PREFIX + (ctx.symCounter++);
+    const subResult = new Map(sub);
+    subResult.set('result', { coeffs: new Map([[sym, 1n]]), c: 0n });
+    for (const c of sum.ensures) {
+      ctx.assumptions.push({
+        lhs: this.substLinearForm(c.lhs, subResult),
+        op: c.op,
+        rhs: this.substLinearForm(c.rhs, subResult),
+      });
+    }
+    ctx.calls.push({ node, sym });
+    return { coeffs: new Map([[sym, 1n]]), c: 0n };
+  }
+
+  // v0.55 修复(B1):直线体分析的共享"纯表达式"判定。
+  // 非直线 = 出现控制流节点(If/Match/BlockExpr/Loop/LoopExpr/Lambda)或
+  //   Return/Assign/Break/Continue/FnStmt 等语句节点(含嵌套;分支体/闭包体不保证执行)。
+  // 线性分析只能穿透纯表达式;遇到非直线表达式必须停止后续线性分析(已收集的结果保留),
+  // 否则会把分支内的赋值/返回当作直线路径,造成摘要采用错误后置条件或误报 M3041/M3042/M3045。
+  exprIsLinear(e) {
+    if (!e || typeof e.nt !== 'string') return true;
+    switch (e.nt) {
+      case 'If': case 'Match': case 'BlockExpr': case 'Loop': case 'LoopExpr':
+      case 'Lambda': case 'FnStmt': case 'Return': case 'Assign':
+      case 'Break': case 'Continue': case 'While': case 'For':
+      case 'UnsafeBlock': case 'SyncScopeBlock':
+        return false;
+      default: break;
+    }
+    for (const k of Object.keys(e)) {
+      if (k === 'span' || k === 'docs') continue;
+      const v = e[k];
+      if (Array.isArray(v)) {
+        for (const x of v) if (x && typeof x === 'object' && !this.exprIsLinear(x)) return false;
+      } else if (v && typeof v === 'object' && !this.exprIsLinear(v)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // v0.55 修复(B1):直线语句判定(三处 walker 共用)。只有
+  //   Let(PIdent) / Assign(Ident 目标) / ExprStmt(纯表达式) / Return(纯返回值)
+  // 允许线性分析;其余语句(控制流/循环/unsafe/局部 fn/元组模式声明等)一律非直线。
+  // 复合赋值的线性转移由 walkLinearBody 处理(其余 op 在 walker 内放弃)。
+  stmtIsLinear(st) {
+    if (!st || typeof st.nt !== 'string') return false;
+    switch (st.nt) {
+      case 'Return': return !st.value || this.exprIsLinear(st.value);
+      case 'Let': return st.pat?.nt === 'PIdent' && this.exprIsLinear(st.init);
+      case 'Assign': return st.target?.nt === 'Ident' && this.exprIsLinear(st.value);
+      case 'ExprStmt': return this.exprIsLinear(st.expr);
+      default: return false;
+    }
+  }
+
+  // 直线体线性符号执行(与 M3042 checkEnsuresStatically 同口径):
+  //   语句仅 Let(PIdent) / Assign(Ident) / ExprStmt / Return;参数为 i64 时以自身符号起步;
+  //   Let/Assign 更新变量形式,形式不可计算 → abort;Return/块尾产出返回形式。
+  // onCall(callNode, state):在每个被求值的调用表达式处回调(供调用点上下文收集);
+  //   只下钻无条件求值的表达式白名单 —— 不下钻 If/Match/Lambda/BlockExpr 等。
+  // v0.55(任务 3):opts.summaries(Map<name, summary>)存在时启用调用后置条件解析 ——
+  //   纯函数调用结果可绑定为 fresh 符号(res$N,遍历序编号),并采用被调已证 ensures;
+  //   opts.assumptions 为初始假设集(函数入口的 requires 归一化)。返回增加 assumptions
+  //   (含调用后置的最终假设集)与 calls(已采用后置的调用点记录,信息性)。
+  // 返回 { returns:[{form,span}], aborted, varForms, paramNames, paramsAssigned, assumptions, calls }。
+  walkLinearBody(entry, onCall, opts = {}) {
+    const d = entry.decl;
+    const sig = entry.sig;
+    const varForms = new Map();
+    const paramNames = new Set();
+    for (const p of sig.params) {
+      if (p.type?.k === 'int' && p.type.bits === 64 && p.type.signed) {
+        varForms.set(p.name, { coeffs: new Map([[p.name, 1n]]), c: 0n });
+        paramNames.add(p.name);
+      }
+    }
+    const ctx = opts.summaries
+      ? { summaries: opts.summaries, assumptions: [...(opts.assumptions ?? [])], calls: [], symCounter: 0 }
+      : null;
+    const out = {
+      returns: [], aborted: false, varForms, paramNames, paramsAssigned: false,
+      assumptions: ctx ? ctx.assumptions : [], calls: ctx ? ctx.calls : [],
+    };
+    const lin = (e) => this.linOfExpr(e, varForms, undefined, ctx);
+    const noteAssign = (name) => { if (paramNames.has(name)) out.paramsAssigned = true; };
+    const descend = (e) => {
+      if (!e || typeof e.nt !== 'string') return;
+      if (!this.exprIsLinear(e)) return; // v0.55 修复(B1):控制流/赋值表达式不下钻
+      switch (e.nt) {
+        case 'Unary': descend(e.expr); return;
+        case 'Binary':
+          // v0.55 修复(B2):&&/|| 只下钻左侧(左侧必求值;右侧条件求值,
+          // 不能当作无条件调用点;右侧调用保守不收集)
+          descend(e.l);
+          if (e.op !== '&&' && e.op !== '||') descend(e.r);
+          return;
+        case 'Call':
+          if (onCall && e.callee?.nt === 'Ident') onCall(e, out);
+          descend(e.callee);
+          for (const a of e.args ?? []) descend(a);
+          return;
+        case 'Field': descend(e.base); return;
+        case 'Index': descend(e.base); descend(e.index); return;
+        case 'As': case 'PostQ': descend(e.expr); return;
+        case 'StrLit': for (const p of e.parts ?? []) if (p.expr) descend(p.expr); return;
+        case 'VecLit': case 'TupleLit': for (const x of e.elems ?? []) descend(x); return;
+        case 'MapLit': for (const en of e.entries ?? []) { descend(en.k); descend(en.v); } return;
+        case 'StructLit': for (const f of e.fields ?? []) descend(f.value); return;
+        case 'Range': descend(e.lo); descend(e.hi); return;
+        default: return; // If/Match/BlockExpr/Lambda:条件/分支求值不做线性假设
+      }
+    };
+    const walk = (block) => {
+      for (const st of block.stmts) {
+        // v0.55 修复(B1):非直线语句(含 ExprStmt 包裹的 If/Match/BlockExpr/Loop 等)
+        // → 停止后续线性分析;之前已收集的返回/调用保持。
+        if (!this.stmtIsLinear(st)) { out.aborted = true; return; }
+        if (st.nt === 'Return') {
+          descend(st.value);
+          const f = st.value ? lin(st.value) : null;
+          if (f) out.returns.push({ form: f, span: st.span ?? block.span });
+          else out.aborted = true;
+          return; // return 后不可达,停止本块(M3042 同口径)
+        }
+        if (st.nt === 'Let' && st.pat?.nt === 'PIdent') {
+          descend(st.init);
+          const f = lin(st.init);
+          if (!f) { out.aborted = true; return; }
+          noteAssign(st.pat.name); // 同块重绑定形参(防御;正常会先报重复声明)
+          varForms.set(st.pat.name, f);
+          continue;
+        }
+        if (st.nt === 'Assign' && st.target?.nt === 'Ident') {
+          descend(st.value);
+          noteAssign(st.target.name);
+          const cur = varForms.get(st.target.name);
+          if (st.op === '=') {
+            const f = lin(st.value);
+            if (!f || !cur) { out.aborted = true; return; }
+            varForms.set(st.target.name, f);
+            continue;
+          }
+          // v0.55 修复(M6):i64 常量复合赋值的线性转移(+=-=*= 常量);
+          // 其余复合 op / 非常量右值 / 未追踪变量 → 放弃后续(不误报)。
+          if (!['+=', '-=', '*='].includes(st.op) || !cur) { out.aborted = true; return; }
+          const rhs = lin(st.value);
+          if (!rhs || !linIsConst(rhs)) { out.aborted = true; return; }
+          const next = st.op === '*='
+            ? linMulConst(cur, rhs.c)
+            : linAdd(cur, rhs, st.op === '+=' ? 1n : -1n);
+          varForms.set(st.target.name, next);
+          continue;
+        }
+        if (st.nt === 'ExprStmt') { descend(st.expr); continue; }
+        // 其余语句在上面的 stmtIsLinear 已拒绝;此处为防御性兜底。
+        out.aborted = true;
+        return;
+      }
+      if (!out.aborted && block.tail) {
+        descend(block.tail);
+        const f = lin(block.tail);
+        if (f) out.returns.push({ form: f, span: block.tail.span ?? block.span });
+        else out.aborted = true;
+      }
+    };
+    walk(d.body);
+    return out;
+  }
+
+  // 摘要的 ensures 预证:与 M3042 相同的直线体符号执行 + 本函数可编码 requires 为假设,
+  // 证明 ensures 每条合取叶子在返回点成立。返回约束以「形参名 + result 符号」表示
+  // (不把 result 代换成返回形式 —— 摘要必须保留 result 与形参的关系供调用点代入)。
+  // v0.55 阶段 2:calleeSummaries = 拓扑序上已算出的被调摘要;直线段内的调用按
+  //   resolveCallLinear 的门控采用被调已证 ensures(requires 完整且可证才采用),
+  //   返回形式因此可依赖调用结果符号(res$N)。
+  // null = 不证明/不可编码/非直线体/非 i64 面 → 摘要不采用(调用方不得假设)。
+  provenPostFor(entry, calleeSummaries = new Map()) {
+    const d = entry.decl;
+    const sig = entry.sig;
+    if (!d.ensures?.expr || !d.body || !sig) return null;
+    if ((sig.effects?.size ?? 0) > 0) return null; // 纯函数(阶段 1 范围)
+    if (sig.ret?.k !== 'int' || sig.ret.bits !== 64 || !sig.ret.signed) return null;
+    for (const p of sig.params) {
+      if (p.type?.k !== 'int' || p.type.bits !== 64 || !p.type.signed) return null;
+    }
+    if (sig.params.some(p => p.name === 'result')) return null; // 形参名与 result 符号冲突 → 放弃
+    const paramNames = new Set(sig.params.map(p => p.name));
+    // 假设集 = 本函数可编码 requires(跳过不可编码叶子只会削弱证明前提)+ 被调后置条件
+    const paramForms = new Map();
+    for (const pn of paramNames) paramForms.set(pn, { coeffs: new Map([[pn, 1n]]), c: 0n });
+    const walked = this.walkLinearBody(entry, null, {
+      summaries: calleeSummaries,
+      assumptions: this.requiresAssumptions(d.requires?.expr, paramForms),
+    });
+    if (walked.returns.length === 0) return null;
+    const retForm = walked.returns[0].form;
+    // 返回形式只能依赖形参 + 本次证明的调用结果符号(不得引入其他未知变量)
+    for (const k of retForm.coeffs.keys()) {
+      if (!paramNames.has(k) && !k.startsWith(CALL_RESULT_SYM_PREFIX)) return null;
+    }
+    // ensures 以「形参 + result」符号线性化
+    const ensMap = new Map();
+    for (const pn of paramNames) ensMap.set(pn, { coeffs: new Map([[pn, 1n]]), c: 0n });
+    ensMap.set('result', { coeffs: new Map([['result', 1n]]), c: 0n });
+    const constraints = this.contractToLinearConj(d.ensures.expr, ensMap);
+    if (!constraints) return null;
+    const assumptions = walked.assumptions;
+    // 假设集自相矛盾 = 前置条件不可达 → 该函数的后置条件不作为摘要(保守)
+    if (solveDiffConstraints(assumptions).kind === 'unsat') return null;
+    const sub = new Map([['result', retForm]]);
+    for (const c of constraints) {
+      const goal = { lhs: this.substLinearForm(c.lhs, sub), op: c.op, rhs: this.substLinearForm(c.rhs, sub) };
+      if (proveImplication(assumptions, goal).kind !== 'proven') return null;
+    }
+    return constraints;
+  }
+
+  // 函数体内的直接调用边(声明序去重;只保留本模块 fn —— 导入/std/方法/闭包动态调用
+  // 不是本模块摘要表的图节点)。闭包体与局部 fn 体不在此刻求值,不作为直接边。
+  collectCalls(node, mod) {
+    const out = [];
+    const seen = new Set();
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+      if (typeof n.nt === 'string') {
+        if (n.nt === 'Call' && n.callee?.nt === 'Ident') {
+          const nm = n.callee.name;
+          const callee = mod.items.get(nm);
+          if (callee?.kind === 'fn' && !callee.extern && !seen.has(nm)) { seen.add(nm); out.push(nm); }
+        }
+        if (n.nt === 'Lambda' || n.nt === 'FnStmt') return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'span' || k === 'docs') continue;
+        const v = n[k];
+        if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(node);
+    return out;
+  }
+
+  // 任务 1:按模块建立摘要表(在 M3042 遍之前调用一次)。范围 = 纯函数、i64 形参/返回、
+  // 非泛型、非 extern;其余函数不进表(调用方视为"无摘要",不得假设其 ensures)。
+  // v0.55 阶段 2:post 不再由 checker 独立预证,而是把 provenPostFor 作为第三参交给
+  //   computeSummaries —— 它按拓扑序调用,回调拿到已算出的被调摘要,于是 post 的证明
+  //   可以假设"已证被调 ensures"(requires 完整且当前路径可证才采用),形成链式证明。
+  buildSummaries(mod) {
+    const fns = [];
+    const entryByName = new Map();
+    for (const [, entry] of mod.items) {
+      if (entry.kind !== 'fn' || entry.poisoned || entry.extern) continue;
+      if (!entry.decl.body || entry.decl.nt === 'ExternFnDecl') continue;
+      const sig = entry.sig;
+      if (!sig || sig.tparams.length > 0) continue;
+      if ((sig.effects?.size ?? 0) > 0) continue; // 纯函数
+      if (sig.ret?.k !== 'int' || sig.ret.bits !== 64 || !sig.ret.signed) continue;
+      let allI64 = true;
+      for (const p of sig.params) {
+        if (p.type?.k !== 'int' || p.type.bits !== 64 || !p.type.signed) { allI64 = false; break; }
+      }
+      if (!allI64) continue;
+      fns.push({
+        name: entry.decl.name,
+        params: sig.params.map(p => ({ name: p.name, type: p.type })),
+        requires: entry.decl.requires?.expr ?? null,
+        ensures: entry.decl.ensures?.expr ?? null,
+        calls: this.collectCalls(entry.decl.body, mod),
+      });
+      entryByName.set(entry.decl.name, entry);
+    }
+    const summaries = computeSummaries(
+      fns,
+      (ast, varMap) => this.contractToLinearConj(ast, varMap),
+      (fn, calleeSummaries) => {
+        // 防御:摘要回调内的任何异常都不得影响既有检查(失败 = 不采用该 ensures)
+        const e = entryByName.get(fn.name);
+        if (!e) return null;
+        try { return this.provenPostFor(e, calleeSummaries); } catch { return null; }
+      },
+    );
+    this.summariesByMod.set(mod, summaries);
+    return summaries;
+  }
+
+  // v0.55 阶段 3:调用点 requires 判定统计(entry = 被调函数;kind = 'proven'|'violated')。
+  // 只统计被静态判定过的调用点:字面量路径可判定真/假;线性路径可证满足或可证违反。
+  noteCallRequires(entry, kind) {
+    if (!entry) return;
+    let st = this.callStats.get(entry);
+    if (!st) { st = { proven: 0, violated: 0 }; this.callStats.set(entry, st); }
+    st[kind] += 1;
+  }
+
+  // v0.55 阶段 3(--proof-report 摘要):汇总每个可摘要函数的契约状态与调用点统计。
+  // 数据全部来自阶段 1/2 已建立的 this.summariesByMod 与本次检查累积的 this.callStats
+  // (不重复计算证明)。顺序 = 模块加载序 + 声明序,确定性。
+  //   requires_present/requires_complete: 有 requires 子句 / 且全部叶子可线性编码
+  //   ensures_present/ensures_proven:     有 ensures 子句 / 且已证并作为摘要采用
+  //   calls_proven/calls_violated:        该函数被调用时 requires 可证满足/可证违反的次数
+  buildSummaryReport() {
+    const out = [];
+    for (const mod of this.modules) {
+      const summaries = this.summariesByMod.get(mod);
+      if (!summaries) continue;
+      for (const [, entry] of mod.items) {
+        if (entry.kind !== 'fn' || entry.poisoned || entry.extern) continue;
+        const sum = summaries.get(entry.decl.name);
+        if (!sum) continue; // 非纯 i64 面 / 泛型 / extern:无契约摘要
+        const st = this.callStats.get(entry) ?? { proven: 0, violated: 0 };
+        out.push({
+          file: entry.decl.span?.file ?? mod.file,
+          fn: entry.decl.name,
+          requires_present: entry.decl.requires != null,
+          requires_complete: sum.requires !== null,
+          ensures_present: entry.decl.ensures != null,
+          ensures_proven: sum.ensures !== null,
+          calls_proven: st.proven,
+          calls_violated: st.violated,
+        });
+      }
+    }
+    return out;
+  }
+
+  // 任务 2 的上下文:为直线段内每个 Call 节点记录实参线性形式与当前假设集。
+  // 假设集 = 本函数可编码 requires(被跳过的叶子只削弱假设)。任一形参被重赋值后不再使用
+  // 假设集(保守:requires 说的是入口值;虽然变量形式仍以入口符号表示,放弃假设只会漏证)。
+  buildCallSiteLinear(entry) {
+    const d = entry.decl;
+    if (!d?.body || d.nt === 'ExternFnDecl' || !entry.sig) return;
+    const paramForms = new Map();
+    for (const p of entry.sig.params) {
+      if (p.type?.k === 'int' && p.type.bits === 64 && p.type.signed) {
+        paramForms.set(p.name, { coeffs: new Map([[p.name, 1n]]), c: 0n });
+      }
+    }
+    const baseAssumptions = this.requiresAssumptions(d.requires?.expr, paramForms);
+    // 假设集自相矛盾(负环)= 当前函数不可达 → 不做线性调用点证明(与 M3045 对
+    // requires 不可达函数的处理同口径;避免对死代码报 M3041)。
+    if (solveDiffConstraints(baseAssumptions).kind !== 'sat') return;
+    this.walkLinearBody(entry, (callNode, st) => {
+      const argForms = [];
+      for (const a of callNode.args ?? []) {
+        const f = this.linOfExpr(a, st.varForms);
+        if (!f) return; // 任一实参非线性 → 整个调用放弃(交给运行时 M4015)
+        argForms.push(f);
+      }
+      this.callSiteLinear.set(callNode, {
+        argForms,
+        // v0.55 修复(B3):反例构造需要调用方上下文 —— 可编码 requires 假设 +
+        // 原始 requires 表达式(用于按完整 requires 过滤反例,与 M3045 同口径)。
+        assumptions: st.paramsAssigned ? [] : baseAssumptions,
+        requiresExpr: d.requires?.expr ?? null,
+      });
+    });
+  }
+
+  // M3041 线性实参路径(v0.55):实参线性形式代入被调 requires 的线性约束,以当前函数
+  // 假设集证明"违反条件";可证违反 → M3041 + 被调参数小值反例;不可证 → 静默。
+  // 范围:被调可为任意 fn(效果不限制 M3041),全 i64 形参、非泛型、非 extern、
+  // 实参个数匹配且全部可线性化;requires 必须完整可编码(任一叶子不可编码 → 整条静默)。
+  checkRequiresLinearAtCallSite(entry, e, sig, req) {
+    if (entry.extern) return;
+    if ((sig.tparams?.length ?? 0) > 0) return; // 泛型:类型擦除,直接跳过
+    if (e.args.length !== sig.params.length) return;
+    for (const p of sig.params) {
+      if (p.type?.k !== 'int' || p.type.bits !== 64 || !p.type.signed) return; // 仅全 i64 形参
+    }
+    const st = this.callSiteLinear.get(e);
+    if (!st || st.argForms.length !== sig.params.length) return;
+    const paramForms = new Map();
+    for (const p of sig.params) paramForms.set(p.name, { coeffs: new Map([[p.name, 1n]]), c: 0n });
+    const constraints = this.contractToLinearConj(req.expr, paramForms);
+    if (!constraints || constraints.length === 0) return; // 不完整/空 requires → 静默
+    const sub = new Map();
+    for (let i = 0; i < sig.params.length; i++) sub.set(sig.params[i].name, st.argForms[i]);
+    const assumptions = st.assumptions;
+    let allProven = true; // v0.55 阶段 3:全部叶子在假设集下可证满足 → 调用点 proven
+    for (const c of constraints) {
+      const lhs = this.substLinearForm(c.lhs, sub);
+      const rhs = this.substLinearForm(c.rhs, sub);
+      // 违反条件 = 该叶子的取反(整数语义):<= → >;< → >=;>= → <;> → <=;== → !=;!= → ==
+      const badOp = { '<=': '>', '<': '>=', '>=': '<', '>': '<=', '==': '!=', '!=': '==' }[c.op];
+      if (!badOp) { allProven = false; continue; } // 防御:不可编码叶子不参与判定
+      if (proveImplication(assumptions, { lhs, op: badOp, rhs }).kind !== 'proven') {
+        // 未证违反:继续尝试"可证满足";两者都不成立 → 该调用点不计入统计
+        if (proveImplication(assumptions, { lhs, op: c.op, rhs }).kind !== 'proven') allProven = false;
+        continue;
+      }
+      this.noteCallRequires(entry, 'violated');
+      const cex = this.findRequiresCex(sig, constraints, c, st);
+      const cexText = cex ? `(反例:${cex})` : '';
+      this.diags.push(err('M3041',
+        `调用点静态违反契约:实参使 requires 不成立${cexText}${req.msg ? ';' + req.msg : ''}`,
+        e.span, '调整实参以满足前置条件;该错误在运行时本会以 M4015 出现。'));
+      return; // 同一调用点只报一次
+    }
+    if (allProven) this.noteCallRequires(entry, 'proven');
+  }
+
+  // 反例枚举(v0.55 修复 B3):反例必须满足调用方 requires(旧实现只按被调形参枚举
+  // {-2..2},会给出调用方根本到不了的值,如调用方 requires x == 10 却报 a = -2)。
+  // 调用点上下文 st(由 buildCallSiteLinear 建立):
+  //   argForms[i]   被调第 i 个形参的实参线性形式(变量 = 调用方形参);
+  //   assumptions   调用方可编码 requires(差分约束);
+  //   requiresExpr  调用方完整 requires 表达式(可求值叶子用于过滤,与 M3045 同口径)。
+  // 策略:
+  //   1) 实参全为常量 → 被调形参值就是实参常量,直接报常量值(不满足其余叶子 → 无反例);
+  //   2) 枚举调用方形参(小值域 ∪ 契约/假设中出现的常量),只接受满足调用方 requires 的
+  //      赋值,再按实参线性形式计算被调实参值并校验被调 requires;
+  //   3) 变量过多/无候选/无上下文 → null("无反例"消息变体)。
+  findRequiresCex(sig, constraints, violated, st) {
+    const varSet = new Set();
+    for (const c of constraints) for (const side of [c.lhs, c.rhs]) for (const k of side.coeffs.keys()) varSet.add(k);
+    const names = [];
+    for (const p of sig.params) if (varSet.has(p.name)) names.push(p.name);
+    if (names.length !== varSet.size) return null; // 契约变量不是全部形参(防御)
+    if (names.length === 0) return null;
+    const fmt = (env) => names.map(n => `${n} = ${env.get(n)}`).join(', ');
+    const cexHolds = (env) => {
+      for (const c of constraints) {
+        if (c === violated) continue;
+        if (!this.cmpLin(linEvalAt(c.lhs, env), c.op, linEvalAt(c.rhs, env))) return false;
+      }
+      return !this.cmpLin(linEvalAt(violated.lhs, env), violated.op, linEvalAt(violated.rhs, env));
+    };
+    const hasCtx = st && Array.isArray(st.argForms) && st.argForms.length === sig.params.length;
+    // 1) 实参全为常量:反例即真实常量实参
+    if (hasCtx && st.argForms.every((f) => linIsConst(f))) {
+      const env = new Map();
+      for (let i = 0; i < sig.params.length; i++) env.set(sig.params[i].name, st.argForms[i].c);
+      return cexHolds(env) ? fmt(env) : null;
+    }
+    const smallVals = [-2n, -1n, 0n, 1n, 2n];
+    // 2) 调用方上下文枚举:保证反例落在调用方 requires 的合法输入集内
+    if (hasCtx) {
+      const callerVars = [];
+      const seen = new Set();
+      const noteVar = (k) => { if (!seen.has(k)) { seen.add(k); callerVars.push(k); } };
+      for (const f of st.argForms) for (const k of f.coeffs.keys()) noteVar(k);
+      for (const a of st.assumptions ?? []) for (const side of [a.lhs, a.rhs]) for (const k of side.coeffs.keys()) noteVar(k);
+      if (callerVars.length > 3) return null; // 枚举上限(与 M3045 同款 ≤3 i64)
+      const candSet = new Set(smallVals);
+      for (const a of st.assumptions ?? []) { candSet.add(a.lhs.c); candSet.add(a.rhs.c); }
+      for (const c of constraints) { candSet.add(c.lhs.c); candSet.add(c.rhs.c); }
+      let cands = [...candSet].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      if (cands.length > 24) cands = cands.slice(0, 24); // 防御:合取叶子极多时限制枚举规模
+      const envCaller = new Map();
+      const callerHolds = () => {
+        for (const a of st.assumptions ?? []) {
+          if (!this.cmpLin(linEvalAt(a.lhs, envCaller), a.op, linEvalAt(a.rhs, envCaller))) return false;
+        }
+        // 完整 requires 的可求值叶子必须为真;不可求值叶子不据此剔除(M3045 同口径)
+        if (st.requiresExpr) {
+          const r = this.evalContractExpr(st.requiresExpr, envCaller);
+          if (r.ok && r.v !== true) return false;
+        }
+        return true;
+      };
+      const envCallee = new Map();
+      const calleeEnvOf = () => {
+        for (let i = 0; i < sig.params.length; i++) {
+          envCallee.set(sig.params[i].name, linEvalAt(st.argForms[i], envCaller));
+        }
+        return envCallee;
+      };
+      if (callerVars.length === 0) {
+        if (!callerHolds()) return null;
+        return cexHolds(calleeEnvOf()) ? fmt(envCallee) : null;
+      }
+      const idx = new Array(callerVars.length).fill(0);
+      for (;;) {
+        for (let i = 0; i < callerVars.length; i++) envCaller.set(callerVars[i], cands[idx[i]]);
+        if (callerHolds() && cexHolds(calleeEnvOf())) return fmt(envCallee);
+        let carry = callerVars.length - 1; // 末位最快推进,确定性枚举序
+        while (carry >= 0) {
+          idx[carry]++;
+          if (idx[carry] < cands.length) break;
+          idx[carry] = 0; carry--;
+        }
+        if (carry < 0) break;
+      }
+      return null;
+    }
+    // 3) 无调用点上下文(防御路径):按被调形参小值枚举
+    if (names.length > 3) return null;
+    const env = new Map();
+    const idx = new Array(names.length).fill(0);
+    for (;;) {
+      for (let i = 0; i < names.length; i++) env.set(names[i], smallVals[idx[i]]);
+      if (cexHolds(env)) return fmt(env);
+      let carry = names.length - 1; // 末位最快推进,确定性枚举序
+      while (carry >= 0) {
+        idx[carry]++;
+        if (idx[carry] < smallVals.length) break;
+        idx[carry] = 0; carry--;
+      }
+      if (carry < 0) return null;
+    }
+  }
+
+  cmpLin(a, op, b) {
+    switch (op) {
+      case '==': return a === b;
+      case '!=': return a !== b;
+      case '<': return a < b;
+      case '<=': return a <= b;
+      case '>': return a > b;
+      default: return a >= b;
+    }
   }
 
   // ---------- v0.48(M3042,QF_LIA 第一片):ensures 直线体符号执行 ----------
@@ -2126,8 +2773,9 @@ export class Checker {
   // 返回点以 `result` 绑定返回值形式求值 ensures:可证明为假 → M3042 + 反例。
   // v0.52:线性形式代数与差分约束证明抽到 src/prover.js,此处只留 AST 适配与诊断。
 
-  // 表达式 → 线性形式;子集之外返回 null(resultForm:`result` 绑定的形式)
-  linOfExpr(e, varForms, resultForm) {
+  // 表达式 → 线性形式;子集之外返回 null(resultForm:`result` 绑定的形式;callCtx:
+  // v0.55 调用点后置条件上下文 —— 非 null 时调用表达式可绑定为 fresh 结果符号)。
+  linOfExpr(e, varForms, resultForm, callCtx) {
     switch (e.nt) {
       case 'IntLit': {
         if (e.bits !== 64 || typeof e.v !== 'bigint') return null;
@@ -2141,34 +2789,37 @@ export class Checker {
       }
       case 'Unary': {
         if (e.op !== '-') return null;
-        const a = this.linOfExpr(e.expr, varForms, resultForm);
+        const a = this.linOfExpr(e.expr, varForms, resultForm, callCtx);
         return a ? linMulConst(a, -1n) : null;
       }
       case 'Binary': {
         const op = e.op;
         if (op === '+') {
-          const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+          const l = this.linOfExpr(e.l, varForms, resultForm, callCtx), r = this.linOfExpr(e.r, varForms, resultForm, callCtx);
           return (l && r) ? linAdd(l, r, 1n) : null;
         }
         if (op === '-') {
-          const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+          const l = this.linOfExpr(e.l, varForms, resultForm, callCtx), r = this.linOfExpr(e.r, varForms, resultForm, callCtx);
           return (l && r) ? linAdd(l, r, -1n) : null;
         }
         if (op === '*') {
-          const l = this.linOfExpr(e.l, varForms, resultForm), r = this.linOfExpr(e.r, varForms, resultForm);
+          const l = this.linOfExpr(e.l, varForms, resultForm, callCtx), r = this.linOfExpr(e.r, varForms, resultForm, callCtx);
           if (l && r && linIsConst(r)) return linMulConst(l, r.c);
           if (l && r && linIsConst(l)) return linMulConst(r, l.c);
           return null;
         }
         return null; // / % 位运算移位 → 放弃
       }
-      default: return null; // 调用/字段/浮点/字符串等 → 放弃
+      // v0.55(任务 3):调用结果 —— 仅在后置条件门控通过时绑定为 fresh 符号,否则 null
+      case 'Call': return this.resolveCallLinear(e, varForms, callCtx);
+      default: return null; // 字段/浮点/字符串等 → 放弃
     }
   }
 
   // ensures 表达式在(变量 → 线性形式)下的判定:'true' | 'false' | 'unknown'
   // resultForm:返回值的线性形式(result 绑定)
-  decideEnsures(e, varForms, resultForm) {
+  // assumptions:v0.55 差分约束假设集(本函数 requires + 已验证调用后置);空集 = v0.48 行为
+  decideEnsures(e, varForms, resultForm, assumptions = []) {
     switch (e.nt) {
       case 'Ident': {
         if (e.name === 'result') {
@@ -2181,16 +2832,16 @@ export class Checker {
       }
       case 'Unary': {
         if (e.op !== '!') return 'unknown';
-        const inner = this.decideEnsures(e.expr, varForms, resultForm);
+        const inner = this.decideEnsures(e.expr, varForms, resultForm, assumptions);
         return inner === 'true' ? 'false' : inner === 'false' ? 'true' : 'unknown';
       }
       case 'Binary': {
         const op = e.op;
         if (op === '&&' || op === '||') {
-          const l = this.decideEnsures(e.l, varForms, resultForm);
+          const l = this.decideEnsures(e.l, varForms, resultForm, assumptions);
           if (op === '&&' && l === 'false') return 'false';
           if (op === '||' && l === 'true') return 'true';
-          const r = this.decideEnsures(e.r, varForms, resultForm);
+          const r = this.decideEnsures(e.r, varForms, resultForm, assumptions);
           if (l === r && l !== 'unknown') return l;
           return 'unknown';
         }
@@ -2210,26 +2861,25 @@ export class Checker {
             default: return c >= 0n ? 'true' : 'false';
           }
         }
-        // v0.52:非常量差交差分约束证明。假设集本阶段为空(requires 边界假设是阶段 2/3 的事):
-        // 空假设下任何含变量的单一约束皆可满足,各方向义务均不可证 → 'unknown',
-        // 与 v0.48 的"非常量 → unknown"严格一致;变量 >12 → too-many-vars → 同样静默。
-        return this.decideCmpByProof(diff, op);
+        // 非常量差交差分约束证明。v0.55:假设集可非空(requires + 已验证调用后置)——
+        // 空假设下任何含变量的单一约束皆可满足,与 v0.48 的"非常量 → unknown"严格一致。
+        return this.decideCmpByProof(diff, op, assumptions);
       }
       default: return 'unknown';
     }
   }
 
-  // v0.52:非常量差的比较叶判定,经 prover 的差分约束证明(成立/证伪两向义务):
+  // 非常量差的比较叶判定,经 prover 的差分约束证明(成立/证伪两向义务):
   //   '<'  :true ⇔ 证 diff <= -1;false ⇔ 证 diff >= 0
   //   '<=' :true ⇔ 证 diff <= 0; false ⇔ 证 diff >= 1
   //   '>'  :true ⇔ 证 diff >= 1; false ⇔ 证 diff <= 0
   //   '>=' :true ⇔ 证 diff >= 0; false ⇔ 证 diff <= -1
   //   '==' :true ⇔ 双向(<= 0 且 >= 0)均证;false ⇔ 证 <= -1 或 >= 1(单向即可)
   //   '!=' :与 '==' 对偶
-  // 阶段 2/3 传入非空假设集(.requires 归一化 + len$x 符号)后,同一义务表即可扩大可证面。
-  decideCmpByProof(diff, op) {
-    const le = (k) => proveImplication([], { lhs: diff, op: '<=', rhs: linFromInt(k) }).kind === 'proven';
-    const ge = (k) => proveImplication([], { lhs: diff, op: '>=', rhs: linFromInt(k) }).kind === 'proven';
+  // assumptions 非空时同一义务表即可扩大可证面(阶段 2 跨函数 ensures)。
+  decideCmpByProof(diff, op, assumptions = []) {
+    const le = (k) => proveImplication(assumptions, { lhs: diff, op: '<=', rhs: linFromInt(k) }).kind === 'proven';
+    const ge = (k) => proveImplication(assumptions, { lhs: diff, op: '>=', rhs: linFromInt(k) }).kind === 'proven';
     switch (op) {
       case '<': return le(-1n) ? 'true' : ge(0n) ? 'false' : 'unknown';
       case '<=': return le(0n) ? 'true' : ge(1n) ? 'false' : 'unknown';
@@ -2240,7 +2890,14 @@ export class Checker {
     }
   }
 
-  checkEnsuresStatically(entry) {
+  // v0.48(M3042)+ v0.55(阶段 2):ensures 直线体静态验证。
+  // v0.55 扩展:
+  //   - 符号执行改用 walkLinearBody(支持调用结果符号);假设集 = 本函数可编码 requires
+  //     + 已验证调用后置条件(被调 requires 完整且当前路径可证时才采用其 ensures);
+  //   - 可证假 → M3042 + 反例(枚举须同时满足 requires 与假设集;找不到时保留"无反例"变体);
+  //   - 不可判定 / 假设集自相矛盾(不可达)→ 静默,运行时 M4015 保留。
+  // 无调用且无 requires 的单函数用例:假设集为空,行为与 v0.48 逐字一致(§43/§52/§59.10)。
+  checkEnsuresStatically(entry, mod) {
     const d = entry.decl;
     const ens = d.ensures;
     if (!ens?.expr) return;
@@ -2250,85 +2907,142 @@ export class Checker {
       if (p.type?.k !== 'int' || p.type.bits !== 64 || !p.type.signed) return;
     }
     const body = d.body;
-    // 直线体:语句仅 Let/Assign/ExprStmt
+    // 直线体:语句仅 Let/Assign/ExprStmt/Return
     for (const st of body.stmts) {
       if (!['Let', 'Assign', 'ExprStmt', 'Return'].includes(st.nt)) return;
     }
-    // 变量 → 线性形式(参数初始化)
-    const varForms = new Map();
-    for (const p of sig.params) varForms.set(p.name, { coeffs: new Map([[p.name, 1n]]), c: 0n });
-    // 遍历语句;遇到 Return/块尾 → 以当前形式判定 ensures
-    const checkAtReturn = (retForm, span) => {
-      const verdict = this.decideEnsures(ens.expr, varForms, retForm);
-      if (verdict !== 'false') return;
-      // 反例:满足 requires 的小值搜索(线性 ensures 恒假 → 任意满足 requires 的值皆反例)
-      const names = sig.params.map(p => p.name);
-      const cands = [0n, 1n, 2n, 3n, 5n, -1n, -2n, 10n, 100n, -5n];
-      const vals = new Map();
-      let found = null;
-      const n = names.length;
-      if (n <= 3) {
-        const idx = new Array(n).fill(0);
-        const total = Math.pow(cands.length, n);
-        for (let t = 0; t < total && !found; t++) {
-          for (let i = 0; i < n; i++) vals.set(names[i], cands[idx[i]]);
-          const rr = this.evalContractExpr(d.requires?.expr ?? { nt: 'BoolLit', v: true }, vals);
-          const passR = !d.requires?.expr || (rr.ok && rr.v === true);
-          if (passR) {
-            // 用同一组值复核 ensures 数值(线性求值)
-            const resVal = linEvalAt(retForm, vals);
-            const v2 = new Map(vals);
+    // 变量入口形式(参数 → 自身符号);假设集 = requires + 调用后置(阶段 2)
+    const paramForms = new Map();
+    for (const p of sig.params) paramForms.set(p.name, { coeffs: new Map([[p.name, 1n]]), c: 0n });
+    const walked = this.walkLinearBody(entry, null, {
+      summaries: this.summariesByMod.get(mod),
+      assumptions: this.requiresAssumptions(d.requires?.expr, paramForms),
+    });
+    if (walked.aborted || walked.returns.length === 0) return;
+    const assumptions = walked.assumptions;
+    // 假设集自相矛盾 = 函数不可达(requires/契约矛盾)→ 静默,不对死代码报错
+    if (solveDiffConstraints(assumptions).kind === 'unsat') return;
+    for (const ret of walked.returns) {
+      const verdict = this.decideEnsures(ens.expr, walked.varForms, ret.form, assumptions);
+      if (verdict !== 'false') continue;
+      this.reportEnsuresStaticallyFalse(entry, ens, ret.form, assumptions);
+      return; // 直线体至多一个返回点
+    }
+  }
+
+  // v0.55:为 M3042 反例求值构造满足假设集的符号赋值(调用结果符号 res$N)。
+  // 1) 等式传播:假设中的等式若一侧恰有一个未定符号(系数 ±1)且另一侧无未定符号,
+  //    精确解出该符号;反复至不动点(支持链式 S0 == a + 1 / S1 == S0 + 1)。
+  // 2) 剩余未定符号 ≤2 个小值域枚举(只在不等式约束它们时出现)。
+  // 3) 最后逐条数值校验全部假设 —— 只有全部成立的赋值才被接受(绝不会伪造反例)。
+  // 返回符号+形参的完整赋值 Map(供 linEvalAt / evalContractExpr 复核 ensures);失败 null。
+  assignSymbolsForCex(assumptions, syms, baseVals) {
+    const env = new Map(baseVals);
+    const isKnown = (k) => env.has(k);
+    for (let iter = 0; iter < syms.length; iter++) {
+      let progress = false;
+      for (const a of assumptions) {
+        if (a.op !== '==') continue;
+        for (const [x, y] of [[a.lhs, a.rhs], [a.rhs, a.lhs]]) {
+          const xFree = [...x.coeffs.keys()].filter((k) => !isKnown(k));
+          if (xFree.length !== 1) continue;
+          const behind = [...y.coeffs.keys()].filter((k) => !isKnown(k));
+          if (behind.length !== 0) continue;
+          const sym = xFree[0];
+          if (!syms.includes(sym)) continue; // 只解调用结果符号
+          const coef = x.coeffs.get(sym);
+          if (coef !== 1n && coef !== -1n) continue;
+          const num = linEvalAt(y, env) - linEvalAt(x, env); // coef*sym + xv == yv
+          if (num % coef !== 0n) continue;
+          env.set(sym, num / coef);
+          progress = true;
+          break;
+        }
+      }
+      if (!progress) break;
+    }
+    const rest = syms.filter((s) => !env.has(s));
+    if (rest.length > 2) return null;
+    const holds = () => {
+      for (const a of assumptions) {
+        if (!this.cmpLin(linEvalAt(a.lhs, env), a.op, linEvalAt(a.rhs, env))) return false;
+      }
+      return true;
+    };
+    if (rest.length === 0) return holds() ? env : null;
+    const cands = [0n, 1n, 2n, 3n, 5n, -1n, -2n, 10n, 100n, -5n];
+    if (rest.length === 1) {
+      for (const v of cands) { env.set(rest[0], v); if (holds()) return env; }
+    } else {
+      for (const v0 of cands) {
+        env.set(rest[0], v0);
+        for (const v1 of cands) { env.set(rest[1], v1); if (holds()) return env; }
+      }
+    }
+    return null;
+  }
+
+  // M3042 反例枚举(沿用 v0.48 策略):形参在 cands 小值域枚举(≤3 个),须满足 requires;
+  // v0.55:还须满足假设集(调用结果符号由 assignSymbolsForCex 解出/枚举,再以求值复核
+  //   ensures 为假)。找不到满足假设的赋值 → 报"无反例"变体(与既有 n > 3 的处理一致)。
+  reportEnsuresStaticallyFalse(entry, ens, retForm, assumptions) {
+    const d = entry.decl;
+    const sig = entry.sig;
+    const names = sig.params.map(p => p.name);
+    // 假设集/返回形式中的调用结果符号(形参之外的变量);确定性:首次出现序
+    const symSet = new Set();
+    const noteSyms = (f) => { for (const k of f.coeffs.keys()) if (!names.includes(k)) symSet.add(k); };
+    noteSyms(retForm);
+    for (const a of assumptions) { noteSyms(a.lhs); noteSyms(a.rhs); }
+    const syms = [...symSet];
+    const cands = [0n, 1n, 2n, 3n, 5n, -1n, -2n, 10n, 100n, -5n];
+    const vals = new Map();
+    let found = null;
+    const n = names.length;
+    if (n <= 3) {
+      const idx = new Array(n).fill(0);
+      const total = Math.pow(cands.length, n);
+      search:
+      for (let t = 0; t < total; t++) {
+        for (let i = 0; i < n; i++) vals.set(names[i], cands[idx[i]]);
+        // requires 过滤(既有策略:只报满足 requires 的反例)
+        const rr = this.evalContractExpr(d.requires?.expr ?? { nt: 'BoolLit', v: true }, vals);
+        const passR = !d.requires?.expr || (rr.ok && rr.v === true);
+        if (passR) {
+          // 假设集须数值成立(含被调 ensures 代入后的约束);符号由等式解出或小值域枚举
+          const env = this.assignSymbolsForCex(assumptions, syms, vals);
+          if (env) {
+            const resVal = linEvalAt(retForm, env);
+            const v2 = new Map(env);
             v2.set('result', resVal);
             const rr2 = this.evalContractExpr(ens.expr, v2);
-            if (rr2.ok && rr2.v === false) found = new Map(vals);
+            if (rr2.ok && rr2.v === false) {
+              found = new Map();
+              for (const pn of names) found.set(pn, vals.get(pn));
+              break search;
+            }
           }
-          let carry = 0;
-          while (carry < n) {
-            idx[carry]++;
-            if (idx[carry] < cands.length) break;
-            idx[carry] = 0; carry++;
-          }
-          if (carry >= n) break;
         }
-      }
-      if (found) {
-        const parts = [];
-        for (const [k, v] of found) parts.push(`${k} = ${v}`);
-        this.diags.push(err('M3042',
-          `函数 "${d.name}" 的 ensures 可静态证伪(反例:${parts.join(', ')})${ens.msg ? ';' + ens.msg : ''}`,
-          ens.span ?? d.span, '修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'));
-      } else {
-        this.diags.push(err('M3042',
-          `函数 "${d.name}" 的 ensures 可静态证伪${ens.msg ? ';' + ens.msg : ''}`,
-          ens.span ?? d.span, '修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'));
-      }
-    };
-    // Return 语句单独走:以返回值形式判定(直接递归处理块的后续不需要——直线体遇 return 即结束)
-    const walkBodyForReturns = (block) => {
-      for (const st of block.stmts) {
-        if (st.nt === 'Return') {
-          const f = st.value ? this.linOfExpr(st.value, varForms) : null;
-          if (f) checkAtReturn(f, st.span ?? block.span);
-          return; // return 之后的语句不可达,停止本块分析
+        let carry = 0;
+        while (carry < n) {
+          idx[carry]++;
+          if (idx[carry] < cands.length) break;
+          idx[carry] = 0; carry++;
         }
-        if (st.nt === 'Let' && st.pat?.nt === 'PIdent') {
-          const f2 = this.linOfExpr(st.init, varForms);
-          if (f2) varForms.set(st.pat.name, f2); else return;
-        } else if (st.nt === 'Assign' && st.target?.nt === 'Ident') {
-          const f3 = this.linOfExpr(st.value, varForms);
-          if (f3 && varForms.has(st.target.name)) varForms.set(st.target.name, f3); else return;
-        } else if (st.nt === 'ExprStmt' && st.expr?.nt === 'Call') {
-          continue;
-        } else if (st.nt !== 'ExprStmt') {
-          return; // 非直线语句 → 放弃整条路径
-        }
+        if (carry >= n) break;
       }
-      if (block.tail) {
-        const f4 = this.linOfExpr(block.tail, varForms);
-        if (f4) checkAtReturn(f4, block.tail.span ?? block.span);
-      }
-    };
-    walkBodyForReturns(body);
+    }
+    if (found) {
+      const parts = [];
+      for (const [k, v] of found) parts.push(`${k} = ${v}`);
+      this.diags.push(err('M3042',
+        `函数 "${d.name}" 的 ensures 可静态证伪(反例:${parts.join(', ')})${ens.msg ? ';' + ens.msg : ''}`,
+        ens.span ?? d.span, '修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'));
+    } else {
+      this.diags.push(err('M3042',
+        `函数 "${d.name}" 的 ensures 可静态证伪${ens.msg ? ';' + ens.msg : ''}`,
+        ens.span ?? d.span, '修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'));
+    }
   }
 
   // ---------- v0.52 阶段 2(M3045/W3105,QF_LIA 第二片):requires 边界的 Vec 索引越界静态证明 ----------
@@ -2473,9 +3187,14 @@ export class Checker {
     // 表达式白名单下钻(全部无条件求值且不含嵌套语句);Lambda/Match/If/BlockExpr 等不下钻
     const descend = (e) => {
       if (!e || typeof e.nt !== 'string') return;
+      if (!this.exprIsLinear(e)) return; // v0.55 修复(B1):控制流/赋值表达式不下钻
       switch (e.nt) {
         case 'Unary': descend(e.expr); return;
-        case 'Binary': descend(e.l); descend(e.r); return;
+        case 'Binary':
+          // v0.55 修复(B2):&&/|| 右侧条件求值,不作为无条件索引点
+          descend(e.l);
+          if (e.op !== '&&' && e.op !== '||') descend(e.r);
+          return;
         case 'Index': descend(e.base); descend(e.index); registerPoint(e); return;
         case 'Field': descend(e.base); return;
         case 'Call': descend(e.callee); for (const a of e.args ?? []) descend(a); return;
@@ -2490,6 +3209,8 @@ export class Checker {
     };
     const walk = (block) => {
       for (const st of block.stmts) {
+        // v0.55 修复(B1):非直线语句 → 停止后续索引义务收集(已收集的保留)
+        if (!this.stmtIsLinear(st)) { aborted = true; return; }
         if (st.nt === 'Return') {
           if (st.value) descend(st.value);
           aborted = true; // return 后不可达,结束本块(M3042 同口径)
@@ -2512,7 +3233,7 @@ export class Checker {
           continue;
         }
         if (st.nt === 'ExprStmt') { descend(st.expr); continue; } // 纯调用/裸表达式语句
-        // 其余(复合赋值、下标赋值目标、If/While/Match、元组模式 let 等):无条件求值部分先收集,再放弃
+        // 其余(复合赋值、下标赋值目标等):无条件求值部分先收集,再放弃
         if (st.nt === 'Assign') { descend(st.target); descend(st.value); }
         aborted = true;
         return;

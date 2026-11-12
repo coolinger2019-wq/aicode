@@ -1,6 +1,6 @@
-// tests/proof_fuzz.mjs — v0.52 静态边界证明模糊器(零依赖;plan §4.2.3 任务 6)。
+// tests/proof_fuzz.mjs — 静态证明模糊器(零依赖;plan §4.2.3 任务 6 + §4.2.6 任务 5)。
 // 思路:prover 声称"proven"时,运行时必须真的安全;声称"violated"时,反例必须真的成立。
-// 两个模式,各查一个方向的谎言:
+// 模式 1/2(v0.52 边界证明,默认运行):
 //   模式 1(误报检测):生成"非 mut Vec[i64] 参数 + i64 参数 + 线性 requires + 直线体含 buf[i]"
 //     的 .ming,生成器用自带求值器保证实参满足 requires。凡 check --json --proof-report 判
 //     proven 的索引,断言 `run` 与 `run --tree` 退出 0 且无 M4003/M4015 —— 证明器说安全,
@@ -9,11 +9,25 @@
 //   模式 2(反例验证):生成可证违反形态,断言 M3045 必发;用本文件独立实现的小型线性求值器
 //     (刻意不 import src/prover.js)验证反例:反例值满足全部 requires 且使索引越出义务侧。
 //     每 8 例抽 1 例为负控(requires 含 buf[n] 的不可编码形态)——断言保持静默(不误报)。
+// 模式 summaries(v0.55 跨函数契约摘要,--mode summaries):
+//   每 12 例固定分布:6 ok / 2 callsite / 1 ensfalse / 2 静默 / 1 易误报语料。
+//   随机生成 2-4 函数直线链 f0→f1→…(单条 requires + ensures result == a + C):
+//     ok      全链 requires 可证满足且各 ensures 可证真 → check 必须 0 诊断(不误报);
+//             负控:--proof-report summaries 必须 ensures_present/ensures_proven=true
+//             (调用方 ensures 仅靠被调已证 ensures 才可证,摘要确实被采用);
+//     callsite 某调用点实参可证违反被调 requires → check 必报 M3041,反例须满足调用方 requires;
+//             随机含上界(`a <= U`)与下界(`a >= L`)两种调用方 requires 形态(M7);
+//     ensfalse 某函数 ensures 声明可证假 → check 必报 M3042,反例须满足该函数 requires 且
+//              独立求值器复算的实际返回值不等于声明值;
+//     静默    递归/互递归/非线性/不可编码四类 → check 必须 0 诊断;
+//     易误报  分支返回/分支内形参重赋值/match 重赋值/短路 &&/||(B1/B2 回归)→ 必须静默。
+//   反例验证复用本文件独立线性求值器(不 import src/prover.js)。汇总
+//   "可证 N / 违反 M / 静默 K / 易误报 T / 误报 0",失败退出 1。
 // 说明:M3045 语料无法用于运行时复核 —— `ming run` 先 check,M3045 直接拒绝执行(exit 1);
 //   因此"violated → 运行时必 M4003"由 §56 的运行时测试与差分模糊承担,本文件只做静态一致性。
-// 用法:node tests/proof_fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
-//   默认 --count 200:模式 1 跑 200 例,模式 2 跑 ceil(count/5) 例(200 → 40)。
-// 末尾汇总"误报 F / 反例验证 ok/N";任一失败退出 1。
+// 用法:node tests/proof_fuzz.mjs [--seed N] [--count N] [--mode default|1|2|summaries|all]
+//   默认 --mode default = 模式 1 + 模式 2(既有门禁口径不变);默认 --count 200(summaries 模式 300)。
+//   末尾汇总各模式统计;任一失败退出 1。
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -25,8 +39,17 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? Number(argv[i + 1]) : d; };
+const strOpt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 ? argv[i + 1] : d; };
 const SEED = opt('seed', 20261112);
-const COUNT = Math.max(1, opt('count', 200));
+const MODE = strOpt('mode', 'default');
+if (!['default', '1', '2', 'summaries', 'all'].includes(MODE)) {
+  process.stderr.write(`proof_fuzz:未知 --mode "${MODE}"(可用:default|1|2|summaries|all)\n`);
+  process.exit(1);
+}
+const RUN_M12 = MODE === 'default' || MODE === '1' || MODE === '2' || MODE === 'all';
+const RUN_SUM = MODE === 'summaries' || MODE === 'all';
+// 默认 count 按模式:summaries 验收规模 300,既有模式保持 200(CI 门禁口径不变)。
+const COUNT = Math.max(1, opt('count', MODE === 'summaries' ? 300 : 200));
 
 // mulberry32:确定性 rng(与 tests/fuzz.mjs 同款)
 function mulberry32(a) {
@@ -156,6 +179,219 @@ function parseCex(s) {
   return Object.keys(vals).length ? vals : null;
 }
 
+// ===================== summaries 模式:v0.55 跨函数契约摘要 =====================
+// 生成的链规格:{kind, n, reqs:[{op,n}], K, M, C(实际返回常数), declC(声明 ensures 常数),
+//   violAt, falseAt, mainArg}。全部是 i64 单参数 a;契约 = 单条 requires(单侧线性界)
+//   + ensures (result == a + C)。独立求值器只用规格里的常数与 op,不经过 prover。
+
+function genSummaryChain(kind) {
+  const n = int(2, 4);
+  const K = new Array(n).fill(0);
+  const M = new Array(n).fill(0);
+  for (let i = 0; i < n - 1; i++) { K[i] = int(0, 3); M[i] = int(0, 3); }
+  const reqs = new Array(n);
+  let violAt = -1, falseAt = -1, lowShape = false;
+  if (kind === 'callsite') {
+    violAt = int(0, n - 2);
+    K[violAt] = 0; // 违反点实参必须是裸 a:静态可证与反例同值可核
+    lowShape = rng() < 0.5;
+    if (lowShape) {
+      // M7:下界 requires 形态(caller a >= L,callee a <= U < L)→ 反例须落在调用方合法输入集
+      const L = int(2, 4);
+      reqs[violAt] = { op: '>=', n: L };
+      reqs[violAt + 1] = { op: '<=', n: L - 1 - int(0, 2) };
+      for (let i = violAt - 1; i >= 0; i--) {
+        // 上层下界链(自顶向下):R_i + K_i >= R_{i+1} ⇒ 调用点 requires 可证
+        const lo = Math.max(0, reqs[i + 1].n - K[i]);
+        reqs[i] = { op: '>=', n: lo + int(0, 3) };
+      }
+      for (let i = violAt + 2; i < n; i++) {
+        // 下层上界链(自顶向下):U_i + K_{i-1} <= U_{i-1} ⇒ 调用点 requires 可证
+        const lim = reqs[i - 1].n;
+        if (K[i - 1] > lim) K[i - 1] = 0;
+        reqs[i] = { op: '<=', n: Math.max(0, lim - K[i - 1]) };
+      }
+    } else {
+      const U = int(2, 4); // 调用方上界 ≥ 2,保证小值反例(-2..2)满足调用方 requires
+      reqs[violAt] = { op: '<=', n: U };
+      reqs[violAt + 1] = { op: '>=', n: U + 1 + int(0, 2) }; // 被调下界高于可达上界
+      for (let i = violAt - 1; i >= 0; i--) {
+        // 上层上界链(自顶向下):U_i + K_i <= U_{i+1}(必要时把 K_i 归零)
+        const lim = reqs[i + 1].n;
+        if (K[i] > lim) K[i] = 0;
+        reqs[i] = { op: '<=', n: int(0, lim - K[i]) };
+      }
+      for (let i = violAt + 2; i < n; i++) reqs[i] = { op: '>=', n: 0 }; // 下层可证下界链
+    }
+  } else {
+    // 全下界可证链(自底向上):R_i + K_i >= R_{i+1} ⇒ 调用点 requires 可证
+    reqs[n - 1] = { op: '>=', n: int(0, 3) };
+    for (let i = n - 2; i >= 0; i--) {
+      const lo = Math.max(0, reqs[i + 1].n - K[i]);
+      reqs[i] = { op: '>=', n: lo + int(0, 3) };
+    }
+    if (kind === 'ensfalse') falseAt = int(0, n - 1);
+  }
+  // C 用最终 K/M 计算(上层上界链可能改过 K);实际返回 = a + C,声明值 = a + declC
+  const C = new Array(n);
+  C[n - 1] = int(0, 4);
+  for (let i = n - 2; i >= 0; i--) C[i] = K[i] + C[i + 1] + M[i];
+  const declC = C.slice();
+  if (falseAt >= 0) declC[falseAt] = C[falseAt] + int(1, 3); // 可证假的声明值
+  const mainArg = kind === 'callsite'
+    ? (lowShape ? BigInt(reqs[0].n) : 0n) // 下界形态:main 实参须满足 f0.requires(否则多报一条字面量 M3041)
+    : BigInt(reqs[0].n);
+  return { kind, n, reqs, K, M, C, declC, violAt, falseAt, lowShape, mainArg };
+}
+
+function summaryProgram(spec) {
+  const lines = [];
+  for (let i = 0; i < spec.n; i++) {
+    const req = `a ${spec.reqs[i].op} ${spec.reqs[i].n}`;
+    lines.push(`fn f${i}(a: i64) -> i64 requires ${req} ensures (result == a + ${spec.declC[i]}) {`);
+    if (i === spec.n - 1) {
+      lines.push(`    return a + ${spec.C[i]};`);
+    } else {
+      lines.push(`    let r = f${i + 1}(a + ${spec.K[i]});`);
+      lines.push(`    return r + ${spec.M[i]};`);
+    }
+    lines.push('}');
+  }
+  lines.push(`fn main() with io { print(str(f0(${spec.mainArg}))); }`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+// 独立求值器:给定形参值,复算链上某函数的真实返回(不依赖 checker/prover)。
+function summaryActual(spec, idx, aVal) {
+  if (idx === spec.n - 1) return aVal + BigInt(spec.C[idx]);
+  return summaryActual(spec, idx + 1, aVal + BigInt(spec.K[idx])) + BigInt(spec.M[idx]);
+}
+function summaryReqHolds(spec, idx, aVal) {
+  const r = spec.reqs[idx];
+  return r.op === '>=' ? aVal >= BigInt(r.n) : aVal <= BigInt(r.n);
+}
+
+// 静默形态:递归 / 互递归 / 非线性 ensures / 不可编码 requires。全部必须 check 0 诊断。
+function genSilentSummaryProgram() {
+  const k = int(0, 3);
+  if (k === 0) {
+    return {
+      tag: '递归',
+      src: [
+        'fn rec(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { if a == 0 { return 1; } return rec(a - 1) + 1; }',
+        'fn top(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { let r = rec(a); return r + 1; }',
+        'fn main() with io { print(str(top(0))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  if (k === 1) {
+    return {
+      tag: '互递归',
+      src: [
+        'fn p(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { if a == 0 { return 1; } return q(a - 1) + 1; }',
+        'fn q(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { if a == 0 { return 2; } return p(a - 1) + 1; }',
+        'fn top(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { let r = p(a); return r + 1; }',
+        'fn main() with io { print(str(top(0))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  if (k === 2) {
+    return {
+      tag: '非线性',
+      src: [
+        'fn sq(a: i64) -> i64 requires a >= 0 ensures (result == a * a) { return a * a; }',
+        'fn top(a: i64) -> i64 requires a >= 0 ensures (result == a * a + 1) { let r = sq(a); return r + 1; }',
+        'fn main() with io { print(str(top(0))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  return {
+    tag: '不可编码',
+    src: [
+      'fn even(a: i64) -> i64 requires a % 2 == 0 ensures (result == a + 1) { return a + 1; }',
+      'fn top(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { let r = even(a); return r + 1; }',
+      'fn main() with io { print(str(top(0))); }',
+      '',
+    ].join('\n'),
+  };
+}
+
+// v0.55.0 审查修复(B1/B2)回归语料:分支返回 / 分支内形参重赋值 / match 重赋值 /
+// 短路 guard。旧实现的直线遍历会"穿透"控制流,错误采用分支内的旧形参值或把短路
+// 右侧调用当作无条件求值 → 误报 M3041/M3042。正确行为:控制流/短路右侧不参与线性
+// 摘要与调用点证明,整份程序 check 0 诊断。
+function genTrickySummaryProgram() {
+  const k = int(0, 4);
+  if (k === 0) {
+    return {
+      tag: '分支返回',
+      src: [
+        'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a) { if a >= 0 { return a; } return 0 - 1; }',
+        'fn main() with io { print(str(f(1))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  if (k === 1) {
+    return {
+      tag: '分支重赋值',
+      src: [
+        'fn g(mut a: i64) -> i64 requires a == 0 ensures (result == a + 5) { if a == 0 { a = 10; return 15; } return 5; }',
+        'fn caller(x: i64) -> i64 requires x == 0 ensures (result == x + 15) { return g(x); }',
+        'fn main() with io { print(str(caller(0))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  if (k === 2) {
+    return {
+      tag: 'match重赋值',
+      src: [
+        'fn g(mut a: i64) -> i64 requires a == 0 ensures (result == a + 5) { match a { _ => { a = 10; return 15; } } return 0; }',
+        'fn main() with io { print(str(g(0))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  if (k === 3) {
+    return {
+      tag: '短路与',
+      src: [
+        'fn limit(a: i64) -> i64 requires a > 0 { return a; }',
+        'fn f(x: i64) -> i64 requires x <= 0 { let _b = (x > 100) && (limit(x) > 0); return 0; }',
+        'fn main() with io { print(str(f(0))); }',
+        '',
+      ].join('\n'),
+    };
+  }
+  return {
+    tag: '短路或',
+    src: [
+      'fn limit(a: i64) -> i64 requires a > 0 { return a; }',
+      'fn f(x: i64) -> i64 requires x <= 0 { let _b = (x <= 0) || (limit(x) > 0); return 0; }',
+      'fn main() with io { print(str(f(0))); }',
+      '',
+    ].join('\n'),
+  };
+}
+
+// 从 M3041/M3042 消息中取反例赋值(格式由 checker 固定:`(反例:a = -2)` / `a = 0, b = 1`)。
+function cexOfMessage(msg) {
+  const m = /\(反例:([^)]*)\)/.exec(msg ?? '');
+  if (!m) return null;
+  const vals = {};
+  for (const part of m[1].split(', ')) {
+    const eq = part.split(' = ');
+    if (eq.length !== 2) return null;
+    try { vals[eq[0].trim()] = BigInt(eq[1].trim()); } catch { return null; }
+  }
+  return Object.keys(vals).length ? vals : null;
+}
+
 function ming(args) {
   const r = spawnSync(process.execPath, [MING, ...args], { encoding: 'utf8', timeout: 30000 });
   return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -168,11 +404,22 @@ const report = (mode, it, why, src) => {
   failures.push(`${mode} 第 ${it} 例(seed=${SEED})\n${why.map((w) => '  ! ' + w).join('\n')}\n--- 程序 ---\n${src}`);
 };
 let m1 = 0, m1Fail = 0, m1ProvenRuns = 0, m2ver = 0, m2ok = 0, m2ctrl = 0;
+let sOk = 0, sViol = 0, sSilent = 0, sTricky = 0, sFail = 0, sFalsePos = 0, sCexOk = 0, sLowShape = 0;
+const sSilentTags = { '递归': 0, '互递归': 0, '非线性': 0, '不可编码': 0 };
 
 try {
-  process.stdout.write(`proof_fuzz:seed=${SEED} count=${COUNT}(模式 1 ${COUNT} 例 + 模式 2 ${Math.max(6, Math.ceil(COUNT / 5))} 例)\n`);
+  const M2N_ALL = Math.max(6, Math.ceil(COUNT / 5));
+  const modeDesc = {
+    default: `模式 1 ${COUNT} 例 + 模式 2 ${M2N_ALL} 例`,
+    1: `模式 1 ${COUNT} 例`,
+    2: `模式 2 ${M2N_ALL} 例`,
+    summaries: `模式 summaries ${COUNT} 例`,
+    all: `模式 1 ${COUNT} 例 + 模式 2 ${M2N_ALL} 例 + 模式 summaries ${COUNT} 例`,
+  }[MODE];
+  process.stdout.write(`proof_fuzz:seed=${SEED} count=${COUNT}(${modeDesc})\n`);
 
   // ---- 模式 1:误报检测 ----
+  if (MODE === 'default' || MODE === '1' || MODE === 'all')
   for (let it = 0; it < COUNT; it++) {
     const t = pick(M1);
     const L = int(1, 8);
@@ -216,6 +463,7 @@ try {
 
   // ---- 模式 2:反例验证(每 8 例 1 例负控)----
   const M2N = Math.max(6, Math.ceil(COUNT / 5));
+  if (MODE === 'default' || MODE === '2' || MODE === 'all')
   for (let it = 0; it < M2N; it++) {
     const isCtrl = it % 8 === 7;
     const t = isCtrl ? null : pick(M2);
@@ -261,14 +509,97 @@ try {
     }
     if (why.length) report(isCtrl ? '模式2负控' : '模式2', it, why, src);
   }
+
+  // ---- 模式 summaries:跨函数契约摘要(v0.55)----
+  // 每 12 例固定分布:6 可证(ok)/ 2 调用点违反(M3041)/ 1 ensures 可证假(M3042)/
+  // 2 静默(递归等)/ 1 易误报语料(分支返回/分支重赋值/短路 guard;B1/B2 回归)。
+  // ok 类负控:--proof-report 的 summaries 必须显示 ensures_present/ensures_proven=true,
+  // 证明"调用方 ensures 仅靠被调已证 ensures 才可证"(摘要确实被采用,而非空转)。
+  if (RUN_SUM) {
+    for (let it = 0; it < COUNT; it++) {
+      const slot = it % 12;
+      const kind = slot <= 5 ? 'ok' : slot <= 7 ? 'callsite' : slot === 8 ? 'ensfalse' : slot <= 10 ? 'silent' : 'tricky';
+      const why = [];
+      let src, spec = null, silentTag = null;
+      if (kind === 'silent') {
+        const g = genSilentSummaryProgram();
+        src = g.src; silentTag = g.tag;
+      } else if (kind === 'tricky') {
+        const g = genTrickySummaryProgram();
+        src = g.src; silentTag = g.tag;
+      } else {
+        spec = genSummaryChain(kind);
+        src = summaryProgram(spec);
+      }
+      const f = path.join(TMPDIR, `sum_${it}.ming`);
+      fs.writeFileSync(f, src);
+      const c = ming(['check', f, '--json', '--proof-report']);
+      let j = null;
+      try { j = JSON.parse(c.stdout); } catch { why.push(`check stdout 非 JSON:${(c.stdout ?? '').slice(0, 120)}`); }
+      const diags = j?.diagnostics ?? [];
+      const label = kind === 'silent' ? `summaries静默(${silentTag})`
+        : kind === 'tricky' ? `summaries易误报(${silentTag})`
+        : kind === 'ok' ? 'summaries可证' : kind === 'callsite' ? 'summaries调用点违反' : 'summaries-ensures违反';
+      if (kind === 'ok' || kind === 'silent' || kind === 'tricky') {
+        // 可证/静默/易误报:必须 0 诊断(任何诊断都是误报)
+        if (c.code !== 0) why.push(`check 退出 ${c.code} ≠ 0(应静默):${JSON.stringify(diags).slice(0, 240)}`);
+        if (diags.length !== 0) why.push(`check 诊断非空(误报):${JSON.stringify(diags).slice(0, 240)}`);
+        if (kind === 'ok') {
+          // 负控:摘要确实被采用(requires 完整且 ensures_present/ensures_proven=true)
+          const sums = j?.proofs?.summaries ?? [];
+          for (let i = 0; i < spec.n; i++) {
+            const s = sums.find((x0) => x0.fn === `f${i}`);
+            if (!s) why.push(`摘要缺失:f${i}`);
+            else if (s.requires_complete !== true) why.push(`f${i}.requires 不完整(生成器缺陷)`);
+            else if (s.ensures_present !== true || s.ensures_proven !== true) {
+              why.push(`摘要未被采用:f${i} ensures_present=${s.ensures_present} ensures_proven=${s.ensures_proven}`);
+            }
+          }
+        }
+        if (why.length) { sFail++; sFalsePos++; report(label, it, why, src); }
+        else if (kind === 'silent') { sSilent++; sSilentTags[silentTag] = (sSilentTags[silentTag] ?? 0) + 1; }
+        else if (kind === 'tricky') { sTricky++; sSilentTags[silentTag] = (sSilentTags[silentTag] ?? 0) + 1; }
+        else sOk++;
+        continue;
+      }
+      // 可证违反:恰好一条期望诊断,且反例经独立求值器复核
+      const want = kind === 'callsite' ? 'M3041' : 'M3042';
+      const hit = diags.filter((d) => d.code === want);
+      if (hit.length !== 1) why.push(`期望恰好 1 条 ${want},实际:${JSON.stringify(diags.map((d) => d.code))}`);
+      if (diags.some((d) => d.code !== want)) why.push(`出现非期望诊断:${JSON.stringify(diags.map((d) => d.code))}`);
+      const vals = hit.length === 1 ? cexOfMessage(hit[0].message) : null;
+      if (!vals || vals.a === undefined) why.push(`反例缺失或不可解析:${JSON.stringify(hit[0]?.message ?? null)}`);
+      else if (kind === 'callsite') {
+        const ix = spec.violAt;
+        const x = vals.a;
+        if (spec.lowShape) sLowShape++;
+        if (!summaryReqHolds(spec, ix, x)) why.push(`M3041 反例不满足调用方 f${ix} requires(a ${spec.reqs[ix].op} ${spec.reqs[ix].n}):a = ${x}`);
+        const arg = x + BigInt(spec.K[ix]);
+        if (summaryReqHolds(spec, ix + 1, arg)) why.push(`M3041 反例未违反被调 f${ix + 1} requires(a ${spec.reqs[ix + 1].op} ${spec.reqs[ix + 1].n}):a = ${arg}`);
+        if (!why.length) sCexOk++;
+      } else {
+        const ix = spec.falseAt;
+        const x = vals.a;
+        if (!summaryReqHolds(spec, ix, x)) why.push(`M3042 反例不满足 f${ix} requires(a ${spec.reqs[ix].op} ${spec.reqs[ix].n}):a = ${x}`);
+        const actual = summaryActual(spec, ix, x); // 独立复算真实返回
+        const declared = x + BigInt(spec.declC[ix]);
+        if (actual === declared) why.push(`M3042 反例下独立复算实际返回 ${actual} == 声明 ${declared}(反例不成立)`);
+        if (!why.length) sCexOk++;
+      }
+      if (why.length) { sFail++; report(label, it, why, src); } else sViol++;
+    }
+  }
 } finally {
   fs.rmSync(TMPDIR, { recursive: true, force: true });
 }
 
 // ===================== 汇总 =====================
-process.stdout.write(`\nproof_fuzz 汇总:模式 1 ${m1} 例,误报 ${m1Fail}(proven 运行验证 ${m1ProvenRuns} 例 × 双引擎);模式 2 反例验证 ${m2ok}/${m2ver},负控 ${m2ctrl} 例\n`);
+if (RUN_M12) process.stdout.write(`\nproof_fuzz 汇总:模式 1 ${m1} 例,误报 ${m1Fail}(proven 运行验证 ${m1ProvenRuns} 例 × 双引擎);模式 2 反例验证 ${m2ok}/${m2ver},负控 ${m2ctrl} 例\n`);
+if (RUN_SUM) process.stdout.write(`\nproof_fuzz summaries 汇总:可证 ${sOk} / 违反 ${sViol} / 静默 ${sSilent} / 易误报语料 ${sTricky} / 误报 ${sFalsePos}(反例独立验证 ${sCexOk}/${sViol};下界 requires 形态 ${sLowShape};静默分类:递归 ${sSilentTags['递归'] ?? 0} / 互递归 ${sSilentTags['互递归'] ?? 0} / 非线性 ${sSilentTags['非线性'] ?? 0} / 不可编码 ${sSilentTags['不可编码'] ?? 0} / 分支返回 ${sSilentTags['分支返回'] ?? 0} / 分支重赋值 ${sSilentTags['分支重赋值'] ?? 0} / match重赋值 ${sSilentTags['match重赋值'] ?? 0} / 短路与 ${sSilentTags['短路与'] ?? 0} / 短路或 ${sSilentTags['短路或'] ?? 0})\n`);
 if (failures.length) {
   process.stderr.write(`\n失败清单(${failures.length}):\n` + failures.join('\n---\n') + '\n');
   process.exit(1);
 }
-process.stdout.write('proof_fuzz:误报 0,反例验证全过 — 通过\n');
+if (RUN_SUM && !RUN_M12) process.stdout.write('proof_fuzz summaries:误报 0,反例独立验证全过 — 通过\n');
+else if (RUN_SUM) process.stdout.write('proof_fuzz:模式 1/2 与 summaries 全过 — 通过\n');
+else process.stdout.write('proof_fuzz:误报 0,反例验证全过 — 通过\n');

@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { computeSummaries } from '../src/prover.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
@@ -2053,8 +2054,9 @@ fn main() with io, fs {
   // v0.46:字面量实参违反 → 编译期 M3041(不再到运行时)
   const rreqLit = runMing(['run', reqFile]);
   check('v45:requires 字面量违反编译期 M3041', rreqLit.code === 1 && /M3041/.test(rreqLit.stderr), 'code=' + rreqLit.code + ' stderr=' + (rreqLit.stderr ?? '').slice(0, 120));
-  // 运行时 M4015 路径:变量实参(静态不可判定)
-  const reqVarFile = mingFile('contract_reqvar.ming', ['fn f(a: i64) -> i64 requires a > 0 { return a + 1; }', 'fn main() with io { let a = 0; print(str(f(a))); }'].join('\n'));
+  // 运行时 M4015 路径:非线性表达式实参(静态不可判定;v0.55 线性实参已能在编译期证明,
+  // 故此处用 `/` 形式保持"静态不可判定"的原意)
+  const reqVarFile = mingFile('contract_reqvar.ming', ['fn f(a: i64) -> i64 requires a > 0 { return a + 1; }', 'fn main() with io { let a = 0; let b = a / 2; print(str(f(b))); }'].join('\n'));
   const rreq = runMing(['run', reqVarFile]);
   const rreqt = runMing(['run', reqVarFile, '--tree']);
   check('v45:requires 违反 M4015(VM)', rreq.code === 101 && /M4015/.test(rreq.stderr));
@@ -2215,11 +2217,11 @@ fn main() with io, fs {
   const rcs = runMing(['check', csFile]);
   check('v46:M3041 调用点静态违反(反例 + else 消息)', rcs.code === 1 && (rcs.stderr ?? '').includes('M3041') && (rcs.stderr ?? '').includes('amount = -5') && (rcs.stderr ?? '').includes('金额必须为正'), 'stderr=' + (rcs.stderr ?? '').slice(0, 160));
 
-  // M3041 变量实参不误报(交给运行时 M4015)
+  // M3041 非线性变量实参不误报(交给运行时 M4015;v0.55 起线性实参会在编译期证明)
   const csOkFile = path.join(dir, 'callsiteok.ming');
-  fs.writeFileSync(csOkFile, csSrc.replace('print(str(pay(-5)));', 'let v = 0 - 5;\n    print(str(pay(v)));'));
+  fs.writeFileSync(csOkFile, csSrc.replace('print(str(pay(-5)));', 'let v = 0 - 10;\n    let w = v / 2;\n    print(str(pay(w)));'));
   const rcsOk = runMing(['check', csOkFile]);
-  check('v46:M3041 变量实参不误报', rcsOk.code === 0 && !(rcsOk.stderr ?? '').includes('M3041'), 'code=' + rcsOk.code + ' stderr=' + (rcsOk.stderr ?? '').slice(0, 120));
+  check('v46:M3041 非线性变量实参不误报', rcsOk.code === 0 && !(rcsOk.stderr ?? '').includes('M3041'), 'code=' + rcsOk.code + ' stderr=' + (rcsOk.stderr ?? '').slice(0, 120));
 
   // v0.47:mut 方法退出时的 invariant 重查(双引擎一致;非法变异拦截,合法变异放行)
   const invSrc = [
@@ -4519,6 +4521,581 @@ fn main() with io, fs {
     + ' mathVm=' + b5MathVm.code + '/' + JSON.stringify(b5MathVm.stdout)
     + ' ' + b5MemCcDetail);
 }
+
+// ===================== 59. v0.55:跨函数契约摘要 + 调用点线性前置条件(M3041 扩展)=====================
+{
+  const dir = path.join(TMP, 'v55');
+  fs.mkdirSync(dir, { recursive: true });
+  const mk = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+  const silent = (r) => r.code === 0 && !/M3041|M3042/.test(r.stderr ?? '');
+
+  // ---- v59.1:摘要引擎(纯数据接口:Tarjan SCC + 被调方优先拓扑序 + 硬门控)----
+  // 契约 AST 对 prover 不透明 → 用轻量假 AST + 注入 toLinear 直接驱动 computeSummaries。
+  const FV = (n) => ({ nt: 'V', n });
+  const FC = (k) => ({ nt: 'C', k: BigInt(k) });
+  const FL = (op, l, r) => ({ nt: 'L', op, l, r });
+  const FAND = (l, r) => ({ nt: 'A', l, r });
+  const FT = { nt: 'True' };
+  const FBAD = { nt: 'Bad' };
+  const toLin = (ast, varMap) => {
+    if (ast == null) return [];
+    const leaves = [];
+    const split = (e) => { if (e?.nt === 'A') { split(e.l); split(e.r); return; } leaves.push(e); };
+    split(ast);
+    const out = [];
+    for (const leaf of leaves) {
+      if (leaf?.nt === 'True') continue;
+      if (leaf?.nt !== 'L') return null;
+      const side = (x) => {
+        if (x?.nt === 'C') return { coeffs: new Map(), c: x.k };
+        if (x?.nt === 'V') {
+          const f = varMap.get(x.n);
+          return f ? { coeffs: new Map(f.coeffs), c: f.c } : null;
+        }
+        return null;
+      };
+      const l = side(leaf.l), r = side(leaf.r);
+      if (!l || !r) return null;
+      out.push({ lhs: l, op: leaf.op, rhs: r });
+    }
+    return out;
+  };
+  const linF = (spec, c = 0n) => ({ coeffs: new Map(Object.entries(spec).map(([k, v]) => [k, BigInt(v)])), c: BigInt(c) });
+  const P = (n) => ({ name: n, type: 'i64' });
+  const postX1 = [{ lhs: linF({ result: 1, x: -1 }), op: '==', rhs: linF({}, 1) }]; // result - x == 1
+  const chainFns = [
+    { name: 'f', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['g'], post: postX1 },
+    { name: 'g', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['h'], post: postX1 },
+    { name: 'h', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [], post: postX1 },
+  ];
+  const chain = computeSummaries(chainFns, toLin);
+  const chain2 = computeSummaries(chainFns, toLin);
+  const chainOrder = [...chain.keys()].join(',');
+  check('v59.1:摘要引擎链式拓扑序(声明 f,g,h → 计算 h,g,f)+ requires/ensures 采用 + 确定性',
+    chainOrder === 'h,g,f' && chainOrder === [...chain2.keys()].join(',')
+    && ['f', 'g', 'h'].every((n) => chain.get(n).requires?.length === 1 && chain.get(n).ensures?.length === 1 && chain.get(n).noSummary === false),
+    'order=' + chainOrder);
+
+  const gate = computeSummaries([
+    { name: 'badReq', params: [P('x')], requires: FL('==', FBAD, FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [], post: postX1 },
+    { name: 'badPost', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [], post: null },
+    { name: 'badVar', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [], post: [{ lhs: linF({ z: 1 }), op: '>=', rhs: linF({}, 0) }] },
+    { name: 'noEns', params: [P('x')], requires: FAND(FL('>=', FV('x'), FC(0)), FT), ensures: null, calls: [], post: null },
+  ], toLin);
+  check('v59.1:摘要硬门控(requires 不完整 / post 未证 / 非形参变量 → ensures=null;无 ensures → 空合取)',
+    gate.get('badReq').requires === null && gate.get('badReq').ensures === null
+    && gate.get('badPost').requires?.length === 1 && gate.get('badPost').ensures === null
+    && gate.get('badVar').requires?.length === 1 && gate.get('badVar').ensures === null
+    && Array.isArray(gate.get('noEns').ensures) && gate.get('noEns').ensures.length === 0,
+    JSON.stringify([...gate.values()].map((s) => [s.name, s.requires === null ? null : s.requires.length, s.ensures === null ? null : s.ensures.length])));
+
+  // N10(v0.55.0 审查):注入的 toLinear / computePost 结果 op 非法 → 视为不可编码
+  // (requires → 不完整门控;ensures → 不采用),不得进入差分约束求解器。
+  const n10 = computeSummaries([
+    { name: 'badReqOp', params: [P('x')], requires: FL('~', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [], post: postX1 },
+    { name: 'badPostOp', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [], post: [{ lhs: linF({ result: 1 }), op: '~', rhs: linF({ x: 1 }) }] },
+  ], toLin);
+  check('v59.1:N10 注入 toLinear/computePost 非法 op → 视为不可编码(requires 不完整 / ensures 不采用)',
+    n10.get('badReqOp').requires === null && n10.get('badReqOp').ensures === null
+    && n10.get('badPostOp').requires?.length === 1 && n10.get('badPostOp').ensures === null,
+    JSON.stringify([...n10.values()].map((s) => [s.name, s.requires === null ? null : s.requires.length, s.ensures === null ? null : s.ensures.length])));
+
+  const cyc = computeSummaries([
+    { name: 'r', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['r'], post: postX1 },
+    { name: 'p', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['q'], post: postX1 },
+    { name: 'q', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['p'], post: postX1 },
+    { name: 's', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['r'], post: postX1 },
+  ], toLin);
+  check('v59.1:环(自递归 r→r / 互递归 p↔q)noSummary → ensures 不采用;环外调用方 s 仍出摘要',
+    cyc.get('r').noSummary === true && cyc.get('p').noSummary === true && cyc.get('q').noSummary === true
+    && cyc.get('r').ensures === null && cyc.get('p').ensures === null && cyc.get('q').ensures === null
+    && cyc.get('s').noSummary === false && cyc.get('s').ensures?.length === 1 && cyc.get('r').requires?.length === 1,
+    JSON.stringify([...cyc.values()].map((s) => [s.name, s.noSummary, s.ensures === null ? null : s.ensures.length])));
+
+  // 端到端:链式 f→g→h(丢弃调用的直线体)全绿 —— 各函数 ensures 由自身返回形式成立
+  const chainSrc = mk('chain.ming', [
+    'fn h(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { return a + 1; }',
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { h(a); return a + 2; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 3) { g(a); return a + 3; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rchain = runMing(['check', chainSrc]);
+  check('v59.1:链式 f→g→h 摘要语料 check 全绿(调用语句丢弃结果,ensures 由返回形式成立)', silent(rchain), 'code=' + rchain.code + ' stderr=' + (rchain.stderr ?? '').slice(0, 200));
+
+  // v0.55 阶段 2:M3042 假设集现在含本函数 requires → 仅靠 a == 0 即可证伪(能力提升)
+  const m3042Same = mk('m3042_same.ming', [
+    'fn f(a: i64) -> i64 requires a == 0 ensures (result == 1) { return a; }',
+    'fn main() with io { print(str(f(0))); }',
+    '',
+  ].join('\n'));
+  const rm3042 = runMing(['check', m3042Same]);
+  check('v59.1:M3042 假设集含本函数 requires(a == 0 ⇒ result == 1 可证伪,反例 a = 0)',
+    rm3042.code === 1 && (rm3042.stderr ?? '').includes('M3042') && (rm3042.stderr ?? '').includes('(反例:a = 0)'),
+    'code=' + rm3042.code + ' stderr=' + (rm3042.stderr ?? '').slice(0, 200));
+
+  // ---- v59.2:调用点线性实参可证违反 → M3041 + 反例(非字面量路径)----
+  const lin1 = mk('callsite_linear.ming', [
+    'fn limit(a: i64) -> i64 requires a >= 5 { return a; }',
+    'fn caller(x: i64) -> i64 requires x <= 4 { return limit(x); }',
+    'fn main() with io { print(str(caller(4))); }',
+    '',
+  ].join('\n'));
+  const rlin1 = runMing(['check', lin1]);
+  check('v59.2:参数实参可证违反 g.requires → M3041 + 反例(非字面量)',
+    rlin1.code === 1 && (rlin1.stderr ?? '').includes('M3041')
+    && (rlin1.stderr ?? '').includes('调用点静态违反契约:实参使 requires 不成立(反例:a = -2)'),
+    'code=' + rlin1.code + ' stderr=' + (rlin1.stderr ?? '').slice(0, 220));
+
+  const lin2 = mk('callsite_local.ming', [
+    'fn limit(a: i64) -> i64 requires a >= 5 { return a; }',
+    'fn caller(x: i64) -> i64 requires x <= 3 { let y = x + 1; return limit(y); }',
+    'fn main() with io { print(str(caller(3))); }',
+    '',
+  ].join('\n'));
+  const rlin2 = runMing(['check', lin2]);
+  check('v59.2:局部线性形式实参(let y = x + 1)可证违反 → M3041 + 反例',
+    rlin2.code === 1 && (rlin2.stderr ?? '').includes('M3041') && (rlin2.stderr ?? '').includes('(反例:a = -1)'),
+    'code=' + rlin2.code + ' stderr=' + (rlin2.stderr ?? '').slice(0, 220));
+
+  // ---- v59.3:对抗面 —— 不得误报(硬门槛)----
+  const adv = mk('adversarial.ming', [
+    'const LIST: Vec[i64] = [1, 2, 3];',
+    'fn limit(a: i64) -> i64 requires a >= 5 { return a; }',
+    'fn even(a: i64) -> i64 requires a % 2 == 0 { return a; }',
+    'fn pick(buf: Vec[i64], i: i64) -> i64 requires i < buf.len() { return buf[i]; }',
+    'fn lenreq(a: i64) -> i64 requires (a < LIST.len()) { return a; }',
+    'fn id[T](a: T) -> T { return a; }',
+    // 1) 需求只给下界:x >= 0 不蕴含 x >= 5 也不蕴含 x < 5 → 不可证违反,静默
+    'fn weak(x: i64) -> i64 requires x >= 0 { return limit(x); }',
+    // 2) 非线性实参 x * x(v0.55 线性化失败 → 静默)
+    'fn nonlin(x: i64) -> i64 requires x <= 0 { return limit(x * x); }',
+    // 3) 被调 requires 不可编码(%):整条静默
+    'fn modreq(x: i64) -> i64 requires x <= -1 { return even(x); }',
+    // 4) 被调含 Vec 参数 + len():直接跳过
+    'fn vecreq(x: i64) -> i64 requires x <= 0 { return pick([1, 2], x); }',
+    // 5) 泛型调用:跳过
+    'fn gen(x: i64) -> i64 requires x <= 0 { return id(x); }',
+    // 6) 全 i64 形参但 requires 含常量 Vec 的 len():不可编码 → 静默
+    'fn constlen(x: i64) -> i64 requires x <= 0 { return lenreq(x); }',
+    'fn main() with io { print(str(weak(0)) + str(nonlin(0)) + str(modreq(-2)) + str(vecreq(0)) + str(gen(0)) + str(constlen(0))); }',
+    '',
+  ].join('\n'));
+  const radv = runMing(['check', adv]);
+  check('v59.3:对抗面无误报(下界不足/非线性/%/Vec+len/泛型/常量 len → 全部静默)', silent(radv), 'code=' + radv.code + ' stderr=' + (radv.stderr ?? '').slice(0, 300));
+
+  // 形参重赋值后 requires 假设作废(否则 mut x 改值会造成误报)
+  const reassign = mk('reassign.ming', [
+    'fn limit(a: i64) -> i64 requires a > 50 { return a; }',
+    'fn caller(mut x: i64) -> i64 requires x <= 5 { x = 100; return limit(x); }',
+    'fn main() with io { print(str(caller(0))); }',
+    '',
+  ].join('\n'));
+  const rre = runMing(['check', reassign]);
+  check('v59.3:形参重赋值后旧 requires 假设作废(不误报 M3041)', silent(rre), 'code=' + rre.code + ' stderr=' + (rre.stderr ?? '').slice(0, 300));
+
+  // 调用方 ensures 不得依赖未证明前提的被调 ensures(阶段 2 的硬门控;h 无 requires)
+  const noAssume = mk('no_assume.ming', [
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { return a + 1; }',
+    'fn h(a: i64) -> i64 ensures (result == a + 1) { return g(a); }',
+    'fn main() with io { print(str(h(1))); }',
+    '',
+  ].join('\n'));
+  const rna = runMing(['check', noAssume]);
+  check('v59.3:被调 requires 未证明 → 不假设其 ensures(静默,不误报 M3042)', silent(rna), 'code=' + rna.code + ' stderr=' + (rna.stderr ?? '').slice(0, 300));
+
+  // 多参数混合:可证违反其中一条 → 正确报告;反例须满足其余可编码 requires
+  const multi = mk('multi.ming', [
+    'fn mm(a: i64, b: i64) -> i64 requires (a > 0 && b > a) { return a; }',
+    'fn caller(x: i64) -> i64 requires x <= 0 { return mm(x, 0); }',
+    'fn main() with io { print(str(caller(0))); }',
+    '',
+  ].join('\n'));
+  const rmulti = runMing(['check', multi]);
+  check('v59.3:多参数混合(线性 + 字面量)可证违反 → M3041 + 反例满足其余合取(b > a)',
+    rmulti.code === 1 && (rmulti.stderr ?? '').includes('M3041') && (rmulti.stderr ?? '').includes('(反例:a = -2, b = 0)'),
+    'code=' + rmulti.code + ' stderr=' + (rmulti.stderr ?? '').slice(0, 260));
+
+  // ---- v59.4:递归/互递归/循环/分支静默 ----
+  // v0.55.0 审查修复(B1):branch 改为纯分支体(不依赖 rec 的 noSummary)——分支内形参重赋值
+  // 必须让直线分析停止;旧实现跳过 if 后把 x 当作入口值,误报 M3041。
+  const rec = mk('recursion.ming', [
+    'fn rec(a: i64) -> i64 requires a >= 0 ensures (result >= 0) { if a == 0 { return 0; } return rec(a - 1); }',
+    'fn ping(a: i64) -> i64 requires a >= 0 ensures (result >= 0) { if a == 0 { return 0; } return pong(a - 1); }',
+    'fn pong(a: i64) -> i64 requires a >= 0 ensures (result >= 0) { if a == 0 { return 0; } return ping(a - 1); }',
+    'fn limit(a: i64) -> i64 requires a > 50 { return a; }',
+    'fn branch(mut x: i64) -> i64 requires x == 0 { if x == 0 { x = 100; } return limit(x); }',
+    'fn loopCall(x: i64) -> i64 requires x <= 4 { let mut i = x; while i < 0 { rec(i); i += 1; } return 0; }',
+    'fn main() with io { print(str(rec(2)) + str(ping(2)) + str(branch(0)) + str(loopCall(0))); }',
+    '',
+  ].join('\n'));
+  const rrec = runMing(['check', rec]);
+  check('v59.4:递归/互递归/循环/分支静默(无摘要错误、无 M3041/M3042)', silent(rrec), 'code=' + rrec.code + ' stderr=' + (rrec.stderr ?? '').slice(0, 300));
+
+  // ---- v59.5:字面量 M3041 路径逐字不变(§42 黄金形态)----
+  const lit = mk('literal.ming', [
+    'fn pay(amount: i64) -> i64 requires amount > 0 else "金额必须为正" {',
+    '    return amount * 2;',
+    '}',
+    'fn main() with io {',
+    '    print(str(pay(-5)));',
+    '    print(str(pay(3)));',
+    '}',
+    '',
+  ].join('\n'));
+  const rlit = runMing(['check', lit]);
+  check('v59.5:字面量 M3041 逐字不变(消息 + 反例 + else + hint)',
+    rlit.code === 1
+    && (rlit.stderr ?? '').includes('error M3041[contract-violated-at-call]: 调用点静态违反契约:实参使 requires 不成立(反例:amount = -5);金额必须为正')
+    && (rlit.stderr ?? '').includes('hint: 调整实参以满足前置条件;该错误在运行时本会以 M4015 出现。')
+    && (rlit.stderr.match(/M3041/g) ?? []).length === 1,
+    'code=' + rlit.code + ' stderr=' + (rlit.stderr ?? '').slice(0, 260));
+
+  // ---- v59.6:调用后置条件假设 —— 链式 f→g→h 的 ensures 可证真/可证伪 ----
+  // 接口契约:computeSummaries 第三参按拓扑序回调(callee 先算),回调可见已算出的被调摘要;
+  // 摘要输出带 params(调用点把 ensures 的形参代入实参所需)。
+  const cbOrder = [];
+  const cbSeen = new Map();
+  const cbFns = [
+    { name: 'caller', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: ['callee'] },
+    { name: 'callee', params: [P('x')], requires: FL('>=', FV('x'), FC(0)), ensures: FL('==', FV('result'), FV('x')), calls: [] },
+  ];
+  const cbOut = computeSummaries(cbFns, toLin, (fn, soFar) => {
+    cbOrder.push(fn.name);
+    const seen = soFar.get('callee');
+    cbSeen.set(fn.name, seen ? seen.ensures : null);
+    return postX1;
+  });
+  check('v59.6:computeSummaries 第三参按拓扑序回调(callee 先于 caller;回调可见已算摘要;输出带 params)',
+    cbOrder.join(',') === 'callee,caller'
+    && cbSeen.get('callee') === null && cbSeen.get('caller')?.length === 1
+    && cbOut.get('caller').ensures?.length === 1 && cbOut.get('caller').params.join(',') === 'x'
+    && cbOut.get('callee').params.join(',') === 'x',
+    'order=' + cbOrder.join(',') + ' seen=' + JSON.stringify([...cbSeen.entries()].map(([k, v]) => [k, v == null ? null : v.length])));
+
+  // h.ensures(result == a + 1) 直线体自证;g 的体调用 h 并返回 r + 1,只有假设 h 的
+  // ensures 才能证 result == a + 2;f 同理依赖 g。正向(ensures 成立)静默、负向报 M3042。
+  const chainOk = mk('chain_assume_ok.ming', [
+    'fn h(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { return a + 1; }',
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { let r = h(a); return r + 1; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 3) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rco = runMing(['check', chainOk]);
+  check('v59.6:链式摘要可证真(g.ensures 假设 h、f.ensures 假设 g)→ 静默',
+    silent(rco), 'code=' + rco.code + ' stderr=' + (rco.stderr ?? '').slice(0, 260));
+
+  const chainBad = mk('chain_assume_bad.ming', [
+    'fn h(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { return a + 1; }',
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { let r = h(a); return r + 1; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 4) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rcb = runMing(['check', chainBad]);
+  check('v59.6:依赖 g.ensures 才可证伪的 f.ensures → M3042 + 反例满足 f.requires(a >= 0 ⇒ 反例 a = 0)',
+    rcb.code === 1 && (rcb.stderr ?? '').includes('M3042') && (rcb.stderr ?? '').includes('(反例:a = 0)')
+    && !(rcb.stderr ?? '').includes('M3041'),
+    'code=' + rcb.code + ' stderr=' + (rcb.stderr ?? '').slice(0, 260));
+
+  // ---- v59.7:硬门控 —— 被调 requires 不完整/未证明 → 不得假设其 ensures ----
+  // (a) requires 含不可编码叶(%):摘要 requires = null → ensures 不采用 → 静默
+  const gateInc = mk('gate_incomplete.ming', [
+    'fn g(a: i64) -> i64 requires a % 2 == 0 ensures (result == a + 2) { return a + 2; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 4) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rgi = runMing(['check', gateInc]);
+  check('v59.7:被调 requires 不可编码(% 2 == 0)→ 摘要 ensures 不采用,静默',
+    silent(rgi), 'code=' + rgi.code + ' stderr=' + (rgi.stderr ?? '').slice(0, 260));
+
+  // (b) requires 完整但当前路径不可证(a >= 5 推不出)→ 不采用 ensures → 静默
+  const gateUnp = mk('gate_unproven.ming', [
+    'fn g(a: i64) -> i64 requires a >= 5 ensures (result == a + 2) { return a + 2; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 4) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rgu = runMing(['check', gateUnp]);
+  check('v59.7:被调 requires 完整但当前路径不可证(a >= 0 推不出 a >= 5)→ 静默',
+    silent(rgu), 'code=' + rgu.code + ' stderr=' + (rgu.stderr ?? '').slice(0, 260));
+
+  // (c) 正例:requires 完整且当前路径可证(a >= 5)→ 假设生效,可证伪 → M3042 + 反例 a = 5
+  const gatePro = mk('gate_proven.ming', [
+    'fn g(a: i64) -> i64 requires a >= 5 ensures (result == a + 2) { return a + 2; }',
+    'fn f(a: i64) -> i64 requires a >= 5 ensures (result == a + 4) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(5))); }',
+    '',
+  ].join('\n'));
+  const rgp = runMing(['check', gatePro]);
+  check('v59.7:requires 完整且当前路径可证 → 采用 ensures,依赖它才可证伪 → M3042(反例 a = 5)',
+    rgp.code === 1 && (rgp.stderr ?? '').includes('M3042') && (rgp.stderr ?? '').includes('(反例:a = 5)'),
+    'code=' + rgp.code + ' stderr=' + (rgp.stderr ?? '').slice(0, 260));
+
+  // (d) 传递门控:g 的 post 依赖 h,而 h.requires(a >= 5) 在 g 的 requires(a >= 0) 下不可证
+  //     → g.post 未证 → 摘要 ensures 不采用 → f 静默(不假设未证明前提的传递链)
+  const transGate = mk('gate_transitive.ming', [
+    'fn h(a: i64) -> i64 requires a >= 5 ensures (result == a + 1) { return a + 1; }',
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { let r = h(a); return r + 1; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 4) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rtg = runMing(['check', transGate]);
+  check('v59.7:传递门控(h.requires 在 g 内不可证 → g.ensures 未证 → f 不假设)静默',
+    silent(rtg), 'code=' + rtg.code + ' stderr=' + (rtg.stderr ?? '').slice(0, 300));
+
+  // ---- v59.8:递归/互递归 noSummary → 不假设,静默 ----
+  // f/fr 的 ensures 若错误地假设了 g/p 的 ensures 反而会被"证伪"(a + 9 ≠ a + 3)→ 静默即证明未假设
+  const recSummary = mk('rec_summary.ming', [
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { if a == 0 { return 2; } return g(a - 1) + 1; }',
+    'fn p(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { if a == 0 { return 1; } return q(a - 1) + 1; }',
+    'fn q(a: i64) -> i64 requires a >= 0 ensures (result == a + 2) { if a == 0 { return 2; } return p(a - 1) + 1; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == a + 9) { let r = g(a); return r + 1; }',
+    'fn fr(a: i64) -> i64 requires a >= 0 ensures (result == a + 9) { let r = p(a); return r + 1; }',
+    'fn main() with io { print(str(f(1)) + str(fr(1))); }',
+    '',
+  ].join('\n'));
+  const rrs = runMing(['check', recSummary]);
+  check('v59.8:递归(g)/互递归(p↔q)noSummary → 不假设其 ensures;依赖它的调用方静默',
+    silent(rrs), 'code=' + rrs.code + ' stderr=' + (rrs.stderr ?? '').slice(0, 300));
+
+  // ---- v59.9:无摘要/无 ensures 的调用结果变量 unknown(不得凭空假设)----
+  const unknownRes = mk('unknown_result.ming', [
+    'fn g(a: i64) -> i64 requires a >= 0 { return a * 2; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result > a) { let r = g(a); return r; }',
+    'fn f2(a: i64) -> i64 requires a >= 0 ensures (result == a + 100) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(1)) + str(f2(1))); }',
+    '',
+  ].join('\n'));
+  const rur = runMing(['check', unknownRes]);
+  check('v59.9:被调无 ensures → 结果变量 unknown,依赖它的 ensures 静默(不误报)',
+    silent(rur), 'code=' + rur.code + ' stderr=' + (rur.stderr ?? '').slice(0, 300));
+
+  // ---- v59.10:既有 M3042 单函数行为逐字不变(§43/§45 形态)----
+  const legacy = mk('legacy_m3042.ming', [
+    'fn f(a: i64) -> i64 requires a > 0 ensures result == a + 2 {',
+    '    return a + 1;',
+    '}',
+    'fn main() with io { print(str(f(3))); }',
+    '',
+  ].join('\n'));
+  const rleg = runMing(['check', legacy]);
+  check('v59.10:既有 M3042 逐字不变(§43 形态:码名 + 消息 + 反例 a = 1 + hint)',
+    rleg.code === 1
+    && (rleg.stderr ?? '').includes('error M3042[ensures-statically-false]: 函数 "f" 的 ensures 可静态证伪(反例:a = 1)')
+    && (rleg.stderr ?? '').includes('hint: 修正确保表达式或函数体;该错误在运行时本会以 M4015 出现。'),
+    'code=' + rleg.code + ' stderr=' + (rleg.stderr ?? '').slice(0, 260));
+
+  const legacyNoReq = mk('legacy_noreq.ming', [
+    'fn f(a: i64) -> i64 ensures result > a else "结果必须大于输入" { return a; }',
+    'fn main() with io { print(str(f(3))); }',
+    '',
+  ].join('\n'));
+  const rln = runMing(['check', legacyNoReq]);
+  check('v59.10:无 requires 的单函数 M3042 逐字不变(§45 形态:反例 a = 0 + else 消息)',
+    rln.code === 1
+    && (rln.stderr ?? '').includes('error M3042[ensures-statically-false]: 函数 "f" 的 ensures 可静态证伪(反例:a = 0);结果必须大于输入'),
+    'code=' + rln.code + ' stderr=' + (rln.stderr ?? '').slice(0, 260));
+
+  // ---- v59.11:多调用结果符号独立性(两次 g 调用各自后置)----
+  const twoCalls = mk('two_calls.ming', [
+    'fn g(a: i64) -> i64 requires a >= 0 ensures (result == a + 1) { return a + 1; }',
+    'fn f(a: i64) -> i64 requires a >= 0 ensures (result == 0) { let r = g(a); let s = g(a + 1); return r - s; }',
+    'fn fok(a: i64) -> i64 requires a >= 0 ensures (result == 0 - 1) { let r = g(a); let s = g(a + 1); return r - s; }',
+    'fn main() with io { print(str(f(1)) + str(fok(1))); }',
+    '',
+  ].join('\n'));
+  const rtc = runMing(['check', twoCalls]);
+  check('v59.11:两次调用各自独立符号(r - s = -1);共享符号会误证 result == 0 → 必须报 M3042(反例 a = 0)',
+    rtc.code === 1 && (rtc.stderr ?? '').includes('M3042') && (rtc.stderr ?? '').includes('(反例:a = 0)')
+    && !(rtc.stderr ?? '').includes('"fok"'),
+    'code=' + rtc.code + ' stderr=' + (rtc.stderr ?? '').slice(0, 300));
+
+  // ---- v59.13:直线体判定(B1)——控制流分支不得被"穿透" ----
+  // 旧 walkLinearBody 的 descend 白名单把 ExprStmt 包裹的 If/Match/BlockExpr 当纯表达式跳过,
+  // 后续语句被误认为直线路径 → 摘要采用分支内已改写的旧形参值 / 误报 M3041/M3042/M3045。
+  const b1If = mk('b1_if_return.ming', [
+    'fn f(x: i64) -> i64 requires x >= 0 ensures (result == x) { if x >= 0 { return x; } return -1; }',
+    'fn main() with io { print(str(f(1))); }',
+    '',
+  ].join('\n'));
+  const rb1If = runMing(['check', b1If]);
+  check('v59.13:B1 if 分支返回不再被穿透(HEAD 误报 M3042 → 静默)',
+    silent(rb1If), 'code=' + rb1If.code + ' stderr=' + (rb1If.stderr ?? '').slice(0, 300));
+
+  const b1Assign = mk('b1_match_block.ming', [
+    'fn limit(a: i64) -> i64 requires a > 50 { return a; }',
+    'fn m(mut x: i64) -> i64 requires x == 0 { match x { _ => { x = 100; } } return limit(x); }',
+    'fn b(mut x: i64) -> i64 requires x == 0 { { x = 100; } return limit(x); }',
+    'fn main() with io { print(str(m(0)) + str(b(0))); }',
+    '',
+  ].join('\n'));
+  const rb1As = runMing(['check', b1Assign]);
+  check('v59.13:B1 match/裸块赋值后停止直线分析(HEAD 误报 M3041 → 静默)',
+    silent(rb1As), 'code=' + rb1As.code + ' stderr=' + (rb1As.stderr ?? '').slice(0, 300));
+
+  const b1Bogus = mk('b1_bogus_summary.ming', [
+    'fn g(mut a: i64) -> i64 requires a == 0 ensures (result == a + 5) { if a == 0 { a = 10; return 15; } return 5; }',
+    'fn caller(x: i64) -> i64 requires x == 0 ensures (result == x + 15) { return g(x); }',
+    'fn main() with io { print(str(caller(0))); }',
+    '',
+  ].join('\n'));
+  const rb1Bogus = runMing(['check', b1Bogus]);
+  check('v59.13:B1 分支内形参重赋值后摘要不得采用(调用方正确程序必须静默;HEAD 误报 M3042)',
+    silent(rb1Bogus), 'code=' + rb1Bogus.code + ' stderr=' + (rb1Bogus.stderr ?? '').slice(0, 300));
+
+  const b1Idx = mk('b1_index_branch.ming', [
+    'fn f(buf: Vec[i64], mut i: i64) -> i64 requires (i == 5 && buf.len() == 5) { if i == 5 { i = 0; } return buf[i]; }',
+    'fn main() with io { print(str(f([1, 2, 3, 4, 5], 5))); }',
+    '',
+  ].join('\n'));
+  const rb1Idx = runMing(['check', b1Idx]);
+  check('v59.13:B1 索引遍历同源修复(if 分支内赋值后 buf[i] 不再误报 M3045;HEAD 复现)',
+    silent(rb1Idx) && !(rb1Idx.stderr ?? '').includes('M3045'), 'code=' + rb1Idx.code + ' stderr=' + (rb1Idx.stderr ?? '').slice(0, 300));
+
+  // ---- v59.14:短路 &&/|| 的右侧不得当作无条件调用点(B2)----
+  const b2 = mk('b2_short_circuit.ming', [
+    'fn limit(a: i64) -> i64 requires a > 0 { return a; }',
+    'fn f1(x: i64) -> i64 requires x <= 0 { let _b = (x > 100) && (limit(x) > 0); return 0; }',
+    'fn f2(x: i64) -> i64 requires x <= 0 { let _b = false && (limit(x) > 0); return 0; }',
+    'fn f3(x: i64) -> i64 requires x <= 0 { let _b = (x <= 0) || (limit(x) > 0); return 0; }',
+    'fn main() with io { print(str(f1(0)) + str(f2(0)) + str(f3(0))); }',
+    '',
+  ].join('\n'));
+  const rb2 = runMing(['check', b2]);
+  check('v59.14:B2 &&/|| 右侧条件求值不收集(guard 恒假/恒真 → 静默,HEAD 误报 M3041)',
+    silent(rb2), 'code=' + rb2.code + ' stderr=' + (rb2.stderr ?? '').slice(0, 300));
+
+  const b2Left = mk('b2_left_call.ming', [
+    'fn limit(a: i64) -> i64 requires a > 0 { return a; }',
+    'fn f(x: i64) -> i64 requires x <= 0 { let _b = (limit(x) > 0) && true; return 0; }',
+    'fn main() with io { print(str(f(0))); }',
+    '',
+  ].join('\n'));
+  const rb2L = runMing(['check', b2Left]);
+  check('v59.14:B2 左侧必求值调用仍能报 M3041(不因短路修复漏报)',
+    rb2L.code === 1 && (rb2L.stderr ?? '').includes('M3041') && (rb2L.stderr ?? '').includes('(反例:a = -2)'),
+    'code=' + rb2L.code + ' stderr=' + (rb2L.stderr ?? '').slice(0, 300));
+
+  // ---- v59.15:反例必须满足调用方 requires(B3)----
+  const b3 = mk('b3_cex_context.ming', [
+    'fn limit(a: i64) -> i64 requires a == 5 { return a; }',
+    'fn caller(x: i64) -> i64 requires x == 10 { return limit(x); }',
+    'fn main() with io { print(str(caller(10))); }',
+    '',
+  ].join('\n'));
+  const rb3 = runMing(['check', b3]);
+  check('v59.15:B3 反例落在调用方合法输入集(x == 10 → 反例 a = 10,不再是不可达的 a = -2)',
+    rb3.code === 1 && (rb3.stderr ?? '').includes('M3041') && (rb3.stderr ?? '').includes('(反例:a = 10)')
+    && !(rb3.stderr ?? '').includes('a = -2'),
+    'code=' + rb3.code + ' stderr=' + (rb3.stderr ?? '').slice(0, 300));
+
+  const b3c = mk('b3_cex_const.ming', [
+    'fn limit(a: i64) -> i64 requires a == 5 { return a; }',
+    'fn caller() -> i64 requires true { let y = 0 - 5; return limit(y); }',
+    'fn main() with io { print(str(caller())); }',
+    '',
+  ].join('\n'));
+  const rb3c = runMing(['check', b3c]);
+  check('v59.15:B3 常量实参直接报常量值(let y = 0 - 5 → 反例 a = -5,不是枚举小值 a = -2)',
+    rb3c.code === 1 && (rb3c.stderr ?? '').includes('M3041') && (rb3c.stderr ?? '').includes('(反例:a = -5)'),
+    'code=' + rb3c.code + ' stderr=' + (rb3c.stderr ?? '').slice(0, 300));
+
+  // ---- v59.16:复合赋值线性转移(M6)----
+  const m6Branch = mk('m6_branch.ming', [
+    'fn f(mut x: i64) -> i64 requires x == 3 ensures (result == 5) { if x >= 0 { x += 2; } return x; }',
+    'fn main() with io { print(str(f(3))); }',
+    '',
+  ].join('\n'));
+  const rm6b = runMing(['check', m6Branch]);
+  check('v59.16:M6 分支内 x += 2 不得被当作未执行(HEAD 误报 M3042 → 静默)',
+    silent(rm6b), 'code=' + rm6b.code + ' stderr=' + (rm6b.stderr ?? '').slice(0, 300));
+
+  const m6Lin = mk('m6_linear.ming', [
+    'fn good(mut x: i64) -> i64 requires x == 3 ensures (result == 5) { x += 2; return x; }',
+    'fn plus(mut x: i64) -> i64 requires x == 3 ensures (result == 2) { x -= 2; x *= 2; return x; }',
+    'fn bad(mut x: i64) -> i64 requires x == 2 ensures (result == 5) { x += 2; return x; }',
+    'fn main() with io { print(str(good(3)) + str(plus(3)) + str(bad(2))); }',
+    '',
+  ].join('\n'));
+  const rm6l = runMing(['check', m6Lin]);
+  check('v59.16:M6 直线复合赋值线性转移(+= -= *= 常量:good/plus 静默;bad 必须 M3042 反例 x = 2)',
+    rm6l.code === 1 && (rm6l.stderr ?? '').includes('M3042') && (rm6l.stderr ?? '').includes('(反例:x = 2)')
+    && !(rm6l.stderr ?? '').includes('"good"') && !(rm6l.stderr ?? '').includes('"plus"'),
+    'code=' + rm6l.code + ' stderr=' + (rm6l.stderr ?? '').slice(0, 300));
+
+  // ---- v59.12:--proof-report 契约摘要(additive;文本逐函数一行 + JSON summaries 数组)----
+  // 链式语料:每个函数被调用点的 requires 都可证满足(h→g→f→main),ensures 均已证。
+  const rsText = runMing(['check', chainOk, '--proof-report']);
+  const lineOf = (fn) => (rsText.stdout ?? '').split('\n').find((l) => l.includes(`:${fn}: 契约摘要`)) ?? '';
+  check('v59.12:--proof-report 文本契约摘要(每函数一行,链式调用点 1 可证)',
+    rsText.code === 0
+    && lineOf('h').endsWith(': 契约摘要 requires=完整 ensures=已证 调用点=1 可证, 0 违反')
+    && lineOf('g').endsWith(': 契约摘要 requires=完整 ensures=已证 调用点=1 可证, 0 违反')
+    && lineOf('f').endsWith(': 契约摘要 requires=完整 ensures=已证 调用点=1 可证, 0 违反'),
+    'stdout=' + JSON.stringify((rsText.stdout ?? '').slice(0, 400)));
+  const rsJson = JSON.parse(runMing(['check', chainOk, '--json', '--proof-report']).stdout);
+  const sumOf = (j, fn) => j.proofs?.summaries?.find((s) => s.fn === fn);
+  check('v59.12:--json --proof-report 增加 summaries[{file,fn,requires_present,requires_complete,ensures_present,ensures_proven,calls_proven,calls_violated}]',
+    Array.isArray(rsJson.proofs?.summaries)
+    && ['h', 'g', 'f'].every((fn) => {
+      const s = sumOf(rsJson, fn);
+      return s && s.requires_present === true && s.requires_complete === true
+        && s.ensures_present === true && s.ensures_proven === true && s.calls_proven === 1 && s.calls_violated === 0
+        && JSON.stringify(Object.keys(s)) === JSON.stringify(['file', 'fn', 'requires_present', 'requires_complete', 'ensures_present', 'ensures_proven', 'calls_proven', 'calls_violated']);
+    }),
+    JSON.stringify(rsJson.proofs?.summaries ?? null).slice(0, 400));
+
+  // 可证违反语料:被调 g.requires 被调用点可证违反 → summaries.calls_violated=1;
+  // 调用方 f 的 ensures 因调用后置未采用而未证。
+  const repViol = mk('report_violation.ming', [
+    'fn g(a: i64) -> i64 requires a >= 5 ensures (result == a + 1) { return a + 1; }',
+    'fn f(a: i64) -> i64 requires a <= 3 ensures (result == a + 2) { let r = g(a); return r + 1; }',
+    'fn main() with io { print(str(f(0))); }',
+    '',
+  ].join('\n'));
+  const rvJson = JSON.parse(runMing(['check', repViol, '--json', '--proof-report']).stdout);
+  const sg = sumOf(rvJson, 'g'), sf = sumOf(rvJson, 'f');
+  check('v59.12:违反语料 summaries.calls_violated=1(被调 requires 可证违反);调用方 ensures 未证',
+    sg && sg.calls_violated === 1 && sg.calls_proven === 0 && sg.requires_complete === true && sg.ensures_proven === true
+    && sf && sf.calls_violated === 0 && sf.calls_proven === 1 && sf.ensures_proven === false,
+    JSON.stringify([sg, sf]));
+
+  // 状态三态:requires 含不可编码叶 → 不完整;循环/未证 ensures → 未证;无契约纯函数 → 无/无
+  const repStates = mk('report_states.ming', [
+    'fn none(a: i64) -> i64 { return a + 1; }',
+    'fn inc(a: i64) -> i64 requires a % 2 == 0 ensures (result == a + 2) { if a == 0 { return 2; } return inc(a - 2) + 2; }',
+    'fn main() with io { print(str(none(1)) + str(inc(0))); }',
+    '',
+  ].join('\n'));
+  const rstat = runMing(['check', repStates, '--proof-report']);
+  const statLine = (fn) => (rstat.stdout ?? '').split('\n').find((l) => l.includes(`:${fn}: 契约摘要`)) ?? '';
+  check('v59.12:摘要状态三态(无契约 → 无/无;requires 不可编码 → 不完整;环 ensures → 未证)',
+    rstat.code === 0
+    && statLine('none').endsWith(': 契约摘要 requires=无 ensures=无 调用点=0 可证, 0 违反')
+    && statLine('inc').endsWith(': 契约摘要 requires=不完整 ensures=未证 调用点=1 可证, 0 违反'),
+    'stdout=' + JSON.stringify((rstat.stdout ?? '').slice(0, 400)));
+
+  // M5(v0.55.0 审查):无契约函数 JSON 必须给出 requires_present/ensures_present=false,
+  // 消费者不能仅凭 ensures_proven=true(无 ensures = 空后置条件)误判"已证 ensures"。
+  const rstatJson = JSON.parse(runMing(['check', repStates, '--json', '--proof-report']).stdout);
+  const snone = sumOf(rstatJson, 'none'), sinc = sumOf(rstatJson, 'inc');
+  check('v59.12:JSON summaries 新增 requires_present/ensures_present(无契约 → false,不与 ensures_proven=true 混淆)',
+    snone && snone.requires_present === false && snone.requires_complete === true && snone.ensures_present === false
+    && sinc && sinc.requires_present === true && sinc.requires_complete === false && sinc.ensures_present === true,
+    JSON.stringify([snone, sinc]));
+
+  // 无旗标:JSON 无 proofs/summaries 键,文本 check 无摘要行(纯 additive)
+  const rsPlain = runMing(['check', chainOk]);
+  const rsPlainJson = JSON.parse(runMing(['check', chainOk, '--json']).stdout);
+  check('v59.12:无旗标无摘要输出(文本空 + JSON 无 proofs/summaries 键)',
+    rsPlain.code === 0 && rsPlain.stdout === '' && !('proofs' in rsPlainJson) && !('summaries' in rsPlainJson),
+    'stdout=' + JSON.stringify(rsPlain.stdout) + ' keys=' + JSON.stringify(Object.keys(rsPlainJson)));
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

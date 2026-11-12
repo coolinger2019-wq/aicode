@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.54.0';
+export const VERSION = '0.55.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
@@ -348,22 +348,34 @@ function cmdCheck(files, flags) {
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     printDiags(diags, false);
-    if (proofs) printProofs(proofs);
+    if (proofs) printProofs(proofs, checked);
   }
   for (const why of strictReasons) process.stderr.write(`strict-wasm: ${why}\n`);
   if (wasmFallback) return 2;
   return allOk ? 0 : 1;
 }
 
-function printProofs(proofs) {
+function printProofs(proofs, checked) {
   for (const fn of proofs.functions) {
     process.stdout.write(`${fn.file}:${fn.fn}: 义务 ${fn.total},proven ${fn.proven},violated ${fn.violated},unproven ${fn.unproven}\n`);
+  }
+  // v0.55 阶段 3:契约摘要行(additive;仅 --proof-report)。requires=无 只在没有
+  // requires 子句时出现;有子句但含不可线性编码叶子 → 不完整;ensures 同理。
+  for (const r of checked ?? []) {
+    for (const s of r.summaries ?? []) {
+      const req = !s.requires_present ? '无' : s.requires_complete ? '完整' : '不完整';
+      const ens = !s.ensures_present ? '无' : s.ensures_proven ? '已证' : '未证';
+      process.stdout.write(`${s.file}:${s.fn}: 契约摘要 requires=${req} ensures=${ens} 调用点=${s.calls_proven} 可证, ${s.calls_violated} 违反\n`);
+    }
   }
 }
 
 // v0.52 --proof-report:聚合 checker 的逐义务证明记录(有 Vec 索引义务的函数;零义务语料为空)。
+// v0.55:同份报告 additive 增加契约摘要(summaries)——数据来自 checker 阶段 1/2 已建立的摘要表
+// 与调用点统计,不重复计算;无旗标时不构造、不输出。
 function collectProofs(checked) {
   const functions = [];
+  const summaries = [];
   const summary = { functions: 0, obligations: 0, proven: 0, violated: 0, unproven: 0 };
   for (const r of checked) {
     for (const rec of r.proofs ?? []) {
@@ -374,8 +386,19 @@ function collectProofs(checked) {
       summary.violated += rec.violated;
       summary.unproven += rec.unproven;
     }
+    for (const s of r.summaries ?? []) {
+      summaries.push({
+        file: s.file, fn: s.fn,
+        requires_present: s.requires_present,
+        requires_complete: s.requires_complete,
+        ensures_present: s.ensures_present,
+        ensures_proven: s.ensures_proven,
+        calls_proven: s.calls_proven,
+        calls_violated: s.calls_violated,
+      });
+    }
   }
-  return { summary, functions };
+  return { summary, functions, summaries };
 }
 
 // ---------- test ----------

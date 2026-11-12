@@ -1,4 +1,4 @@
-# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.54.0)
+# Ming 稳定诊断码表(v0.15.0 起;维护至 v0.55.0)
 
 诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27-v0.30 无新增码(错误链复用既有码面,新增可选字段)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。
@@ -111,8 +111,8 @@
 | M4015 | contract-violation | v0.45:契约违反(requires/ensures),退出码 101 |
 | M4016 | native-only-feature | v0.54:tree/VM 执行 `std.mem.alloc/free` 或指针读写(`p.load/store/offset`;经 `std.mem.alloc` 取得的 Ptr 在 alloc 处即拒绝,extern Ptr 在 JS 桩体处拒绝)时 panic;消息"unsafe 指针操作仅在 C 原生后端可用",退出码 101,三路(tree / VM / wasm 回落 VM)首行逐字一致。C 原生后端由 C5(v0.54)兑现:Ptr[mut u8]/Ptr[u8] → `unsigned char*`/`const unsigned char*`;C5 资格旗标 `opts.unsafe` 仅在 `ming cc` 路径放行,wasm 保持严格拒绝 |
 | M3040 | invariant-field-protected | 带 invariant 的 struct 字段只能在自身 impl 方法内修改(v0.46) |
-| M3041 | contract-violated-at-call | 调用点静态契约违反:整数字面量实参代入 requires 可判定为假(含反例)(v0.46) |
-| M3042 | ensures-statically-false | ensures 直线体符号执行可静态证伪(含反例)(v0.48,QF_LIA 第一片) |
+| M3041 | contract-violated-at-call | 调用点静态契约违反:整数字面量实参代入 requires 可判定为假;或实参可线性化(当前函数的参数/局部线性形式;被调须全 i64 形参、非泛型、非 extern)时,代入被调 requires 的违反条件在当前 requires 假设下可证(含被调参数小值反例);不可证/不可编码静默(v0.46;线性实参扩展 v0.55) |
+| M3042 | ensures-statically-false | ensures 直线体符号执行可静态证伪(含反例);v0.55 起假设集 = 本函数 requires + 已验证调用后置条件(纯函数 + 全 i64 + 直线体 + 无环调用图;被调 requires 完整且当前路径可证才采用其 ensures,反例须满足假设集;未证明前置条件的调用结果按 unknown 静默)(v0.48 QF_LIA 第一片;v0.55 跨函数扩展) |
 | M3043 | contract-not-pure | 契约表达式必须是纯表达式:requires/ensures/invariant 中调用 mut 方法(Vec/Map 原地方法或 mut self 方法)(v0.51) |
 | M3044 | invalid-map-key | Map 键类型必须是 int/float/bool/str(Vec/struct/enum 键无值语义相等)(v0.51.4) |
 | M3045 | index-bounds-violated | 静态边界证明(QF_LIA 第二片):在 requires 线性边界 + 直线体下,Vec 索引义务(`0 <= i` 或 `i < len$buf`,len$x 为非 mut `Vec[i64]` 参数的长度符号)被可证违反——所有满足 requires 的调用都会 M4003 panic;含小值反例(i64 参数 ∈ {-2..2}、len$x ∈ 0..8 确定性枚举;反例满足完整 requires——按被跳过但可求值的 requires 叶子过滤,无候选则不给反例)。未证明不报告;requires 自相矛盾(负环)整函数跳过;不改运行时语义(v0.52) |

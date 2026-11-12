@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.54.0**（下一阶段 v0.55 见 §4.2;契约阶段 2 + QF_LIA 第一/二片已交付；v0.53 可信构建基线:CI 矩阵、strict-wasm 三态、构建键修复、env -i 验收、C `str` for-in 码点迭代；**v0.54 `with unsafe` 最小实现(C5)已交付(2026-11-12)**；测试 652 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.55.0**（v0.52–v0.55 路线已全部交付；v0.53 可信构建基线:CI 矩阵、strict-wasm 三态、构建键修复、env -i 验收、C `str` for-in 码点迭代；v0.54 `with unsafe` 最小实现(C5)；**v0.55 跨函数契约摘要已交付(2026-11-12)**；测试 694 项全绿）。
 
 ---
 
@@ -14,8 +14,8 @@
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 |
-| 质量护栏 | 回归全绿（v0.54.0 起 652 项，§58 为 v0.54 `with unsafe`/C5 + 独立审查：20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明 0 误报 + 反例独立求值器验证）+ bench（cc 腿） |
-| 能力矩阵 | 50 行口径 ≈81%（docs/capabilities.md；v0.54 审计后重算） |
+| 质量护栏 | 回归全绿（v0.55.0 起 694 项，§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明模式 1/2 + **v0.55 summaries 模式** 300 例 0 误报/0 假反例）+ bench（cc 腿） |
+| 能力矩阵 | 51 行口径 ≈81%（docs/capabilities.md；v0.55 审计后重算，新增契约/证明行） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -90,6 +90,8 @@
 - 交付：checker 符号执行 + 诊断码 M3042 三处登记 + §43 测试 + 文档。
 
 ## 4.2 v0.52+ 路线(software-architect 规划,2026-11-11)
+
+> **状态(2026-11-12):v0.52–v0.55 路线已全部交付**(v0.52 QF_LIA 第二片 / v0.53 可信构建与跨平台验证基线 / v0.54 `with unsafe` C5 / v0.55 跨函数契约摘要)。本节已无待办计划任务;下一步方向见 §4.2.8 Backlog(v0.56+)与 §5.1 已知缺陷 #23–#30。
 
 > 基线:v0.51.5,534 项测试全绿,四后端差分 0 分歧;§5.1 的 16 项审查缺陷已清零。
 > 总原则:**先装安全带,再讲解开安全带的规则**——验证基础设施先于危险能力;一版一个语义面;
@@ -175,21 +177,23 @@
 **v0.54.0 独立审查修复(2026-11-12,§58 v58.15–v58.20)**:B1 `UnsafeBlock` 接入控制流分析(`stmtTerminates`/`hasBreak`;块内 return 为最后语句不再误报 M3017;`loop { unsafe { break; } }` 类型为 unit,装 i64/Ptr → M3002);B2 C 后端 unsafe 块发射独立 C 作用域(遮蔽写法 cc 输出 2/1 与 VM 一致);B3 M3046 覆盖容器/构造器载荷逃逸(`typeContainsPtr` 递归:Vec/Map/Option/Result/元组/结构体字段/枚举载荷;泛型调用点按实参类型判定,泛型体内擦除跳过);B4 unsafe 块内闭包函数类型携带 `unsafe` 效果(赋给纯函数类型 → M3029,块内直接调用允许);B5 #27 修复(`use std.x [as y]` 短名在字节码编译器可解析;compileNamedValue 读 imports → `__stdmod:<真实模块名>`;编译器未解析名 → 带 file:line:col 的 M4001 诊断)。M1 Ptr 方法防御 M4016;M4 固定非 unsafe 程序 C 渲染指纹逐字节回归;M6 示例比较退出码 + stderr 首行。新登记 #28/#29/#30 见 §5.1。**验收实测**:`node tests/run.mjs` **652 项 0 失败**;`fuzz --seed 44044 --count 25` 0 分歧(一致 25,其中 C 腿 7);`proof_fuzz --count 100` 0 误报(反例验证 18/18);`cc examples/unsafe_demo.ming` 输出 `65/66/false`;tree/VM/wasm 回落 M4016 首行逐字一致(exit 101);B1 三例/B2 遮蔽 2/1/B3 块外 7×M3046 与块内 0/B4 M3029 反例/B5 `use std.mem` 三路与 `use std.math` 5.0 均实测。
 **风险/回退**:悬垂/越界解引用是进程级 UB,Ming 不捕获(GUIDE §14.1 诚实声明);v1 限定 u8、禁止算术/打印;特性 effect-gated,可整体回退。
 
-### 4.2.6 v0.55 — QF_LIA 第三片:跨函数契约摘要
+### 4.2.6 v0.55 — QF_LIA 第三片:跨函数契约摘要 ✅(2026-11-12 完成)
 
 **目标**:用"直线体 + 线性契约"的函数摘要,让调用链上的 ensures 可证明;绝不假设未证明的前置条件。
 
 **范围**:i64 参数/返回、纯函数、直线体、无环调用图、单条 requires/ensures、摘要代入、调用点前置条件证明。
 **不做**:循环/分支、递归/互递归、高阶函数、效果函数、堆/别名、通用 SMT、运行时语义变更。
 
-**任务**:
-1. 摘要引擎(prover.js):调用图拓扑序;DFS 检测环,递归函数标记"无摘要";摘要 = {requires 声明, ensures 仅在已证明时作为后置条件}。
-2. 调用点前置条件:实参线性形式代入被调 requires,用当前假设证明;可证违反 → M3041 + 反例;无法证明 → 放弃该路径,不得假设被调 ensures。
-3. 调用后置条件:调用成功后 `result` 绑定为新符号变量,加入被调 ensures 作为假设;未知/无摘要调用使相关表达式 unknown。
-4. 调用方 ensures 证明:扩展 M3042 直线体遍历,使用"变量形式 + 差分约束假设集";可证假 → M3042 + 反例;不可判定静默,运行时 M4015 保留。不新增诊断码。
-5. 测试 §59(≥10):f→g→h 链式 ensures;调用点违反 g.requires → M3041;g.requires 未证明时调用方 ensures 不得误判;递归/互递归/循环/分支静默;高阶/效果函数跳过;§43/§54 全绿;`proof_fuzz --mode summaries` 300 例。
+**任务**(全部完成,2026-11-12 收口):
+1. ✅ 摘要引擎(prover.js):`computeSummaries` 调用图 Tarjan SCC 环检测 + 被调方优先拓扑序;递归/互递归标记 `noSummary`;摘要 = {requires 声明, ensures 仅在已证明时作为后置条件};requires 不完整/环上 → ensures 一律不采用。
+2. ✅ 调用点前置条件:实参线性形式代入被调 requires,用当前函数 requires 假设证明;可证违反 → M3041 + 反例;无法证明 → 放弃该路径,不得假设被调 ensures;字面量 M3041 路径逐字不变。
+3. ✅ 调用后置条件:调用成功后 `result` 绑定每次调用独有的 `res$N` 符号,加入被调已证 ensures 作为假设;未知/无摘要/前置未证的调用使相关表达式 unknown。
+4. ✅ 调用方 ensures 证明:M3042 直线体遍历使用"变量形式 + 差分约束假设集(requires + 已证调用后置)";可证假 → M3042 + 反例(须满足假设集);不可判定静默,运行时 M4015 保留;不新增诊断码。
+5. ✅ 测试 §59(42 项 ≥10):f→g→h 链式 ensures;调用点违反 g.requires → M3041;g.requires 未证明时调用方 ensures 不得误判;递归/互递归/循环/分支/高阶/效果函数静默;§43/§54/§56 全绿;`proof_fuzz --mode summaries --count 300` 可证 150 / 违反 75 / 静默 50 / 易误报 25 / 误报 0(反例独立验证 75/75)。
+6. ✅ 收口报告面:check `--proof-report` 文本为每个可摘要函数新增契约摘要行(`requires=<完整|不完整|无> ensures=<已证|未证|无> 调用点=<N 可证, M 违反>`);`--json --proof-report` 的 `proofs` 增加 additive `summaries: [{file, fn, requires_present, requires_complete, ensures_present, ensures_proven, calls_proven, calls_violated}]`;无旗标输出与 v0.54.0 逐字一致;数据复用 checker 摘要表与调用点统计。
 
-**验收**:run.mjs;proof_fuzz 300 例 0 误报/0 假反例;fuzz 0 分歧;check --proof-report 链式 proven;check 语料 ≤1.25x v0.52 基线;codegen 零 diff。
+**验收(2026-11-12 实测)**:`node tests/run.mjs` **694 项 0 失败**(§59 42 项);`proof_fuzz --mode summaries --count 300` 可证 150 / 违反 75 / 静默 50 / 易误报 25 / 误报 0,反例独立验证 75/75,退出 0;既有 `proof_fuzz --count 100` 两模式通过;`fuzz --seed 44044 --count 25` 0 分歧;`check <链式语料> --proof-report` 输出链式 proven 摘要;无旗标 JSON 与 HEAD(v0.54.0)逐字一致;compiler/interp/vm/cbackend/artifact 零改动;check 链式语料 10 次 797ms vs HEAD(v0.54) 875ms(同机信息性,无硬阈值)。
+**v0.55.0 独立审查修复(2026-11-12)**:B1 直线体共享判定(`exprIsLinear`/`stmtIsLinear`)——If/Match/BlockExpr/Loop/Lambda 及含 Return/Assign/Break/Continue 的表达式不再被"穿透";`checkEnsuresStatically` 的 walkLinearBody、`buildCallSiteLinear`、v0.52 `checkIndexBoundsStatically` 三处统一,遇非直线语句停止后续线性分析(已收集保持);分支内形参重赋值不再产生错误摘要,if-return/match/裸块赋值后不再误报 M3041/M3042/M3045(§59.13 四项)。B2 短路 `&&`/`||` 只下钻左侧,右侧条件求值不作为无条件调用点(线性路径不再误报;左侧真实调用仍报 M3041;§59.14 两项)。B3 M3041 反例构造加入调用方上下文(枚举调用方形参、过滤调用方 requires/假设、按实参形式计算被调值;常量实参直接报常量值),反例必落在调用方合法输入集(§59.15 两项;§59.2 反例断言同步)。B4 `proof_fuzz --mode summaries` 改为 12 槽分布(6 ok / 2 callsite / 1 ensfalse / 2 静默 / 1 易误报),新增分支返回/分支重赋值/match 重赋值/短路 &&/|| 语料;ok 类用 `--proof-report summaries.ensures_present/ensures_proven` 负控"摘要确实被采用";callsite 增加下界 requires 形态(M7)。M5 JSON `summaries` 新增 `requires_present/ensures_present`(无契约函数不与 ensures_proven=true 混淆)。M6 `+=/-=/*=` i64 常量复合赋值线性转移(其余 op 放弃);§59.16 两例(HEAD 误报静默 + 线性确保 M3042)。N10 `prover.js` 校验注入 `toLinear/computePost` 的 op ∈ {==,<,<=,>,>=},非法视为不可编码。N8/N9 登记为 §5.1 #31/#32(P3,不改代码)。**实测**:`run.mjs` 694/0;summaries 300 例 0 误报;模式 1/2 100 例 0 误报;seed 777 summaries 120 例 0 误报;`fuzz --seed 44044 --count 25` 0 分歧;无旗标 JSON 快照全绿;冻结面零改动。
 **风险/回退**:摘要不健全 → requires 未证明则不采用 ensures 的硬门控 + 拓扑序 + 环检测;出问题退回 v0.52 行为。
 
 ### 4.2.7 诊断码登记
@@ -245,7 +249,7 @@
 | v0.52 | 三态稳定(proven/violated/silent);proof 报告 additive;codegen 零改动 | §54 ≥12;proof fuzz 200 例 0 误报;fuzz 40 程序 0 分歧;无旗标 JSON 快照不变 |
 | v0.53 | strict wasm 无静默回落;`env -i` 可跑;构建键无重复/路径化;C str for-in 三引擎一致;CI workflow 结构静态校验(实际矩阵以 GitHub Actions 记录为准) | §57 ≥10(实测 31);两次 clean build dist_hash 相同;文档数字与实现一致 |
 | v0.54 | C unsafe 黄金通过;tree/VM 确定性 M4016;门禁闭合;无半开状态 | §58 ≥12(实测 20,含独立审查回归);Linux/Windows C 黄金逐字一致(本机 Windows 实测;Linux 由 CI c-backend job 承载);既有 C 差分 0 变化 |
-| v0.55 | 跨函数 ensures 可证;前置条件不被跳过;无新码;codegen 零改动 | §59 ≥10;proof fuzz 300 例 0 误报/0 假反例;check ≤1.25x v0.52 |
+| v0.55 | 跨函数 ensures 可证;前置条件不被跳过;无新码;codegen 零改动 | §59 ≥10(实测 42);proof_fuzz summaries 300 例 0 误报/0 假反例(反例独立验证 75/75;含分支/重赋值/短路与下界 requires 语料);fuzz 25 程序 0 分歧;链式 `--proof-report` 输出 proven 摘要;无旗标 JSON 与 v0.54.0 逐字一致 |
 
 **跨版本共同门槛**:`node tests/run.mjs` 0 失败;`fuzz` 0 分歧;新增分节测试;GUIDE 修订记录 + README 路线图 + plan 已完成项移动;版本三处同步;诊断码三处登记;不留下未提交生成物;性能数字必须来自可复现命令(bench 仍为信息性)。
 
@@ -315,6 +319,13 @@
 | 28 | **tree 引擎块作用域泄漏(if/unsafe 块)**:`let x = 1; if c { let x = 2; }` / `unsafe { let x = 2; }` 之后,块外读到的仍是块内的新值(实测 `let x=1; unsafe { let x=2; print } print` → tree `2/2`,VM `2/1`;HEAD 可复现)——树引擎 execBlock 复用外层 env,块级 let 覆盖了外层绑定;违反"三引擎一致"硬规则。与 #23(for-in 遮蔽泄漏)同属 tree 作用域根因,待统一修复 | P1 | 待修(§4.2.8;本轮 B2 只修 C 后端作用域,v58.17 用 VM/cc 对照锁定,未改 tree) |
 | 29 | **launcher 源码模式 panic 仅裸码无位置**:`dist/ming-app.mjs` 在无 `app.bytecode.json`(源码回退模式)下 panic 时只打印 `M4xxx: 消息`,不含 `file:line:col` 与源码摘录;而直接 `ming run` 的 panic 首行带位置。诊断信息在回退产物中退化 | P3 | 待修(§4.2.8) |
 | 30 | **extern fn 值存局部变量后 C 后端不支持调用**:`let q = f; q(...)`(f 为 extern fn)在 C 后端 let 推导为 null,发射期拒绝/无法调用;直接 `f(...)` 正常。与 v0.54 无关,既有面 | P2 | 待修(§4.2.8) |
+
+### 新登记(2026-11-12,v0.55.0 独立审查;本轮记录,未改代码)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 31 | **多入口共享模块时 `--proof-report` 摘要行/JSON 重复**:同一模块被多个入口加载时,摘要按入口各输出一份(per-entry 语义;文本行重复、JSON `summaries` 数组重复)。仅影响报告可读性,不影响证明结论/诊断;应按绝对路径去重 | P3 | 记录(后续按绝对路径去重,per-entry 语义保留) |
+| 32 | **摘要/调用点遍历对所有 `Checker.run()` 无条件执行**:即使不消费摘要(无 `--proof-report`/无跨函数证明查询)也建立摘要表与调用点上下文;小语料约 1.06x(信息性),大项目/LSP 可做惰性化(按需构建) | P3 | 记录(大项目/LSP 惰性化留待后续) |
 
 
 ## 6. 过程纪律（所有版本适用）
