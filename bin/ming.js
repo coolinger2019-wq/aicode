@@ -18,19 +18,19 @@ import { startRepl } from '../src/repl.js';
 import { compile } from '../src/compiler.js';
 import { serializeArtifact } from '../src/artifact.js';
 import { emitC } from '../src/cbackend.js';
-import { Unsupported } from '../src/wasm.js';
+import { Unsupported, wasmLayerStatus } from '../src/wasm.js';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.52.0';
+export const VERSION = '0.53.0';
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
-  ming run   [file.ming] [--json] [--tree] [--no-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
-  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index]
+  ming run   [file.ming] [--json] [--tree] [--no-wasm] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
+  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]
   ming test  [file.ming...] [--json] [--filter 名称]
   ming build [--json] [--clean-cache] [--with-source] [--no-dist]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
@@ -142,10 +142,22 @@ function loadAndCheck(file, { json, silent = false } = {}) {
   return { ok: errors.length === 0, result, diags };
 }
 
+// ---------- v0.53 阶段1:strict wasm(--strict-wasm / MING_WASM_STRICT=1)----------
+// strict 模式把"静默回落"变成可见失败:eligible>0 但编译/实例化回落 → 退出码 2 并点名原因。
+// 判定本体在 src/wasm.js 的 wasmLayerStatus(纯函数);此处只做旗标仲裁与输出。
+function strictWasmOn(flags) {
+  return flags.has('strict-wasm') || process.env.MING_WASM_STRICT === '1';
+}
+function strictWasmConflict(flags) {
+  return strictWasmOn(flags) && (flags.has('tree') || flags.has('no-wasm'));
+}
+const STRICT_WASM_CONFLICT_MSG = '--strict-wasm 与 --tree/--no-wasm 互斥(strict 模式观测的正是 wasm 分层本身;先去掉 --tree/--no-wasm)';
+
 // ---------- run ----------
 function cmdRun(file, flags, opts, programArgs) {
   const json = flags.has('json');
   if (!file) return fail('run 需要一个 .ming 文件', json);
+  if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
   const c = loadAndCheck(file, { json, silent: true });
   if (!c.ok) {
     if (json) {
@@ -155,6 +167,24 @@ function cmdRun(file, flags, opts, programArgs) {
   }
   const result = c.result;
 
+  // v0.53 strict:先判定 wasm 分层,回落 → 退出码 2(不运行);预编译产物传给 VM 避免双份 compile。
+  // 非 strict 不进入此分支 —— 现状静默回落行为逐字不变。
+  let strictStatus = null;
+  let strictCompiled = null;
+  if (strictWasmOn(flags) && !flags.has('tree')) {
+    strictCompiled = compile(result);
+    strictStatus = wasmLayerStatus(result, strictCompiled);
+    if (strictStatus.status === 'fallback') {
+      const why = strictStatus.reason ?? '未知原因';
+      if (json) {
+        process.stdout.write(JSON.stringify({ ok: false, exit_code: 2, wasm_status: 'fallback', error: why }, null, 2) + '\n');
+      } else {
+        process.stderr.write(`strict-wasm: ${why}\n`);
+      }
+      return 2;
+    }
+  }
+
   const interpOpts = {
     capture: json,
     noWasm: flags.has('no-wasm'),
@@ -162,15 +192,28 @@ function cmdRun(file, flags, opts, programArgs) {
     maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
     maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
   };
+  if (strictStatus) interpOpts.precompiled = strictCompiled;
   const interp = flags.has('tree') ? new Interp(result, interpOpts) : new VMInterp(result, interpOpts);
+  // v0.53 additive:run --json 的 wasm_status(vm 模式;tree 无 wasm 分层,键集保持不变)。
+  // 非 strict 时仅 --json 输出才判定(惰性);strict 时复用运行前的判定(字符串化)。
+  // --no-wasm:wasm 层未参与执行,不输出该字段(否则会被误读为"wasm 已跑过")。
+  let statusCache = strictStatus ? strictStatus.status : null;
+  const wasmStatusField = () => {
+    if (flags.has('tree') || flags.has('no-wasm')) return undefined;
+    if (statusCache === null) statusCache = wasmLayerStatus(result, interp.compiled).status;
+    return statusCache;
+  };
   const t0 = Date.now();
   try {
     const { exitCode } = interp.runMain(programArgs);
     if (json) {
-      process.stdout.write(JSON.stringify({
+      const out = {
         ok: true, engine: flags.has('tree') ? 'tree' : 'vm', wasm: !flags.has('tree') && !flags.has('no-wasm'), exit_code: exitCode, ms: Date.now() - t0,
         stdout: interp.flushCaptured(), stderr: '',
-      }, null, 2) + '\n');
+      };
+      const ws = wasmStatusField();
+      if (ws) out.wasm_status = ws;
+      process.stdout.write(JSON.stringify(out, null, 2) + '\n');
     }
     return exitCode;
   } catch (e) {
@@ -184,11 +227,14 @@ function cmdRun(file, flags, opts, programArgs) {
             stack: (e.cause.stack ?? []).map(f => `at ${f.name} (${f.file}:${f.line}:${f.col})`),
           };
         }
-        process.stdout.write(JSON.stringify({
+        const pout = {
           ok: false, engine: flags.has('tree') ? 'tree' : 'vm', wasm: !flags.has('tree') && !flags.has('no-wasm'), exit_code: 101, ms: Date.now() - t0,
           stdout: interp.flushCaptured(), stderr: '',
           diagnostics: [dj],
-        }, null, 2) + '\n');
+        };
+        const pws = wasmStatusField();
+        if (pws) pout.wasm_status = pws;
+        process.stdout.write(JSON.stringify(pout, null, 2) + '\n');
       } else {
         process.stderr.write(formatDiag(d, process.stderr.isTTY) + '\n');
         if (e.stack.length) {
@@ -210,11 +256,14 @@ function cmdRun(file, flags, opts, programArgs) {
     if (e instanceof RangeError) {
       // JS 栈溢出兜底(深嵌套表达式等),按 M4005 报告而不是内部错误
       if (json) {
-        process.stdout.write(JSON.stringify({
+        const rout = {
           ok: false, engine: flags.has('tree') ? 'tree' : 'vm', wasm: !flags.has('tree') && !flags.has('no-wasm'), exit_code: 101, ms: Date.now() - t0,
           stdout: interp.flushCaptured(), stderr: '',
           diagnostics: [{ code: 'M4005', name: 'stack-overflow', severity: 'error', message: '调用栈过深(递归或嵌套过深)' }],
-        }, null, 2) + '\n');
+        };
+        const rws = wasmStatusField();
+        if (rws) rout.wasm_status = rws;
+        process.stdout.write(JSON.stringify(rout, null, 2) + '\n');
       } else {
         process.stderr.write('M4005[stack-overflow]: 调用栈过深(递归或嵌套过深);提示:改写为循环\n');
       }
@@ -246,6 +295,9 @@ function cmdCheck(files, flags) {
   // 两旗标仅 check 消费;其他命令按既有风格忽略未知旗标(命令只读取自己认识的旗标)。
   const proofReport = flags.has('proof-report');
   const warnUnprovenIndex = flags.has('warn-unproven-index');
+  // v0.53:--strict-wasm 仅在 check 通过后做 wasm 分层存活验证(fallback → 退出码 2);
+  // 与 --tree/--no-wasm 互斥;非 strict 时 check 不编译,JSON 也不带 wasm_status。
+  if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
   if (!files.length) return fail('check 需要至少一个 .ming 文件', json);
   let allOk = true;
   const allDiags = [];
@@ -268,19 +320,45 @@ function cmdCheck(files, flags) {
   // --proof-report:证明摘要(additive;不带旗标时 JSON 与文本输出逐字不变)。
   // 违反诊断(M3045)仍走既有诊断通道,proofs 字段与之共存不冲突。
   const proofs = proofReport ? collectProofs(checked) : null;
+  // v0.53:strict wasm —— check 通过后逐文件验证分层存活;任一 fallback → 退出码 2 并点名原因。
+  // 聚合语义:有 fallback → 'fallback';否则有 ok → 'ok';否则 'none'。仅 strict 时计算与输出。
+  // 审查修复:fallback 不再走独立输出路径——与正常路径共用同一 out 构造(ok/diagnostics/proofs/
+  // wasm_status),否则 --proof-report 的 proofs 与 warnings 会被吞掉;fallback 时 ok:false(与 run 一致)。
+  let wasmAgg = null;
+  let wasmFallback = false;
+  const strictReasons = [];
+  if (strictWasmOn(flags) && allOk) {
+    let anyFallback = false, anyOk = false;
+    for (const r of checked) {
+      const st = wasmLayerStatus(r, compile(r));
+      if (st.status === 'fallback') {
+        anyFallback = true;
+        strictReasons.push(`${r.entry?.file ?? '?'}: ${st.reason ?? '未知原因'}`);
+      }
+      if (st.status === 'ok') anyOk = true;
+    }
+    wasmAgg = anyFallback ? 'fallback' : (anyOk ? 'ok' : 'none');
+    wasmFallback = anyFallback;
+  }
+  // 单一输出出口(正常路径与 strict fallback 共用;文本模式先 printDiags/proofs,再报 strict 原因)
   if (json) {
-    const out = { ok: allOk, diagnostics: diagJson(diags) };
+    const out = { ok: wasmFallback ? false : allOk, diagnostics: diagJson(diags) };
     if (proofs) out.proofs = proofs;
+    if (wasmAgg) out.wasm_status = wasmAgg;
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     printDiags(diags, false);
-    if (proofs) {
-      for (const fn of proofs.functions) {
-        process.stdout.write(`${fn.file}:${fn.fn}: 义务 ${fn.total},proven ${fn.proven},violated ${fn.violated},unproven ${fn.unproven}\n`);
-      }
-    }
+    if (proofs) printProofs(proofs);
   }
+  for (const why of strictReasons) process.stderr.write(`strict-wasm: ${why}\n`);
+  if (wasmFallback) return 2;
   return allOk ? 0 : 1;
+}
+
+function printProofs(proofs) {
+  for (const fn of proofs.functions) {
+    process.stdout.write(`${fn.file}:${fn.fn}: 义务 ${fn.total},proven ${fn.proven},violated ${fn.violated},unproven ${fn.unproven}\n`);
+  }
 }
 
 // v0.52 --proof-report:聚合 checker 的逐义务证明记录(有 Vec 索引义务的函数;零义务语料为空)。
@@ -541,19 +619,24 @@ function hashTree(dir) {
   return createHash('sha256').update(files.join(String.fromCharCode(10))).digest('hex');
 }
 
-// 项目根目录下全部 .ming 与 ming.toml(排除隐藏/dist/.ming-cache/node_modules)
+// 项目根目录下全部 .ming 与 ming.toml(排除隐藏/dist/.ming-cache/node_modules)。
+// v0.53 修复:旧实现目录分支 `out.push(...walk(p))` 把共享闭包数组 push 进自身 ——
+// 嵌套目录条目成倍重复(两层项目 4 文件收出 11 条),且条目只用 basename,
+// 同名不同目录交换内容构建键不变(漏检)。修复:每层返回本次新增条目,
+// 条目 = 项目相对路径(unix 斜杠)+ \0 + 文件内容;调用方拿到排序后的列表。
 function collectProjectSources(root) {
-  const out = [];
-  const walk = (d) => {
+  const walk = (d, prefix) => {
+    const out = [];
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'dist' || e.name === '.ming-cache') continue;
       const p = path.join(d, e.name);
-      if (e.isDirectory()) out.push(...walk(p));
-      else if (e.name.endsWith('.ming') || e.name === 'ming.toml') out.push(path.basename(p) + '\u0000' + fs.readFileSync(p, 'utf8'));
+      const rel = prefix ? prefix + '/' + e.name : e.name;
+      if (e.isDirectory()) out.push(...walk(p, rel));
+      else if (e.name.endsWith('.ming') || e.name === 'ming.toml') out.push(rel + '\u0000' + fs.readFileSync(p, 'utf8'));
     }
     return out;
   };
-  return walk(root).sort();
+  return walk(root, '').sort();
 }
 
 // ---------- tools:自举工具统一入口(v0.50;工具本体仍是 tools/*.ming,Ming 自写) ----------
@@ -667,14 +750,22 @@ function cmdBuild(flags) {
   }
   // v0.49:构建缓存——键 = 规范化哈希(编译器版本 + 项目全部 .ming 源 + ming.toml)
   // 过包含保健全:任何源变化 → 键变化 → 重建;命中 → 跳过 check+compile(dist 已有效)
+  // v0.53:注入 Node 主版本(同内容跨 Node 大版本不再假命中);sources 由修复后的
+  // collectProjectSources 提供(相对路径 + 内容,无重复)
+  const sources = collectProjectSources(projectRoot);
   const buildKey = createHash('sha256').update(JSON.stringify({
-    v: VERSION, manifest: proj.project ?? null, withSource: !!flags.has('with-source'), sources: collectProjectSources(projectRoot),
+    v: VERSION, node: process.versions.node.split('.')[0], manifest: proj.project ?? null, withSource: !!flags.has('with-source'), sources,
   })).digest('hex').slice(0, 32);
   let prevCache = null;
   try { prevCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { prevCache = null; }
   const distIntact = !!prevCache?.distHash && hashTree(distDir) === prevCache.distHash;
   if (!flags.has('no-dist') && !flags.has('clean-cache') && prevCache && prevCache.key === buildKey && distIntact) {
-    if (json) process.stdout.write(JSON.stringify({ ok: true, project: proj.project.name, cache: 'hit', ms: Date.now() - t0 }, null, 2) + '\n');
+    // v0.53 --json additive:build_key/dist_hash/cache_hit/source_count/interface_hashes
+    if (json) process.stdout.write(JSON.stringify({
+      ok: true, project: proj.project.name, cache: 'hit', ms: Date.now() - t0,
+      build_key: buildKey, dist_hash: prevCache.distHash, cache_hit: true,
+      source_count: sources.length, interface_hashes: Array.isArray(prevCache.modules) ? prevCache.modules : [],
+    }, null, 2) + '\n');
     else process.stdout.write('缓存命中(键未变,跳过检查与编译;--clean-cache 清除)\n');
     return 0;
   }
@@ -693,13 +784,13 @@ function cmdBuild(flags) {
   const sorted = sortDiags(diags);
   const hasError = sorted.some(d => d.severity === SEVERITY.ERROR);
   if (hasError) ok = false;
-  if (json) {
-    process.stdout.write(JSON.stringify({
-      ok, project: proj.project.name, version: proj.project.version,
-      entry: proj.project.entry, ms: Date.now() - t0,
-      diagnostics: diagJson(sorted),
-    }, null, 2) + '\n');
-  } else {
+  // v0.53 --json:JSON 块延后到 dist 产出之后打印 —— dist_hash/interface_hashes 需要产物落地;
+  // ms 保持与 HEAD 相同的计时点(检查+诊断,不含产物生成)。文本模式逐字不变。
+  const msElapsed = Date.now() - t0;
+  // v0.53:接口哈希在 check 通过后即可计算(no-dist/构建失败路径也要进 JSON;文本报告仍在 dist 块)
+  const moduleHashes = ok ? checkResult.modules.map(m => ({ file: path.basename(m.file), interfaceHash: moduleIfaceHash(m) })) : [];
+  let distHashOut = null; // dist 产出后由 hashTree 填充;未产 dist(null)进 JSON
+  if (!json) {
     printDiags(sorted, false);
     const errs = sorted.filter(d => d.severity === SEVERITY.ERROR).length;
     const warns = sorted.filter(d => d.severity === SEVERITY.WARNING).length;
@@ -782,20 +873,22 @@ function cmdBuild(flags) {
         fs.copyFileSync(mAbs, dest);
       }
       process.stderr.write(`AOT 不可用:${aotErr};已回退源码模式(产物含明文源)\n`);
-      process.stdout.write('产物:dist/(app.ming 源码模式 + runtime + ming-app.mjs)\n');
+      // --json:人读行改走 stderr,stdout 只留 JSON(可被 JSON.parse 直接消费)
+      (json ? process.stderr : process.stdout).write('产物:dist/(app.ming 源码模式 + runtime + ming-app.mjs)\n');
     } else {
       if (flags.has('with-source')) {
         fs.copyFileSync(files[0], path.join(distDir, 'app.ming'));
-        process.stdout.write('产物:dist/(app.bytecode.json 字节码 + runtime + ming-app.mjs;--with-source 附源码)\n');
+        (json ? process.stderr : process.stdout).write('产物:dist/(app.bytecode.json 字节码 + runtime + ming-app.mjs;--with-source 附源码)\n');
       } else {
-        process.stdout.write('产物:dist/(app.bytecode.json 字节码,无明文源 + runtime + ming-app.mjs;用法:node dist/ming-app.mjs)\n');
+        (json ? process.stderr : process.stdout).write('产物:dist/(app.bytecode.json 字节码,无明文源 + runtime + ming-app.mjs;用法:node dist/ming-app.mjs)\n');
       }
     }
     // v0.49:写构建缓存(键 + 每模块接口哈希)并报告接口变更(ABI 防火墙可观测)
-    const moduleHashes = checkResult.modules.map(m => ({ file: path.basename(m.file), interfaceHash: moduleIfaceHash(m) }));
+    // v0.53:distHash 提取为 distHashOut(--json 的 dist_hash 复用同一值)
+    distHashOut = hashTree(distDir);
     fs.mkdirSync(cacheDir, { recursive: true });
     fs.writeFileSync(cacheFile, JSON.stringify({
-      key: buildKey, builtAt: new Date().toISOString(), compilerVersion: VERSION, distHash: hashTree(distDir), modules: moduleHashes,
+      key: buildKey, builtAt: new Date().toISOString(), compilerVersion: VERSION, distHash: distHashOut, modules: moduleHashes,
     }, null, 1));
     if (prevCache && Array.isArray(prevCache.modules)) {
       const prevByFile = new Map(prevCache.modules.map(x => [x.file, x.interfaceHash]));
@@ -805,6 +898,16 @@ function cmdBuild(flags) {
         process.stdout.write(`接口哈希:未变 ${unchanged.length} 个${changed.length ? ',变更 ' + changed.map(x => x.file).join(', ') : ''}\n`);
       }
     }
+  }
+  // v0.53 --json:块尾打印(既有字段与 HEAD 逐字一致;新增字段全部 additive)
+  if (json) {
+    process.stdout.write(JSON.stringify({
+      ok, project: proj.project.name, version: proj.project.version,
+      entry: proj.project.entry, ms: msElapsed,
+      diagnostics: diagJson(sorted),
+      build_key: buildKey, cache_hit: false, source_count: sources.length,
+      dist_hash: distHashOut, interface_hashes: moduleHashes,
+    }, null, 2) + '\n');
   }
   return ok ? 0 : 1;
 }

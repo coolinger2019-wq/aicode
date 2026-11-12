@@ -20,10 +20,15 @@ function check(name, cond, detail = '') {
 }
 
 function runMing(args, opts = {}) {
+  // v0.53 审查修复:默认剥掉 MING_WASM_STRICT——开发者 shell 导出该变量后整套用例
+  // 会被当成 strict 模式(回落 exit 2)而大面积假失败。需要注入的用例显式传 env。
+  const env = { ...process.env, ...(opts.env ?? {}) };
+  if (!opts.env || !Object.prototype.hasOwnProperty.call(opts.env, 'MING_WASM_STRICT')) delete env.MING_WASM_STRICT;
   const r = spawnSync(process.execPath, [MING, ...args], {
     encoding: 'utf8',
     input: opts.stdin ?? '',
     cwd: opts.cwd ?? ROOT,
+    env,
     timeout: 30000,
   });
   return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -3421,6 +3426,479 @@ fn main() with io, fs {
   check('v52.4:W3105 门控(文件已有 M3002 error → 旗标下只有 M3002、无 W3105)', brtypW.code === 1
     && (brtypW.stderr ?? '').includes('error M3002') && !(brtypW.stderr ?? '').includes('W3105'),
     'code=' + brtypW.code + ' stderr=' + (brtypW.stderr ?? '').slice(0, 240));
+}
+
+// ===================== 57. v0.53:strict wasm 三态 + 构建可信性(collectProjectSources/buildKey/build --json)=====================
+// v0.53 阶段2 追加:env -i launcher 验收(v53.14-16)+ C 后端 str for-in 码点迭代黄金(v53.17-19)
+// v0.53 阶段3 追加:CI workflow 静态结构 + 版本三处一致/修订记录(v53.20-21)
+// v0.53 收口追加:尾表达式函数 wasm 模块有效性回归(v53.22;strict 暴露的既有回落形态)
+// v0.53.0 独立审查修复回归:F 节 v53.23–v53.31(B2 JSON 信息丢失 / M1 no-wasm 字段 /
+// M2 点名函数 / M9 fib 真 wasm 执行 / B3 C for-in 遮蔽 / M12 除号 opcode / M6 env 剥离 / M7 纯 JSON)
+{
+  // ---------- A. strict wasm(--strict-wasm / MING_WASM_STRICT=1;判定本体 src/wasm.js wasmLayerStatus)----------
+  // fallback 构造:eligible 形态(f64→f64)但 wasm 不支持 f64 复合赋值(§47 同类:整体静默回落,exit 0)
+  const okProg = mingFile('v53-wasm-ok.ming', [
+    'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }',
+    'fn main() with io { print(str(fib(10))); }',
+  ].join('\n'));
+  const fbProg = mingFile('v53-wasm-fallback.ming', [
+    'fn g(x: f64) -> f64 { let mut y = x; y += 1.0; return y; }',
+    'fn main() with io { print(str(g(1.5))); }',
+  ].join('\n'));
+  const noneProg = mingFile('v53-wasm-none.ming', 'fn main() with io { print("e"); }');
+
+  // 1) eligible 程序 strict 下 ok:旗标与环境变量等价;--json wasm_status=ok;
+  //    键集固化(除新增 wasm_status 外与 HEAD 逐字一致);--tree 无 wasm 分层,键集完全不变
+  const okStrict = runMing(['run', okProg, '--strict-wasm']);
+  // 环境变量等价:显式注入 env(runMing 默认剥离 MING_WASM_STRICT,见 M6 修复)
+  const okEnv = runMing(['run', okProg], { env: { MING_WASM_STRICT: '1' } });
+  const okJson = JSON.parse(runMing(['run', okProg, '--json']).stdout);
+  const treeJson = JSON.parse(runMing(['run', okProg, '--json', '--tree']).stdout);
+  check('v53.1:strict-wasm eligible 程序 ok(旗标+环境变量+json 三态+键集固化)',
+    okStrict.code === 0 && okStrict.stdout === '55\n'
+    && okEnv.code === 0 && okEnv.stdout === '55\n'
+    && okJson.wasm_status === 'ok' && okJson.exit_code === 0
+    && JSON.stringify(Object.keys(okJson).sort()) === JSON.stringify(['engine', 'exit_code', 'ms', 'ok', 'stderr', 'stdout', 'wasm', 'wasm_status'])
+    && !('wasm_status' in treeJson) && JSON.stringify(Object.keys(treeJson).sort()) === JSON.stringify(['engine', 'exit_code', 'ms', 'ok', 'stderr', 'stdout', 'wasm']),
+    'code=' + okStrict.code + ' env=' + okEnv.code + ' status=' + okJson.wasm_status + ' keys=' + JSON.stringify(Object.keys(okJson).sort()));
+
+  // 2) fallback:strict exit 2 并点名函数与原因(文本 stderr 与 --json 两路)
+  const fbStrict = runMing(['run', fbProg, '--strict-wasm']);
+  const fbJson = JSON.parse(runMing(['run', fbProg, '--strict-wasm', '--json']).stdout);
+  check('v53.2:strict fallback exit 2 + 点名函数与原因',
+    fbStrict.code === 2 && fbStrict.stdout === '' && (fbStrict.stderr ?? '').includes('wasm 编译回落(g)') && (fbStrict.stderr ?? '').includes('f64 复合赋值')
+    && fbJson.exit_code === 2 && fbJson.wasm_status === 'fallback' && (fbJson.error ?? '').includes('f64 复合赋值'),
+    'code=' + fbStrict.code + ' stderr=' + (fbStrict.stderr ?? '').slice(0, 160) + ' json=' + JSON.stringify(fbJson));
+
+  // 3) 非 strict 静默回落行为逐字不变(exit 0 + 正确结果 + stderr 干净);--json 仅 additive 多 wasm_status
+  const fbPlain = runMing(['run', fbProg]);
+  const fbJsonNon = JSON.parse(runMing(['run', fbProg, '--json']).stdout);
+  check('v53.3:非 strict 静默回落行为不变(json 仅 additive wasm_status=fallback)',
+    fbPlain.code === 0 && fbPlain.stdout === '2.5\n' && (fbPlain.stderr ?? '') === ''
+    && fbJsonNon.exit_code === 0 && fbJsonNon.stdout === '2.5\n' && fbJsonNon.wasm_status === 'fallback',
+    'code=' + fbPlain.code + ' stdout=' + JSON.stringify(fbPlain.stdout) + ' status=' + fbJsonNon.wasm_status);
+
+  // 4) 零 eligible → none(exit 0;main 带 io 不 eligible,无分层可验)
+  const noneJson = JSON.parse(runMing(['run', noneProg, '--json']).stdout);
+  check('v53.4:零 eligible → none(exit 0)', noneJson.wasm_status === 'none' && noneJson.exit_code === 0, 'status=' + noneJson.wasm_status);
+
+  // 5) 互斥冲突 exit 1:--strict-wasm × --tree/--no-wasm,环境变量同样要拦
+  const c1 = runMing(['run', okProg, '--strict-wasm', '--tree']);
+  const c2 = runMing(['run', okProg, '--strict-wasm', '--no-wasm']);
+  const c3 = runMing(['run', okProg, '--tree'], { env: { MING_WASM_STRICT: '1' } });
+  check('v53.5:互斥冲突 exit 1(旗标×tree/no-wasm + 环境变量×tree)',
+    c1.code === 1 && (c1.stderr ?? '').includes('互斥') && c2.code === 1 && (c2.stderr ?? '').includes('互斥') && c3.code === 1 && (c3.stderr ?? '').includes('互斥'),
+    'codes=' + c1.code + ',' + c2.code + ',' + c3.code);
+
+  // 6) check --strict-wasm:通过语料 ok;回落语料 exit 2 + 原因;非 strict 的 check --json 不带 wasm_status
+  const chkOk = JSON.parse(runMing(['check', okProg, '--strict-wasm', '--json']).stdout);
+  const chkFb = runMing(['check', fbProg, '--strict-wasm']);
+  const chkPlain = JSON.parse(runMing(['check', okProg, '--json']).stdout);
+  check('v53.6:check --strict-wasm(ok/fallback exit 2;非 strict JSON 无 wasm_status)',
+    chkOk.wasm_status === 'ok' && chkFb.code === 2 && (chkFb.stderr ?? '').includes('wasm 编译回落(g)') && !('wasm_status' in chkPlain),
+    'ok=' + chkOk.wasm_status + ' fb=' + chkFb.code + ' stderr=' + (chkFb.stderr ?? '').slice(0, 140));
+
+  // 7) wasmLayerStatus 纯函数三态直测(覆盖 fallback 分支;不经过 CLI)
+  const { Checker } = await import('../src/checker.js');
+  const { compile } = await import('../src/compiler.js');
+  const { wasmLayerStatus } = await import('../src/wasm.js');
+  const mkStatus = (p) => { const c = new Checker(p); const r = c.run(); return wasmLayerStatus(r, compile(r)); };
+  const stOk = mkStatus(okProg);
+  const stFb = mkStatus(fbProg);
+  const stNone = mkStatus(noneProg);
+  check('v53.7:wasmLayerStatus 纯函数三态(ok/fallback 点名/none)',
+    stOk.status === 'ok' && stOk.eligible >= 1 && stOk.reason === null
+    && stFb.status === 'fallback' && (stFb.reason ?? '').includes('编译回落(g)') && (stFb.reason ?? '').includes('f64 复合赋值') && stFb.eligible === 1
+    && stNone.status === 'none' && stNone.eligible === 0,
+    'ok=' + JSON.stringify(stOk) + ' fb=' + JSON.stringify(stFb) + ' none=' + JSON.stringify(stNone));
+
+  // ---------- B. 构建可信性(任务4)----------
+  const mkProj53 = (name) => {
+    const d = path.join(TMP, name);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'ming.toml'), '[project]\nname = "' + name + '"\nversion = "0.1.0"\nentry = "app.ming"\n');
+    return d;
+  };
+  const write53 = (d, rel, src) => { const p = path.join(d, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, src); };
+  const build53 = (d, extra = []) => spawnSync(process.execPath, [MING, 'build', '--json', ...extra], { encoding: 'utf8', cwd: d, timeout: 120000 });
+  // build --json:stdout 为纯 JSON(v0.53 审查修复:人读"产物:"行改走 stderr),可直接 JSON.parse
+  const parseBuild53 = (stdout) => JSON.parse(stdout);
+
+  const pn = mkProj53('v53-nested');
+  write53(pn, 'app.ming', 'fn main() with io { print("n"); }\n');
+  // v53.9 要害:两个文件**同名**(lib/a.ming 与 lib/deep/a.ming,均定义 pub fn a,内容不同)——
+  // 旧实现条目只用 basename,交换内容后键不变(漏检);相对路径 + 内容才真正区分。
+  write53(pn, 'lib/a.ming', 'pub fn a() -> i64 { return 1; }\n');
+  write53(pn, 'lib/deep/a.ming', 'pub fn a() -> i64 { return 2; }\n');
+
+  // 8) 嵌套两层目录 source_count 正确(collectProjectSources 修复证据:旧实现 4 文件收 11 条,新实现 4 条)
+  //    fresh JSON 键集固化 + interface_hashes 结构化(每模块 file+interfaceHash)
+  const bn1r = build53(pn);
+  const bn1 = parseBuild53(bn1r.stdout);
+  check('v53.8:嵌套目录 source_count=4 + fresh 键集固化 + interface_hashes 结构化',
+    bn1r.status === 0 && bn1.ok === true && bn1.source_count === 4 && bn1.cache_hit === false && typeof bn1.dist_hash === 'string' && bn1.dist_hash.length > 0
+    && JSON.stringify(Object.keys(bn1).sort()) === JSON.stringify(['build_key', 'cache_hit', 'diagnostics', 'dist_hash', 'entry', 'interface_hashes', 'ms', 'ok', 'project', 'source_count', 'version'])
+    && Array.isArray(bn1.interface_hashes) && bn1.interface_hashes.length === 1 && bn1.interface_hashes[0].file === 'app.ming' && /^[0-9a-f]{16}$/.test(bn1.interface_hashes[0].interfaceHash),
+    'count=' + bn1.source_count + ' keys=' + JSON.stringify(Object.keys(bn1).sort()) + ' ifaces=' + JSON.stringify(bn1.interface_hashes));
+
+  // 9) 同名不同目录交换内容 → build_key 变化(旧实现条目只用 basename,交换后条目多重集不变 → 漏检)
+  //    初始 lib/a.ming=1、lib/deep/a.ming=2;交换后 lib/a.ming=2、lib/deep/a.ming=1。
+  const k1 = parseBuild53(build53(pn).stdout).build_key;
+  write53(pn, 'lib/a.ming', 'pub fn a() -> i64 { return 2; }\n');
+  write53(pn, 'lib/deep/a.ming', 'pub fn a() -> i64 { return 1; }\n');
+  const k2 = parseBuild53(build53(pn).stdout).build_key;
+  check('v53.9:同名不同目录交换内容 → build_key 变化(旧实现 basename 键会保持不变)', k1 !== k2, 'k1=' + k1.slice(0, 12) + ' k2=' + k2.slice(0, 12));
+
+  // 10) 两次 --clean-cache 构建 dist_hash 相同(同 OS + 同 Node 主版本可复现)
+  const cl1 = parseBuild53(build53(pn, ['--clean-cache']).stdout);
+  const cl2 = parseBuild53(build53(pn, ['--clean-cache']).stdout);
+  check('v53.10:两次 --clean-cache 构建 dist_hash 相同',
+    cl1.cache_hit === false && cl2.cache_hit === false && cl1.dist_hash === cl2.dist_hash && cl1.build_key === cl2.build_key,
+    'h1=' + (cl1.dist_hash ?? '').slice(0, 16) + ' h2=' + (cl2.dist_hash ?? '').slice(0, 16));
+
+  // 11) 第三次构建(不 clean)cache_hit: true;hit JSON 键集固化;键与 dist_hash 稳定
+  const h3 = parseBuild53(build53(pn).stdout);
+  check('v53.11:第三次构建 cache_hit true(hit 键集固化 + 键/哈希稳定)',
+    h3.cache_hit === true && h3.cache === 'hit' && h3.build_key === cl2.build_key && h3.dist_hash === cl2.dist_hash && h3.source_count === 4
+    && JSON.stringify(Object.keys(h3).sort()) === JSON.stringify(['build_key', 'cache', 'cache_hit', 'dist_hash', 'interface_hashes', 'ms', 'ok', 'project', 'source_count']),
+    'hit=' + h3.cache_hit + ' keys=' + JSON.stringify(Object.keys(h3).sort()));
+
+  // 12) 非 .ming 项目行为不变:空目录与仅清单(入口缺失)的失败逐字保留
+  const emptyDir = path.join(TMP, 'v53-empty');
+  fs.mkdirSync(emptyDir, { recursive: true });
+  const tomlOnly = mkProj53('v53-toml-only');
+  const e1 = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: emptyDir, timeout: 60000 });
+  const e2 = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: tomlOnly, timeout: 60000 });
+  check('v53.12:非项目/仅清单项目行为不变',
+    e1.status === 1 && (e1.stderr ?? '').includes('build 需要 ming.toml') && e2.status === 1 && (e2.stderr ?? '').includes('入口文件不存在'),
+    'c1=' + e1.status + ' c2=' + e2.status + ' e2=' + (e2.stderr ?? '').slice(0, 100));
+
+  // 13) 旧缓存(键算法变化后)自然失效重建,不崩溃:预写异键缓存 → 重建成功 → 下次命中
+  const lp = mkProj53('v53-legacy');
+  write53(lp, 'app.ming', 'fn main() with io { print("l"); }\n');
+  const legacy = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: lp, timeout: 120000 });
+  fs.writeFileSync(path.join(lp, '.ming-cache', 'build-cache.json'), JSON.stringify({ key: 'legacy-old-algorithm', builtAt: '2000-01-01T00:00:00.000Z', compilerVersion: '0.49.0', distHash: null, modules: [] }, null, 1));
+  const reb = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: lp, timeout: 120000 });
+  const rebHit = parseBuild53(build53(lp).stdout);
+  check('v53.13:旧缓存键失效自然重建(不崩溃 + 下次命中)',
+    legacy.status === 0 && reb.status === 0 && !(reb.stdout ?? '').includes('缓存命中') && rebHit.cache_hit === true,
+    'legacy=' + legacy.status + ' reb=' + reb.status + ' hit=' + rebHit.cache_hit);
+
+  // ---------- C. env -i launcher 验收(v0.53 任务3)----------
+  // 最小项目 → 构建 AOT dist → 复制到与项目无关的临时目录 → 删除项目源目录
+  // → 无关 cwd + 平台最小环境启动 launcher(Windows 仅 SystemRoot;POSIX 仅 PATH/LANG)。
+  // 断言 stdout/退出码与正常(继承)环境逐字一致,参数按字节透传。
+  const penv = mkProj53('v53-env-i');
+  write53(penv, 'app.ming', [
+    'fn main(args: Vec[str]) with io {',
+    '    print("dist-ok");',
+    '    print(str(args.len()));',
+    '    if args.len() > 0 { print(args[0]); }',
+    '    if args.len() > 1 { panic("dist-env-i"); }',
+    '}',
+  ].join('\n'));
+  const benv = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: penv, timeout: 120000 });
+  const envIDist = path.join(TMP, 'v53-env-i-relocated', 'dist');
+  fs.mkdirSync(path.dirname(envIDist), { recursive: true });
+  fs.cpSync(path.join(penv, 'dist'), envIDist, { recursive: true });
+  // 删除项目源目录:dist 若含任何源码/项目路径依赖,异地启动立即失败
+  fs.rmSync(penv, { recursive: true, force: true });
+  const envICwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-env-i-cwd-'));
+  const envILauncher = path.join(envIDist, 'ming-app.mjs');
+  const envIMinimal = process.platform === 'win32'
+    ? { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' }
+    : { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' };
+  const runEnvI = (args57, minimal) => spawnSync(process.execPath, [envILauncher, ...args57], {
+    encoding: 'utf8', cwd: envICwd, timeout: 60000, ...(minimal ? { env: envIMinimal } : {}),
+  });
+  const envIN1 = runEnvI(['--', 'arg1'], false);
+  const envIM1 = runEnvI(['--', 'arg1'], true);
+  check('v53.14:env -i launcher 异地 dist(删源 + 无关 cwd;最小环境与正常环境 stdout/退出码逐字一致)',
+    benv.status === 0 && fs.existsSync(path.join(envIDist, 'app.bytecode.json')) && !fs.existsSync(path.join(envIDist, 'app.ming'))
+    && envIN1.status === 0 && envIM1.status === 0 && envIM1.stdout === 'dist-ok\n1\narg1\n'
+    && envIM1.stdout === envIN1.stdout && envIM1.status === envIN1.status,
+    'build=' + benv.status + ' min=' + JSON.stringify(envIM1.stdout) + ' normal=' + JSON.stringify(envIN1.stdout) + ' codes=' + envIM1.status + '/' + envIN1.status + ' err=' + (envIM1.stderr ?? '').slice(0, 150));
+
+  // 多字节 UTF-8 实参逐字透传(最小环境;单参避免触发上面的 panic 分支)
+  const envIN2 = runEnvI(['--', '汉字😀'], false);
+  const envIM2 = runEnvI(['--', '汉字😀'], true);
+  check('v53.15:env -i 参数透传逐字(-- 剥离 + 多字节 UTF-8 实参)',
+    envIN2.status === 0 && envIM2.status === 0 && envIM2.stdout === 'dist-ok\n1\n汉字😀\n'
+    && envIM2.stdout === envIN2.stdout && envIM2.status === envIN2.status,
+    'min=' + JSON.stringify(envIM2.stdout) + ' normal=' + JSON.stringify(envIN2.stdout) + ' codes=' + envIM2.status + '/' + envIN2.status);
+
+  // panic 路径不依赖环境:exit 101 + stderr 首行逐字一致
+  const firstLine53 = (s) => (s ?? '').split('\n')[0];
+  const envIN3 = runEnvI(['--', 'a', 'panic'], false);
+  const envIM3 = runEnvI(['--', 'a', 'panic'], true);
+  check('v53.16:env -i panic 路径(exit 101;stderr 首行与正常环境逐字一致)',
+    envIN3.status === 101 && envIM3.status === 101
+    && firstLine53(envIM3.stderr) === firstLine53(envIN3.stderr)
+    && firstLine53(envIM3.stderr).includes('M4001')
+    && envIM3.stdout === envIN3.stdout,
+    'codes=' + envIM3.status + '/' + envIN3.status + ' min=' + JSON.stringify(firstLine53(envIM3.stderr)) + ' normal=' + JSON.stringify(firstLine53(envIN3.stderr)));
+
+  // ---------- D. v0.53 任务5:C 后端 str for-in 按 UTF-8 码点迭代 ----------
+  // 黄金三组:ASCII/CJK/emoji;tree / VM / VM-only / cc 输出逐字一致。
+  // 注:默认引擎的 wasm 腿对含 str for-in 的函数会整模块回落 JS VM(该形态不在 wasm
+  // 资格面内),所以这里比较的是 VM 语义,不暗示 wasm 处理了 str for-in。
+  // 无编译器时 C 腿自动跳过(与既有 C 腿测试同风格),JS 三引擎仍校验。
+  const detectCC57 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const ccBin57 = detectCC57();
+  const ccOut57 = path.join(TMP, 'v53-cc-strfor');
+  fs.mkdirSync(ccOut57, { recursive: true });
+  const strForCases = [
+    ['ascii', 'abc', '3'],
+    ['cjk', '汉字', '2'],
+    ['emoji', '😀a', '2'],
+  ];
+  let seq57 = 17;
+  for (const [k57, lit57, want57] of strForCases) {
+    const f57 = mingFile('v53-strfor-' + k57 + '.ming', [
+      'fn count(s: str) -> i64 {',
+      '    let mut v = 0;',
+      '    for ch in s { v += ch.char_len() as i64; }',
+      '    return v;',
+      '}',
+      'fn main() with io { print(str(count("' + lit57 + '"))); }',
+      '',
+    ].join('\n'));
+    const rt57 = runMing(['run', f57, '--tree']);
+    const rv57 = runMing(['run', f57]);
+    const rn57 = runMing(['run', f57, '--no-wasm']);
+    let ccOk57 = true;
+    let ccDetail57 = '无编译器,跳过 C 腿';
+    if (ccBin57) {
+      const b57 = spawnSync(process.execPath, [MING, 'cc', f57, '--no-run', '--out', ccOut57], { encoding: 'utf8', timeout: 180000 });
+      const exe57 = path.join(ccOut57, 'v53-strfor-' + k57 + (process.platform === 'win32' ? '.exe' : ''));
+      const rc57 = b57.status === 0 && fs.existsSync(exe57) ? spawnSync(exe57, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '' };
+      ccOk57 = b57.status === 0 && rc57.status === 0 && rc57.stdout === want57 + '\n';
+      ccDetail57 = 'build=' + b57.status + ' cc=' + JSON.stringify(rc57.stdout) + ' stderr=' + (b57.stderr ?? '').slice(0, 150);
+    }
+    check('v53.' + seq57 + ':str for-in 码点迭代 ' + k57 + '(' + lit57 + '→' + want57 + ';tree / VM / VM-only / cc 逐字一致;wasm 腿为 VM 回落)',
+      rt57.code === 0 && rv57.code === 0 && rn57.code === 0
+      && rt57.stdout === want57 + '\n' && rv57.stdout === want57 + '\n' && rn57.stdout === want57 + '\n'
+      && ccOk57,
+      'tree=' + JSON.stringify(rt57.stdout) + ' vm=' + JSON.stringify(rv57.stdout) + ' nowasm=' + JSON.stringify(rn57.stdout) + ' ' + ccDetail57);
+    seq57++;
+  }
+
+  // ---------- E. v0.53 任务1/6:CI workflow 结构与版本收口(静态)----------
+  // 零依赖静态校验:不解析 YAML,只锁定结构关键行(与 .github/workflows/ci.yml 同步维护)。
+  // 实际矩阵执行结果以 GitHub Actions 记录为准;本测试防的是"workflow 丢失/矩阵缩水/引入 npm"。
+  const ciPath = path.join(ROOT, '.github', 'workflows', 'ci.yml');
+  const ci = fs.existsSync(ciPath) ? fs.readFileSync(ciPath, 'utf8') : '';
+  const ciUses = [...ci.matchAll(/^\s*uses:\s*(\S+)\s*$/gm)].map(m => m[1]);
+  const ciHas = (s) => ci.includes(s);
+  check('v53.20:CI workflow 结构(触发器/九组合/C 腿/nightly/官方 action/零 npm/timeout)',
+    ci.length > 0
+    && ciHas('push:') && ciHas('pull_request:') && ciHas('schedule:') && ciHas("cron: '17 3 * * *'")
+    && ciHas('os: [ubuntu-latest, macos-latest, windows-latest]')
+    && ciHas('node: [18, 20, 22]')
+    && ciHas('c-backend:') && ciHas('os: [ubuntu-latest, macos-latest]')
+    && ciHas('seed: [44044, 7, 2026]')
+    && ciHas('node tests/run.mjs') && ciHas('--seed 44044 --count 25') && ciHas('--count 100')
+    && ciHas('run examples/fib.ming --strict-wasm') // M9:CI 跑示例 strict(纯 Node,不依赖 gcc)
+    && ciHas('--count 120') && ciHas('--count 300')
+    && ciHas('timeout-minutes: 20') && ciHas('timeout-minutes: 40')
+    && ciUses.length === 6 && ciUses.every(u => u === 'actions/checkout@v4' || u === 'actions/setup-node@v4')
+    && !ciHas('npm install') && !ciHas('npm ci'),
+    'exists=' + (ci.length > 0) + ' uses=' + JSON.stringify(ciUses));
+
+  // 版本三处一致 + GUIDE 修订记录存在(与 package.json 动态比对,未来版本无需改测试)
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  const binVersion = (fs.readFileSync(MING, 'utf8').match(/export const VERSION = '([^']+)'/) ?? [])[1];
+  const guideText = fs.readFileSync(path.join(ROOT, 'GUIDE.md'), 'utf8');
+  const guideHead = (guideText.match(/^\*\*版本:v([0-9.]+)\*\*/m) ?? [])[1];
+  const guideRev = guideText.includes('### v' + pkgVersion + '(');
+  check('v53.21:版本三处一致(package.json/bin VERSION/GUIDE 头)+ GUIDE 修订记录',
+    pkgVersion === binVersion && binVersion === guideHead && guideRev,
+    'pkg=' + pkgVersion + ' bin=' + binVersion + ' guide=' + guideHead + ' rev=' + guideRev);
+
+  // 审查发现(v0.53 收口):strict wasm 暴露既有 wasm 模块校验回落——非 void 函数以尾表达式
+  // 结束时,函数级兜底补零在返回值之后再压一个值 → 函数末尾 2 值 → 整模块 "expected 1
+  // elements on the stack for fallthru, found 2" → 静默回落。修复见 src/wasm.js emitBodyOnce。
+  const tailProg = mingFile('v53-wasm-tail.ming', [
+    'fn count(n: i64) -> i64 {',
+    '    let mut i = 0;',
+    '    while i < n { i += 1; }',
+    '    i',
+    '}',
+    'fn main() with io { print(str(count(7))); }',
+  ].join('\n'));
+  const tailStrict = runMing(['run', tailProg, '--strict-wasm', '--json']);
+  const tailJson = JSON.parse(tailStrict.stdout);
+  check('v53.22:尾表达式函数 wasm 模块有效(strict ok;函数级补零不再多压栈)',
+    tailStrict.code === 0 && tailJson.wasm_status === 'ok' && tailJson.stdout === '7\n',
+    'code=' + tailStrict.code + ' status=' + tailJson.wasm_status + ' stdout=' + JSON.stringify(tailJson.stdout));
+
+  // ---------- F. v0.53.0 独立审查修复回归(2026-11-12)----------
+  // B2:check --strict-wasm 的 fallback 与正常路径共用同一 out 构造——ok:false、
+  // diagnostics(含 warning)与 --proof-report 的 proofs 都不能丢。
+  const pfProg = mingFile('v53-proof-fb.ming', [
+    'fn pick(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn eqf(x: f64) -> bool { return x == 1.0; }',
+    'fn g(x: f64) -> f64 { let mut y = x; y += 1.0; return y; }',
+    'fn main() with io { print(str(pick([10, 20, 30], 1))); print(str(g(1.5))); }',
+  ].join('\n'));
+  const pfR = runMing(['check', pfProg, '--proof-report', '--json', '--strict-wasm']);
+  const pfJ = JSON.parse(pfR.stdout);
+  const pfT = runMing(['check', pfProg, '--proof-report', '--strict-wasm']);
+  check('v53.23:check --strict-wasm fallback JSON 保留 ok:false/diagnostics/proofs(exit 2)',
+    pfR.code === 2 && pfJ.ok === false && Array.isArray(pfJ.diagnostics) && pfJ.diagnostics.some(d => d.code === 'W3102')
+    && pfJ.wasm_status === 'fallback' && pfJ.proofs?.summary?.proven === 1 && pfJ.proofs.functions[0]?.fn === 'pick'
+    && pfT.code === 2 && (pfT.stdout ?? '').includes('pick: 义务 1') && (pfT.stderr ?? '').includes('W3102')
+    && (pfT.stderr ?? '').includes('wasm 编译回落(g)'),
+    'code=' + pfR.code + ' json=' + JSON.stringify(pfJ).slice(0, 320) + ' text=' + JSON.stringify((pfT.stdout ?? '').slice(0, 200)));
+
+  // M1:--no-wasm 时 wasm 层未参与执行,JSON 不得再报 wasm_status(否则被误读为 wasm 已跑过)。
+  const nowasmRun = runMing(['run', okProg, '--json', '--no-wasm']);
+  const nowasmJson = JSON.parse(nowasmRun.stdout);
+  check('v53.24:run --json --no-wasm 不输出 wasm_status(wasm 层未参与执行)',
+    nowasmRun.code === 0 && nowasmJson.wasm === false && nowasmJson.stdout === '55\n' && !('wasm_status' in nowasmJson)
+    && JSON.stringify(Object.keys(nowasmJson).sort()) === JSON.stringify(['engine', 'exit_code', 'ms', 'ok', 'stderr', 'stdout', 'wasm']),
+    'keys=' + JSON.stringify(Object.keys(nowasmJson).sort()) + ' status=' + JSON.stringify(nowasmJson.wasm_status));
+
+  // M2:Module 校验/实例化回落也要点名 Ming 函数(用 order→compiled.functions 映射;
+  // V8 的 function #N 索引不一定可靠,故同时给 eligible 全表)。
+  const ifExprProg = mingFile('v53-wasm-ifexpr.ming', [
+    'fn pick(n: i64) -> i64 { let x = if n > 0 { 1 } else { 2 }; return x; }',
+    'fn main() with io { print(str(pick(3))); }',
+  ].join('\n'));
+  const ifStrict = runMing(['run', ifExprProg, '--strict-wasm']);
+  check('v53.25:if 表达式回落消息点名疑似函数与 eligible 表(strict exit 2)',
+    ifStrict.code === 2 && (ifStrict.stderr ?? '').includes('疑似函数 pick') && (ifStrict.stderr ?? '').includes('eligible=[0:pick]'),
+    'code=' + ifStrict.code + ' stderr=' + (ifStrict.stderr ?? '').slice(0, 240));
+
+  // M9:示例 fib 的 strict 门禁必须证明 wasm 真的执行了(不能只信 wasm_status 自报):
+  // MING_WASM_DEBUG=1 下 stderr 含 "[wasm] fn fib OK" 且无 "实例化失败";CI test job 跑同一命令。
+  const fibPath = path.join(ROOT, 'examples', 'fib.ming');
+  const fibStrict = runMing(['run', fibPath, '--strict-wasm', '--json']);
+  const fibJ = JSON.parse(fibStrict.stdout);
+  const fibDbg = runMing(['run', fibPath, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  check('v53.26:fib strict ok 且真实经 wasm 执行([wasm] fn fib OK,无实例化失败)',
+    fibStrict.code === 0 && fibJ.wasm_status === 'ok'
+    && fibDbg.code === 0 && (fibDbg.stderr ?? '').includes('[wasm] fn fib OK') && !(fibDbg.stderr ?? '').includes('实例化失败'),
+    'code=' + fibStrict.code + ' status=' + fibJ.wasm_status + ' dbg=' + JSON.stringify((fibDbg.stderr ?? '').slice(0, 200)));
+
+  // B3:C 后端 for-in 循环变量的作用域泄漏——遮蔽外层同名变量时此前在函数作用域
+  // declare(v_ch_2)导致块外引用非法 C。只对比 VM/VM-only/cc:tree 引擎对 for-in 遮蔽
+  // 有独立既有泄漏缺陷(plan §4.2.8 #23),本例 tree 输出不同(已知分歧,不在此断言)。
+  const ccRunF = (f) => {
+    const b = spawnSync(process.execPath, [MING, 'cc', f, '--no-run', '--out', ccOut57], { encoding: 'utf8', timeout: 180000 });
+    const exe = path.join(ccOut57, path.basename(f).replace(/\.ming$/i, '') + (process.platform === 'win32' ? '.exe' : ''));
+    const r = b.status === 0 && fs.existsSync(exe) ? spawnSync(exe, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stdout: '', stderr: '' };
+    return { build: b.status, code: r.status, stdout: r.stdout ?? '', stderr: (b.stderr ?? '') + (r.stderr ?? '') };
+  };
+  const shadowCases = [
+    ['str', [
+      'fn probe(s: str) -> i64 {',
+      '    let ch = "汉字";',
+      '    let mut acc = 0;',
+      '    for ch in s { acc += ch.char_len() as i64; }',
+      '    return ch.char_len() as i64 * 10 + acc;',
+      '}',
+      'fn main() with io { print(str(probe("abc"))); }',
+    ].join('\n'), '23'],
+    ['vec', [
+      'fn probe(v: Vec[i64]) -> i64 {',
+      '    let x = 99;',
+      '    let mut acc = 0;',
+      '    for x in v { acc += x; }',
+      '    return x + acc;',
+      '}',
+      'fn main() with io { print(str(probe([1, 2, 3]))); }',
+    ].join('\n'), '105'],
+    ['map', [
+      'fn probe(m: Map[str, i64]) -> i64 {',
+      '    let k = "z";',
+      '    let mut acc = 0;',
+      '    for (k, v) in m { acc += v; }',
+      '    return k.char_len() as i64 + acc;',
+      '}',
+      'fn main() with io { print(str(probe({"a": 1, "b": 2}))); }',
+    ].join('\n'), '4'],
+    ['range', [
+      'fn probe() -> i64 {',
+      '    let i = 100;',
+      '    for i in 0..3 { }',
+      '    return i;',
+      '}',
+      'fn main() with io { print(str(probe())); }',
+    ].join('\n'), '100'],
+  ];
+  let shadowOk = true;
+  const shadowDetail = [];
+  for (const [kind, src, want] of shadowCases) {
+    const f = mingFile('v53-shadow-' + kind + '.ming', src);
+    const vmR = runMing(['run', f]);
+    const noR = runMing(['run', f, '--no-wasm']);
+    const ccR = ccBin57 ? ccRunF(f) : null;
+    shadowOk = shadowOk && vmR.code === 0 && vmR.stdout === want + '\n'
+      && noR.code === 0 && noR.stdout === want + '\n'
+      && (!ccR || (ccR.build === 0 && ccR.code === 0 && ccR.stdout === want + '\n'));
+    shadowDetail.push(kind + ':vm=' + JSON.stringify(vmR.stdout) + ',no=' + JSON.stringify(noR.stdout) + (ccR ? ',cc=' + JSON.stringify(ccR.stdout) + '/b' + ccR.build : ',cc=skip'));
+  }
+  check('v53.27:C for-in 遮蔽作用域(VM / VM-only / cc 一致;tree 已知分歧见 plan #23)', shadowOk, shadowDetail.join(' '));
+
+  // M12:wasm `/` 守卫修复(0x83 i64.and → 0x71 i32.and,并把 if 移到两个比较之后)。
+  // 修复前任何含 / 的 eligible 函数整模块校验失败 → 静默回落 JS VM。
+  const divCases = mingFile('v53-div-cases.ming', [
+    'fn dv(a: i64, b: i64) -> i64 { return a / b; }',
+    'fn main() with io { print(str(dv(7, 2))); print(str(dv(-7, 2))); print(str(dv(7, -2))); print(str(dv(-7, -2))); }',
+  ].join('\n'));
+  const dvStrict = runMing(['run', divCases, '--strict-wasm', '--json']);
+  const dvJ = JSON.parse(dvStrict.stdout);
+  const dvTree = runMing(['run', divCases, '--tree']);
+  const dvNo = runMing(['run', divCases, '--no-wasm']);
+  const dvCc = ccBin57 ? ccRunF(divCases) : null;
+  const dvWant = '3\n-3\n-3\n3\n';
+  check('v53.28:eligible 含 / 的函数 strict ok 且 tree/VM/VM-only/cc 一致(i32.and 修复)',
+    dvStrict.code === 0 && dvJ.wasm_status === 'ok' && dvJ.stdout === dvWant
+    && dvTree.stdout === dvWant && dvNo.stdout === dvWant && (!dvCc || (dvCc.build === 0 && dvCc.stdout === dvWant)),
+    'strict=' + dvStrict.code + '/' + dvJ.wasm_status + ' json=' + JSON.stringify(dvJ.stdout) + ' tree=' + JSON.stringify(dvTree.stdout) + ' no=' + JSON.stringify(dvNo.stdout) + ' cc=' + JSON.stringify(dvCc && dvCc.stdout));
+
+  // 守卫回归:零除 M4004、min/-1 M4002 在 wasm 执行路径仍是 panic(exit 101)。
+  const divZero = mingFile('v53-div-zero.ming', 'fn dv(a: i64, b: i64) -> i64 { return a / b; }\nfn main() with io { print(str(dv(10, 0))); }\n');
+  const divOvf = mingFile('v53-div-ovf.ming', 'fn dv(a: i64, b: i64) -> i64 { return a / b; }\nfn main() with io { print(str(dv(-9223372036854775807 - 1, -1))); }\n');
+  const dz = runMing(['run', divZero, '--strict-wasm']);
+  const dovf = runMing(['run', divOvf, '--strict-wasm']);
+  check('v53.29:/ 的零除与 min/-1 守卫仍在(M4004/M4002,exit 101;wasm 执行路径)',
+    dz.code === 101 && (dz.stderr ?? '').includes('M4004') && dovf.code === 101 && (dovf.stderr ?? '').includes('M4002'),
+    'dz=' + dz.code + ' stderr=' + JSON.stringify((dz.stderr ?? '').slice(0, 90)) + ' ovf=' + dovf.code + ' stderr=' + JSON.stringify((dovf.stderr ?? '').slice(0, 90)));
+
+  // M6:夹具默认剥离 MING_WASM_STRICT——开发者 shell 导出该变量不该让非 strict 用例假失败;
+  // 需要 strict 的用例显式注入 env(见 v53.1/v53.5)。
+  const savedShellStrict = process.env.MING_WASM_STRICT;
+  process.env.MING_WASM_STRICT = '1';
+  const shellStrictIgnored = runMing(['run', fbProg]);
+  if (savedShellStrict === undefined) delete process.env.MING_WASM_STRICT; else process.env.MING_WASM_STRICT = savedShellStrict;
+  const injectedStrict = runMing(['run', fbProg], { env: { MING_WASM_STRICT: '1' } });
+  check('v53.30:夹具默认剥离 MING_WASM_STRICT(shell 导出不致假失败;显式注入仍生效)',
+    shellStrictIgnored.code === 0 && shellStrictIgnored.stdout === '2.5\n'
+    && injectedStrict.code === 2 && (injectedStrict.stderr ?? '').includes('wasm 编译回落(g)'),
+    'shell=' + shellStrictIgnored.code + '/' + JSON.stringify(shellStrictIgnored.stdout) + ' injected=' + injectedStrict.code);
+
+  // M7:build --json 的 stdout 为纯 JSON(人读"产物:"行改走 stderr),可直接 JSON.parse。
+  const pureB = build53(pn, ['--clean-cache']);
+  const pureJ = JSON.parse(pureB.stdout);
+  check('v53.31:build --json stdout 纯 JSON(人读产物行改走 stderr)',
+    pureB.status === 0 && pureB.stdout.trim().startsWith('{') && pureB.stdout.trim().endsWith('}')
+    && (pureB.stderr ?? '').includes('产物:dist/') && pureJ.ok === true && pureJ.cache_hit === false && typeof pureJ.build_key === 'string',
+    'status=' + pureB.status + ' head=' + JSON.stringify((pureB.stdout ?? '').slice(0, 20)) + ' stderr=' + JSON.stringify((pureB.stderr ?? '').slice(0, 120)));
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

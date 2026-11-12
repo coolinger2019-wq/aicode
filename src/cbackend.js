@@ -957,15 +957,44 @@ class CEmit {
       case 'Continue': ctx.line('continue;'); return;
       case 'For': {
         // C1:区间 for;C2:Vec[i64] for-in;C3:Map[str,i64] for-in(PTuple(k,v),插入序)
+        // v0.53:str for-in 按 UTF-8 码点迭代(对齐 tree/vm 的 [...s];此前按容器拒绝)
         if (s.iter.nt !== 'Range' && s.iter.nt !== 'Ident') throw new Unsupported('for 迭代 ' + s.iter.nt);
         if (s.iter.nt === 'Ident') {
           const bt = ctx.typeOf(s.iter.name);
+          if (bt === 'str') {
+            if (s.pat.nt !== 'PIdent') throw new Unsupported('str for-in 模式');
+            const base = ctx.nameOf(s.iter.name);
+            // 快照:迭代开始时的字符串值(tree/vm 的迭代器同样持有旧值);循环体可重绑 s
+            const snap = this.newTmp(ctx, 'str', base);
+            const lenT = this.newTmp(ctx, 'i64', `${snap}.n`);
+            ctx.open('{');
+            // v0.53 审查修复:循环变量必须落在内层作用域(此前 declare 在函数作用域,
+            // 遮蔽外层同名变量后 nameOf 指向块内 cname,v_ch_2 → 块外引用非法 C)
+            ctx.pushScope();
+            const ivar = ctx.declare('__is' + s.pat.name, 'i64');
+            ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ) {`);
+            // UTF-8 码点宽度:1/2/3/4 字节(与运行时 ming_str_chars 同一判定)
+            const bv = this.newTmp(ctx, 'i64', `(long long)(unsigned char)${snap}.p[${ivar}]`);
+            const cv = this.newTmp(ctx, 'i64', `(${bv} < 0x80) ? 1 : ((${bv} & 0xE0) == 0xC0) ? 2 : ((${bv} & 0xF0) == 0xE0) ? 3 : 4`);
+            // 防御:截断序列不越界读(合法 UTF-8 下恒不触发)
+            ctx.line(`if (${ivar} + ${cv} > ${lenT}) ${cv} = ${lenT} - ${ivar};`);
+            const ev = ctx.declare(s.pat.name, 'str');
+            ctx.line(`ming_str ${ev}; ${ev}.p = ${snap}.p + ${ivar}; ${ev}.n = ${cv};`);
+            ctx.line(`${ivar} += ${cv};`);
+            this.emitBlock(s.body, ctx);
+            ctx.close('}');
+            ctx.close('}');
+            ctx.popScope();
+            return;
+          }
           if (bt === 'vi64') {
             if (s.pat.nt !== 'PIdent') throw new Unsupported('for 模式');
             const base = ctx.nameOf(s.iter.name);
             const lenT = this.newTmp(ctx, 'i64');
             ctx.line(`${lenT} = ${base}.n;`);
             ctx.open('{');
+            // v0.53 审查修复:容器 for-in 循环变量落入内层作用域(同 str 分支)
+            ctx.pushScope();
             const ivar = ctx.declare('__i' + s.pat.name, 'i64');
             ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ${ivar}++) {`);
             const ev = ctx.declare(s.pat.name, 'i64');
@@ -973,6 +1002,7 @@ class CEmit {
             this.emitBlock(s.body, ctx);
             ctx.close('}');
             ctx.close('}');
+            ctx.popScope();
             return;
           }
           if (bt === 'mi64') {
@@ -981,6 +1011,8 @@ class CEmit {
             const lenT = this.newTmp(ctx, 'i64');
             ctx.line(`${lenT} = ${base}.n;`);
             ctx.open('{');
+            // v0.53 审查修复:容器 for-in 循环变量落入内层作用域(同 str 分支)
+            ctx.pushScope();
             const ivar = ctx.declare('__im' + s.pat.pats[0].name, 'i64');
             ctx.open(`for (long long ${ivar} = 0; ${ivar} < ${lenT}; ${ivar}++) {`);
             const kv = ctx.declare(s.pat.pats[0].name, 'str');
@@ -990,6 +1022,7 @@ class CEmit {
             this.emitBlock(s.body, ctx);
             ctx.close('}');
             ctx.close('}');
+            ctx.popScope();
             return;
           }
           throw new Unsupported('for 容器 ' + bt);
@@ -1001,11 +1034,15 @@ class CEmit {
         const hiV = this.newTmp(ctx, 'i64');
         ctx.line(`${hiV} = ${this.emitExpr(s.iter.hi, 'i64', ctx)};`);
         ctx.open('{');
+        // v0.53 审查修复(同根因):区间 for 的循环变量同样落入内层作用域——
+        // 此前遮蔽外层同名变量时块外引用 v_i_2 → 非法 C;非遮蔽程序发射逐字不变
+        ctx.pushScope();
         const ivar = ctx.declare(s.pat.name, 'i64');
         ctx.open(`for (long long ${ivar} = ${loV}; ${ivar} < ${hiV}; ${ivar}++) {`);
         this.emitBlock(s.body, ctx);
         ctx.close('}');
         ctx.close('}');
+        ctx.popScope();
         return;
       }
       default:

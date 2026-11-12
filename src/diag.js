@@ -79,6 +79,7 @@ export const CODES = {
   M4010: 'task-timeout',
   M4011: 'alloc-quota-exceeded',
   M4012: 'time-quota-exceeded',
+  M4013: 'ffi-load-failed',
   M4015: 'contract-violation',
 };
 

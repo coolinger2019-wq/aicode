@@ -1,0 +1,95 @@
+name: CI
+
+# v0.53 可信构建与跨平台验证基线:
+# - push / PR:ubuntu+macoS+windows × Node 18/20/22 九组合跑全量回归 + 差分模糊 + 证明模糊
+# - C 腿独立 job(ubuntu/macos):有 gcc/clang 时全量回归自动启用 C 测试;无编译器则自跳过
+# - nightly:三种子深模糊(120 程序)+ 证明模糊 300 例
+# 约束:只用官方 action(actions/checkout / actions/setup-node),零 npm 依赖(仓库零依赖)。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [18, 20, 22]
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+      - name: 安装 Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Node 版本
+        run: node --version
+      - name: wasm 分层存活(examples/fib.ming --strict-wasm;纯 Node,不依赖 gcc)
+        run: node bin/ming.js run examples/fib.ming --strict-wasm
+      - name: 全量回归
+        run: node tests/run.mjs
+      - name: 差分模糊(seed 44044,25 程序)
+        run: node tests/fuzz.mjs --seed 44044 --count 25
+      - name: 静态边界证明模糊(100 例)
+        run: node tests/proof_fuzz.mjs --count 100
+
+  c-backend:
+    name: c-backend (${{ matrix.os }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 编译器探测(无编译器则 C 相关测试自动跳过,不失败)
+        run: |
+          if command -v gcc >/dev/null 2>&1; then gcc --version | head -n 1; fi
+          if command -v clang >/dev/null 2>&1; then clang --version | head -n 1; fi
+          if ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+            echo "无 gcc/clang:C 相关测试将自动跳过(本 job 成功)"
+          fi
+      - name: 全量回归(C 腿自动启用)
+        run: node tests/run.mjs
+
+  nightly:
+    name: nightly (seed ${{ matrix.seed }})
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [44044, 7, 2026]
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 差分模糊(seed ${{ matrix.seed }},120 程序)
+        run: node tests/fuzz.mjs --seed ${{ matrix.seed }} --count 120
+      - name: 静态边界证明模糊(300 例)
+        run: node tests/proof_fuzz.mjs --count 300

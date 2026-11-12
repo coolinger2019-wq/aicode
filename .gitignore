@@ -10,3 +10,6 @@ __pycache__/
 
 # 构建缓存(ming build;内容寻址,本机生成)
 .ming-cache/
+
+# C 后端默认产物目录
+ming-cc-out/

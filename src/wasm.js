@@ -146,6 +146,79 @@ export function analyzeEligibility(check, compiled, opts = {}) {
   return c.analyze(opts);
 }
 
+// v0.53 阶段1(strict wasm):分层三态判定纯函数 —— run/check 的 wasm_status 与 --strict-wasm 共用。
+// 三态:none = 零 eligible;ok = eligible>0 且编译出字节 + WebAssembly 校验 + 桩导入实例化成功;
+// fallback = eligible>0 但编译回落/校验失败/实例化失败(即旧静默回落的全部形态)。
+// 复用既有存活信号而不另起炉灶:资格分析走同一 WasmCompiler.analyze(单一事实来源),
+// 逐函数拒绝定位与 MING_WASM_DEBUG 的 emitBody 探测同一路径;实例化桩按模块自报的
+// WebAssembly.Module.imports 生成——不复制 vm.js 的导入实现(名字/数量由产物自证,不会漂移)。
+// 纯函数:不读环境、不落盘、不改动 check/compiled 的既有语义(compiled.spans 只追加重复项,
+// 字节码索引不受影响)。返回 { status, eligible, reason }。
+export function wasmLayerStatus(check, compiled) {
+  if (!compiled || !Array.isArray(compiled.functions)) {
+    return { status: 'fallback', eligible: 0, reason: '无编译产物' };
+  }
+  const c = new WasmCompiler(check, compiled);
+  let order;
+  try {
+    const eligible = c.analyze(); // wasm 路径:不传扩展旗标(严格,与 tryWasm 一致)
+    if (eligible.size === 0) return { status: 'none', eligible: 0, reason: null };
+    order = [...eligible.keys()].sort((a, b) => a - b);
+  } catch (e) {
+    return { status: 'fallback', eligible: 0, reason: 'wasm 资格分析失败:' + (e?.message ?? e) };
+  }
+  const fns = compiled.functions;
+  let bytes = null;
+  try {
+    const wasmIdxOf = new Map(order.map((fi, ord) => [fi, ord]));
+    c.wasmOrder = order; // 与 run() 相同:emitBody 解析 eligible 调用索引依赖它
+    bytes = c.emitModule(fns, order, wasmIdxOf);
+  } catch (e) {
+    const msg = e instanceof Unsupported ? e.message : (e?.message ?? String(e));
+    // 逐函数探测定位回落函数(与 MING_WASM_DEBUG 的 '[wasm] fn … REJECT' 探测同一路径)
+    let bad = null;
+    for (const fi of order) {
+      try { c.emitBody(fns[fi], 3); }
+      catch (pe) { if (pe instanceof Unsupported) { bad = fns[fi].name ?? ('m' + fi); break; } }
+    }
+    return { status: 'fallback', eligible: order.length, reason: `wasm 编译回落(${bad ?? '未知函数'}):${msg}` };
+  }
+  if (typeof WebAssembly === 'undefined') {
+    return { status: 'fallback', eligible: order.length, reason: 'wasm 编译成功但宿主无 WebAssembly(实例化回落)' };
+  }
+  // 审查修复:模块校验/实例化回落此前不点名 Ming 函数(emit 期路径才点名)。V8 的
+  // "function #N" 用模块函数索引空间(导入在前,DEFINED_BASE 起是编译产物函数),
+  // 借此映射回 order[ord] → compiled.functions 名。校验失败时该索引未必可靠,
+  // 因此消息同时给出 eligible 全表(ord:name)与首个候选函数名,便于定位。
+  const eligibleDesc = order.map((fi, ord) => `${ord}:${fns[fi]?.name ?? ('m' + fi)}`).join(',');
+  const firstCandidate = fns[order[0]]?.name ?? ('m' + order[0]);
+  const suspectOf = (msg) => {
+    const m = /function #(\d+)/.exec(msg ?? '');
+    if (m) {
+      const ord = Number(m[1]) - DEFINED_BASE;
+      if (ord >= 0 && ord < order.length) return fns[order[ord]]?.name ?? ('m' + order[ord]);
+    }
+    return firstCandidate;
+  };
+  let mod = null;
+  try {
+    mod = new WebAssembly.Module(new Uint8Array(bytes));
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    return { status: 'fallback', eligible: order.length, reason: `WebAssembly.Module 校验失败(疑似函数 ${suspectOf(msg)};eligible=[${eligibleDesc}]):` + msg };
+  }
+  try {
+    const stub = {};
+    for (const imp of WebAssembly.Module.imports(mod)) {
+      (stub[imp.module] ??= {})[imp.name] = () => 0;
+    }
+    new WebAssembly.Instance(mod, stub);
+  } catch (e) {
+    return { status: 'fallback', eligible: order.length, reason: `wasm 实例化失败(首个候选 ${firstCandidate};eligible=[${eligibleDesc}]):` + (e?.message ?? e) };
+  }
+  return { status: 'ok', eligible: order.length, reason: null };
+}
+
 export class WasmCompiler {
   constructor(check, compiled) {
     this.check = check;
@@ -477,8 +550,11 @@ export class WasmCompiler {
     this.callImport(ctx, 0, []);
 
     this.compileBlockW(f.entry.decl.body, ctx, isVoid ? null : ctx.retTy, /* noTailFallback */ true);
-    if (!isVoid) {
-      // 检查器保证数值函数必然产生值;函数级兜底(块内不再重复)
+    if (!isVoid && !f.entry.decl.body.tail) {
+      // 检查器保证数值函数必然产生值;函数级兜底(块内不再重复)。
+      // v0.53 修复:仅当块无尾表达式时补零——有尾表达式时 compileBlockW 已压入返回值,
+      // 再补一个 0 会使函数末尾栈上留 2 个值 → WebAssembly.Module 校验失败("expected 1
+      // elements on the stack for fallthru, found 2")→ 整个 wasm 模块静默回落。
       this.compileZero(ctx, ctx.retTy);
     }
     instr.push(0x0b); // 函数 end
@@ -589,10 +665,13 @@ export class WasmCompiler {
         b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4004', span);
         b.push(0x0b);
-        this.localGet(ctx, s1); this.pushI64(ctx, -1n); b.push(0x51);
-        b.push(0x04); b.push(0x40);
-        this.localGet(ctx, s0); this.pushI64(ctx, I64_MIN); b.push(0x51);
-        b.push(0x83);                    // i64.and
+        this.localGet(ctx, s1); this.pushI64(ctx, -1n); b.push(0x51); // b == -1
+        this.localGet(ctx, s0); this.pushI64(ctx, I64_MIN); b.push(0x51); // a == i64.min
+        b.push(0x71);                    // i32.and(v0.53 审查修复:此前此处两处错误——
+                                         // ① opcode 误发 0x83 i64.and;② `if` 开在第二个比较
+                                         // 之前,块内只剩 1 个 i32。任一都会让整模块校验失败
+                                         // ("not enough arguments on the stack")→ 含 / 的
+                                         // eligible 函数全部静默回落 JS VM)
         b.push(0x04); b.push(0x40);
         this.emitPanic(ctx, 'M4002', span);
         b.push(0x0b);

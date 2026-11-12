@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.52.0** · 字节码 VM + WASM 分层 + **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.53.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测**)+ **C 后端 C1–C4**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + `--proof-report`)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **自举工具 12 个 + ming tools 统一入口** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -900,21 +900,21 @@ fn main() with io {
 
 | 命令 | 作用 |
 |------|------|
-| `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON |
+| `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON;`--strict-wasm`(或 `MING_WASM_STRICT=1`,v0.53)把 eligible>0 的 wasm 回落变成可见失败(exit 2 并点名原因;与 `--tree`/`--no-wasm` 互斥),`--json` additive `wasm_status: none\|ok\|fallback` |
 | 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
-| `ming build`(项目模式,v0.38 / 缓存 v0.49) | 项目检查通过后产出 **dist 可移植产物**:app.bytecode.json(或 app.ming 源码模式)+ runtime 拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑。**v0.49 起内容寻址缓存**:键 = 编译器版本 + 项目全部 .ming 源 + ming.toml(过包含保健全),命中且 dist 完整 → 跳过检查与编译;每次构建报告每模块**接口哈希**(签名/效果/契约规范化,排除函数体:`接口哈希:未变 N 个,变更 <文件>`);`--clean-cache` 清理缓存与 dist 并全量重建 |
-| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;插值串/Result 属 C4(显式拒绝) |
+| `ming build`(项目模式 v0.38 / 缓存 v0.49 / 构建键 v0.53) | 项目检查通过后产出 **dist 可移植产物**:app.bytecode.json(或 app.ming 源码模式)+ runtime 拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑。**v0.49 起内容寻址缓存**:键 = 编译器版本 + 项目全部 .ming 源 + ming.toml(过包含保健全),命中且 dist 完整 → 跳过检查与编译;每次构建报告每模块**接口哈希**(签名/效果/契约规范化,排除函数体:`接口哈希:未变 N 个,变更 <文件>`);`--clean-cache` 清理缓存与 dist 并全量重建。**v0.53**:构建键条目改为**项目相对路径 + 内容**(修复嵌套目录重复与同名文件交换漏检)并注入 **Node 主版本**;`--json` additive 增加 `build_key/dist_hash/cache_hit/source_count/interface_hashes`。可复现承诺:**同 OS + 同 Node 主版本**下两次 `--clean-cache` 构建 `dist_hash` 相同(不承诺跨 OS 位级一致) |
+| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3 / v0.42 C4 / v0.53 str for-in) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64])+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;`str` for-in 按 **UTF-8 码点**迭代(v0.53,ASCII/CJK/emoji 与 tree/VM 逐字一致);`--static` 静态链接;extern fn FFI(C4)。**已声明覆盖范围**:上述 eligible 形态及其调用/for-in/match 组合;`for-in` 的 `str` 源支持 Ident 局部/参数,字面量/字段/const 源仍发射期拒绝;插值串、Result 返回值、结构体/数组 FFI 参数不在此列——**不支持的语句形态在 C 发射期显式拒绝**(报 `C1 不支持该程序形态` 并 exit 1),需另用 JS 引擎运行 |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:聚合 `ming check --json` 的诊断码频次;v0.51.6 起参数可为**文件或目录**(目录递归收 .ming,跳隐藏/node_modules/dist)+ `--top N` 限量,缺省 Top-10)——语法/检查改进的数据依据 |
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
 | 自举工具 v0.51.6 优化(脚本化纪律) | 9 个工具**错误走 stderr、失败退出码 1**(此前 stdout + 退出 0);`wc` 多文件附 total 行(单文件格式不变);`json_query` 点路径(`servers.0.host`:obj 段用键、arr 段用下标)+ 类型化输出(字符串裸输出,其余 JSON 原貌)+ 一次多路径;`diaghot` 目录展开 + `--top N`;`batch_rename` **幂等**(已带前缀跳过,重复运行不再叠加);`tree` 可选深度参数;`todo_scan` 增扫 .mjs/.cjs;12 个工具全部 `ming fmt --check` 规范 |
 | `ming tools [--list] <命令> [参数...] [-- 透传...]`(v0.50 / 透传 v0.51.6) | **自举工具统一入口**:去掉 `node bin/ming.js run tools/xxx.ming --` 的长命令行摩擦。`patch/patch-all/read/write/append/insert/insert-before/del/count` → mingkit;`edit` → 行级编辑器;`diff` → engdiff;`diag` → diaghot;`wc/tree/find/json/todo/log/rename/organize` → 其余工具;任意 `tools/<名>.ming` 亦可直接调用;`--` 之后的参数透传给工具本体(工具自有选项,如 `ming tools diag examples -- --top 5`)。CLI 进程内路由(工具本体仍是 Ming,无额外进程启动);编辑类沿用"恰好 1 处/越界拒绝"安全语义 |
-| `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52) |
+| `ming check f.ming [...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]` | 只做静态检查。`--proof-report`:逐函数证明统计(文本一行/函数;JSON 下为 additive `proofs` 字段,含逐义务 index/kind/obligation/反例);`--warn-unproven-index`:未证明的索引义务发 W3105(warning,不改退出码)(均 v0.52);`--strict-wasm`(v0.53):检查通过后验证 wasm 分层,任一文件回落 → exit 2 并点名原因(与 `--tree`/`--no-wasm` 互斥;JSON additive `wasm_status`) |
 | `ming test f.ming [--json] [--filter 名]` | 运行 test 块 |
 | `ming fmt f.ming [--write\|--check]` | 规范格式化;`--check` 用于 CI |
 | `ming doc f.ming [--json]` | 提取 `///` 文档 |
 
-- **退出码**:0 成功;1 有诊断;101 panic;2 工具链 bug。`main -> i64` 自定义退出码。
+- **退出码**:0 成功;1 有诊断;101 panic;2 工具链 bug 或 strict-wasm 可见回落(`--strict-wasm` 下 wasm 层 fallback;普通模式静默回落仍是 0)。`main -> i64` 自定义退出码。
 - **诊断协议**(所有命令 `--json`):
 
 ```json
@@ -1001,7 +1001,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 ## 23. 路线图
 
-逐版进度的**诚实口径**见 [docs/capabilities.md](docs/capabilities.md)(✅/🟡/❌ 矩阵,每版更新)。近版方向:
+逐版进度的**诚实口径**见 [docs/capabilities.md](docs/capabilities.md)(✅/🟡/❌ 矩阵,每版更新)。下表是 **v0.28–v0.43 历史节选**;v0.44 起的逐版内容见本文件 **§24 修订记录**,当前版本与下一版方向见 [README 路线图](README.md#路线图) 与 [docs/plan.md §4.2](docs/plan.md)。
 
 | 版本 | 内容 |
 |------|------|
@@ -1018,14 +1018,25 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.38(已完成) | `ming build` dist 可移植产物(launcher/args/panic 全路径)+ **原生后端(C)预研**(资格分析复用路线)+ 模糊器 if/else |
 | v0.39(已完成) | **C 后端 C1**(ming cc:eligible 数值函数 → C + GCC -O2,资格分析复用;顺带修复 wasm 四项休眠 bug 使端到端真正复活)+ 模糊器加深(f64/match/loop/Option/方法面 + C 第 4 腿)+ `with ffi` 设计定稿(design.md §6.9,不实现) |
 | v0.40(已完成) | **C2:str/Vec[i64] 入 C**(cat/eq/char_len/pad/slice/replace,下标 OOB,push/for-in/mut 传参值语义,match 含 guard)+ engdiff 自举工具 + 模糊器 cc 族拓宽 |
-| v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;**cc 差分腿 = 解释引擎全形态**,四种子 100%) |
+| v0.41(已完成) | **C3:Map[str,i64]/Option[i64]/str trim 族/f64 打印入 C**(floatStr 对齐 + JS 最短往返;cc 差分腿覆盖 v0.41 声明形态,四种子 100%;`str` for-in 于 v0.53 补齐) |
 | v0.42(已完成) | **C4:with ffi 兑现**(extern "库" fn 声明,隐含 ffi 效果,调用方须 with ffi;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym 真调用,M4013 失败路径;ming cc --static) |
 | v0.43(已完成) | **ffi 字符串桥 + Result[i64,str] 进 C 面 + with unsafe 设计定稿**(资格基线修正:opt/res 形参入形状面;prelude 构造器不再误降级不动点) |
-| 更远(北星对齐) | C2 str/Vec 全形态;C3 交叉编译 -static;C4 `with ffi`/`with unsafe`;async 运行时;eval 能力;RSA/国密;动态权限收回;形式化验证 |
+| 更远(北星对齐) | v0.54 `with unsafe`(C 原生指针最小面)→ v0.55 跨函数契约摘要;`mask`/async/eval/国密/RSA/形式化验证留待更远(见 plan §4.2) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.53.0(2026-11-12)
+
+- **CI 矩阵与 nightly(plan §4.2.4 任务 1)**:新增 `.github/workflows/ci.yml`——push/PR + 每日 schedule(03:17 UTC)+ workflow_dispatch。`test` job 覆盖 ubuntu/macos/windows × Node 18/20/22 **九组合**,每组合跑 `node tests/run.mjs`、`fuzz --seed 44044 --count 25`、`proof_fuzz --count 100`(timeout 20 分钟);`c-backend` job 在 ubuntu/macos × Node 20 上先探测 gcc/clang 再跑全量回归(C 相关测试自动启用;无编译器则自动跳过,不失败);`nightly` job 在 schedule 下用 44044/7/2026 **三种子**跑 `fuzz --count 120` + `proof_fuzz --count 300`(timeout 40 分钟)。只用官方 action(actions/checkout@v4、actions/setup-node@v4),零 npm 依赖。workflow 已用 PyYAML 做本地语法/结构静态校验;GitHub runner 上的实际矩阵结果以仓库 Actions 记录为准(本机无法代跑)。
+- **strict wasm 三态(--strict-wasm / MING_WASM_STRICT=1,任务 2)**:`wasmLayerStatus` 纯函数(src/wasm.js)把 wasm 层判定为 `none|ok|fallback`——`none` = 零 eligible;`ok` = 资格分析后编译、`WebAssembly.Module` 校验、按模块自报导入生成桩并实例化全部成功;`fallback` = 编译回落 / 校验失败 / 实例化失败(旧静默回落的全部形态)。`run --json` additive 增加 `wasm_status`(vm 模式;tree 键集不变;check 仅在 `--strict-wasm` 时输出聚合值);strict 模式下 eligible>0 但 fallback → **退出码 2** 并点名回落函数与原因;strict 与 `--tree`/`--no-wasm` 互斥(exit 1)。非 strict 行为逐字不变(静默回落仍 exit 0)。
+- **构建键修复(任务 4)**:`collectProjectSources` 改为每层返回本次新增条目(旧实现把共享数组 push 进自身,嵌套目录条目成倍重复);条目 = **项目相对路径(unix 斜杠)+ `\0` + 内容**,同名不同目录交换内容不再假命中;构建键注入 **Node 主版本**。`ming build --json` additive 增加 `build_key/dist_hash/cache_hit/source_count/interface_hashes`;旧缓存键一次性自然失效并重建。可复现承诺:**同 OS + 同 Node 主版本**下两次 `--clean-cache` 构建 `dist_hash` 相同(不承诺跨 OS 位级一致)。
+- **env -i launcher 验收(任务 3)**:AOT dist 异地拷贝 + 删除源目录 + 无关 cwd;POSIX 最小环境(`PATH/LANG`)与 Windows 最小环境(仅 `SystemRoot`)下 stdout/退出码/panic 首行与正常环境逐字一致;`--` 剥离与多字节 UTF-8 实参逐字透传。
+- **C 后端 `str` for-in(任务 5)**:按 **UTF-8 码点**迭代(非字节),与 tree/VM 的字符语义对齐;ASCII/CJK/emoji 三组黄金测试逐字一致(tree / VM(该形态 wasm 回落)/ VM-only / cc);fuzz 生成器补 `for ch in s { v += ch.char_len() as i64; }` 形态(有编译器时自动进 C 第 4 腿)。Backlog 的 "C str for-in" 缺口关闭(trim 族已于 v0.51.3 交付)。
+- **审查发现并修复(wasm 层,strict 暴露)**:非 void 函数以**尾表达式**结束时,函数级兜底补零在返回值之后再压一个值 → 函数末尾栈上 2 个值 → `WebAssembly.Module` 校验失败("expected 1 elements on the stack for fallthru, found 2")→ 整个 wasm 模块静默回落。`emitBodyOnce` 改为仅当块**无**尾表达式时补零;§57 v53.22 的 i64 尾表达式(while 后)程序 strict 下 `ok` 且经 wasm 执行。这解释了 `examples/fib.ming` 此前为何静默回落(语义正确但未走 wasm)。strict 同时如实报告其他**既有**回落形态(如 f64 + while 的局部槽类型、if 表达式的块类型索引);它们不影响语义(回落 JS VM),已登记 plan §4.2.8 Backlog。
+- **v0.53.0 独立审查修复(B1/B2/B3 阻断 + M1–M12 次要)**:B1 v53.9 fixture 改为**同名文件**(`lib/a.ming` 与 `lib/deep/a.ming`,交换内容后断言 `build_key` 变化)——旧 fixture basename 不同,旧实现也能通过;B2 `check --strict-wasm` fallback 与正常路径共用同一 out 构造(`ok:false` + `diagnostics` + `proofs` + `wasm_status`;文本模式先 `printDiags` 再报 strict 原因),`--proof-report` 的 proofs 不再丢失;B3 C 后端容器/区间 for-in 循环变量落入内层作用域(遮蔽外层同名变量不再发射 `v_ch_2` 未声明);M1 `run --json --no-wasm` 不输出 `wasm_status`(wasm 层未参与执行);M2 `WebAssembly.Module` 校验/实例化回落消息点名疑似函数并附 `eligible=[...]`(emit 期点名保留);M12 wasm `/` 守卫修复(opcode `0x83` i64.and → `0x71` i32.and,且 `if` 移到两个比较之后)——含 `/` 的 eligible 函数现 strict `ok` 且真实经 wasm 执行;M6 测试夹具/模糊器默认剥离 `MING_WASM_STRICT`(开发者导出该变量不再让套件假失败);M7 `build --json` stdout 纯 JSON(人读"产物:"行改走 stderr);M9 CI test job 增加 `node bin/ming.js run examples/fib.ming --strict-wasm`,§57 断言 `[wasm] fn fib OK` 且无实例化失败。文档同步:C 后端拒绝措辞统一为"发射期显式拒绝(报 `C1 不支持该程序形态` 并 exit 1);需另用 JS 引擎运行",for-in str 源覆盖范围(仅 Ident 局部/参数)写入 GUIDE。
+- 测试:**628 项全绿**(§57 共 31 项 v53.*:strict wasm 7 + 构建可信性 6 + env -i 3 + C str for-in 3 + CI/版本收口 2 + wasm 尾表达式 1 + 独立审查修复 9);`fuzz --seed 44044 --count 25` 0 分歧;`proof_fuzz --count 100` 0 误报。
 
 ### v0.52.0(2026-11-12)
 
@@ -1236,7 +1247,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 ### v0.41.0(2026-11-10)
 
-- **C 后端 C3:Map/Option/f64 打印进入 C 面**(`ming cc`,src/cbackend.js)——**cc 差分腿覆盖 = 解释引擎全形态**:
+- **C 后端 C3:Map/Option/f64 打印进入 C 面**(`ming cc`,src/cbackend.js)——**cc 差分腿覆盖 v0.41 声明形态**(不承诺解释引擎全形态;`str` for-in 于 v0.53 补齐):
   - Map[str,i64] = `ming_map{d,n,cap}`(插入序线性表;set 已有键原位更新;值语义 = let/赋值/mut 传参 ming_map_copy);下标缺键 M4007 消息逐字对齐(键经 debugStr 引号);set/has/get(→Option)/delete/clear/len/is_empty;for-in `(k, v)` 元组模式。
   - Option[i64] = `ming_opt{some,v}`;Some/None 构造(裸 `None` 标识符与 `Some(x)` 调用两种形态);unwrap(M4006 `对 None 调用 unwrap()` 逐字)/unwrap_or/is_some/is_none;Vec.pop/get → Option。
   - float→int 截断:`ming_f2i_sat/ming_f2u_sat`(向零截断 + 饱和;NaN → min/0,与 interp castValue 逐字对齐)。
@@ -1244,8 +1255,8 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
   - str:trim/trim_start/trim_end(JS 空白集 UTF-8 实现)/starts_with/ends_with。
   - 方法 base 统一为"非 Ident 求值一次入临时"(修复链式 `m.get(k).unwrap_or(0)` 的 oi64 base 无发射路径 + 双求值);`ming cc --no-run`(只构建不运行——运行退出码 = 程序退出码,差分工具据此分离构建与运行)。
 - **检查器第六处 valuePos 缺位**:内建调用实参(`str(if …)` 实参返回 unit)——checkExpr 值位置清单补齐内建 args。
-- **模糊器 cc 族 = wide 全形态**:新增 mapx 形态(set 覆盖/has/get/len/for-in(k,v)/delete);option/f64 解锁进 cc 族;f64 形态直接 `print(str(f))`(floatStr 差分);生成器 `fabs` → `abs` 修正。四种子(20261109/39039/35035/40040/40041)全 100% 一致,C 腿 11-24 条/轮。
-- 测试:401 项全绿(§36 新增:C3 综合四方一致/unwrap None/M4007 缺键 panic 对齐/C3 全形态模糊档)。
+- **模糊器 cc 族拓宽(wide 形态)**:新增 mapx 形态(set 覆盖/has/get/len/for-in(k,v)/delete);option/f64 解锁进 cc 族;f64 形态直接 `print(str(f))`(floatStr 差分);生成器 `fabs` → `abs` 修正。四种子(20261109/39039/35035/40040/40041)全 100% 一致,C 腿 11-24 条/轮。
+- 测试:401 项全绿(§36 新增:C3 综合四方一致/unwrap None/M4007 缺键 panic 对齐/C3 宽形态模糊档)。
 
 ### v0.40.0(2026-11-10)
 

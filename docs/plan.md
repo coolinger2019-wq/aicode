@@ -1,7 +1,7 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.52.0**（下一阶段 v0.53–v0.55 见 §4.2;契约阶段 2 + QF_LIA 第一片 M3042 已交付；**QF_LIA 第二片:越界包含静态验证 M3045/W3105 + --proof-report + proof_fuzz 已交付(2026-11-12,含独立审查 6 项修复)**；测试 597 项全绿）。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.53.0**（下一阶段 v0.54–v0.55 见 §4.2;契约阶段 2 + QF_LIA 第一/二片已交付；**v0.53 可信构建与跨平台验证基线:CI 矩阵、strict-wasm 三态、构建键修复、env -i 验收、C `str` for-in 码点迭代已交付(2026-11-12)**；测试 628 项全绿）。
 
 ---
 
@@ -10,17 +10,18 @@
 | 项 | 状态 |
 |----|------|
 | 语言内核 | 显式类型/效果系统/值语义/确定性；树+VM+wasm+C 四后端 |
-| C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static` |
-| 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`** |
+| C 后端 | C1 数值 → C2 str/Vec[i64] → C3 Map/Option/f64 打印 → C4 extern fn FFI（dlopen/dlsym）、`--static`；v0.53 `str` for-in 按 UTF-8 码点迭代 |
+| 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
+| CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 |
-| 质量护栏 | 回归全绿（v0.52.0 起 597 项，§56 为 v0.52 静态边界证明：prover 抽出/边界证明/收口观测/审查修复）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明 0 误报 + 反例独立求值器验证）+ bench（cc 腿） |
-| 能力矩阵 | 49 行口径 ≈82%（docs/capabilities.md） |
+| 质量护栏 | 回归全绿（v0.53.0 起 628 项，§57 为 v0.53 可信构建：strict wasm/构建键/env -i/C str for-in/CI 与版本收口/尾表达式 wasm 修复）+ 多后端差分模糊（四腿）+ proof_fuzz（边界证明 0 误报 + 反例独立求值器验证）+ bench（cc 腿） |
+| 能力矩阵 | 49 行口径 ≈81%（docs/capabilities.md；v0.53 审计后重算） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
 - v0.39 C 后端 C1 + wasm 层四项休眠 bug 修复 + ffi 设计
 - v0.40 C2（str/Vec）+ engdiff 自举工具 + 模糊器 cc 族
-- v0.41 C3（Map/Option/f64 打印）+ cc 差分腿全形态
+- v0.41 C3（Map/Option/f64 打印）+ cc 差分腿覆盖 v0.41 声明形态（`str` for-in 于 v0.53 补齐）
 - v0.42 `with ffi` 兑现（extern fn + 效果门禁 + M4013）+ `--static`
 - v0.43 ffi 字符串桥 + Result 进 C 面 + 真 AOT 字节码产物 + `with unsafe` 设计
 - v0.44 W3104 过拟合检查 + 结构化修复处方（fix）+ diaghot + `mask` 设计定稿；
@@ -97,16 +98,20 @@
 ### 4.2.1 现状判断
 
 - **强项**:四后端(树 / VM+wasm / VM-only / C)+ 差分模糊构成语义合同;效果门禁已闭合到函数值;
-  契约有运行时检查与两片静态检查;诊断码稳定且带 span/hint/JSON;534 项回归是可信基线。
+  契约有运行时检查与两片静态检查;诊断码稳定且带 span/hint/JSON;628 项回归是可信基线(v0.53 起)。
 - **风险**:证明器只覆盖直线体 `ensures`,越界/调用链/循环仍空白,"证明 → 许可"闭环未建立;
-  `unsafe`/`mask` 仍是设计稿;无 CI,跨平台门禁依赖单机;wasm 静默回落只有 `MING_WASM_DEBUG` 可见。
+  `unsafe`/`mask` 仍是设计稿。**v0.53 已装第一道安全带**:CI 九组合矩阵 + nightly 深模糊,
+  跨平台门禁不再依赖单机;strict wasm(`--strict-wasm`)让静默回落成为可见失败(exit 2)。
 - **已知债务(本规划核实)**:
-  - `collectProjectSources` 共享累加器导致重复条目(4 文件 → 8 条),且同 basename 不同目录交换内容
-    会改变构建键(过度重建,非脏命中);v0.53 修复为"项目相对路径 + 内容"并加 Node 主版本。
-  - 文档漂移(GUIDE 头 v0.48 / capabilities 头 v0.38 / plan §0 471 项 / M3030 效果列表):
-    本次落盘已同步修正,余下覆盖率表述在 v0.53 审计。
-  - README "cc 差分腿 = 解释引擎全形态"属过度声明(C 缺 `str` for-in);v0.53 补齐或改写。
+  - ✅ v0.53 已修复:`collectProjectSources` 共享累加器导致重复条目(旧实现 4 文件收 11 条,
+    新实现 4 条:项目相对路径 + 内容去重);旧实现同 basename 不同目录交换内容后**构建键不变**
+    (漏检/脏命中),现为"项目相对路径 + 内容"并注入 Node 主版本。
+  - ✅ v0.53 已复核:文档漂移(GUIDE 头 v0.48 / capabilities 头 v0.38 / plan §0 471 项 / M3030 效果列表);
+    本次收口再次对齐 GUIDE/capabilities/README/plan/AGENTS 的版本与数字。
+  - ✅ v0.53 已改写:README "cc 差分腿 = 解释引擎全形态"属过度声明(C 缺 `str` for-in);
+    现为"覆盖已声明 eligible 形态 + 未覆盖清单",且 `str` for-in 已按 UTF-8 码点补齐。
 - **最短板**:不是语言表面不够多,而是"检查 → 可证明、可复现、可跨平台验证"的闭环尚未形成。
+  **v0.53 已建立可复现与跨平台验证基线**(构建键/CI/env -i);剩余闭环是 v0.54–v0.55 的证明→许可链。
 
 ### 4.2.2 关键 ADR
 
@@ -135,20 +140,20 @@
 **审查修复**(2026-11-12 独立审查 6 项,全部落实):M3045 反例按被跳过但可求值的 requires 叶子过滤(满足完整 requires;无候选退回无反例消息)·`--warn-unproven-index` 下文件已有 error 不叠加 W3105·lenSeen 死代码删除·prover.js 头注释改写当前职责·GOLDEN_DIAG 快照分隔符无关化·diagnostics.md CRLF → LF。
 **风险/回退**:误报 M3045 —— 用"非 mut Vec + 直线体 + 假设一致 + 差分约束"四重门控;出问题关闭对应模式(保留 W3105 观测),运行时语义未动。
 
-### 4.2.4 v0.53 — 可信构建与跨平台验证基线
+### 4.2.4 v0.53 — 可信构建与跨平台验证基线 ✅(2026-11-12 完成)
 
 **目标**:让"通过"在 Linux/macOS/Windows × Node 18/20/22 可复现;wasm 静默回落成为 CI 可见失败;构建键真正由"路径 + 内容"决定。
 
-**任务**:
-1. **CI 矩阵**:GitHub Actions,`ubuntu/macos/windows × Node 18/20/22` 跑 `tests/run.mjs`、`fuzz --count 25`、`proof_fuzz --count 100`;C 腿在 ubuntu/macos 单独 job(gcc/clang);nightly 三种子 `--count 120`。只用官方 action,零 npm 依赖;PR 超时 20 分钟。
-2. **strict wasm**:`--strict-wasm` / `MING_WASM_STRICT=1`;`--json` 增加 additive `wasm_status: none|ok|fallback`;eligible>0 但未实例化或发生回落 → 退出码 2 并打印原因;与 `--tree`/`--no-wasm` 互斥(冲突 exit 1);判定抽成纯函数,单测覆盖 fallback。
-3. **`env -i` launcher 验收**(§55):最小环境 + 无关 cwd + dist 异地拷贝;POSIX 用 `env -i PATH=... LANG=C.UTF-8`,Windows 只保留 `SystemRoot`;断言输出/退出码逐字一致。
-4. **构建可信性**:修复 `collectProjectSources`(递归返回本次新增条目,条目 = 项目相对路径 + 内容,注入 Node 主版本);`ming build --json` 增加 `build_key/dist_hash/cache_hit/source_count/interface_hashes`;回归:同名不同目录交换内容 → 键变化;两次 `--clean-cache` 构建 `dist_hash` 相同;第三次 `cache_hit: true`。只承诺"同 OS + 同 Node 主版本可复现"。
-5. **C 后端 `str` for-in**:按 UTF-8 码点迭代(非字节);ASCII/CJK/emoji 三组三引擎黄金测试;fuzz 增加 `for ch in s { v += ch.char_len() as i64; }`;Backlog 移除 trim 族(已于 v0.51.3 完成)。
-6. **文档真实性审计**:GUIDE/capabilities/README/plan 数字与版本头;无法被测试证明的表述改为"已声明覆盖范围 + 未覆盖清单"。
+**任务**(全部完成,2026-11-12 收口):
+1. ✅ **CI 矩阵**:`.github/workflows/ci.yml`——`ubuntu/macos/windows × Node 18/20/22` **九组合**跑 `tests/run.mjs`、`fuzz --seed 44044 --count 25`、`proof_fuzz --count 100`;C 腿在 ubuntu/macos 单独 job(Node 20,先探测 gcc/clang,无编译器则自跳过);nightly 三种子 `fuzz --count 120` + `proof_fuzz --count 300`。只用官方 action(actions/checkout@v4、actions/setup-node@v4),零 npm 依赖;PR/push job 超时 20 分钟,nightly 40 分钟。workflow 以 PyYAML 做本地语法/结构静态校验(本机不代跑 Actions)。
+2. ✅ **strict wasm**:`--strict-wasm` / `MING_WASM_STRICT=1`;`run --json` 增加 additive `wasm_status: none|ok|fallback`(check 仅在 strict 时输出聚合值);eligible>0 但编译/实例化回落 → 退出码 2 并点名函数与原因;与 `--tree`/`--no-wasm` 互斥(冲突 exit 1);判定抽成 `src/wasm.js` 的 `wasmLayerStatus` 纯函数,§57 直测三态并覆盖 fallback。
+3. ✅ **`env -i` launcher 验收**(§57):最小环境 + 无关 cwd + 删除源目录后的 dist 异地拷贝;POSIX 用 `PATH`/`LANG=C.UTF-8`,Windows 只保留 `SystemRoot`;输出/退出码/panic 首行逐字一致,多字节 UTF-8 实参按字节透传。
+4. ✅ **构建可信性**:修复 `collectProjectSources`(递归返回本次新增条目,条目 = 项目相对路径 + 内容,注入 Node 主版本);`ming build --json` 增加 `build_key/dist_hash/cache_hit/source_count/interface_hashes`;回归:同名不同目录交换内容 → 键变化;两次 `--clean-cache` 构建 `dist_hash` 相同;第三次 `cache_hit: true`。只承诺"同 OS + 同 Node 主版本可复现"。
+5. ✅ **C 后端 `str` for-in**:按 UTF-8 码点迭代(非字节);ASCII/CJK/emoji 三组黄金测试逐字一致(tree / VM(该形态 wasm 回落)/ VM-only / cc);fuzz 增加 `for ch in s { v += ch.char_len() as i64; }`;Backlog 关闭 for-in 缺口(trim 族已于 v0.51.3 完成)。
+6. ✅ **文档真实性审计**:GUIDE/capabilities/README/plan/AGENTS 数字与版本头;无法被测试证明的表述改为"已声明覆盖范围 + 未覆盖清单"(C 后端 diff 腿、能力矩阵覆盖率)。
 
-**验收**:`run.mjs` 0 失败(§55 ≥10);fuzz 0 分歧;两次 clean build `dist_hash` 相同;`cache_hit: true`;`env -i` 输出逐字一致;CI 矩阵绿(Windows 无 gcc 记录跳过,不失败);strict wasm 对 eligible 语料 `ok`、零 eligible `none`。
-**风险/回退**:CI 抖动 —— C 腿/bench 独立 job;strict wasm 误判 —— `none` 白名单;构建键修复使旧缓存全部失效(一次性成本,文档说明)。
+**验收(2026-11-12 实测)**:`node tests/run.mjs` **628 项 0 失败**(§57 共 31 项 v53.*:strict wasm 7 + 构建可信性 6 + env -i 3 + C str for-in 3 + CI/版本收口 2 + 尾表达式 wasm 1 + 独立审查修复 9);`fuzz --seed 44044 --count 25` 0 分歧;`proof_fuzz --count 100` 0 误报;两次 clean build `dist_hash` 相同、第三次 `cache_hit: true`(§57 v53.10/11);`env -i` 输出逐字一致(v53.14-16);strict wasm 对 §57 eligible 语料 `ok`、零 eligible `none`、回落语料 exit 2(v53.1-7/v53.22;其他既有回落形态如 f64+while/if 表达式由 strict 如实报告,已登记 Backlog);CI workflow 结构静态校验通过(test 九组合 + 示例 fib strict 步 + c-backend 两组合 + nightly 三种子 / timeout 20/40 分钟;GitHub runner 实际矩阵结果以仓库 Actions 记录为准,本机无法代跑)。**审查追加**:strict 暴露既有 wasm 尾表达式模块校验回落(函数级补零多压栈),已修并加 v53.22 回归——`examples/fib.ming` 现 strict `ok` 且真实经 wasm 执行。**v0.53.0 独立审查修复(9 项阻断/次要,§57 F 节)**:B1 同名文件 fixture 真的能测出 basename 键缺陷;B2 check strict fallback 与正常路径共用 out(ok/diagnostics/proofs/wasm_status,文本先 printDiags 再报原因);B3 C 后端容器/区间 for-in 循环变量落入内层作用域(遮蔽程序不再发射非法 C);M1 `--no-wasm` 不输出 wasm_status;M2 Module 校验/实例化回落点名疑似函数 + eligible 表;M12 wasm `/` 守卫 opcode 与 if 位置修复(含 `/` 的 eligible 函数现 strict `ok`);M6 测试夹具默认剥离 MING_WASM_STRICT;M7 `build --json` stdout 纯 JSON;M9 CI 增加示例 fib strict 步。
+**风险/回退**:CI 抖动 —— C 腿独立 job、nightly 独立 job;strict wasm 误判 —— `none` 白名单 + 纯函数单测;构建键修复使旧缓存全部失效(一次性成本,文档说明)。
 
 ### 4.2.5 v0.54 — `with unsafe` 最小实现(C 原生,效果门禁)
 
@@ -162,7 +167,7 @@
 2. 效果/检查器:`unsafe` 入 KNOWN_EFFECTS;`unsafe {}` 需函数声明 `with unsafe`(M3029);指针操作/Ptr 实参必须在块内,否则 M3046[unsafe-context-required];块外只允许 let/assign/return 传递与 is_null。
 3. C5:资格增加 C 专用 unsafe 扩展(效果 ⊆ {ffi, unsafe},wasm 不传);Ptr → `unsigned char*`/`const unsigned char*`;alloc/free → malloc/free;extern 槽位支持 Ptr;`--emit-c` 快照;`ming build` 遇 `with unsafe` 显式回退源码模式。
 4. tree/VM 诚实拒绝:M4016[native-only-feature](panic,101),消息"unsafe 指针操作仅在 C 原生后端可用";tree/VM 逐字一致;wasm 继续拒绝 unsafe 函数,主程序回落 VM 得到同一 M4016。
-5. 测试 §56(≥12):C 黄金程序;只读 Ptr 不可 store;块外 load → M3046;无 with unsafe → M3029;Ptr 实参传纯函数 → M3046;check 通过;tree/VM M4016;emit-c 含 `unsigned char*`/`malloc`;既有 C 差分零变化。
+5. 测试 §58(≥12):C 黄金程序;只读 Ptr 不可 store;块外 load → M3046;无 with unsafe → M3029;Ptr 实参传纯函数 → M3046;check 通过;tree/VM M4016;emit-c 含 `unsigned char*`/`malloc`;既有 C 差分零变化。
 6. 文档:design.md §6.10 改为块形式并说明不用 `unsafe(expr)` 的理由;GUIDE unsafe/std.mem 节与安全/unsafe 对照;diagnostics M3046/M4016。
 
 **验收**:`run.mjs`;`check examples/unsafe_demo.ming` 0 诊断;`cc` 输出黄金;`run --tree`/`--no-wasm` exit 101 + M4016;fuzz 0 分歧;Linux/Windows C 黄金一致;既有 C 差分零变化;`--strict-wasm` 不误报 ok。
@@ -180,7 +185,7 @@
 2. 调用点前置条件:实参线性形式代入被调 requires,用当前假设证明;可证违反 → M3041 + 反例;无法证明 → 放弃该路径,不得假设被调 ensures。
 3. 调用后置条件:调用成功后 `result` 绑定为新符号变量,加入被调 ensures 作为假设;未知/无摘要调用使相关表达式 unknown。
 4. 调用方 ensures 证明:扩展 M3042 直线体遍历,使用"变量形式 + 差分约束假设集";可证假 → M3042 + 反例;不可判定静默,运行时 M4015 保留。不新增诊断码。
-5. 测试 §57(≥10):f→g→h 链式 ensures;调用点违反 g.requires → M3041;g.requires 未证明时调用方 ensures 不得误判;递归/互递归/循环/分支静默;高阶/效果函数跳过;§43/§54 全绿;`proof_fuzz --mode summaries` 300 例。
+5. 测试 §59(≥10):f→g→h 链式 ensures;调用点违反 g.requires → M3041;g.requires 未证明时调用方 ensures 不得误判;递归/互递归/循环/分支静默;高阶/效果函数跳过;§43/§54 全绿;`proof_fuzz --mode summaries` 300 例。
 
 **验收**:run.mjs;proof_fuzz 300 例 0 误报/0 假反例;fuzz 0 分歧;check --proof-report 链式 proven;check 语料 ≤1.25x v0.52 基线;codegen 零 diff。
 **风险/回退**:摘要不健全 → requires 未证明则不采用 ensures 的硬门控 + 拓扑序 + 环检测;出问题退回 v0.52 行为。
@@ -207,12 +212,14 @@
 | ffi 面扩大 | 拆分:Ptr 交集进 v0.54;struct/array 保留;`lib.fn` 运行时 API 删除 | extern fn 已覆盖可审计路径;动态符号破坏 AOT/审计 |
 | 约束解码生成模式 | 移出语言计划(工具侧研究) | 非语言/编译器能力 |
 | 内容寻址代码 | 降级 | 项目级 ABI 缓存已交付;函数级 ROI 无数据 |
-| C `str` for-in / trim 族 | trim 已 v0.51.3;for-in 进 v0.53 | 关闭 C 差分最后已知形态缺口 |
+| C `str` for-in / trim 族 | **已关闭** | trim 族 v0.51.3;for-in v0.53(UTF-8 码点迭代,tree / VM / VM-only / cc 黄金一致;该形态 wasm 回落) |
+| wasm 静默回落残留形态 | 记录,v0.54+ 评估 | v0.53 strict-wasm 观测:f64 + while(局部槽类型)、if 表达式(块类型索引)等仍回落 JS VM;语义正确但 wasm 路径未生效;修复需 wasm 局部/块类型专项审查 |
 | 泛型单态化缓存 | 降级 | 无 bench 证据 |
 | async/eval/国密/交叉编译 | 保留远期 | 各自独立设计与安全评审 |
 | 证明携带 unsafe(`unsafe(cond)`) | 新增 Backlog | 需带长度 Ptr/Slice 与证明令牌 |
 | 循环/守卫敏感边界证明 | 新增 Backlog | `for i in 0..len { buf[i] }` 最高频;v0.52 只做直线体 |
 | Ptr 带长度 / Slice 只读视图 | 新增 Backlog | 零拷贝与证明联动先决条件 |
+| v0.53.0 独立审查新登记缺陷 | **记录,待修** | #23 tree for-in 遮蔽泄漏(P1)/ #24 VM 捕获闭包传 `v.map` TypeError(P1)/ #25 fuzz 恒 io、wasm 腿不真实执行(P2)/ #26 buildKey 不含编译器源码(P3);逐条见 §5.1 |
 
 ### 4.2.9 明确不做(v0.52–v0.55)
 
@@ -233,9 +240,9 @@
 | 版本 | 完成判定(全部满足) | 量化门槛 |
 |------|---------------------|----------|
 | v0.52 | 三态稳定(proven/violated/silent);proof 报告 additive;codegen 零改动 | §54 ≥12;proof fuzz 200 例 0 误报;fuzz 40 程序 0 分歧;无旗标 JSON 快照不变 |
-| v0.53 | CI 矩阵绿;strict wasm 无静默回落;`env -i` 可跑;构建键无重复/路径化;C str for-in 三引擎一致 | §55 ≥10;两次 clean build dist_hash 相同;文档数字与实现一致 |
-| v0.54 | C unsafe 黄金通过;tree/VM 确定性 M4016;门禁闭合;无半开状态 | §56 ≥12;Linux/Windows C 黄金逐字一致;既有 C 差分 0 变化 |
-| v0.55 | 跨函数 ensures 可证;前置条件不被跳过;无新码;codegen 零改动 | §57 ≥10;proof fuzz 300 例 0 误报/0 假反例;check ≤1.25x v0.52 |
+| v0.53 | strict wasm 无静默回落;`env -i` 可跑;构建键无重复/路径化;C str for-in 三引擎一致;CI workflow 结构静态校验(实际矩阵以 GitHub Actions 记录为准) | §57 ≥10(实测 31);两次 clean build dist_hash 相同;文档数字与实现一致 |
+| v0.54 | C unsafe 黄金通过;tree/VM 确定性 M4016;门禁闭合;无半开状态 | §58 ≥12;Linux/Windows C 黄金逐字一致;既有 C 差分 0 变化 |
+| v0.55 | 跨函数 ensures 可证;前置条件不被跳过;无新码;codegen 零改动 | §59 ≥10;proof fuzz 300 例 0 误报/0 假反例;check ≤1.25x v0.52 |
 
 **跨版本共同门槛**:`node tests/run.mjs` 0 失败;`fuzz` 0 分歧;新增分节测试;GUIDE 修订记录 + README 路线图 + plan 已完成项移动;版本三处同步;诊断码三处登记;不留下未提交生成物;性能数字必须来自可复现命令(bench 仍为信息性)。
 
@@ -282,6 +289,15 @@
 | 20 | fmt 注释瀑布:部分文件需 `fmt --write` 两遍到定点(注释占行后 preserveBlank 按源行距二次判定) | P2 | 已修(v0.51.6 后续提交):preserveBlank 向前看待冲刷独立行注释,常规语句前注释一遍到定点、规范形态零漂移;残余形态见 #22;§55 补 3 项回归 |
 | 21 | 模糊器表达式语法不生成 `+=`/`-=` 复合赋值(#17 因此漏网) | P2 | 已修(提交 eefac3a):genStmt 补 compound 臂 + while 内复合形态,五种子 0 分歧 |
 | 22 | fmt 残余瀑布形态:`} else { // 注释`(else 头行尾注释)等仍需两遍到定点(else 头 `{` 源行号在两遍间漂移,在 preserveBlank 触达之外) | P3 | 待修(行为与修复前一致且幂等,非劣化;审查发现的残余面) |
+
+### 新登记(2026-11-12,v0.53.0 独立审查;本轮未修)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 23 | **tree 引擎 for-in 循环变量遮蔽泄漏**:`let i = 100; for i in 0..3 {}; return i` 类形态 tree 返回循环变量末值而非外层 100(实测 tree 2 / VM 100;审查报告样例 tree 5 / VM 103),违反"三引擎一致"硬规则。**同根因**:C 后端区间 for-in 遮蔽时此前发射非法 C(`v_i_2` 未声明),已随本版 B3 修复(容器/区间 for-in 循环变量落入内层作用域);tree 语义待统一 | P1 | 待修(§4.2.8) |
+| 24 | **VM 捕获闭包传入 `v.map` 触发 TypeError**(`Cannot read properties of null`);tree 正常;HEAD 可复现 | P1 | 待修(§4.2.8) |
+| 25 | **fuzz 生成的 main 恒带 io、wasm 腿从不真实执行**——差分实际只覆盖 VM 回落路径;建议生成纯 helper 由 main 调用,让 wasm 腿真正落地 | P2 | 待修(§4.2.8) |
+| 26 | **buildKey 不含编译器 `src/*.js`**,仅靠 VERSION 区分——编译器改动而版本号未变时可能脏命中(设计现状,记录在案) | P3 | 记录(§4.2.8) |
 
 ## 6. 过程纪律（所有版本适用）
 

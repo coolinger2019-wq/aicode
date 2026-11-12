@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.51.6），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.53.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.51.6�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（568 项，含各版本分节 §1..§55；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（628 项，含各版本分节 §1..§57；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc）
 tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
@@ -47,7 +47,9 @@ GUIDE.md             使用指南 + 修订记录（每次改动必须登记）
 node bin/ming.js run   examples/hello.ming        # 运行（默认 VM+wasm）
 node bin/ming.js run   f.ming --tree              # 树引擎对照
 node bin/ming.js run   f.ming --no-wasm           # VM 关闭 wasm
+node bin/ming.js run   f.ming --strict-wasm       # wasm 回落可见失败（exit 2；与 --tree/--no-wasm 互斥）
 node bin/ming.js check f.ming --json              # 类型检查（JSON 协议，含 fix 处方）
+node bin/ming.js check f.ming --strict-wasm       # 检查 + wasm 分层存活验证（eligible 回落 → exit 2）
 node bin/ming.js test  f.ming                     # test 块
 node bin/ming.js fmt   f.ming --write             # 唯一风格
 node bin/ming.js build                            # 项目模式：dist 字节码产物（AOT；v0.49 内容寻址缓存，命中即跳过）
@@ -115,16 +117,17 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 
 ## 9. 已知陷阱
 
-- **wasm 静默回落**：`tryCompileWasm` 失败返回 null 不报错；排查用 `MING_WASM_DEBUG=1`，并要求 `[wasm] fn <名字> OK` 且无 `REJECT`。
+- **wasm 静默回落**：`tryCompileWasm` 失败返回 null 不报错；排查用 `MING_WASM_DEBUG=1`，并要求 `[wasm] fn <名字> OK` 且无 `REJECT`；或加 `--strict-wasm`（回落 → exit 2 并点名函数/原因）。已知残留形态（f64+while、if 表达式块类型）见 plan §4.2.8 Backlog。
 - **C 后端 panic 对齐**：`ming run` 的 panic stderr 含源码摘录与调用栈；C 侧只复刻**首行**（差分与测试均按首行比对）。
 - **CRLF**：C 产物用 `_setmode(_O_BINARY)` 关闭 CRLF 翻译；`.gitignore` 与会话工件保持干净。
 - **mingkit 转义**：只认 `\n \t \\` 一层；透明转义不存在，未知转义原样保留——嵌套 shell 时注意层数。
 - **`Json` 类型**：unify 曾有 json 缺失分支 bug（v0.44 修）；Json 值可赋值/传参，但结构体不自动序列化（M3033）。
 - **VM 操作数栈**：全帧共享 `valueStack`；`RET`/`?` 提前返回会截断到帧 `stackBase`（v0.44 修复 match-arm-return 残留）。
 - **fmt 需两遍到定点**：注释瀑布按源行距保留空行,一次 `--write` 后注释占行可能触发再排;跑到 `fmt --check` 全绿为止(2026-11-12 已登记 plan.md #20)。
-- **模糊器不生成 `+=`**：表达式语法无复合赋值臂——VM 窥孔 bug（v0.51.6 #17）因此漏网;语义可疑时先写最小 .ming 复现跑 `--tree` 对照,别只信模糊绿。
+- **strict-wasm 与解释器旗标互斥**：`--strict-wasm`（或 `MING_WASM_STRICT=1`）观测的正是 wasm 分层本身，与 `--tree`/`--no-wasm` 同时出现 → exit 1；strict 下 eligible>0 回落 → exit 2，非 strict 仍静默回落 exit 0（§57 v53.1-7 锁定）。
+- **模糊器覆盖不等于语义证明**：v0.51.6 起生成器已含 `+=/-=/*=`（含 while 内）；VM 复合赋值窥孔 bug 曾因早期生成器不生成 `+=` 漏网。语义可疑时仍要写最小 .ming 复现跑 `--tree` 对照，别只信模糊绿。
 
 ## 10. 当前状态与下一步
 
-- **v0.51.6**：568 项测试全绿；自举工具 12 个统一错误纪律（stderr/退出码）并全部 fmt 规范；VM 复合赋值窥孔（`x += N` N≠1 误融 ±1）与 fmt 两处缺陷（if 表达式崩溃、else-if 悬挂）已修；ABI 哈希构建缓存、契约阶段 2 + QF_LIA 第一片此前已完成。
-- 下一步见 `docs/plan.md §4.2`：v0.52 越界证明 → v0.53 可信构建/CI → v0.54 `with unsafe` → v0.55 跨函数契约摘要。
+- **v0.53.0**：628 项测试全绿；CI 矩阵（九组合 + C 腿 + nightly + 示例 fib strict 步）workflow 结构静态校验通过（实际矩阵以 GitHub Actions 记录为准，本机不代跑）；strict-wasm 三态（none/ok/fallback，回落 exit 2）；构建键修复（项目相对路径 + 内容 + Node 主版本；`build --json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes）；env -i launcher 验收；C 后端 `str` for-in 按 UTF-8 码点迭代；修复尾表达式函数的 wasm 模块校验回落（strict 暴露：函数级补零多压栈）；**v0.53.0 独立审查修复**（B1 同名文件构建键 fixture / B2 check strict fallback 保留 ok:false+diagnostics+proofs / B3 C 后端 for-in 遮蔽作用域 / M1 no-wasm 不报 wasm_status / M2 回落点名函数 / M12 wasm `/` 守卫 opcode 与 if 位置 / M6 env 剥离 / M7 build --json 纯 JSON / M9 CI 示例 strict）；ABI 哈希构建缓存、契约阶段 2 + QF_LIA 第一/二片此前已完成。
+- 下一步见 `docs/plan.md §4.2`：v0.54 `with unsafe` → v0.55 跨函数契约摘要。

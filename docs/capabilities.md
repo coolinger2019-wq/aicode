@@ -1,6 +1,6 @@
-# Ming 能力矩阵(v0.38 基线审计;当前 v0.51.5)
+# Ming 能力矩阵(v0.38 基线审计;当前 v0.53.0)
 
-> 本表是 v0.38 时的全面审计。v0.39–v0.51.5 的能力增量以 `GUIDE.md` 修订记录为准;v0.53 将做一次新的全面审计。
+> 本表是 v0.38 时的全面审计。v0.39–v0.53 的能力增量以 `GUIDE.md` 修订记录为准;v0.53 已复核契约/C 后端/CI 相关行并重算覆盖率。
 
 对照"标准库金字塔"的诚实审计。✅ 生产语义 / 🟡 雏形(有硬限制)/ ❌ 缺失。
 
@@ -55,7 +55,7 @@
 |------|------|------|
 | 结构化并发(spawn/spawn_all/join/scoped) | ✅ | worker 隔离 + wire 边界 |
 | 子任务错误隔离(Err 化) | ✅ | panic → join Err |
-| 诊断协议(错误码+位置+hint+JSON) | ✅ | 40+ 码 |
+| 诊断协议(错误码+位置+hint+JSON) | ✅ | src/diag.js CODES 71 码(含 M4013);docs/diagnostics.md 可查 |
 | panic 调用栈 | ✅ | Ming 层栈 |
 | 日志库(级别/开关) | ✅ | std.log(v0.28):debug/info/warn/error,set_level/get_level,阈值过滤,stderr 输出;无文件输出/结构化字段 |
 | 错误链(cause) | ✅ | v0.30:join_detailed(Json {code,message,stack})、scoped 子 panic 真实码透传 + Panic.cause、诊断协议 cause 字段;顺带修复 panic 调用栈从未填充的缺口 |
@@ -65,12 +65,12 @@
 | 位运算 | ✅ | checked 位运算(& \| ^ << >>)+ 位截断 as(全引擎一致,溢出语义显式) |
 | 字节序/位域解包 | ✅ | v0.35:std.bin pack/unpack × u16/u32/u64 × le/be(纯函数,显式端序);位域与 struct packing 判定不做(设计记录 GUIDE std.bin 节) |
 | 字节流正则 | ✅ | v0.36:std.re is_match_bytes/find_bytes/replace_bytes(latin1 无损桥接,\xNN 原始字节匹配) |
-| FFI(外部函数接口) | ✅ | v0.42 兑现:extern "库" fn 声明(隐含 ffi 效果,M3029 门禁;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym,M4013 启用);v1 面 = 数值签名,字符串/结构参数待扩展 |
-| 原生 C 后端(C1/C2) | 🟡 | v0.39 C1(数值函数 → C + GCC -O2,资格分析复用;基准对标 wasm ~10x);v0.40 C2(str/Vec[i64]/match/for-in 值语义;Map/f64 打印/交叉编译待 C3) |
+| FFI(外部函数接口) | ✅ | v0.42 兑现 + v0.43 字符串桥:extern "库" fn 声明(隐含 ffi 效果,M3029 门禁;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym,M4013)。**已声明覆盖范围**:数值(i64/u64/f64)与 str 参数/返回(ming_str ↔ NUL 结尾 C 串)、Result[i64,str] 进 C 面;**未覆盖**:结构体/数组 FFI ABI、运行时动态符号 API(`lib.fn`,Backlog 已删除) |
+| 原生 C 后端(C1–C4) | 🟡 | v0.39 C1(数值函数 → C + GCC -O2,资格分析与 wasm 同源;基准对标 wasm ~10x);v0.40 C2(str/Vec[i64]/match/for-in 值语义);v0.41 C3(Map/Option/f64 打印 + floatStr);v0.42 C4(extern fn FFI);v0.53 `str` for-in 按 UTF-8 码点迭代。**已声明覆盖范围**:eligible 形态(数值/str/Vec[i64]/Map[str,i64]/Option[i64]/Result[i64,str]/ffi 函数及其调用/for-in/match);**未覆盖**:插值串、结构体/数组 FFI ABI、交叉编译;不支持的语句形态在 C 发射期显式拒绝(报 `C1 不支持该程序形态` 并 exit 1);需另用 JS 引擎运行 |
 | 内联汇编/直接 syscall | ❌ | 北星支柱 2:原生后端之后;经 `with unsafe` 门禁(效果系统即泛化 unsafe 块) |
 | 海量并发网络(10 万级连接) | ❌ | 北星支柱 3:需 async/green-thread 运行时(与确定性语义的调和待设计) |
 | L2/L3 原始包构造/嗅探 | ❌ | 北星支柱 3:原生后端之后;std.net 扩展 |
 | eval/热重载 | ❌ | 北星支柱 4:解释器即库,eval 可作显式能力(`with eval`)落地,成本低于多数语言 |
-| 交叉编译静态二进制 | 🟡 | v0.38:ming build dist 可移植目录(源 + 运行时 + launcher,Node 零依赖即跑);静态原生二进制待 C 后端(C3 里程碑) |
+| 交叉编译静态二进制 | 🟡 | v0.38:ming build dist 可移植目录(源 + 运行时 + launcher,Node 零依赖即跑);v0.42 `ming cc --static` 同平台静态链接。**未覆盖**:跨 OS/跨架构交叉编译(明确不承诺) |
 
-**覆盖率:v0.42.0 ≈ 82%**(口径:49 行,✅=1、🟡=0.5、❌=0 → 37✅ 5🟡 7❌;FFI 🟡→✅)。北星立项把安全工具六大支柱纳入矩阵(49 行),覆盖率反映"承诺的面"。
+**覆盖率:v0.53.0 ≈ 81%**(口径:49 行,✅=1、🟡=0.5、❌=0 → 37✅ 5🟡 7❌;(37 + 5×0.5) / 49 ≈ 80.6%)。北星立项把安全工具六大支柱纳入矩阵(49 行),覆盖率反映"承诺的面";v0.53 审计未改变行数与判定,仅修正旧版本描述、C/FFI 覆盖范围与覆盖率算术。

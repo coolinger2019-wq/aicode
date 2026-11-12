@@ -5,6 +5,7 @@
 //   v0.39:形态池加深(f64+math / match / loop / Option / Vec 方法 / str 方法 / for-range)
 //         + "纯数值族"程序接入 C 后端第 4 腿(检测到 gcc/clang 时;C1 拒绝 = 发射器回归)
 //   v0.51.6:生成器补复合赋值形态(+=/-=/*=,含 while 循环内)——覆盖 VM 窥孔融合路径(#17 P0 bug 曾因从不生成 += 而漏网)
+//   v0.53:str 臂偶发 for ch in s { v += ch.char_len() as i64; }(UTF-8 码点迭代,C 腿自动覆盖)
 // 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -48,6 +49,11 @@ function detectCC() {
   return null;
 }
 const CCBIN = detectCC();
+
+// v0.53 审查修复:子进程默认剥离 MING_WASM_STRICT——开发者 shell 导出该变量后
+// 每条 run 腿都会以 strict 语义 exit 2,差分结果整批失真。模糊器观测的是默认静默回落行为。
+const CHILD_ENV = { ...process.env };
+delete CHILD_ENV.MING_WASM_STRICT;
 
 // ---- 表达式生成:纯 i64;允许 panic(各后端须一致地 panic)----
 function genExpr(vars, depth) {
@@ -132,8 +138,13 @@ function genStmt(s, vars, strVar, mode, lines) {
     lines.push(`    for e in vv2${s} { acc${s} = acc${s} + e; }`);
     lines.push(`    ${v} = ${v} + acc${s};`);
   } else if (kind === 'str') {
-    lines.push(`    ${strVar} = ${strVar} + "${pick(['x', 'yy', '!'])}";`);
-    lines.push(`    ${v} = ${v} + ${strVar}.char_len() as i64;`);
+    // v0.53:偶发 str for-in(按 UTF-8 码点迭代;C 后端同形态差分)
+    if (rng() < 0.5) {
+      lines.push(`    for ch${s} in ${strVar} { ${v} += ch${s}.char_len() as i64; }`);
+    } else {
+      lines.push(`    ${strVar} = ${strVar} + "${pick(['x', 'yy', '!'])}";`);
+      lines.push(`    ${v} = ${v} + ${strVar}.char_len() as i64;`);
+    }
   } else if (kind === 'loop') {
     // v0.39:loop/break/continue(有界,必终止)
     const k = int(2, 6);
@@ -255,7 +266,7 @@ for (let i = 0; i < COUNT; i++) {
   const src = genProgram(mode);
   if (i === DUMP) { console.log(src); process.exit(0); }
   fs.writeFileSync(prog, src);
-  const run = (extra) => spawnSync(process.execPath, [MING, 'run', prog, ...extra], { encoding: 'utf8', cwd: ROOT, timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024 });
+  const run = (extra) => spawnSync(process.execPath, [MING, 'run', prog, ...extra], { encoding: 'utf8', cwd: ROOT, timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024, env: CHILD_ENV });
   const rt = run(['--tree']);
   const rw = run([]);
   const rj = run(['--no-wasm']);
@@ -265,7 +276,7 @@ for (let i = 0; i < COUNT; i++) {
   if (mode === 'cc') {
     fs.writeFileSync(ccSrc, src);
     // v0.41:--no-run 分离构建与运行 —— cc 的运行退出码 = 程序退出码(panic → 101),此前被误判为编译失败
-    const b = spawnSync(process.execPath, [MING, 'cc', ccSrc, '--no-run', '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 30000 });
+    const b = spawnSync(process.execPath, [MING, 'cc', ccSrc, '--no-run', '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 30000, env: CHILD_ENV });
     const exe = path.join(ccDir, 'ccfuzz' + (process.platform === 'win32' ? '.exe' : ''));
     if (b.status !== 0 || !fs.existsSync(exe)) {
       if ((b.stderr ?? '').includes('C1 不支持')) {
@@ -279,7 +290,7 @@ for (let i = 0; i < COUNT; i++) {
       console.error(`警告 #${i}:cc 编译失败(非 C1 拒绝),跳过该腿:${(b.stderr ?? '').slice(0, 120)}`);
       continue;
     }
-    const rc = spawnSync(exe, [], { encoding: 'utf8', timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024 });
+    const rc = spawnSync(exe, [], { encoding: 'utf8', timeout: TIMEOUT, maxBuffer: 4 * 1024 * 1024, env: CHILD_ENV });
     if (rc.status === null) { skipped++; continue; }
     norms.cc = norm(rc);
     ccLegs++;
