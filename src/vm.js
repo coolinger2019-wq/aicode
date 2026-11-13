@@ -66,8 +66,9 @@ export class VMInterp extends Interp {
         this.wasmObjTable = [];
         const objTable = this.wasmObjTable;
         // v0.32:线性内存引用与 bump 堆顶(ming_alloc/grow/copy_vec/参数写入共用)
+        // v0.60(#51):wasmParamTopStack 已删——参数堆顶改由 callCompiled 内
+        // paramTopSaved 局部保存/恢复(finally 口径,panic 路径同样复位)。
         this.wasmParamTop = 0;
-        this.wasmParamTopStack = [];
         const keyStr = (kh) => strTable[kh] ?? '';
         const imports = {
           ming: {
@@ -270,7 +271,9 @@ export class VMInterp extends Interp {
     for (const [name, entry] of tests) {
       const testName = name.slice(5);
       if (filter && !testName.includes(filter)) continue;
-      const sub = new VMInterp(this.check, { out: this.out, errOut: this.errOut, capture: true, stdin: this.stdin, maxSteps: this.maxSteps });
+      // v0.60(#54 一半):资源门禁旗标透传到测试子实例——此前只传 maxSteps,
+      // `ming test --max-alloc/--max-ms/--no-wasm` 对 test 块不生效。
+      const sub = new VMInterp(this.check, { out: this.out, errOut: this.errOut, capture: true, stdin: this.stdin, noWasm: this.noWasm, maxSteps: this.maxSteps, maxAlloc: this.maxAlloc, maxMs: this.maxMs });
       const r = { name: testName, ok: false, output: '', error: null, span: entry.decl.span };
       try {
         const idx = sub.compiled.fnIndexOfGet ? sub.compiled.fnIndexOfGet(entry) : sub.indexOfEntry(entry);
@@ -305,9 +308,14 @@ export class VMInterp extends Interp {
   }
 
   // bump 分配(8 字节对齐);配额计入 maxAlloc
-  mingAllocRaw(n) {
+  // v0.60(#51)计费原则(plan §4.4.4 任务 2 口径):值创建 + 外部输入边界计费;
+  // 派生值(deepCopy、json.parse、re.*、wasm 参数搬运)不重复计费——
+  // 参数搬运只是既有值的派生拷贝,tree/VM 均不计费,wasm 侧同口径。
+  // charge=false 供派生拷贝调用;latent:ming_grow/ming_copy_vec 的字节口径与
+  // tree/VM 元素口径差异已登记 plan §5.1(不在本版修)。
+  mingAllocRaw(n, charge = true) {
     const top = (this.wasmParamTop + 7) & ~7;
-    this.chargeAllocBytes(n, null);
+    if (charge) this.chargeAllocBytes(n, null);
     this.ensureWasmMem(top + n);
     this.wasmParamTop = top + n;
     return top;
@@ -316,10 +324,12 @@ export class VMInterp extends Interp {
   // Vec[i64]/Vec[f64] 实参 → 线性内存 [len][cap][elems](值语义:总是拷贝)
   // v0.59(P1 宿主补丁):调用方传的是 pt.el.k('int'/'float'),此前这里只认 'f64'
   // → f64 元素落入 BigInt(1.5) 分支抛 RangeError。统一按 'float' 识别(兼容 'f64')。
+  // v0.60(#51):搬运不计费(charge=false)——派生拷贝与 tree/VM 口径对齐,
+  // 此前实参搬运计入 maxAlloc 导致 wasm 路径多出 16+8n 字节(如 [1,2,3] 多 40)。
   wasmWriteVecNum(v, kind) {
     const a = v.a ?? [];
     const bytes = 16 + a.length * 8;
-    const ptr = this.mingAllocRaw(bytes);
+    const ptr = this.mingAllocRaw(bytes, false);
     this.ensureWasmMem(ptr + bytes);
     const dv = new DataView(this.wasmMemory.buffer);
     dv.setBigInt64(ptr, BigInt(a.length), true);
@@ -348,6 +358,9 @@ export class VMInterp extends Interp {
       const isVoid = sig.ret.k === 'unit';
       const retSigned = sig.ret.k === 'int' ? sig.ret.signed : true;
       const wasmArgs = [];
+      // v0.60(#51):参数堆顶保存——首次 vec 搬运前记住 bump 顶,调用后复位,
+      // 线性内存随调用复用(此前 push 的是搬运后的顶 → 永不复用,单调增长)。
+      let paramTopSaved = null;
       let ok = true;
       for (let i = 0; i < info.nParams; i++) {
         const a = args[i];
@@ -371,8 +384,8 @@ export class VMInterp extends Interp {
             if (process.env.MING_WASM_DEBUG) console.error('[wasm 参数回落] vec 形参收到', a?.t);
             ok = false; break;
           }
+          if (paramTopSaved === null) paramTopSaved = this.wasmParamTop;
           const ptr = this.wasmWriteVecNum(a, pt.el.k, !!sig.params[i]?.mut);
-          this.wasmParamTopStack.push(this.wasmParamTop);
           wasmArgs.push(ptr);
           continue;
         }
@@ -393,7 +406,6 @@ export class VMInterp extends Interp {
           const raw = exported(...wasmArgs);
           this.depth--;
           this.callStack.pop();
-          if (this.wasmParamTopStack.length) this.wasmParamTop = this.wasmParamTopStack.pop();
           if (isVoid) return UNIT;
           if (sig.ret.k === 'str') return V.str(this.wasmStrTable[raw] ?? '');
           if (sig.ret.k === 'vec') {
@@ -421,7 +433,14 @@ export class VMInterp extends Interp {
           if (e instanceof Panic) throw e;
           // wasm trap(RuntimeError:栈耗尽等)
           throw new Panic('M4005', `wasm 执行异常:${e?.message ?? e}`, span);
+        } finally {
+          // v0.60(#51):finally 复位——panic/trap 路径同样归还参数区,
+          // 线性内存随调用复用(返回值读回不依赖堆顶,只读 raw 处字节)。
+          if (paramTopSaved !== null) this.wasmParamTop = paramTopSaved;
         }
+      } else if (paramTopSaved !== null) {
+        // v0.60(#51):编组中途失败回落字节码——搬运块已无人引用,同样复位
+        this.wasmParamTop = paramTopSaved;
       }
     }
     const beforeLen = this.frames.length;

@@ -556,7 +556,10 @@ export class Interp {
     for (const [name, entry] of tests) {
       const testName = name.slice(5);
       if (filter && !testName.includes(filter)) continue;
-      const sub = new Interp(this.check, { out: this.out, errOut: this.errOut, capture: true, stdin: this.stdin, maxSteps: this.maxSteps });
+      // v0.60(#54 另一半):资源门禁旗标透传到测试子实例——与 VMInterp.runTests(vm.js)同形。
+      // --tree 时 VMInterp.runTests 回落到本方法,此前只传 maxSteps,--max-alloc/--max-ms
+      // 对 test 块不生效(VM/--no-wasm 路径已生效 → 三引擎分歧);noWasm 对纯 Interp 无害。
+      const sub = new Interp(this.check, { out: this.out, errOut: this.errOut, capture: true, stdin: this.stdin, noWasm: this.noWasm, maxSteps: this.maxSteps, maxAlloc: this.maxAlloc, maxMs: this.maxMs });
       const r = { name: testName, ok: false, output: '', error: null, span: entry.decl.span };
       try {
         sub.callUser(this.entry, entry, null, [], null);
@@ -600,7 +603,7 @@ export class Interp {
           throw new Panic('M4015', decl.requires.msg ? `契约违反: ${decl.requires.msg} (实际: false)` : '契约违反: requires (实际: false)', decl.requires.span ?? callSpan);
         }
       }
-      const v = this.execBlock(decl.body, fenv, { fnRet: entry.sig?.ret ?? null, fnEnsures: decl.ensures ?? null });
+      const v = this.execBlock(decl.body, fenv, { fnRet: entry.sig?.ret ?? null, fnEnsures: decl.ensures ?? null, bodyBlock: true });
       this.depth--;
       this.callStack.pop();
       this.ensuresStack.pop();
@@ -690,6 +693,11 @@ export class Interp {
     // v0.56(#28):块体在子环境执行——let 只写本块;块尾表达式/return/ensures 亦在子环境
     // 求值(沿 parent 可见外层变量)。if/match 臂/unsafe/sync scope/BlockExpr/循环体/函数体
     // 全部经此入口,自动获得词法块作用域;无绑定块复用父环境(blockNeedsScope)。
+    // v0.60(#47):仅函数体块(callUser/callLocalFn 传 bodyBlock)在块尾查 ensures——
+    // 表达式内嵌块(if 分支/match 臂/BlockExpr)的块尾不得二次触发同一函数的 ensures
+    // 求值,否则 ensures 含块尾表达式时无限重入(→ M4005);内层块一律传 bodyBlock:false。
+    const isBody = ctx?.bodyBlock === true;
+    const innerCtx = isBody ? { ...ctx, bodyBlock: false } : ctx;
     const benv = this.blockNeedsScope(block) ? this.childEnv(env) : env;
     // v0.59(#44):同块本地函数提升登记——块级条目语义(与 checker checkBlock 预登记、
     // 编译器 compileBlock 预编译同口径):本地 fn 在整个块内可见,互递归不要求声明序。
@@ -699,10 +707,10 @@ export class Interp {
         benv.localFns.set(s.decl.name, { name: s.decl.name, decl: s.decl, mod: benv.mod, env: benv });
       }
     }
-    for (const s of block.stmts) this.execStmt(s, benv, ctx);
+    for (const s of block.stmts) this.execStmt(s, benv, innerCtx);
     if (block.tail) {
       const tv = this.evalExpr(block.tail, benv);
-      this.checkEnsures(benv, tv, block.tail.span);
+      if (isBody) this.checkEnsures(benv, tv, block.tail.span);
       return tv;
     }
     return UNIT;
@@ -1275,7 +1283,7 @@ export class Interp {
           throw new Panic('M4015', decl.requires.msg ? `契约违反: ${decl.requires.msg} (实际: false)` : '契约违反: requires (实际: false)', decl.requires.span ?? e.span);
         }
       }
-      const v = this.execBlock(decl.body, fenv, { fnRet: null });
+      const v = this.execBlock(decl.body, fenv, { fnRet: null, bodyBlock: true });
       this.depth--; this.callStack.pop();
       this.ensuresStack.pop();
       this.contractEnvStack.pop();
@@ -1352,7 +1360,12 @@ export class Interp {
       case 'math.hypot': return V.float(Math.hypot(asF64(args[0]), asF64(args[1])), 64);
       case 'math.pi': return V.float(Math.PI, 64);
       case 'math.e': return V.float(Math.E, 64);
-      case 'io.read_line': return V.str(this.readLine());
+      case 'io.read_line': {
+        // v0.60(#52):stdin 行按 UTF-16 长度计费(外部输入边界)
+        const line = this.readLine();
+        this.chargeAllocBytes(line.length, span);
+        return V.str(line);
+      }
       // 日志(v0.28):级别过滤,`[LEVEL] msg` 到 stderr;set_level 非法值 = 程序员错误 → panic
       case 'log.debug': return this.logEmit(0, 'DEBUG', args[0].v);
       case 'log.info': return this.logEmit(1, 'INFO', args[0].v);
@@ -1368,6 +1381,11 @@ export class Interp {
       case 'time.now_ms': return V.int(BigInt(Date.now()), 64, true);
       // ---- std.fs(capability:调用方必须声明 fs 效果,检查器强制)----
       case 'fs.read_file': {
+        // v0.60(#52):外部输入边界计费——先 stat 取文件字节预记账再读;stat 失败交给
+        // 下方 readFileSync 出 Err 不计费;stat 成功但读失败保持已计费(偏保守:实际未读到也算配额)
+        let size = -1;
+        try { size = nodeFs.statSync(args[0].v).size; } catch { /* stat 失败:不计费,Err 由下方 read 出 */ }
+        if (size >= 0) this.chargeAllocBytes(size, span);
         try {
           const content = nodeFs.readFileSync(args[0].v, 'utf8');
           return V.enumv('builtin-res', 'Ok', [V.str(content)]);
@@ -1377,11 +1395,18 @@ export class Interp {
       }
       // v0.31 二进制 I/O 雏形:整文件 ↔ Vec[u8];单文件上限 8MB(无流式)
       case 'fs.read_bytes': {
+        // v0.60(#52):8MB 守卫后按文件字节计费(外部输入边界);stat 失败走 Err 不计费
+        let st;
         try {
-          const st = nodeFs.statSync(args[0].v);
+          st = nodeFs.statSync(args[0].v);
           if (st.size > 8 * 1024 * 1024) {
             return V.enumv('builtin-res', 'Err', [V.str('read_bytes:文件超过 8MB 上限(' + st.size + ' 字节): ' + args[0].v)]);
           }
+        } catch (e) {
+          return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
+        }
+        this.chargeAllocBytes(st.size, span);
+        try {
           const buf = nodeFs.readFileSync(args[0].v);
           return V.enumv('builtin-res', 'Ok', [V.vec([...buf].map(b => V.int(BigInt(b), 8, false)))]);
         } catch (e) {
@@ -1420,12 +1445,15 @@ export class Interp {
         catch { return V.bool(false); }
       }
       case 'fs.list_dir': {
+        let names;
         try {
-          const names = nodeFs.readdirSync(args[0].v, 'utf8');
-          return V.enumv('builtin-res', 'Ok', [V.vec(names.map(n => V.str(n)))]);
+          names = nodeFs.readdirSync(args[0].v, 'utf8');
         } catch (e) {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
+        // v0.60(#52):目录条目按元素数计费(外部输入边界)
+        this.chargeAllocBytes(names.length, span);
+        return V.enumv('builtin-res', 'Ok', [V.vec(names.map(n => V.str(n)))]);
       }
       case 'fs.make_dir': {
         try {
@@ -1487,6 +1515,8 @@ export class Interp {
         }
         const rest = this.stdin.slice(this.stdinPos);
         this.stdinPos = this.stdin.length;
+        // v0.60(#52):stdin 全量按 UTF-16 长度计费;进程内不可抢占边界(plan §4.4.4 任务 3;文档由 CLI agent 落 GUIDE)
+        this.chargeAllocBytes(rest.length, span);
         return V.str(rest);
       }
       case 'fs.remove_file': {
@@ -1756,7 +1786,12 @@ export class Interp {
       case 'time.sleep': {
         const ms = Number(args[0].v);
         if (Number.isFinite(ms) && ms > 0) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(ms, 3_600_000));
+          // v0.60(#53):阻塞内建受 --max-ms 钳制——等待时长钳到剩余配额(配额已尽不等待,
+          // 直接熔断检查),醒来立即 checkTimeQuota → M4012;不再绕过墙钟轮询
+          const rem = this.remainingMs();
+          if (rem <= 0) this.checkTimeQuota(span);
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(ms, rem)));
+          this.checkTimeQuota(span);
         }
         return UNIT;
       }
@@ -1828,6 +1863,8 @@ export class Interp {
     }
   }
 
+  // 进程内不可抢占边界(plan §4.4.4 任务 3;文档由 CLI agent 落 GUIDE):stdin 同步读阻塞
+  // 期间主线程无法执行任何熔断检查,--max-ms 对它不生效
   readLine() {
     if (!this.stdinLoaded) {
       if (this.stdin === null) {
@@ -1879,7 +1916,12 @@ export class Interp {
       return V.enumv('builtin-res', 'Err', [V.str('无法启动 exec worker: ' + e.message)]);
     }
     const int32 = new Int32Array(sab);
-    const wr = Atomics.wait(int32, 0, 0, 60000);
+    // v0.60(#53):等待钳到剩余墙钟配额——配额已尽直接熔断(M4012)不等待,唤醒后再查一次;
+    // worker 内部 55s 超时不动:子进程自身有界,主线程侧配额负责全局墙钟(文档边界)
+    const rem = this.remainingMs();
+    if (rem <= 0) this.checkTimeQuota(span);
+    const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(60000, rem)));
+    this.checkTimeQuota(span);
     if (wr === 'timed-out') {
       worker.terminate();
       return V.enumv('builtin-res', 'Err', [V.str('exec 超时(60s): ' + cmd)]);
@@ -1893,6 +1935,8 @@ export class Interp {
     if (parsed.exit === -1 && parsed.stderr) {
       return V.enumv('builtin-res', 'Err', [V.str('命令不存在或无法执行: ' + parsed.stderr)]);
     }
+    // v0.60(#52):子进程输出按 stdout+stderr 字符数计费(外部输入边界;仅 Ok 组装处一次)
+    this.chargeAllocBytes(parsed.stdout.length + parsed.stderr.length, span);
     return V.enumv('builtin-res', 'Ok', [V.tuple([
       V.int(BigInt(parsed.exit)),
       V.str(parsed.stdout),
@@ -1902,6 +1946,10 @@ export class Interp {
 
   // v0.32 发布期门禁:动态熔断
   // 内存配额:累计分配口径(估算,非 RSS)——Vec/Map 按元素、str 按字符计费;超限 M4011
+  // v0.60(#52)计费原则:计费点 = 值创建(Vec/Map 字面量、push/extend、str 拼接/repeat/join)
+  // + 外部输入边界(fs/stdin/proc/net 结果);派生值(deepCopy、json.parse、re.*、wasm 参数搬运)
+  // 不重复计费。单位口径:文件按字节、字符串按 UTF-16 长度、Vec 按元素——配额是累计分配
+  // 估算(沿用 v0.32 既有口径,不新增单位)。
   chargeAllocBytes(n, span) {
     if (n <= 0) return;
     this.allocBytes += n;
@@ -1910,9 +1958,17 @@ export class Interp {
     }
   }
 
-  // 时间熔断:墙钟超限 M4012(调用方按步数取模轮询,避免每步 Date.now 开销)
+  // v0.60(#53):剩余墙钟配额——阻塞内建(sleep/exec/join/http)等待前钳制用;无配额 → Infinity
+  remainingMs() {
+    return this.maxMs === Infinity ? Infinity : this.maxMs - (Date.now() - this.runStart);
+  }
+
+  // 时间熔断:墙钟超限 M4012(调用方按步数取模轮询,避免每步 Date.now 开销;
+  // v0.60(#53)起阻塞内建的等待点在等待前后显式检查,不再绕过轮询)
+  // v0.60(#53):比较用 >=——阻塞等待钳到剩余配额后恰在上限边界唤醒,严格 > 会因
+  // Date.now 毫秒取整在"恰好 == 上限"处漏报;达到上限即熔断(自旋轮询路径无观察差异)
   checkTimeQuota(span) {
-    if (this.maxMs !== Infinity && Date.now() - this.runStart > this.maxMs) {
+    if (this.maxMs !== Infinity && Date.now() - this.runStart >= this.maxMs) {
       throw new Panic('M4012', `执行时间超过上限 ${this.maxMs}ms(用 --max-ms 调整)`, span);
     }
   }
@@ -2058,7 +2114,9 @@ export class Interp {
     for (const task of tasks) {
       if (task.failed) { results.push(V.enumv('builtin-res', 'Err', [V.str('无法启动子任务 worker: ' + task.failed)])); continue; }
       const int32 = new Int32Array(task.sab);
-      const wr = Atomics.wait(int32, 0, 0, 120000);
+      // v0.60(#53):每次等待都钳到剩余墙钟配额,唤醒后熔断检查(M4012)——批量 join 不再绕过 --max-ms
+      const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
+      this.checkTimeQuota(span);
       if (wr === 'timed-out') {
         task.worker.terminate();
         results.push(V.enumv('builtin-res', 'Err', [V.str('join 超时(120s)')]));
@@ -2146,7 +2204,9 @@ export class Interp {
     }
     this.syncTasks.delete(h.id);
     const int32 = new Int32Array(task.sab);
-    const wr = Atomics.wait(int32, 0, 0, 120000);
+    // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)——阻塞 join 不再绕过 --max-ms
+    const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
+    this.checkTimeQuota(span);
     if (wr === 'timed-out') {
       task.worker.terminate();
       return V.enumv('builtin-res', 'Err', [V.str('join 超时(120s):任务 #' + h.id)]);
@@ -2257,7 +2317,10 @@ export class Interp {
     }
     this.syncTasks.delete(h.id);
     const int32 = new Int32Array(task.sab);
-    const wr = Atomics.wait(int32, 0, 0, timeoutMs);
+    // v0.60(#53):显式用户超时与剩余墙钟配额取小;唤醒后熔断检查(M4012)——配额先尽则熔断,
+    // 否则维持 M4010 任务超时语义不变
+    const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(timeoutMs, this.remainingMs())));
+    this.checkTimeQuota(span);
     if (wr === 'timed-out') {
       task.worker.terminate();
       return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4010', 'join_detailed 超时(' + timeoutMs + 'ms):任务 #' + h.id, [])]);
@@ -2319,7 +2382,9 @@ export class Interp {
       if (task.cancelled) { this.syncTasks.delete(id); continue; } // v0.31:已取消的任务不再等待(terminate 后 SAB 永不写)
       this.syncTasks.delete(id);
       const int32 = new Int32Array(task.sab);
-      const wr = Atomics.wait(int32, 0, 0, 120000);
+      // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)——scoped 收尾不再绕过 --max-ms
+      const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
+      this.checkTimeQuota(span);
       if (wr === 'timed-out') {
         task.worker.terminate();
         if (!swallow) throw new Panic('M4001', 'scoped 子任务 join 超时(120s)', span);
@@ -2398,7 +2463,9 @@ export class Interp {
     }
     const int32 = new Int32Array(sab);
     const waitMs = Math.max(1000, o.timeoutMs + 5000);
-    const waitResult = Atomics.wait(int32, 0, 0, waitMs);
+    // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)——阻塞 HTTP 不再绕过 --max-ms
+    const waitResult = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(waitMs, this.remainingMs())));
+    this.checkTimeQuota(span);
     if (waitResult === 'timed-out') {
       worker.terminate();
       return V.enumv('builtin-res', 'Err', [V.str('请求超时(' + Math.round(o.timeoutMs / 1000) + 's): ' + o.url)]);
@@ -2412,6 +2479,8 @@ export class Interp {
     const len = Atomics.load(int32, 1);
     const hlen = Atomics.load(int32, 2);
     const body = Buffer.from(sab, 12, len).toString('utf8');
+    // v0.60(#52):响应体按 UTF-16 长度计费(外部输入边界;body 值构造处一次,响应头/状态码不计)
+    this.chargeAllocBytes(body.length, span);
     const hdrJson = hlen > 0 ? Buffer.from(sab, 8 + CAP, hlen).toString('utf8') : '{}';
     const headersMap = new Map();
     for (const [k, v] of Object.entries(JSON.parse(hdrJson))) headersMap.set(k, V.str(v));
@@ -2465,7 +2534,9 @@ export class Interp {
       return V.enumv('builtin-res', 'Err', [V.str('无法启动 HTTP worker: ' + e.message)]);
     }
     const int32 = new Int32Array(sab);
-    const waitResult = Atomics.wait(int32, 0, 0, 35000);
+    // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)
+    const waitResult = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(35000, this.remainingMs())));
+    this.checkTimeQuota(span);
     if (waitResult === 'timed-out') {
       worker.terminate();
       return V.enumv('builtin-res', 'Err', [V.str('请求超时(35s): ' + url)]);
@@ -2478,6 +2549,8 @@ export class Interp {
     }
     const len = Atomics.load(int32, 1);
     const bodyOut = Buffer.from(sab, 8, len).toString('utf8');
+    // v0.60(#52):响应体按 UTF-16 长度计费(外部输入边界;body 值构造处一次)
+    this.chargeAllocBytes(bodyOut.length, span);
     return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), V.str(bodyOut)])]);
   }
 

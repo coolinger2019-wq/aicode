@@ -9152,6 +9152,473 @@ fn main() with io, fs {
   }
 }
 
+// ===================== 64. v0.60:资源门禁一致性(#51 wasm 搬运计费 / #52 外部输入计费 / #53 --max-ms 钳制 / #47 tree 契约重入 / #54 CLI 旗标)=====================
+// 文件所有权(三方评估,plan §4.4.4):§64-A = src/vm.js(#51 + runTests 透传)·
+// §64-B = src/interp.js(#52/#53/#47 + runTests 透传)· §64-C = bin/ming.js(#54 CLI 转发与冲突仲裁)。
+// 每个 agent 只在自己的 START/END 标记之间插入用例;不改其它区域,不改既有分节。
+{
+  const dir64 = path.join(TMP, 'v64');
+  fs.mkdirSync(dir64, { recursive: true });
+  const m64 = (name, src) => { const f = path.join(dir64, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags64 = ['', '--no-wasm', '--tree'];
+  const runAll64 = (p, extra = []) => flags64.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const same64 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns64 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+
+  // ---- §64-A-START(#51:src/vm.js——wasm 参数搬运计费分歧 + wasmParamTop 复位;runTests 透传)----
+  const debugA = (p, extra = []) => runMing(['run', p, ...extra], { env: { MING_WASM_DEBUG: '1' } });
+  const allGateM4011 = (runs) => runs.every(r => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4011'));
+
+  // ---- v64.A1(#51):wasm 参数搬运不计费(派生拷贝口径)——[1,2,3] 实参搬运此前
+  // 经 mingAllocRaw 计入 16+8*3=40 字节,--max-alloc 20 时 wasm 路径 exit 101 M4011
+  // 而 --no-wasm/--tree exit 0 输出 6(四引擎语义合同违约;修复后三引擎同口径)。
+  {
+    const p = m64('a1_sum.ming', [
+      'fn sum(v: Vec[i64]) -> i64 {',
+      '    let mut t = 0;',
+      '    for x in v {',
+      '        t += x;',
+      '    }',
+      '    return t;',
+      '}',
+      'fn main() with io { print(str(sum([1, 2, 3]))); }',
+      '',
+    ].join('\n'));
+    const runsOk = runAll64(p, ['--max-alloc', '20']);
+    const runsGate = runAll64(p, ['--max-alloc', '2']);
+    check('v64.A1:#51 搬运不计费——sum([1,2,3]) --max-alloc 20 三引擎 exit 0 输出 6;--max-alloc 2 三引擎 exit 101 且首行 M4011',
+      same64(runsOk, '6\n') && allGateM4011(runsGate),
+      `ok=${fmtRuns64(runsOk)} gate=${fmtRuns64(runsGate)}`);
+  }
+
+  // ---- v64.A2(#51):计费 parity 锁定——1000 次调用各创建 VecLit 3 元素,三引擎
+  // 累计分配均为 3000(此前 wasm 路径每次实参搬运多计 40 → 43000 远超 tree/VM);
+  // 3000 恰好放行 / 2999 超限,锁定三引擎 billing parity。
+  {
+    const p = m64('a2_parity.ming', [
+      'fn sum(v: Vec[i64]) -> i64 {',
+      '    let mut t = 0;',
+      '    for x in v {',
+      '        t += x;',
+      '    }',
+      '    return t;',
+      '}',
+      'fn main() with io {',
+      '    let mut t = 0;',
+      '    for i in 0..1000 { t += sum([1, 2, 3]); }',
+      '    print(str(t));',
+      '}',
+      '',
+    ].join('\n'));
+    const runsOk = runAll64(p, ['--max-alloc', '3000']);
+    const runsGate = runAll64(p, ['--max-alloc', '2999']);
+    check('v64.A2:#51 计费 parity——1000×sum([1,2,3]) 累计 3000 三引擎一致:--max-alloc 3000 放行输出 6000,2999 exit 101 M4011',
+      same64(runsOk, '6000\n') && allGateM4011(runsGate),
+      `ok=${fmtRuns64(runsOk)} gate=${fmtRuns64(runsGate)}`);
+  }
+
+  // ---- v64.A3(#51):param-top 复位冒烟——10 万次 wasm 调用的实参搬运复用同一
+  // 线性内存段(此前 push 的是搬运后的堆顶 → 永不复用、随调用单调增长;旧口径下
+  // 搬运计费 40×100000 早在 500000 配额内爆掉)。wasm 真实执行另用小程序
+  // MING_WASM_DEBUG 断言(fn sum OK 无 REJECT/实例化失败)——大程序逐调用
+  // 打 [wasm 参数] 超 runMing 30s 超时,与 §63 wasmOk63 用小程序同口径。
+  // 注:100000 × sum([1,2,3]=6) = 600000(资源口径:循环 100000 次 VecLit 各计 3)。
+  {
+    const p = m64('a3_reuse.ming', [
+      'fn sum(v: Vec[i64]) -> i64 {',
+      '    let mut t = 0;',
+      '    for x in v {',
+      '        t += x;',
+      '    }',
+      '    return t;',
+      '}',
+      'fn main() with io {',
+      '    let mut t = 0;',
+      '    for i in 0..100000 { t += sum([1, 2, 3]); }',
+      '    print(str(t));',
+      '}',
+      '',
+    ].join('\n'));
+    const pd = m64('a3_dbg.ming', [
+      'fn sum(v: Vec[i64]) -> i64 {',
+      '    let mut t = 0;',
+      '    for x in v {',
+      '        t += x;',
+      '    }',
+      '    return t;',
+      '}',
+      'fn main() with io { print(str(sum([1, 2, 3]))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll64(p, ['--max-alloc', '500000']);
+    const dbg = debugA(pd);
+    check('v64.A3:#51 param-top 复位——100000×sum([1,2,3]) 三引擎 exit 0 输出 600000 且 wasm 真实执行(fn sum OK 无 REJECT/实例化失败)',
+      same64(runs, '600000\n') && dbg.code === 0 && (dbg.stderr ?? '').includes('[wasm] fn sum OK')
+      && !(dbg.stderr ?? '').includes('REJECT') && !(dbg.stderr ?? '').includes('实例化失败'),
+      `${fmtRuns64(runs)} dbg=${dbg.code} ${JSON.stringify((dbg.stderr ?? '').slice(0, 120))}`);
+  }
+
+  // ---- v64.A4(#54 一半):runTests 资源旗标透传——VMInterp.runTests 创建子实例
+  // 同时继承 noWasm/maxSteps/maxAlloc/maxMs(此前只传 maxSteps);CLI 侧转发在 §64-C
+  // 的 bin/ming.js(同批合并后生效)。VecLit 6 元素 → 累计 6;--max-alloc 5 超限 M4011。
+  {
+    const p = m64('a4_testgate.ming', [
+      'fn main() with io { print("ok"); }',
+      'test allocgate {',
+      '    let v = [1, 2, 3, 4, 5, 6];',
+      '    print(str(v.len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const ok = runMing(['test', p]);
+    const gated = runMing(['test', p, '--max-alloc', '5']);
+    const noWasm = runMing(['test', p, '--no-wasm']);
+    const tree = runMing(['test', p, '--tree']);
+    check('v64.A4:#54 runTests 透传——ming test exit 0 通过;--max-alloc 5 exit 1 输出含 M4011;--no-wasm 与 --tree 均 exit 0',
+      ok.code === 0 && (ok.stdout ?? '').includes('allocgate')
+      && gated.code === 1 && `${gated.stderr ?? ''}${gated.stdout ?? ''}`.includes('M4011')
+      && noWasm.code === 0 && tree.code === 0,
+      `ok=${ok.code} gated=${gated.code}/${JSON.stringify(((gated.stderr ?? '') + (gated.stdout ?? '')).split('\n').find(l => l.includes('M40')) ?? '')} noWasm=${noWasm.code} tree=${tree.code}`);
+  }
+  // §64-A-END
+
+  // ---- §64-B-START(#52/#53/#47:src/interp.js——外部输入计费 / --max-ms 钳制 / tree 契约重入;runTests 透传)----
+
+  // v64.B1(#47):ensures 含块尾表达式(if 分支)——此前 tree 引擎 execBlock 对任何带尾值的块
+  // 都查 ensures,ensures 求值再次进入块尾 → 无限重入 M4005;修复后仅函数体块查,三引擎一致
+  {
+    const p = m64('v64-b1-contract-block.ming', [
+      'fn f(a: i64) -> i64 ensures if a > 0 { true } else { true } {',
+      '    return a;',
+      '}',
+      'fn main() with io { print(str(f(5))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll64(p);
+    check('v64.B1(#47):ensures 含 if 块尾不再 tree 重入 M4005——三引擎 exit 0 输出 5(VM 原本正确)',
+      same64(runs, '5\n'), `runs=${fmtRuns64(runs)}`);
+  }
+
+  // v64.B2(#47):块尾 ensures 的违约路径仍报——f(5) 走 if 分支(5 > 5 假)、f(-1) 走 else 分支
+  // (-1 == 0 假),均运行时 M4015;三引擎 exit 101 且 stderr 首行含 M4015
+  {
+    const mk = (name, arg) => m64(name, [
+      'fn f(a: i64) -> i64 ensures if a > 0 { result > a } else { result == 0 } {',
+      '    return a;',
+      '}',
+      `fn main() with io { print(str(f(${arg}))); }`,
+      '',
+    ].join('\n'));
+    const pPos = mk('v64-b2-violate-pos.ming', 5);
+    const pNeg = mk('v64-b2-violate-neg.ming', -1);
+    const rPos = runAll64(pPos);
+    const rNeg = runAll64(pNeg);
+    const violated = (rs) => rs.every(r => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4015'));
+    check('v64.B2(#47):块尾 ensures 违约仍报 M4015——f(5) 与 f(-1) 三引擎 exit 101 首行含 M4015',
+      violated(rPos) && violated(rNeg), `pos=${fmtRuns64(rPos)} neg=${fmtRuns64(rNeg)}`);
+  }
+
+  // v64.B3(#52):fs.read_file 外部输入边界计费——先 stat 取字节预记账再读;
+  // 5000 字节 + --max-alloc 10 → M4011;10 字节(恰等配额,chargeAllocBytes 严格 >)→ exit 0
+  {
+    const big = path.join(dir64, 'v64-b3-big.txt');
+    fs.writeFileSync(big, 'x'.repeat(5000), 'utf8');
+    const small = path.join(dir64, 'v64-b3-small.txt');
+    fs.writeFileSync(small, 'x'.repeat(10), 'utf8');
+    const mk = (name, file) => m64(name, [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      `    let r = std.fs.read_file("${file.replace(/\\/g, '/')}");`,
+      '    print(str(r.unwrap().byte_len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const pBig = mk('v64-b3-big.ming', big);
+    const pSmall = mk('v64-b3-small.ming', small);
+    const qBig = runAll64(pBig, ['--max-alloc', '10']);
+    const fBig = runAll64(pBig);
+    const fSmall = runAll64(pSmall, ['--max-alloc', '10']);
+    const m4011 = (rs) => rs.every(r => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4011'));
+    check('v64.B3(#52):read_file 5000B + --max-alloc 10 → 三引擎 M4011;默认配额输出 5000;10B 恰等配额 exit 0 输出 10',
+      m4011(qBig) && same64(fBig, '5000\n') && same64(fSmall, '10\n'),
+      `quota=${fmtRuns64(qBig)} free=${fmtRuns64(fBig)} small=${fmtRuns64(fSmall)}`);
+  }
+
+  // v64.B4(#52):stdin 外部输入边界计费——read_to_end 按 UTF-16 长度、read_line 按行长度;
+  // 100 字符 + --max-alloc 10 → M4011;默认配额输出真实长度
+  {
+    const pEnd = m64('v64-b4-end.ming', [
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let s = io.read_to_end();',
+      '    print(str(s.byte_len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const pLine = m64('v64-b4-line.ming', [
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let line = io.read_line();',
+      '    print(str(line.byte_len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const qEnd = flags64.map(f => runMing(f ? ['run', pEnd, '--max-alloc', '10', f] : ['run', pEnd, '--max-alloc', '10'], { stdin: 'x'.repeat(100) }));
+    const fEnd = flags64.map(f => runMing(f ? ['run', pEnd, f] : ['run', pEnd], { stdin: 'x'.repeat(100) }));
+    const qLine = flags64.map(f => runMing(f ? ['run', pLine, '--max-alloc', '10', f] : ['run', pLine, '--max-alloc', '10'], { stdin: 'y'.repeat(40) }));
+    const fLine = flags64.map(f => runMing(f ? ['run', pLine, f] : ['run', pLine], { stdin: 'y'.repeat(40) }));
+    const m4011 = (rs) => rs.every(r => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4011'));
+    check('v64.B4(#52):read_to_end 100 字符 + --max-alloc 10 → 三引擎 M4011,默认输出 100;read_line 40 字符同口径',
+      m4011(qEnd) && same64(fEnd, '100\n') && m4011(qLine) && same64(fLine, '40\n'),
+      `qEnd=${fmtRuns64(qEnd)} fEnd=${fmtRuns64(fEnd)} qLine=${fmtRuns64(qLine)} fLine=${fmtRuns64(fLine)}`);
+  }
+
+  // v64.B5(#52):fs.list_dir 外部输入边界计费——按目录条目数计费;
+  // 20 个文件 + --max-alloc 5 → M4011;默认配额输出 20
+  {
+    const d20 = path.join(dir64, 'v64-b5-dir');
+    fs.mkdirSync(d20, { recursive: true });
+    for (let i = 0; i < 20; i++) fs.writeFileSync(path.join(d20, `f${i}.txt`), 'a', 'utf8');
+    const p = m64('v64-b5-list.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      `    let r = std.fs.list_dir("${d20.replace(/\\/g, '/')}");`,
+      '    print(str(r.unwrap().len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const qRuns = runAll64(p, ['--max-alloc', '5']);
+    const fRuns = runAll64(p);
+    check('v64.B5(#52):list_dir 20 条目 + --max-alloc 5 → 三引擎 M4011;默认配额输出 20',
+      qRuns.every(r => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4011')) && same64(fRuns, '20\n'),
+      `quota=${fmtRuns64(qRuns)} free=${fmtRuns64(fRuns)}`);
+  }
+
+  // v64.B6(#53):time.sleep 受 --max-ms 钳制——等待钳到剩余配额,醒来立即熔断;
+  // sleep(300) + --max-ms 100 → exit 101 M4012 且单次运行 < 2000ms(修复前整段睡满 exit 0);
+  // sleep(50) 默认限额(600s)→ exit 0 done
+  {
+    const pSlow = m64('v64-b6-slow.ming', [
+      'use std.io;',
+      'use std.time;',
+      '',
+      'fn main() with io, time {',
+      '    std.time.sleep(300);',
+      '    print("done");',
+      '}',
+      '',
+    ].join('\n'));
+    const pOk = m64('v64-b6-ok.ming', [
+      'use std.io;',
+      'use std.time;',
+      '',
+      'fn main() with io, time {',
+      '    std.time.sleep(50);',
+      '    print("done");',
+      '}',
+      '',
+    ].join('\n'));
+    const qRuns = flags64.map(f => {
+      const t0 = Date.now();
+      const r = runMing(f ? ['run', pSlow, '--max-ms', '100', f] : ['run', pSlow, '--max-ms', '100']);
+      return { r, ms: Date.now() - t0 };
+    });
+    const fRuns = runAll64(pOk);
+    const hit = qRuns.every(({ r, ms }) => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4012') && ms < 2000);
+    check('v64.B6(#53):sleep(300) + --max-ms 100 → 三引擎 M4012 且单次 < 2000ms;sleep(50) 默认限额 exit 0',
+      hit && fRuns.every(r => r.code === 0 && r.stdout === 'done\n'),
+      `quota=${fmtRuns64(qRuns.map(x => x.r))} maxMs=${Math.max(...qRuns.map(x => x.ms))} free=${fmtRuns64(fRuns)}`);
+  }
+
+  // v64.B7(#53):阻塞 join 受 --max-ms 钳制——子任务 sleep(3000),join 等待钳到剩余配额;
+  // 修复前 join 原地等满 3 秒(exit 0),修复后 ~配额边界 M4012 exit 101
+  {
+    const p = m64('v64-b7-join.ming', [
+      'use std.io;',
+      'use std.sync;',
+      'use std.time;',
+      '',
+      'fn slow(n: i64) -> i64 with time {',
+      '    std.time.sleep(3000);',
+      '    return n;',
+      '}',
+      '',
+      'fn main() with io, sync {',
+      '    let h = std.sync.spawn(slow, 1);',
+      '    let r = std.sync.join(h);',
+      '    print(str(r.unwrap()));',
+      '}',
+      '',
+    ].join('\n'));
+    const qRuns = flags64.map(f => {
+      const t0 = Date.now();
+      const r = runMing(f ? ['run', p, '--max-ms', '100', f] : ['run', p, '--max-ms', '100']);
+      return { r, ms: Date.now() - t0 };
+    });
+    const hit = qRuns.every(({ r, ms }) => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('M4012') && ms < 2000);
+    check('v64.B7(#53):子任务 sleep(3000) + join + --max-ms 100 → 三引擎 M4012 且单次 < 2000ms',
+      hit, `runs=${fmtRuns64(qRuns.map(x => x.r))} maxMs=${Math.max(...qRuns.map(x => x.ms))}`);
+  }
+
+  // v64.B8(#53):无配额场景不回归——spawn_all 批量 + 单 spawn/join 正常路径三引擎 exit 0
+  // (2+4+6=12,join 得 20,合计 32;钳制只在配额存在时改变行为)
+  {
+    const p = m64('v64-b8-join-ok.ming', [
+      'use std.io;',
+      'use std.sync;',
+      '',
+      'fn dbl(n: i64) -> i64 { return n * 2; }',
+      '',
+      'fn main() with io, sync {',
+      '    let all = std.sync.spawn_all(dbl, [1, 2, 3]);',
+      '    let mut sum = 0;',
+      '    for res in all { sum += res.unwrap(); }',
+      '    let h = std.sync.spawn(dbl, 10);',
+      '    sum += std.sync.join(h).unwrap();',
+      '    print(str(sum));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll64(p);
+    check('v64.B8(#53):无配额场景 spawn_all/join 正常——三引擎 exit 0 输出 32',
+      same64(runs, '32\n'), `runs=${fmtRuns64(runs)}`);
+  }
+
+  // v64.B9(B-1/#54 另一半):基类 Interp.runTests 透传资源门禁——--tree 时 VMInterp.runTests
+  // 回落本方法,此前 sub 只继承 maxSteps,`ming test --tree --max-alloc/--max-ms` 对 test 块
+  // 不生效(VM/--no-wasm 路径已生效 → 三引擎分歧);GUIDE 声明资源门禁旗标对 ming test 生效。
+  {
+    const pGate = m64('v64-b9-testgate.ming', [
+      'fn main() with io { print("ok"); }',
+      'test allocgate {',
+      '    let v = [1, 2, 3, 4, 5, 6];',
+      '    print(str(v.len()));',
+      '}',
+      '',
+    ].join('\n'));
+    const pSleep = m64('v64-b9-testsleep.ming', [
+      'use std.io;',
+      'use std.time;',
+      '',
+      'fn main() with io { print("ok"); }',
+      'test slow_sleep {',
+      '    std.time.sleep(300);',
+      '}',
+      '',
+    ].join('\n'));
+    const okTree = runMing(['test', pGate, '--tree']);
+    const gatedTree = runMing(['test', pGate, '--tree', '--max-alloc', '5']);
+    const qRuns = flags64.map(f => {
+      const t0 = Date.now();
+      const r = runMing(f ? ['test', pSleep, '--tree', '--max-ms', '100', f] : ['test', pSleep, '--tree', '--max-ms', '100']);
+      return { r, ms: Date.now() - t0 };
+    });
+    const okM4011 = (r) => r.code === 1 && `${r.stderr ?? ''}${r.stdout ?? ''}`.includes('M4011');
+    const okM4012 = ({ r, ms }) => r.code === 1 && `${r.stderr ?? ''}${r.stdout ?? ''}`.includes('M4012') && ms < 2000;
+    check('v64.B9(B-1):ming test --tree 资源门禁——默认 exit 0;--max-alloc 5 exit 1 含 M4011;test 块 sleep(300) + --max-ms 100 三引擎 exit 1 含 M4012',
+      okTree.code === 0 && okM4011(gatedTree) && qRuns.every(okM4012),
+      `ok=${okTree.code} gated=${gatedTree.code}/${JSON.stringify(((gatedTree.stderr ?? '') + (gatedTree.stdout ?? '')).split('\n').find(l => l.includes('M40')) ?? '')} ms=${fmtRuns64(qRuns.map(x => x.r))} maxMs=${Math.max(...qRuns.map(x => x.ms))}`);
+  }
+
+  // §64-B-END
+
+  // ---- §64-C-START(#54:bin/ming.js——ming test 旗标转发与 strict 冲突仲裁;ming init CLI 回归)----
+  // v64.C1:ming test 透传 --max-alloc(限额消费依赖 §64-A/B 的 runTests 透传,同批合并后生效)。
+  // 程序 VecLit 6 元素 → 累计分配 6;--max-alloc 5 超限 → M4011。
+  {
+    const fC1 = m64('c1_allocgate.ming', 'test allocgate {\n    let v = [1,2,3,4,5,6];\n    print(str(v.len()));\n}\n');
+    const c1a = runMing(['test', fC1, '--max-alloc', '5']);
+    check('v64.C1:ming test --max-alloc 5 → exit 1 且输出含 M4011',
+      c1a.code === 1 && (c1a.stdout + c1a.stderr).includes('M4011'),
+      `code=${c1a.code} out=${JSON.stringify(c1a.stdout)} err=${JSON.stringify(c1a.stderr.slice(0, 200))}`);
+    const c1b = runMing(['test', fC1]);
+    check('v64.C1:ming test 无限额 → exit 0',
+      c1b.code === 0 && (c1b.stdout + c1b.stderr).includes('c1_allocgate.ming::allocgate'),
+      `code=${c1b.code} out=${JSON.stringify(c1b.stdout)} err=${JSON.stringify(c1b.stderr.slice(0, 200))}`);
+  }
+
+  // v64.C2:ming test 的 --no-wasm 与 --tree 输出一致(exit 0);MING_WASM_DEBUG=1 下 --no-wasm
+  // 的 stderr 无任何 [wasm] 行(test 子实例也关闭 wasm 层,#54 透传 noWasm)。
+  {
+    const fC2 = m64('c2_plain.ming', 'test t {\n    print("hello");\n}\n');
+    const c2a = runMing(['test', fC2, '--no-wasm']);
+    const c2b = runMing(['test', fC2, '--tree']);
+    check('v64.C2:ming test --no-wasm 与 --tree 输出一致且 exit 0',
+      c2a.code === 0 && c2b.code === 0 && c2a.stdout === c2b.stdout && c2a.stderr === c2b.stderr,
+      `nowasm=${c2a.code}:${JSON.stringify(c2a.stdout)}/${JSON.stringify(c2a.stderr.slice(0, 120))} tree=${c2b.code}:${JSON.stringify(c2b.stdout)}/${JSON.stringify(c2b.stderr.slice(0, 120))}`);
+    const c2d = runMing(['test', fC2, '--no-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+    const wasmLines = (c2d.stderr ?? '').split('\n').filter((l) => l.includes('[wasm]'));
+    check('v64.C2:MING_WASM_DEBUG=1 下 test --no-wasm stderr 无 [wasm] 行',
+      c2d.code === 0 && wasmLines.length === 0,
+      `code=${c2d.code} wasmLines=${JSON.stringify(wasmLines.slice(0, 3))} err=${JSON.stringify((c2d.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // v64.C3:--strict-wasm 与 --tree/--no-wasm 同现 → 与 run 同口径的互斥拒绝(exit 1,复用
+  // STRICT_WASM_CONFLICT_MSG;fail 在非 JSON 下走 stderr)。
+  {
+    const fC3 = m64('c3_conflict.ming', 'test t {\n    print("x");\n}\n');
+    const c3a = runMing(['test', fC3, '--strict-wasm', '--tree']);
+    check('v64.C3:test --strict-wasm --tree → exit 1 且消息含"互斥"',
+      c3a.code === 1 && (c3a.stdout + c3a.stderr).includes('互斥'),
+      `code=${c3a.code} out=${JSON.stringify(c3a.stdout)} err=${JSON.stringify((c3a.stderr ?? '').slice(0, 160))}`);
+    const c3b = runMing(['test', fC3, '--strict-wasm', '--no-wasm', '--json']);
+    check('v64.C3:test --strict-wasm --no-wasm --json → exit 1 且 JSON {ok:false,error} 含"互斥"',
+      c3b.code === 1 && (c3b.stdout + c3b.stderr).includes('互斥') && (c3b.stdout + c3b.stderr).includes('"ok":false'),
+      `code=${c3b.code} out=${JSON.stringify((c3b.stdout ?? '').slice(0, 160))} err=${JSON.stringify((c3b.stderr ?? '').slice(0, 120))}`);
+  }
+
+  // v64.C6(审查修复):test 的 --strict-wasm 单独出现(不与 --tree/--no-wasm 冲突)→ 显式提示后
+  // 忽略,退出码与 stdout 不变(不静默吞旗标;提示走 stderr)。
+  {
+    const fC6 = m64('c6_strict_alone.ming', 'test t {\n    print("x");\n}\n');
+    const c6 = runMing(['test', fC6, '--strict-wasm']);
+    const c6plain = runMing(['test', fC6]);
+    check('v64.C6:test --strict-wasm 单独出现 → exit 0 且 stderr 含"已忽略"提示',
+      c6.code === 0 && (c6.stderr ?? '').includes('已忽略'),
+      `code=${c6.code} err=${JSON.stringify((c6.stderr ?? '').slice(0, 220))}`);
+    check('v64.C6:test --strict-wasm 的 stdout 与不加旗标一致(旗标仅提示,不改变输出)',
+      c6.stdout === c6plain.stdout,
+      `strict=${JSON.stringify(c6.stdout.slice(0, 120))} plain=${JSON.stringify(c6plain.stdout.slice(0, 120))}`);
+  }
+
+  // v64.C4/C5:ming init CLI 回归(临时目录作 cwd,不入仓库)。
+  {
+    const cwdC4 = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v64c-init-'));
+    const c4 = runMing(['init', 'demo'], { cwd: cwdC4 });
+    const manifestP = path.join(cwdC4, 'ming.toml');
+    const entryP = path.join(cwdC4, 'main.ming');
+    check('v64.C4:ming init demo → exit 0 输出含"已创建"且 ming.toml/main.ming 真实存在',
+      c4.code === 0 && (c4.stdout + c4.stderr).includes('已创建')
+      && fs.existsSync(manifestP) && fs.existsSync(entryP)
+      && fs.readFileSync(manifestP, 'utf8').includes('name = "demo"')
+      && fs.readFileSync(entryP, 'utf8').includes('fn main'),
+      `code=${c4.code} out=${JSON.stringify(c4.stdout)} err=${JSON.stringify((c4.stderr ?? '').slice(0, 160))}`);
+
+    const cwdC4j = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v64c-init-json-'));
+    const c4j = runMing(['init', 'demo', '--json'], { cwd: cwdC4j });
+    let c4jJson = null;
+    try { c4jJson = JSON.parse(c4j.stdout); } catch { /* 断言处报错 */ }
+    check('v64.C4:ming init demo --json → {ok:true, manifest, entry} 且两文件真实存在',
+      c4j.code === 0 && c4jJson?.ok === true && typeof c4jJson.manifest === 'string' && typeof c4jJson.entry === 'string'
+      && fs.existsSync(c4jJson.manifest) && fs.existsSync(c4jJson.entry),
+      `code=${c4j.code} out=${JSON.stringify((c4j.stdout ?? '').slice(0, 220))} err=${JSON.stringify((c4j.stderr ?? '').slice(0, 120))}`);
+
+    // 确定性负例:initProject 的重名语义(manifest 已存在 → ok:false)——二次 init exit 1 且清单未被改写。
+    const before = fs.readFileSync(manifestP, 'utf8');
+    const c5 = runMing(['init', 'demo'], { cwd: cwdC4 });
+    check('v64.C5:ming init 重名 → exit 1 且提示"已存在",ming.toml 未被改写',
+      c5.code === 1 && (c5.stdout + c5.stderr).includes('已存在') && fs.readFileSync(manifestP, 'utf8') === before,
+      `code=${c5.code} out=${JSON.stringify(c5.stdout)} err=${JSON.stringify((c5.stderr ?? '').slice(0, 160))}`);
+  }
+  // §64-C-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

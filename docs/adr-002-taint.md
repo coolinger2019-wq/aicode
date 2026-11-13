@@ -51,7 +51,7 @@ Ming 的定位是 **AI 协作语言**(design §1)与**安全工具语言**(§6 �
 | `std.net.http_request` / `_opts` | url、headers、body | SSRF / 头注入 / 体投毒 |
 | `extern fn` 调用 | 全部实参 | FFI 注入(C 侧无类型安全) |
 
-**不进 v1 sink 面**(如实列出):`print`/`eprint`/`std.log`(日志注入低危且调试场景高频,见 §6.2 误报面①的取舍)、panic 消息(诊断输出,见 §4.4)。
+**不进 v1 sink 面**(如实列出):`print`/`eprint`/`std.log`(日志注入低危且调试场景高频,见 §6.2 误报面①的取舍)、panic 消息(诊断输出,见 §4.4)。**补一句(2026-11-13 三方评估,补丁 b)**:`debug`/插值/`as` 属**禁面**(与 sink 同级,见 §3.2 白名单补丁条)——sink 是"值可流入但需净化",禁面是"通道根本不出现";Untrusted 走这三条通道一律静态拒绝,调试需求经白名单方法满足。
 
 ### 1.3 现状:零拦截(实测)
 
@@ -140,6 +140,8 @@ extern "c" fn f(...) -> str        // 检查器强制按 -> Untrusted[str] 处�
   - 产出同污点载体:v1 不设(含 `get(i) -> Option[char]`——char 可重组为 str,char 不作为污点载体建模会开重组旁路;如实列为 v1.1 候选)。
   - 其余 str 方法(trim/slice/replace/…)全部 M3015 拒绝,hint 指向 sanitize。
   - **运行时分发**:Untrusted 值运行时就是载体值(擦除),方法调用按载体类型的既有实现走,interp 无需新增方法;白名单校验只在 checker。
+  - **调试通道即洗白通道,v1 静态拒绝(2026-11-13 三方评估补丁 b)**:`debug(any) -> str`、字符串插值(`"\{u}"`)与 `as` 转换是类型层洗白的三个旁路,对 Untrusted 一律静态拒绝(与 Ptr 同款:`M3002` + 专用码 `M3050`,`M3019` 通道同样关闭,hint 指向净化)。调试需求经白名单方法(`parse_i64`/`parse_f64`/`char_len`/`byte_len`/`is_empty`)满足——它们产出可打印的纯值,污点在数值/长度上终结。
+  - **白名单边界:仅限载体方法(2026-11-13 三方评估补丁 c)**:白名单只约束"Untrusted **值**能调用什么方法";`std.unstr.*`(`mark`/`sanitize_path`)是**模块自由函数**,不进白名单表——净化是唯一类型跃迁出口,可信根单点(§3.4)。方法白名单与净化函数族是两个维度,不得混表。
 - **构造面**:`Untrusted` 无字面量(不能凭空造脏,也不允许"默认干净")。显式入口 `std.unstr.mark(s: str) -> Untrusted[str]`(把干净值标脏;标脏只会更严,公开无危害)——测试块与"已知干净的特定场景"需要它。
 
 ### 3.3 sink:免费门禁 + 文档表
@@ -162,6 +164,10 @@ extern "c" fn f(...) -> str        // 检查器强制按 -> Untrusted[str] 处�
 1. **单点性**:v1 只此一个净化入口(族按需扩展),可信根集中;实现与 std 其他函数同审计面(code review + 回归锁定)。净化正确性**无法**被 Ming 静态证明(串谓词在 QF_LIA 线性子集之外),如实承认:审计靠测试向量集(黄金用例锁定已知攻击向量),不靠证明器。
 2. **用户自定义净化 v1 拒绝**:一旦 `fn my_sanitize(s: Untrusted[str]) -> Result[str, str]` 自由定义,污点可信根从"std 单点实现"退化为"每个用户的正确性",且语言无法审计——污点系统整体失效。这是诚实的限制,不是缺陷(design §2.8 同款表述)。
 3. **净化 = 类型跃迁的唯一出口**:`Untrusted[str] -> Result[str, str]`(Ok 载荷为净 `str`)在整个语言里只有 `std.unstr.*` 函数族;无 `as` 旁路(M3019 通道,同 Ptr),无隐式转换。
+
+**净化器授权位(2026-11-13 三方评估补丁 d,只授权实参位)**:`sanitize_path` 只授权**路径实参位**——`write_file`/`append_file`/`make_dir`/`remove_file`/`remove_dir_recursive`/`metadata`/`copy_file`/`rename` 的 `path` 形参;**不授权** content 位(`write_file`/`append_file` 第 2 参)、URL 位(`http_request`/`_opts` 的 url/headers/body)、`proc.exec` 的 cmd/args 位、extern 实参位。净化器不是万能"洗白器"——每扩一个授权位 = 一次可信根扩权(与 §9 清单 5 的族扩展纪律同源)。
+
+**绝对路径/CLI 策略(未裁决;v0.61 启动门槛③,plan §4.4.5)**:`sanitize_path` 语义为"拒绝绝对路径"(本节定稿),但 CLI 工具场景(自写工具把 `env.get` 结果作为**用户可传绝对路径**的命令行参数)与该语义冲突。二选一,评审裁决后实现:① 新增 `sanitize_cli_path`(允许绝对路径、拒绝 NUL/控制字符,与 `sanitize_path` 并列,净化族 +1);② 裁定 CLI 工具改用 argv 传参(argv 在 v1 不标污,如实登记漏报窗口)。未裁决前 `std.unstr` 不预实现任何一种。
 
 ---
 

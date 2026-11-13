@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.59.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.60.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -822,6 +822,8 @@ fn main() with io, sync {
 
 内部 mulberry32;初始种子来自时钟+pid,`seed` 后完全确定。
 
+**诚实声明(2026-11-13 三方评估,S7)**:`std.rand` 是 mulberry32/32 位状态的非密码学随机,**不得用于密钥、nonce、token 或任何安全用途**,当前语言面无密码学安全的随机来源;CSPRNG 当前无消费方,暂不新增 API,确有安全随机需求时先立项评估(plan §4.4.10 S7——不新增 std.crypto.random_bytes)。
+
 ### std.crypto(能力:crypto,v0.34)
 
 哈希/HMAC 原语(node:crypto 桥接;安全工具之北支柱 6):输入 UTF-8 字符串,输出小写 hex。AES/RSA/国密与字节流接口随后续版本。
@@ -976,6 +978,7 @@ fn main() with io {
 | `ming doc f.ming [--json]` | 提取 `///` 文档。`--json`(v0.58):稳定 schema `{ok, file, items:[{kind: fn\|struct\|enum\|trait\|const\|impl, name, line, doc, signature}]}`——doc 为 /// 行去前缀原文,signature 为 AST 重建(impl 方法含 `with` 效果与 `requires`/`ensures`,与顶层 fn/fmt 口径一致;trait 方法语法无 effects,渲染不变),impl 的 name 为 `impl <trait> for <类型>`;默认文本输出逐字不变。`--index`(v0.58):`ming doc f1.ming f2.ming ... --index` 多文件聚合 `{ok, files: N, items:[{file, ...单文件 item 同形}]}`(每项前置 file,按命令行顺序);单文件加 `--index` 输出同 schema;无 `--index` 多文件只处理第一个;读失败/解析诊断错误路径与 `--json` 协议一致(exit 1) |
 | `ming lsp`(stdio JSON-RPC;v0.5 诊断/hover,v0.58 三新查询) | **LSP 语言服务器**:initialize/shutdown、didOpen/didChange → publishDiagnostics(全部诊断含 hint)、hover(签名 + /// 文档)——编辑器缓冲区优先于磁盘内容。**v0.58 补全/跳转/符号**:`textDocument/completion`(标识符/字段方法/模块成员/枚举变体/关键字;**保守策略**——类型推不出 → 空列表,语法不可修复 → null,注释与字符串内不补全;打字中间态用占位修复,含第三式"吞光标后同行残余 + 括号补齐");`textDocument/definition`(模块项/局部绑定/跨文件 use;std 与内置无源文件 → null);`textDocument/documentSymbol`(fn/struct/enum/trait/const + impl 层级;use/test 不列)。**协议可靠性**:消息按 **Content-Length 字节分帧**(中文/emoji 等非 ASCII 消息体不会截断会话);坏 JSON 体/空体帧不杀会话(后续消息照常处理);块注释内不补全(嵌套深度按 lexer 语义)。同步、零依赖、单文件协议实现;对泛型/多文件保守(宁可少补,不可错补) |
 
+- **资源门禁口径(v0.60,#51–#53)**:`--max-alloc` 计费 = **值创建**(Vec/Map 元素 + str 字符,计费点见修订记录 v0.32 条目)+ **外部输入边界**(fs/stdin/proc/net 的结果按返回内容长度计费);派生值(deepCopy/json.parse/re.*/wasm 参数搬运)**不重复计费**。`--max-ms` 对阻塞内建 **sleep/join/exec/http 钳制**(超限 **M4012**)。**进程内不可抢占边界(具名,诚实登记)**:`read_line`/`read_to_end` 的 stdin 阻塞与 RegExp 回溯不受 `--max-ms` 中断。资源门禁旗标对 `ming test` 同样生效(v0.60 #54,默认值与 run 相同)。
 - **退出码**:0 成功;1 有诊断;101 panic;2 工具链 bug 或 strict-wasm 可见回落(`--strict-wasm` 下 wasm 层 fallback;普通模式静默回落仍是 0)。`main -> i64` 自定义退出码。
 - **wasm 覆盖面(v0.59 收口;已声明覆盖 / 剩余回落具名)**:已声明覆盖 = i64/u64/f64/str/Vec/Map 的 eligible 函数(数值比较/算术、for-in/while/if、**f64 局部/混合槽序、Map 形参、str 返回、值型 if、块尾 unit if**、调用;不含 `match`)。**剩余回落**(不影响语义;`--strict-wasm` 可见且原因具名):VecLit 数值元素(容器表示未统一)、Vec 下标读/mut 元素写(宿主 `panic_m4003` 导入待补)、Option 消费链(宿主 M4006/M4007 导入待补)、f64 复合赋值等。排查用 `MING_WASM_DEBUG=1` 看 `[wasm] fn <名> OK`/`REJECT`;改槽位/locals/签名先跑 tests §63 P1 组。
 - **诊断协议**(所有命令 `--json`):
@@ -1090,11 +1093,23 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.57(已完成) | **循环/守卫敏感边界证明(QF_LIA 第四片)+ tools AOT 缓存 + 覆盖率/bench 观测**:范围 for 内 `buf[i]` 义务两向证明(循环符号 `i$<n>` + 区间假设入集;脏循环/嵌套/while 保守放弃;break-continue 不破坏不变式;义务 additive `scope: body\|loop`;M3045/W3105 不变,proven 不消除 M4003)、ming tools 工具字节码 AOT 缓存(12 工具全缓存零回退;热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明;MING_TOOLS_DEBUG 观测)、tests/coverage.mjs 零依赖覆盖率基线(93.0% 行 / 86.1% 函数)+ bench 基线(Δ基线对比 + 回退 >20% WARN);§61 27 项、791 项全绿;prover.js 求解器与 codegen 零改动 |
 | v0.58(已完成) | **AI 协作体验与文本工程(开发者体验版)**:LSP 补全/跳转定义/文档符号(保守策略 + 字节分帧 + 坏 JSON 存活)、`std.str.join` 单次 O(n) 拼接(Builder 方案最小替代;与 Vec.join 的 API 不对称与 #49 记账差异如实登记)+ `use std.str` 四形态名字解析(内建/模块/别名/遮蔽,三引擎逐字)+ 遮蔽守卫、`ming doc --json` 稳定 schema + `--index` 多文件聚合(默认文本逐字不变)、Release 打包 workflow(官方 action + 零 npm)+ docs/release.md;审查修复:坏 JSON 存活/块注释补全/第三式中间态/遮蔽守卫;§62 34 项、825 项全绿 |
 | v0.59(已完成) | **默认引擎全面性(无新语言面)**:wasm 覆盖收口 #40/#41/#42/#43/#45/#46 + 6 潜伏 bug(A strConsts/B VECMAP VOID/C alloc 索引/D map_get 顺序/E 移位 64/F 守护口径)+ 宿主补丁(Map i64/Vec[f64]);本地函数恢复 #44(M3047 移除;块级条目/递归/契约/AOT;三条限制);记账统一 #48/#49(str_cat 计费、std.str.join 对称化;BMP 口径与 --max-alloc 内存风险登记);invariant bench 项(VM 0.19–0.28µs/次、tree 0.20–0.28µs/次);strict 120 语料 fallback=0;§63 56 项、881 项全绿 |
-| 更远(北星对齐) | **2026-11-13 三方评估修订**:v0.60 资源门禁一致性(#51–#54 + #47;无新语言面)→ v0.61 污点窄源条件交付(ADR-002 五处补丁 + 迁移 spike;9 源全量为 v1.1)→ v0.62 serve 条件交付(ADR-001 清单 16/16);mask 永久否决(ADR-003);async/eval/国密/RSA/形式化验证留待更远(见 plan §4.4/§4.4.10) |
+| v0.60(已完成) | **资源门禁一致性(质量/安全版,无新语言面)**:#51 wasm 参数搬运计费分歧(`mingAllocRaw` 计费开关 + `wasmParamTop` 调用前保存/finally 复位,线性内存随调用复用)、#52 外部输入边界计费(read_file/read_bytes/read_line/read_to_end/list_dir/proc.exec/http body;计费 = 值创建 + 外部输入边界,派生值不重复计费)、#53 `--max-ms` 阻塞内建钳制(remainingMs + sleep/join/exec/http/sync 等待钳制 → M4012;read_line/RegExp 不可抢占边界具名;checkTimeQuota 边界 `>=`)、#47 tree 契约求值重入(execBlock 仅函数体块尾检查 ensures;bodyBlock 上下文)、#54 `ming test` 旗标传播(tree/no-wasm/max-* 与 run 同默认值;--strict-wasm 仅互斥仲裁并提示忽略)+ `ming init` CLI 回归;§64 24 项、905 项全绿;无新诊断码(复用 M4011/M4012) |
+| 更远(北星对齐) | v0.61 污点窄源条件交付(ADR-002 五处补丁已落;启动门槛 = 12 工具迁移 spike + 净化器策略裁决;9 源全量为 v1.1)→ v0.62 serve 条件交付(ADR-001 清单 16/16);mask 永久否决(ADR-003);async/eval/国密/RSA/形式化验证留待更远(见 plan §4.4/§4.4.10) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.60.0(2026-11-13)
+
+- **资源门禁一致性(质量/安全版,无新语言面)**——让 `--max-ms`/`--max-alloc` 的承诺与实现、四引擎行为一致(2026-11-13 三方评估 S1/S2/#54/#47,plan §4.4.4):
+  - **#51 wasm 参数搬运计费分歧**:`mingAllocRaw(n, charge = true)`——wasm Vec 实参搬运是派生拷贝,不再计入 `--max-alloc`(tree/VM 本就不计);`wasmParamTop` 改为调用前保存/finally 复位(panic/trap/编组回落三路径),线性内存随调用复用;`ming_grow`/`ming_copy_vec` 计费不变。修复前 `sum([1,2,3])` + `--max-alloc 20` 默认引擎 M4011(累计 43)而 `--no-wasm`/`--tree` exit 0。
+  - **#52 外部输入边界计费**:`fs.read_file` 先 stat 按 size 预记账、`fs.read_bytes` 按 size、`io.read_line`/`read_to_end` 按结果长度、`fs.list_dir` 按条目数、`proc.exec` 按 stdout+stderr 长度、`net.http_*` 按响应体长度计费。**计费原则 = 值创建 + 外部输入边界;派生值(deepCopy/json.parse/re.*/wasm 参数搬运)不重复计费**;单位口径(文件字节/str UTF-16/Vec 元素)沿用 v0.32 估算口径。修复前读 182,819 字节文件 + `--max-alloc 10` 照样 exit 0。
+  - **#53 `--max-ms` 阻塞内建钳制**:新增 `remainingMs()`;`time.sleep`/`proc.exec`/`join`/`join_detailed`/`spawn_all`/sync scope/`http_*` 的等待钳到剩余预算,预算已尽不等待、唤醒后立即 `checkTimeQuota` → **M4012**。修复前 `sleep(3000)` + `--max-ms 100` 睡满 3.2 秒 exit 0。**进程内不可抢占边界(具名,不修)**:`read_line`/`read_to_end` 的 stdin 阻塞与 RegExp 回溯。`checkTimeQuota` 边界比较 `>` → `>=`(钳制等待恰在上限边界唤醒时毫秒取整漏报;v0.32 自旋用例逐字不变)。
+  - **#54 `ming test` 旗标传播**:`--tree/--no-wasm/--max-steps/--max-alloc/--max-ms` 对 test 块生效(默认值与 run 同;VMInterp.runTests 与基类 Interp.runTests 双路径透传);`--strict-wasm` 仅做与 `--tree/--no-wasm` 的互斥仲裁,单独出现时 stderr 提示忽略;`ming init` 补 CLI 回归。修复前 `test --max-alloc 5` 通过而 `run --max-alloc 5` 触发 M4011。
+  - **#47 tree 契约求值重入**:`execBlock` 仅在**函数体块尾**检查 ensures(ctx `bodyBlock`;callUser/callLocalFn 传入,嵌套块剥离)——`ensures if a > 0 { true } else { true }` 此前 `--tree` M4005 exit 101,现三引擎输出 5;`return`/`?` 处检查不变,本地函数 ensures 同口径。
+- **测试 §64 共 24 项**(v64.A1–A4 #51/VM 透传、v64.B1–B9 #52/#53/#47/tree 腿门禁、v64.C1–C6 #54/init/strict 提示);**905 项全绿**;`fuzz --seed 44044 --count 40` 40 程序 0 分歧(wasm 真实执行 20)、proof_fuzz 100 例 0 误报;**无新诊断码**(复用 M4011/M4012)。
+- **独立审查(3 名 fresh code-reviewer)**:唯一阻塞项 = 基类 `Interp.runTests` 漏透传(`ming test --tree` 门禁静默失效、与 GUIDE 声明漂移)→ 修复 + v64.B9 锁定;MINOR 5 项全部落实(ADR 白名单补 parse_f64、`copy`→`copy_file` 正名、S7 措辞对齐 plan、capabilities 头注翻转、`--strict-wasm` 忽略提示)。登记 N-60.1–N-60.4(worker terminate 时序/read_file stat 平台差异/wasmWriteVecNum mut 旗标丢弃/test 模式 M4011 栈行 span,均为信息性 latent)。
 
 ### v0.59.0(2026-11-13)
 

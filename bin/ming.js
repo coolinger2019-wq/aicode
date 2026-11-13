@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.59.0';
+export const VERSION = '0.60.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -78,7 +78,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 用法:
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
   ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]
-  ming test  [file.ming...] [--json] [--filter 名称]
+  ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
   ming build [--json] [--clean-cache] [--with-source] [--no-dist]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
   ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
@@ -479,12 +479,28 @@ async function cmdTest(files, flags, opts) {
   const json = flags.has('json');
   const filter = opts.filter ?? null;
   if (!files.length) return fail('test 需要至少一个 .ming 文件', json);
+  // v0.60(#54):strict-wasm 冲突仲裁与 run 同口径 —— strict 观测的正是 wasm 分层本身,
+  // 与 --tree/--no-wasm 同时出现是命令行矛盾,exit 1(复用 run 的消息与 fail 协议)。
+  if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
+  // v0.60 审查修复:strict 单独出现在 test 时无分层验证语义 —— 显式提示后忽略(退出码不变),
+  // 不静默吞旗标(Ming 显式立场:旗标要么生效,要么说明为何不生效)。
+  if (strictWasmOn(flags)) {
+    process.stderr.write('ming test: --strict-wasm 无分层验证语义,已忽略(仅保留与 --tree/--no-wasm 的互斥仲裁)\n');
+  }
   let totalPassed = 0, totalFailed = 0;
   const allResults = [];
   for (const f of files) {
     const c = await loadAndCheck(f, { json: false });
     if (!c.ok) { totalFailed++; continue; }
-    const testOpts = { capture: true, noWasm: flags.has('no-wasm') };
+    // v0.60(#54):资源门禁旗标透传到 test 子实例(默认与 run 相同:Infinity / 268_435_456 / 600_000);
+    // 子实例消费由 interp/vm 的 runTests 承接(同批 §64-A/B),此前 --max-alloc/--max-ms 对 test 不生效。
+    const testOpts = {
+      capture: true,
+      noWasm: flags.has('no-wasm'),
+      maxSteps: opts['max-steps'] ? Number(opts['max-steps']) : Infinity,
+      maxAlloc: opts['max-alloc'] ? Number(opts['max-alloc']) : 268_435_456,
+      maxMs: opts['max-ms'] ? Number(opts['max-ms']) : 600_000,
+    };
     const interp = flags.has('tree') ? new Interp(c.result, testOpts) : new VMInterp(c.result, testOpts);
     const results = interp.runTests(filter);
     for (const r of results) {
