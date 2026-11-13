@@ -104,8 +104,8 @@
 | M4007 | missing-key | map 下标缺键(用 .get(k) 得 Option) |
 | M4008 | assertion-failed | assert / assert_eq 失败(附两侧 debug 值) |
 | M4010 | task-timeout | 子任务超时/已取消(join_detailed 超时参数、cancel 后 join;以 Err 值的 code 字段出现,非 panic;v0.30 起) |
-| M4011 | alloc-quota-exceeded | 内存配额超限:累计分配(元素/字符口径)超过 --max-alloc(v0.32);v0.54 起 C 后端 `std.mem.alloc` 的 malloc 返回 NULL 也复用本码(消息"内存分配失败:std.mem.alloc(N) 返回 NULL",不伪装 null) |
-| M4012 | time-quota-exceeded | 执行时间超过 --max-ms 墙钟上限(v0.32) |
+| M4011 | alloc-quota-exceeded | 内存配额超限:累计分配估算超过 --max-alloc(v0.32;估算口径非 RSS)。计费 = 值创建(Vec/Map 元素 + str 字符)+ 外部输入边界(fs/stdin/proc/net 的结果按返回内容长度计费:read_file 按 stat size 预记账、read_bytes 按 size、read_line/read_to_end 按结果长度、list_dir 按条目数、proc.exec 按 stdout+stderr、http 按响应体长度;v0.60);派生值(deepCopy/json.parse/re.*/wasm 参数搬运)不重复计费。v0.54 起 C 后端 `std.mem.alloc` 的 malloc 返回 NULL 也复用本码(消息"内存分配失败:std.mem.alloc(N) 返回 NULL",不伪装 null) |
+| M4012 | time-quota-exceeded | 执行时间超过 --max-ms 墙钟上限(按步数取模轮询熔断;v0.32);v0.60 起阻塞内建(sleep/join/join_detailed/spawn_all/sync scope/exec/http)的等待钳到剩余预算,预算已尽不等待、唤醒后立即熔断;进程内不可抢占边界:read_line/read_to_end 的 stdin 阻塞与 RegExp 回溯不受 --max-ms 中断 |
 | M4013 | ffi-load-failed | v0.42 启用:extern fn 库加载/符号查找失败(C 后端启动绑定阶段,退出码 101) |
 | M4014 | ffi-signature-invalid | v0.39 预留(未启用):ffi 签名与目标符号不符 |
 | M4015 | contract-violation | v0.45:契约违反(requires/ensures),退出码 101 |

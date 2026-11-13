@@ -157,7 +157,7 @@ extern "c" fn f(...) -> str        // 检查器强制按 -> Untrusted[str] 处�
 // 语义:拒绝绝对路径、.. 段、空段等非法形态,Ok 为规范化相对路径;非法路径 → Err(消息说明原因)
 ```
 
-**失败语义(定稿)**:非法路径 → `Err[str]`(错误消息说明原因,与 `read_file` 的 `Result[str, str]` 同风格);净化成功的唯一产出是 `Ok(规范化相对路径)`。返回 `Result` 而非裸 `str` 是刻意选择:净化失败必须被调用方显式处理(`?`/match),不允许"静默吞掉用空串"——若返回裸 `str`,失败只能 panic 或返回魔法值,两者都比 `Err` 差。初稿注释"不合法 → Err 经 Option/Result 表达"与正文按裸 `str` 使用自相矛盾,已按本节统一(独立审查 2026-11-13 指出)。
+**失败语义(定稿)**:非法路径 → `Err[str]`(错误消息说明原因,与 `read_file` 的 `Result[str, str]` 同风格);净化成功的唯一产出是 `Ok(规范化相对路径)`(**该句限定 `sanitize_path`;`sanitize_cli_path` 的 Ok 为原串原样返回,见下方裁决段**)。返回 `Result` 而非裸 `str` 是刻意选择:净化失败必须被调用方显式处理(`?`/match),不允许"静默吞掉用空串"——若返回裸 `str`,失败只能 panic 或返回魔法值,两者都比 `Err` 差。初稿注释"不合法 → Err 经 Option/Result 表达"与正文按裸 `str` 使用自相矛盾,已按本节统一(独立审查 2026-11-13 指出)。
 
 **净化逻辑谁审计**——三重答案:
 
@@ -165,9 +165,9 @@ extern "c" fn f(...) -> str        // 检查器强制按 -> Untrusted[str] 处�
 2. **用户自定义净化 v1 拒绝**:一旦 `fn my_sanitize(s: Untrusted[str]) -> Result[str, str]` 自由定义,污点可信根从"std 单点实现"退化为"每个用户的正确性",且语言无法审计——污点系统整体失效。这是诚实的限制,不是缺陷(design §2.8 同款表述)。
 3. **净化 = 类型跃迁的唯一出口**:`Untrusted[str] -> Result[str, str]`(Ok 载荷为净 `str`)在整个语言里只有 `std.unstr.*` 函数族;无 `as` 旁路(M3019 通道,同 Ptr),无隐式转换。
 
-**净化器授权位(2026-11-13 三方评估补丁 d,只授权实参位)**:`sanitize_path` 只授权**路径实参位**——`write_file`/`append_file`/`make_dir`/`remove_file`/`remove_dir_recursive`/`metadata`/`copy_file`/`rename` 的 `path` 形参;**不授权** content 位(`write_file`/`append_file` 第 2 参)、URL 位(`http_request`/`_opts` 的 url/headers/body)、`proc.exec` 的 cmd/args 位、extern 实参位。净化器不是万能"洗白器"——每扩一个授权位 = 一次可信根扩权(与 §9 清单 5 的族扩展纪律同源)。
+**净化器授权位(2026-11-13 三方评估补丁 d,只授权实参位)**:`sanitize_path` 只授权**路径实参位**——`write_file`/`append_file`/`make_dir`/`remove_file`/`remove_dir_recursive`/`metadata`/`copy_file`/`rename` 的 `path` 形参;**不授权** content 位(`write_file`/`append_file` 第 2 参)、URL 位(`http_request`/`_opts` 的 url/headers/body)、`proc.exec` 的 cmd/args 位、extern 实参位。净化器不是万能"洗白器"——每扩一个授权位 = 一次可信根扩权(与 §9 清单 5 的族扩展纪律同源)。**2026-11-14 扩权登记(迁移 spike 发现,plan §4.4.5/spike §6)**:`sanitize_cli_path` 的授权位扩及 **CLI 匹配/比较串**——`env.get` 解包值中 **4 处非路径实参位**(find_files 的 FIND_NAME(`contains` 匹配串)、batch_rename 的 RENAME_EXT(`!=` 过滤)与 RENAME_PREFIX(拼接进 rename 路径——路径目的地边界情形,随本扩权一并覆盖)、json_query 的 JSON_FIELD(仅判空));其"校验不改写"语义本适配(不改写即无内容洗白面,仅拒绝 NUL/控制字符),扩权一次、测试向量锁定,不新增函数与语言面。
 
-**绝对路径/CLI 策略(未裁决;v0.61 启动门槛③,plan §4.4.5)**:`sanitize_path` 语义为"拒绝绝对路径"(本节定稿),但 CLI 工具场景(自写工具把 `env.get` 结果作为**用户可传绝对路径**的命令行参数)与该语义冲突。二选一,评审裁决后实现:① 新增 `sanitize_cli_path`(允许绝对路径、拒绝 NUL/控制字符,与 `sanitize_path` 并列,净化族 +1);② 裁定 CLI 工具改用 argv 传参(argv 在 v1 不标污,如实登记漏报窗口)。未裁决前 `std.unstr` 不预实现任何一种。
+**绝对路径/CLI 策略(已裁决,2026-11-14;原 v0.61 启动门槛③)**:**采纳选项①**——净化族 +1:`std.unstr.sanitize_cli_path(u: Untrusted[str]) -> Result[str, str]`,语义 = **校验不改写**:不含 NUL 与 C0 控制字符(< 0x20)且非空 → `Ok(原串原样返回)`;否则 `Err(消息说明原因)`。允许绝对路径、相对路径与 `..` 段——CLI 工具的用户本就是自己命令行参数的信任根,威胁面是**控制字符注入与 FFI NUL 截断**,不是"路径穿越"(穿越防护属 `sanitize_path` 的相对路径语义)。授权位 = 与 `sanitize_path` 相同的路径实参位(含 CLI 工具把 `env.get` 结果传给 wc/tree/find_files 类路径形参)。**否决选项②(argv 不标)**:那会把最高频的 CLI 流整体移出污点面,等于给最常用入口开常备漏报窗口,与污点目的相悖。族扩展纪律(§9 清单 5)如实履行:+1 函数 = 一次可信根扩权,授权位清单如上、测试向量锁定。
 
 ---
 
@@ -303,7 +303,7 @@ Untrusted 面比两者都小:**无 codegen、无运行时新形态、无资格�
 ## 8. v1 任务草案(v0.61 条件;启动门槛见 plan §4.4.5)
 
 1. **checker**:Untrusted 类型构造器 + unify 分支 + 白名单方法表 + extern 返回强制 + 诊断(新码:`M3049[untrusted-mismatch]`(Untrusted 实参进非 Untrusted 槽,含 hint"先 std.unstr.* 净化")、`M3050[untrusted-method-forbidden]`(白名单外方法或洗白尝试,含 `debug` 禁面);与既有 M3002/M3008/M3012 的分工在实现时按"专用码优先、通用码兜底"裁定);三处登记。
-2. **std 面**:v1 窄源标注(仅 `env.get`、`read_line` + extern 返回强制;fs/net/proc 内容源不标,见 §3.1);`std.unstr.sanitize_path -> Result[str, str]` + `std.unstr.mark`;GUIDE §18 各节同步。
+2. **std 面**:v1 窄源标注(仅 `env.get`、`read_line` + extern 返回强制;fs/net/proc 内容源不标,见 §3.1);`std.unstr.sanitize_path -> Result[str, str]`(拒绝绝对路径/.. 段,Ok 规范化相对路径)+ `std.unstr.sanitize_cli_path -> Result[str, str]`(校验不改写:拒绝 NUL/C0 控制字符,Ok 原样返回;CLI 路径授权位,2026-11-14 裁决,§3.4)+ `std.unstr.mark`;GUIDE §18 各节同步。
 3. **测试**:§65 新分节 15–20 项(来源标注正/负例、sink 免费门禁、载荷传播、白名单正/负例、契约内 sanitize、extern 强制、`?`/Result 保留、四引擎运行时一致(擦除验证:同程序标注与否输出逐字同)、来源/白名单/净化测试向量锁定、`debug` 拒绝)。
 4. **文档**:GUIDE 新节(污点标注)+ 修订记录、design.md 新 §6.12(或并入本 ADR 引用)、capabilities "数据流安全(污点标注)" 行 ❌ → ✅(视交付)、README 路线图。
 5. **验证门槛**:`run.mjs` 全绿;`fuzz` 0 分歧;`proof_fuzz` 三模式 0 误报;四引擎对标注程序逐字一致;check 语料耗时 ≤1.3x。
@@ -316,7 +316,7 @@ Untrusted 面比两者都小:**无 codegen、无运行时新形态、无资格�
 | 2 | 建模:效果(候选 A)vs 类型(候选 B)vs 检查器私有数据流(候选 C) | **B**;A/C 否决理由见 §2,否决应视为终局(不许"先 A 后 B"混合) |
 | 3 | 运行时擦除 vs 值携带污点位 | **擦除**;携带位 = 值表示变更 + 四引擎深拷贝/比较/序列化全链路改造,成本不成比例 |
 | 4 | 来源迁移:改签名(破坏)vs 并行 unstr 入口 | **改签名,升 minor**;并行入口违反"一种结构一个语法" |
-| 5 | 净化族范围:v1 仅 `sanitize_path`,还是加 `sanitize_log`/`sanitize_url`? | **仅 sanitize_path**;族按真实 sink 用例扩展,每加一个 = 一次可信根扩权。失败语义已定为 `Result[str, str]`(非法路径 Err,§3.4),族内新函数沿用同一签名风格 |
+| 5 | 净化族范围:v1 仅 `sanitize_path`,还是加 `sanitize_log`/`sanitize_url`? | v1 族 = **`sanitize_path` + `sanitize_cli_path`**(2026-11-14 裁决,§3.4:CLI 路径校验不改写);**不加** sanitize_log/sanitize_url——族按真实 sink 用例扩展,每加一个 = 一次可信根扩权。失败语义已定为 `Result[str, str]`(非法路径 Err,§3.4),族内新函数沿用同一签名风格 |
 | 6 | extern 返回值强制标污(签名禁写裸 str 返回) | **强制**;漏标是语法错误而非纪律。ffi struct 面扩大时(Backlog "ffi 面扩大"条目)另行评估污点规则——struct 返回值的字段级标注是新的裁决面,本 ADR 不预支结论 |
 | 7 | 拼接/插值传播:v1 拒绝,还是提供 `std.unstr.concat`(污进污出)? | **拒绝**;若透传场景证明需要,concat 作为族函数加入(签名即传播规则) |
 | 8 | Untrusted 操作面:零操作 vs 白名单(parse_i64/char_len 等产出纯值的方法) | **白名单**;零操作使处理函数不可写;白名单表测试锁定,"产出同污点载体"的方法 v1 不设 |
