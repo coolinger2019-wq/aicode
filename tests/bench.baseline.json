@@ -1,39 +1,63 @@
 {
   "meta": {
-    "date": "2026-11-12",
+    "date": "2026-11-13",
     "node": "v24.11.0",
     "platform": "win32-x64",
-    "ming": "0.56.0",
-    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms),cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。"
+    "ming": "0.59.0",
+    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)(契约 invariant 循环为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。"
   },
   "items": {
     "fib(24) 递归": {
-      "treeMs": 218,
-      "vmMs": 87,
-      "speedup": 2.5,
-      "ccMs": 10.29,
-      "ccPerVm": 8.5
+      "treeMs": 202,
+      "vmMs": 84,
+      "speedup": 2.4,
+      "ccMs": 9,
+      "ccPerVm": 9.4
     },
     "循环累加 100 万": {
-      "treeMs": 281,
-      "vmMs": 188,
+      "treeMs": 239,
+      "vmMs": 157,
       "speedup": 1.5,
-      "ccMs": 12.17,
-      "ccPerVm": 15.4
+      "ccMs": 9.35,
+      "ccPerVm": 16.8
     },
     "高阶方法 10 万元素": {
-      "treeMs": 223,
-      "vmMs": 211,
+      "treeMs": 209,
+      "vmMs": 187,
       "speedup": 1.1,
       "ccMs": null,
       "ccPerVm": null
     },
     "词频统计 2 万词": {
-      "treeMs": 120,
-      "vmMs": 126,
-      "speedup": 0.9,
+      "treeMs": 127,
+      "vmMs": 108,
+      "speedup": 1.2,
       "ccMs": null,
       "ccPerVm": null
+    },
+    "契约 invariant 循环": {
+      "treeMs": 314,
+      "vmMs": 255,
+      "speedup": 1.2,
+      "ccMs": null,
+      "ccPerVm": null,
+      "invariant": {
+        "loopN": 10000,
+        "rounds": 30,
+        "exits": 300000,
+        "vmUs": 0.23,
+        "treeUs": 0.23,
+        "vmPct": 26.5,
+        "treePct": 22.2,
+        "vmUsMedian": 0.22,
+        "treeUsMedian": 0.22,
+        "vmPctMedian": 24.9,
+        "treePctMedian": 20.7,
+        "controlVmMs": 187,
+        "controlTreeMs": 244,
+        "samples": 5,
+        "cc": "skipped:C1 不支持该程序形态:let 推导 null"
+      }
     }
   }
 }

@@ -319,7 +319,17 @@ class CEmit {
         if (ty !== 'i64' && ty !== 'u64') throw new Unsupported('int 字面量位置');
         if (e.bits !== 64) throw new Unsupported('非 64 位字面量');
         if (ty === 'u64' && e.v < 0n) throw new Unsupported('u64 负字面量');
-        return `${e.v}${CSUF[ty]}`;
+        // v0.59 P1 审查 MINOR 6 回归修复(与 wasm 同口径):字面量超出位宽时
+        // C 的十进制常量会隐式转 unsigned 再折返(9223372036854775808LL 实际是
+        // LLONG_MIN),取负后语义与 tree/VM 不符。2^63 用于 -i64.min 特判;
+        // 其余越界形态显式拒绝(C1 不支持,不再静默错值)。
+        if (ty === 'i64') {
+          if (e.v === 9223372036854775808n) return '(-9223372036854775807LL - 1LL)';
+          if (e.v < -9223372036854775808n || e.v > 9223372036854775807n) throw new Unsupported('i64 字面量越界');
+          return `${e.v}LL`;
+        }
+        if (e.v > 18446744073709551615n) throw new Unsupported('u64 字面量越界');
+        return `${e.v}ULL`;
       }
       case 'FloatLit': {
         if (ty !== 'f64') throw new Unsupported('float 字面量位置');
@@ -397,6 +407,12 @@ class CEmit {
       }
       case 'Unary': {
         if (e.op !== '-') throw new Unsupported('一元 ' + e.op);
+        // v0.59 P1 审查 MINOR 6 回归修复:-(-9223372036854775808) 的操作数是 2^63
+        // 字面量,取负恰为 i64.min;直接发 LLONG_MIN,不走 ming_neg_i64(其 MIN 守卫
+        // 针对运行时值取负,会误判)。
+        if (e.expr.nt === 'IntLit' && e.expr.bits === 64 && e.expr.v === 9223372036854775808n) {
+          return 'LLONG_MIN';
+        }
         const it = this.inferTy(e.expr, ctx);
         if (it === 'f64') return `(-(${this.emitExpr(e.expr, 'f64', ctx)}))`;
         if (it !== 'i64' && it !== 'u64') throw new Unsupported('取负类型');
@@ -569,8 +585,21 @@ class CEmit {
         ctx.open(`if (${b} < 0 || ${b} >= 64) {`);
         P(ctx.specific ? { fmt: `移位位数 ${FMT.i64} 越界(必须在 0..63)\\n`, args: `, ${b}` } : null);
         ctx.close('}');
-        if (op === '<<') ctx.line(`${dst} = (long long)((unsigned long long)(${a}) << ${b});`);
-        else ctx.line(`${dst} = ${a} >> ${b};`); // gcc/clang:有符号右移 = 算术移位
+        if (op === '<<') {
+          // v0.59 P1 审查阻塞 1:C 的 `unsigned long long << b` 丢位静默回绕
+          // (3LL << 62 → LLONG_MIN),tree/VM 报 M4002。操作数先落临时量
+          // (单次求值),移位后算术右移回检 (r >> b) != a → M4002。
+          // 消息口径沿用既有约定:main 内具体消息(与 tree 逐字)/ eligible 函数内
+          // 通用消息(与 wasm panic_m4002 一致)。
+          const av = this.newTmp(ctx, 'i64', a);
+          const bv = this.newTmp(ctx, 'i64', b);
+          ctx.line(`${dst} = (long long)((unsigned long long)${av} << ${bv});`);
+          ctx.open(`if ((${dst} >> ${bv}) != ${av}) {`);
+          P(ctx.specific ? { fmt: `整数<<溢出:${FMT.i64} << ${FMT.i64} 超出 i64 范围\\n`, args: `, ${av}, ${bv}` } : null);
+          ctx.close('}');
+          return;
+        }
+        ctx.line(`${dst} = ${a} >> ${b};`); // gcc/clang:有符号右移 = 算术移位
         return;
       default:
         throw new Unsupported('i64 运算 ' + op);
@@ -609,7 +638,18 @@ class CEmit {
         ctx.open(`if (${b} >= 64) {`);
         P(ctx.specific ? { fmt: `移位位数 ${FMT.u64} 越界(必须在 0..63)\\n`, args: `, ${b}` } : null);
         ctx.close('}');
-        ctx.line(`${dst} = ${a} ${op} ${b};`);
+        if (op === '<<') {
+          // v0.59 P1 审查阻塞 1(u64):丢位回绕静默错值;逻辑右移回检
+          // (r >>u b) != a → M4002(同 signed 口径:main 具体 / eligible 通用)。
+          const av = this.newTmp(ctx, 'u64', a);
+          const bv = this.newTmp(ctx, 'u64', b);
+          ctx.line(`${dst} = ${av} << ${bv};`);
+          ctx.open(`if ((${dst} >> ${bv}) != ${av}) {`);
+          P(ctx.specific ? { fmt: `整数<<溢出:${FMT.u64} << ${FMT.u64} 超出 i64u 范围\\n`, args: `, ${av}, ${bv}` } : null);
+          ctx.close('}');
+          return;
+        }
+        ctx.line(`${dst} = ${a} >> ${b};`);
         return;
       default:
         throw new Unsupported('u64 运算 ' + op);

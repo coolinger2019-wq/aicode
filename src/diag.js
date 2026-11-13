@@ -62,7 +62,8 @@ export const CODES = {
   M3044: 'invalid-map-key',
   M3045: 'index-bounds-violated',
   M3046: 'unsafe-context-required', // v0.54:指针操作/Ptr 实参在 unsafe 块外
-  M3047: 'local-fn-unsupported', // v0.56:本地函数声明暂不支持(VM 无编译路径;显式拒绝)
+  M3047: 'local-fn-unsupported', // v0.59(#44):已废弃——本地函数恢复(VM 编译路径落地),此码不再发射;号段按"已发布码不改号"保留
+  M3048: 'generic-local-fn-unsupported', // v0.59 P2 审查 MINOR:本地函数不支持类型参数(区别于 M3003 推断失败)
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',
@@ -96,7 +97,8 @@ export const CODE_HINTS = {
   M4007: '用 `get(k)` 会返回 Option[V] 而不是 panic。',
   M3045: '调整 requires 边界或索引表达式,使 0 <= i 且 i < len$buf 对所有满足 requires 的调用成立;或改用 buf.get(i) 返回 Option 而不是 panic。',
   M3046: '给函数签名加 "with unsafe",并把指针读写/传递放进 unsafe { ... } 块;块外只允许 let/赋值/return 传递与 p.is_null()。',
-  M3047: '把本地函数移到模块级(顶层 fn)或改用具名顶层函数;需要递归时同样使用顶层函数(计划 v0.57 后恢复本地函数)。',
+  // M3047 已废弃(v0.59 #44 本地函数恢复):不再发射,hint 一并移除。号段保留不改号。
+  M3048: '本地函数编译为独立函数帧、不做单态化:把泛型函数声明在模块级(顶层),或去掉本地函数的类型参数。',
   M4016: 'unsafe 指针操作仅由 C 原生后端(ming cc)执行;tree/VM 不伪装内存语义。',
   W3105: '这是"无法证明"而非"确定越界":证明器只处理 requires 线性边界下的直线体。可补充线性 requires(如 i < buf.len() && i >= 0),或改用 buf.get(i)。',
 };

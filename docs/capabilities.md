@@ -1,6 +1,6 @@
-# Ming 能力矩阵(v0.38 基线审计;当前 v0.58.0)
+# Ming 能力矩阵(v0.38 基线审计;当前 v0.59.0)
 
-> 本表是 v0.38 时的全面审计。v0.39–v0.58 的能力增量以 `GUIDE.md` 修订记录为准;v0.56 已复核 C/wasm 覆盖面并重算覆盖率;v0.57 契约/证明行补循环形态(无新增矩阵行);v0.58 新增 LSP 行(✅)并把流式拼接行按 join 口径改判 🟡。
+> 本表是 v0.38 时的全面审计。v0.39–v0.59 的能力增量以 `GUIDE.md` 修订记录为准;v0.56 已复核 C/wasm 覆盖面并重算覆盖率;v0.57 契约/证明行补循环形态(无新增矩阵行);v0.58 新增 LSP 行(✅)并把流式拼接行按 join 口径改判 🟡;v0.59 新增"本地函数"行(✅,#44 恢复)并更新 WASM 行(覆盖收口 + 剩余守护具名)。
 
 对照"标准库金字塔"的诚实审计。✅ 生产语义 / 🟡 雏形(有硬限制)/ ❌ 缺失。
 
@@ -69,7 +69,8 @@
 | 字节流正则 | ✅ | v0.36:std.re is_match_bytes/find_bytes/replace_bytes(latin1 无损桥接,\xNN 原始字节匹配) |
 | FFI(外部函数接口) | ✅ | v0.42 兑现 + v0.43 字符串桥:extern "库" fn 声明(隐含 ffi 效果,M3029 门禁;JS 引擎 M4001 拒绝,C 后端 dlopen/dlsym,M4013)。**v0.54(C5)**:extern 签名接受/返回 Ptr[u8]/Ptr[mut u8](裸地址直传,emit-c 槽为 `const unsigned char*`/`unsigned char*`)。**已声明覆盖范围**:数值(i64/u64/f64)、str 参数/返回(ming_str ↔ NUL 结尾 C 串)、Result[i64,str] 进 C 面、Ptr 槽;**未覆盖**:结构体/数组 FFI ABI、运行时动态符号 API(`lib.fn`,Backlog 已删除) |
 | 受控不安全指针(`with unsafe`) | ✅ | v0.54 C5:Ptr[mut u8]/Ptr[u8](仅 u8;mut 精确匹配)、load/store/offset/is_null、std.mem.alloc/free(malloc 失败 M4011);双门禁 = 签名 `with unsafe`(M3029 逐层传播)+ 块级 `unsafe { ... }`(M3046);仅 C 原生后端执行,tree/VM 与 wasm 回落以 M4016 panic(exit 101)。**未覆盖**:Ptr 算术(除 offset)、Ptr↔整数、带长度 Ptr/Slice、打印/相等、生命周期/逃逸分析、`unsafe(cond)`;悬垂/越界 UB 不捕获(诚实声明) |
-| WASM 分层覆盖面 | 🟡 | v0.32 复活 + v0.53 strict 三态(`--strict-wasm`);v0.56 修复 W1 一元负号栈序、W2 循环内 if 的 break/continue `br` 深度、F1 for 体内 continue 跳过自增、F2 `inferNumType` 重复 case(均有 `[wasm] fn OK` 存活断言)。**已声明覆盖**:i64/u64/f64/str/Vec/Map 的 eligible 函数(数值比较/算术、for-in/while/if、调用;**不含 `match`**——实测 `REJECT: 表达式 Match`,C 行的 match 声明正确、不受影响);**剩余回落形态**(不影响语义;strict 模式可见):f64 局部/Map 字面量的 locals 索引偏移(#40:违规函数 REJECT,同模块其他函数仍可经 wasm 执行)、Map 形参 `slotTypes` 记 i64 致 for-in Map 回落(#41)、Vec 形参多枚/与 f64 形参组合时 locals 类型错位(#42;后位单个 Vec 形参实测 OK)、str 返回函数 `retTy` 映射 i64(#43) |
+| 本地函数(块内 `fn`) | ✅ | v0.59(#44,M3047 移除):函数体内 `fn` 为**块级条目**——同块内声明前可调用、自递归与同块互递归、`requires`/`ensures` 按模块函数同口径执行(违反 M4015)、可作值传给 HOF;VM/tree/默认引擎一致,AOT 产物可序列化。**四条限制**:不捕获外层局部(引用 → M3001)、块级可见(离开声明块不可见)、泛型不支持(**M3048**)且 C 后端不支持(`C1 不支持该程序形态: 语句 FnStmt`)、静态证明面不含本地函数(运行时 M4015 仍执行) |
+| WASM 分层覆盖面 | 🟡 | v0.32 复活 + v0.53 strict 三态(`--strict-wasm`);v0.56 修复 W1 一元负号栈序、W2 循环内 if 的 break/continue `br` 深度、F1 for 体内 continue 跳过自增、F2 `inferNumType` 重复 case(均有 `[wasm] fn OK` 存活断言);**v0.59 覆盖收口**:#40 f64 局部/混合槽序、#41 Map 形参、#42 Vec 多形参、#43 str 返回、#45 值型 if、#46 块尾 unit if 均真实经 wasm,并修 6 个潜伏 bug(strConsts 空串/VECMAP VOID/alloc 导入索引/map_get 顺序/移位 64/守护口径);严格语料 120 程序 **ok=54 / none=66 / fallback=0**。**已声明覆盖**:i64/u64/f64/str/Vec/Map 的 eligible 函数(数值比较/算术、for-in/while/if、值型 if、块尾 if、str 返回、调用;**不含 `match`**——实测 `REJECT: 表达式 Match`,C 行的 match 声明正确、不受影响);**剩余守护**(不影响语义;strict 模式可见且原因具名):VecLit 数值元素(容器表示未统一)、Vec 下标读/mut 元素写(宿主 `panic_m4003` 导入待补)、Option 消费链(宿主 M4006/M4007 导入待补)、f64 复合赋值等 |
 | 原生 C 后端(C1–C5) | 🟡 | v0.39 C1(数值函数 → C + GCC -O2,资格分析与 wasm 同源;基准对标 wasm ~10x);v0.40 C2(str/Vec[i64]/match/for-in 值语义);v0.41 C3(Map/Option/f64 打印 + floatStr);v0.42 C4(extern fn FFI);v0.53 `str` for-in 按 UTF-8 码点迭代;v0.54 C5(`with unsafe`:Ptr → unsigned char*/const unsigned char*、alloc/free → malloc/free、extern Ptr 槽;C 专用资格旗标 `opts.unsafe` 仅 ming cc 路径);v0.56 无 C 面语义变化(修复集中在 tree/VM/wasm/fmt/构建键)。**已声明覆盖范围**:eligible 形态(数值/str/Vec[i64]/Map[str,i64]/Option[i64]/Result[i64,str]/ffi/unsafe 函数及其调用/for-in/match);**未覆盖**:插值串、结构体/数组 FFI ABI、交叉编译;不支持的语句形态在 C 发射期显式拒绝(报 `C1 不支持该程序形态` 并 exit 1);需另用 JS 引擎运行 |
 | 内联汇编/直接 syscall | ❌ | 北星支柱 2:原生后端之后;经 `with unsafe` 门禁(效果系统即泛化 unsafe 块) |
 | 海量并发网络(10 万级连接) | ❌ | 北星支柱 3:需 async/green-thread 运行时(与确定性语义的调和待设计) |
@@ -77,4 +78,4 @@
 | eval/热重载 | ❌ | 北星支柱 4:解释器即库,eval 可作显式能力(`with eval`)落地,成本低于多数语言 |
 | 交叉编译静态二进制 | 🟡 | v0.38:ming build dist 可移植目录(源 + 运行时 + launcher,Node 零依赖即跑);v0.42 `ming cc --static` 同平台静态链接。**未覆盖**:跨 OS/跨架构交叉编译(明确不承诺) |
 
-**覆盖率:v0.58.0 ≈ 82%**(口径:53 行,✅=1、🟡=0.5、❌=0 → 40✅ 7🟡 6❌;(40 + 7×0.5) / 53 = 82.1% ≈82%)。北星立项把安全工具六大支柱纳入矩阵;v0.54 新增"受控不安全指针(`with unsafe`)"行(✅,C5 交付);v0.55 新增"静态契约与证明(requires/ensures)"行(✅,跨函数摘要交付),覆盖率与 v0.54(50 行 ≈81%)同口径;v0.56 新增"WASM 分层覆盖面"行(🟡:v0.56 修复四个语义缺陷,如实列出剩余回落形态 #40–#43),覆盖率按 52 行口径重算为 80.8% ≈81%。v0.56 审计更新 C 后端/wasm 行与契约行(fmt 保真);v0.57 契约/证明行补循环形态(证明面扩大,能力判定不变,无新增行,覆盖率与 v0.56 同口径);v0.58 新增 LSP 行(✅,三新查询交付)并把"流式拼接 Builder"改判 🟡(std.str.join 单次 O(n);流式 Builder 本身仍 ❌,如实说明),覆盖率按 53 行口径重算为 82.1% ≈82%。
+**覆盖率:v0.59.0 ≈ 82%**(口径:54 行,✅=1、🟡=0.5、❌=0 → 41✅ 7🟡 6❌;(41 + 7×0.5) / 54 = 82.4% ≈82%)。北星立项把安全工具六大支柱纳入矩阵;v0.54 新增"受控不安全指针(`with unsafe`)"行(✅,C5 交付);v0.55 新增"静态契约与证明(requires/ensures)"行(✅,跨函数摘要交付),覆盖率与 v0.54(50 行 ≈81%)同口径;v0.56 新增"WASM 分层覆盖面"行(🟡),覆盖率按 52 行口径重算为 80.8% ≈81%。v0.57 契约/证明行补循环形态(证明面扩大,能力判定不变,无新增行,覆盖率与 v0.56 同口径);v0.58 新增 LSP 行(✅)并把"流式拼接 Builder"改判 🟡,覆盖率按 53 行口径重算为 82.1% ≈82%;v0.59 新增"本地函数"行(✅,M3047 移除)并更新 WASM 行(覆盖收口),覆盖率按 54 行口径重算为 82.4% ≈82%。

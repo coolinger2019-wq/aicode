@@ -1295,6 +1295,77 @@ export class Checker {
     scope.reportUnused(this.diags);
   }
 
+  // v0.59(#44):本地函数签名构建(原 M3047 分支的登记逻辑抽出,供 checkBlock 预登记复用)
+  buildLocalFnSig(d, ctx) {
+    const tp = new Map(d.tparams.map(n => [n, { k: 'param', name: n }]));
+    const effects = new Set();
+    for (const e of d.effects ?? []) {
+      if (KNOWN_EFFECTS.has(e.name)) effects.add(e.name);
+      else this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
+    }
+    return {
+      tparams: d.tparams,
+      params: d.params.map(p => ({ name: p.name, mut: !!p.mut, type: this.resolveTypeAst(p.type, ctx.mod, tp), span: p.span })),
+      ret: d.ret ? this.resolveTypeAst(d.ret, ctx.mod, tp) : T_UNIT,
+      effects,
+      declSpan: d.span ?? null, // v0.59 P2 审查 MINOR#1:重复定义诊断指向首次声明
+    };
+  }
+
+  // v0.59(#44):本地函数体检查(镜像 checkFnBody)。与模块函数的差异:
+  //   * 体作用域不接外层函数作用域(Scope(null, mod) 为底)——不捕获外层局部变量,
+  //     与 tree callLocalFn 帧(parent:null)和 VM 独立子函数帧一致;
+  //   * parent 是只含同块兄弟本地 fn 签名的 sibScope(无变量)——递归/互递归可见。
+  checkLocalFnBody(d, mod, sig, sibs) {
+    const sibScope = new Scope(null, mod);
+    for (const [n, s2] of sibs) sibScope.registerLocalFn(n, s2);
+    const scope = new Scope(sibScope, mod);
+    for (const p of sig.params) {
+      scope.bind(p.name, p.type, p.mut, p.span, true);
+    }
+    const ctx = {
+      mod, scope, fnRet: sig.ret, inLoop: false,
+      fnName: d.name, warnings: this.diags,
+      implTypeName: null,
+      fnDecl: d,
+      genericNames: new Set(d.tparams),
+      effects: sig.effects,
+      genericBounds: new Map(),
+    };
+    // 契约检查(v0.45 口径):纯表达式 + bool;ensures 中 result 绑定返回值
+    if (d.requires) {
+      const pureCtx = { ...ctx, scope, effects: new Set(), fnDecl: d, contractMode: true };
+      const t = this.checkExpr(d.requires.expr, pureCtx, T_BOOL);
+      const r = t ? resolveT(t, new Map()) : null;
+      if (r && r.k !== 'bool') this.diags.push(err('M3014', `requires 条件必须是 bool,实际是 ${typeStr(r)}`, d.requires.expr.span));
+    }
+    if (d.ensures) {
+      const resScope = new Scope(scope, mod);
+      resScope.bind('result', sig.ret, false, d.ensures.expr.span, true);
+      const pureCtx = { ...ctx, scope: resScope, effects: new Set(), fnDecl: d, contractMode: true };
+      const t = this.checkExpr(d.ensures.expr, pureCtx, T_BOOL);
+      const r = t ? resolveT(t, new Map()) : null;
+      if (r && r.k !== 'bool') this.diags.push(err('M3014', `ensures 条件必须是 bool,实际是 ${typeStr(r)}`, d.ensures.expr.span));
+    }
+    const bt = this.checkBlock(d.body, ctx, sig.ret.k === 'unit' ? null : sig.ret);
+    const binds = new Map();
+    if (bt === null) { scope.reportUnused(this.diags); return; } // 体内已有诊断
+    if (sig.ret.k === 'unit') {
+      if (!unify(bt, T_UNIT, binds) && bt.k !== 'never') {
+        this.diags.push(err('M3002', `函数 "${d.name}" 没有返回类型,但块产生了 ${typeStr(bt, binds)} 值`, d.body.span,
+          '删除块尾表达式,或给函数添加 "-> ' + typeStr(bt, binds) + '"。'));
+      }
+    } else {
+      if (bt.k === 'unit') {
+        this.diags.push(err('M3017', `函数 "${d.name}" 标注返回 ${typeStr(sig.ret)},但有的执行路径不会产生返回值`, d.body.span,
+          '补上 return 语句或块尾表达式;检查 if/match 的每个分支是否都返回。'));
+      } else if (!unify(bt, sig.ret, binds) && bt.k !== 'never') {
+        this.diags.push(err('M3002', `函数 "${d.name}" 返回类型是 ${typeStr(sig.ret)},但块产生 ${typeStr(bt, binds)}`, d.body.span));
+      }
+    }
+    scope.reportUnused(this.diags);
+  }
+
   checkTest(entry, mod) {
     const scope = new Scope(null, mod);
     // 测试块允许全部效果(它们是验证脚手架;print 输出会被捕获)
@@ -1375,6 +1446,49 @@ export class Checker {
   checkBlock(block, ctx, expected, valuePos = false) {
     const scope = new Scope(ctx.scope, ctx.mod);
     ctx = { ...ctx, scope };
+    // v0.59(#44):同块本地函数预登记——块级条目语义(与 tree execBlock 提升、编译器
+    // compileBlock 预编译同口径):本地 fn 在整个块内可见,互递归不要求声明序。
+    // 兄弟签名集挂在 decl.localFnSibs(共享引用),供 checkLocalFnBody 的隔离体作用域
+    // 解析"形参 + 同块兄弟(含自身)+ 模块项"这一封闭名字集。
+    let localFnSibs = null; // 惰性:无 FnStmt 的块零开销
+    for (const s of block.stmts) {
+      if (s.nt !== 'FnStmt') continue;
+      localFnSibs ??= new Map();
+      // 附加元数据用不可枚举属性:不污染 AST 的 Object.keys 遍历(fmt/编译器/证明器
+      // 的通用 walker 不受影响);每次检查重建(同一 AST 二次检查也自洽)。
+      Object.defineProperty(s.decl, 'localFnSig', { value: this.buildLocalFnSig(s.decl, ctx), configurable: true, writable: true });
+      Object.defineProperty(s.decl, 'localFnSibs', { value: localFnSibs, configurable: true, writable: true });
+      // v0.59 P2 审查 MINOR#2:泛型本地函数不进入真实调用面(声明处 M3048 统一拒绝)。
+      // 但仍登记一个"毒化签名"(形参/返回 never、无效果):块内调用点按 never 收敛,
+      // 不再按未定的类型参数 T 级联报错(str(...实际是 T) 消除);never 作为底类型
+      // 与一切类型 unify,调用点不会产生类型不匹配。
+      if (s.decl.tparams.length > 0) {
+        const poison = {
+          tparams: [],
+          params: s.decl.params.map(p => ({ name: p.name, mut: !!p.mut, type: T_NEVER, span: p.span })),
+          ret: T_NEVER,
+          effects: new Set(),
+          declSpan: s.decl.span ?? s.span,
+        };
+        localFnSibs.set(s.decl.name, poison);
+        scope.registerLocalFn(s.decl.name, poison);
+        continue;
+      }
+      if (localFnSibs.has(s.decl.name)) {
+        // v0.59 P2 审查 MINOR#1:同块重名本地函数 → M3009(与模块级对齐;
+        // 此前静默"后者胜",解析结果依赖实现细节)。保留首个签名用于块内解析。
+        Object.defineProperty(s.decl, 'localFnDup', { value: true, configurable: true, writable: true });
+        const prevSpan = localFnSibs.get(s.decl.name)?.declSpan;
+        this.diags.push(err('M3009', `本地函数 "${s.decl.name}" 在本块重复定义`, s.decl.span ?? s.span,
+          '同一块内只能声明一个同名本地函数;删除重复声明或改名。',
+          prevSpan ? [{ span: prevSpan, message: '首次声明在这里' }] : []));
+        continue;
+      }
+      localFnSibs.set(s.decl.name, s.decl.localFnSig);
+      // 块级条目:登记进本块作用域——块内任何位置(含声明语句之前)可见,
+      // 与 tree execBlock 提升 / 编译器 precompileLocalFns 同口径
+      scope.registerLocalFn(s.decl.name, s.decl.localFnSig);
+    }
     for (const s of block.stmts) this.checkStmt(s, ctx);
     let bt;
     if (block.tail) {
@@ -1480,29 +1594,30 @@ export class Checker {
         return;
       }
       case 'FnStmt': {
-        // v0.56(B6):本地函数暂不支持。VM/字节码编译器尚无本地函数编译路径
-        // (VM 对任意本地函数声明直接 TypeError;本地函数作值把 tree/VM 分歧;契约被 tree 静默忽略),
-        // 因此在声明处统一显式拒绝(M3047),不再让默认引擎崩溃。计划 v0.57 后恢复(plan §5.1 #44)。
-        // 任何位置(函数体顶层/嵌套块)与非本地函数一样先经过 checkStmt,故一处拦截即覆盖全部形态;
-        // 本地函数作值(v.map(inc))/带契约形态也由声明处同一诊断拦截(不产生后续级联崩溃)。
-        // 仍登记签名(不检查函数体):调用点/作值处可按签名继续检查,避免 M3047 后叠加一串
-        // "找不到值 X" 的级联噪声——统一诊断只报一处声明错误。
+        // v0.59(#44):本地函数恢复(M3047 移除)——签名登记 + 函数体按模块函数同口径检查。
+        // 语义(三引擎一致:tree callLocalFn 帧 / VM 独立子函数帧):
+        //   * 块级条目:同块本地 fn 在整个块内可见(checkBlock 已预登记,互递归不要求声明序);
+        //   * 隔离帧:体内名字集 = 形参 + 同块兄弟本地 fn(含自身,支持递归/互递归)+ 模块项,
+        //     不捕获外层局部变量(引用外层局部在 check 阶段即 M3001,与运行时帧一致);
+        //   * 契约 requires/ensures 按模块函数同口径检查并发射(tree callLocalFn 同步补齐)。
         const d = s.decl;
-        const tp = new Map(d.tparams.map(n => [n, { k: 'param', name: n }]));
-        const effects = new Set();
-        for (const e of d.effects ?? []) {
-          if (KNOWN_EFFECTS.has(e.name)) effects.add(e.name);
-          else this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
+        if (d.tparams.length > 0) {
+          // v0.59 P2 审查 MINOR#2:泛型本地函数三引擎均无单态化路径——专用码 M3048
+          // (与 M3003 推断失败的码义分开),声明处统一拒绝;不检查体,避免按未定
+          // 类型 T 级联。块内调用点已在 checkBlock 预登记 never 毒化签名(底类型),
+          // 不按真实泛型签名解析(str(...实际是 T) 消除)。
+          this.diags.push(err('M3048',
+            `本地函数 "${d.name}" 不支持类型参数:本地函数编译为独立函数帧、不做单态化;泛型函数请声明在模块级(顶层)`,
+            d.span ?? s.span));
+          return;
         }
-        ctx.scope.registerLocalFn(d.name, {
-          tparams: d.tparams,
-          params: d.params.map(p => ({ name: p.name, mut: !!p.mut, type: this.resolveTypeAst(p.type, ctx.mod, tp), span: p.span })),
-          ret: d.ret ? this.resolveTypeAst(d.ret, ctx.mod, tp) : T_UNIT,
-          effects,
-        });
-        this.diags.push(err('M3047',
-          `本地函数 "${d.name}" 暂不支持:VM 后端尚未实现本地函数编译;请移到模块级或改用具名顶层函数(计划 v0.57 后恢复)`,
-          d.span ?? s.span));
+        const sig = d.localFnSig ?? this.buildLocalFnSig(d, ctx);
+        d.localFnSig = sig;
+        if (d.checkedSig === undefined) {
+          Object.defineProperty(d, 'checkedSig', { value: sig, configurable: true, writable: true });
+        } // 编译器经 decl 读取已解析签名(PostQ retK 等;v0.59 #44)
+        if (!d.localFnDup) ctx.scope.registerLocalFn(d.name, sig); // 重复声明已报 M3009,保留首个签名
+        this.checkLocalFnBody(d, ctx.mod, sig, d.localFnSibs ?? new Map([[d.name, sig]]));
         return;
       }
       default:
@@ -1543,6 +1658,12 @@ export class Checker {
           if (ctx.scope.vars.has(pat.name)) {
             this.diags.push(err('M3016', `同一作用域内 "${pat.name}" 已存在,不能重复绑定`, pat.span,
               'Ming 禁止同层遮蔽;换个名字,或复用已有绑定。'));
+          }
+          // v0.59-B3:同块 let 与本地函数同名 → M3009(消除顺序敏感:预登记使
+          // `let f; fn f` 与 `fn f; let f` 同一诊断;跨块遮蔽仍按词法最近块胜出)。
+          if (ctx.scope.localFns.has(pat.name)) {
+            this.diags.push(err('M3009', `"${pat.name}" 在本块已声明为本地函数,不能再用同名变量绑定`, pat.span,
+              '同一块内一个名字只能有一种声明;换个变量名,或删除同名本地函数。'));
           }
           ctx.scope.bind(pat.name, t, forceMut || !!ctx.mutAll, pat.span, false);
         }
@@ -1610,8 +1731,9 @@ export class Checker {
   checkPlace(e, ctx) {
     switch (e.nt) {
       case 'Ident': {
-        const v = ctx.scope.lookup(e.name);
-        if (!v) {
+        // v0.59-B3:本地函数与变量同口径按词法最近层解析;本地函数不可赋值
+        const found = ctx.scope.lookupValue(e.name);
+        if (!found) {
           // 常量不可赋值
           const entry = ctx.mod.items.get(e.name);
           if (entry?.kind === 'const') {
@@ -1621,6 +1743,11 @@ export class Checker {
           this.cannotFindValue(e.name, e.span, ctx);
           return null;
         }
+        if (found.kind === 'fn') {
+          this.diags.push(err('M3004', `"${e.name}" 是本地函数,不可赋值`, e.span, '本地函数不是变量;要可变行为请绑定闭包:let mut g = (x: i64) => ...;'));
+          return mkFn(found.sig.params.map(p => p.type), found.sig.ret, new Set(found.sig.effects ?? []));
+        }
+        const v = found.v;
         if (!v.mut) this.diags.push(err('M3004', `"${e.name}" 不是 mut,不能赋值`, e.span, '声明时写 let mut x = ...'));
         v.used = true;
         return v.type;
@@ -1829,14 +1956,13 @@ export class Checker {
 
   checkIdent(e, ctx, expected) {
     const name = e.name;
-    // 局部变量
-    const v = ctx.scope.lookup(name);
-    if (v) { v.used = true; return v.type; }
-    // 本地函数(作为值)
-    const localFn = ctx.scope.lookupFn(name);
-    if (localFn) {
+    // 局部变量 / 本地函数(按词法最近层交错解析,v0.59-B3)
+    const found = ctx.scope.lookupValue(name);
+    if (found?.kind === 'var') { found.v.used = true; return found.v.type; }
+    if (found?.kind === 'fn') {
+      const localFn = found.sig;
       if (localFn.tparams?.length) {
-        this.diags.push(err('M3003', `泛型函数 "${name}" 作为值使用前需要确定类型参数`, e.span));
+        this.diags.push(err('M3048', `泛型本地函数 "${name}" 不能作为值使用(本地函数不做单态化)`, e.span));
         return null;
       }
       return mkFn(localFn.params.map(p => p.type), localFn.ret, new Set(localFn.effects ?? []));
@@ -2012,14 +2138,19 @@ export class Checker {
     // 1) 普通标识符调用(局部/本地函数 > 模块函数 > 内置 > prelude 变体)
     if (callee.nt === 'Ident') {
       const name = callee.name;
-      const local = ctx.scope.lookup(name);
-      if (local) {
-        local.used = true;
-        return this.callFnType(local.type, e, ctx, expected);
+      // v0.59-B3:变量与本地函数按词法最近层交错解析(内层 fn 遮蔽外层 let/形参)
+      const found = ctx.scope.lookupValue(name);
+      if (found?.kind === 'var') {
+        found.v.used = true;
+        return this.callFnType(found.v.type, e, ctx, expected);
       }
       // 本地函数
-      const localFn = ctx.scope.lookupFn(name);
+      const localFn = found?.kind === 'fn' ? found.sig : null;
       if (localFn) {
+        if (localFn.tparams?.length) {
+          this.diags.push(err('M3048', `泛型本地函数 "${name}" 不能直接调用(本地函数不做单态化)`, callee.span));
+          return null;
+        }
         if (e.args.length !== localFn.params.length) {
           this.diags.push(err('M3005', `函数 "${name}" 需要 ${localFn.params.length} 个参数,得到 ${e.args.length}`, e.span));
         }
@@ -2057,12 +2188,21 @@ export class Checker {
     if (callee.nt === 'Field') {
       const base = callee.base;
       // v0.58(B 审查 MINOR-1):基名被局部/参数变量遮蔽时,按局部值的方法调用解析
-      // (与 compiler.js compileCall 的 !resolveName 守卫、interp evalField 的
+      // (与 compiler.js compileCall 的 !resolveLocalName 守卫、interp evalField 的
       // lookupVar-first 一致)。此前 checker 无条件走导入:`use std.str` + 局部
       // str: Vec[str] 时 checker 按 std.str.join 放行(并误报局部 str 未使用),
       // 引擎却按 Vec.join 执行 → checker/引擎静默分歧(math 同形态引擎 M4001)。
-      // 仅影响"基名被局部遮蔽"形态;无遮蔽的既有导入调用逐一不变。
-      const baseShadowed = base.nt === 'Ident' && !!ctx.scope.lookup(base.name);
+      // v0.59-B4:遮蔽面纳入本地函数(函数体内 fn math 遮蔽 use std.math;checker
+      // 此前按导入解析,树引擎把 localfn 当接收者落 M4001 内部错误)。
+      const baseBinding = base.nt === 'Ident' ? ctx.scope.lookupValue(base.name) : null;
+      const baseShadowed = !!baseBinding;
+      if (baseBinding?.kind === 'fn') {
+        this.diags.push(err('M3015',
+          `本地函数 "${base.name}" 不能作为模块/值接收者调用 ".${callee.name}"(本地函数遮蔽了同名导入或类型)`,
+          callee.span,
+          '本地函数是独立的函数值,没有模块成员或方法;改换本地函数名,或直接以函数调用形式使用。'));
+        return null;
+      }
       if (!baseShadowed && base.nt === 'Ident' && ctx.mod.imports.has(base.name)) {
         const imp = ctx.mod.imports.get(base.name);
         if (imp.std) {
@@ -3579,7 +3719,10 @@ export class Checker {
     for (let i = 0; i < Math.min(argTs.length, spec.params.length); i++) {
       const p = spec.params[i];
       if (p === 'display') {
-        if (!isPrimitiveDisplay(argTs[i], binds)) {
+        // v0.59 P2 审查 MINOR#2:never 是底类型(表达式已必然终止/被拒绝),
+        // 与 str(...) 的显示约束 unify 相容,不再级联 M3002。
+        const rt = resolveT(argTs[i], binds);
+        if (rt?.k !== 'never' && !isPrimitiveDisplay(argTs[i], binds)) {
           this.diags.push(err('M3002', `${name} 的参数 #${i + 1} 必须是 int/float/bool/str,实际是 ${typeStr(argTs[i], binds)}`, e.args[i].span,
             '其他类型用 debug(x)。'));
         }
@@ -4922,6 +5065,19 @@ class Scope {
   }
   lookupLocal(name) {
     if (this.vars.has(name)) return this.vars.get(name);
+    return null;
+  }
+  // v0.59-B3:统一值名字解析——按"词法最近层"在 vars 与 localFns 间交错查找。
+  // 此前 lookup(变量)先遍历完整条父链、lookupFn(本地函数)再遍历一遍,导致内层
+  // 本地函数被外层变量越过(tree 是逐层交错),三引擎解析优先级相反。
+  // 同层同名(let + fn)由 checkBlock/checkPattern 以 M3009 拒绝,层内先后不敏感。
+  lookupValue(name) {
+    let s = this;
+    while (s) {
+      if (s.vars.has(name)) return { kind: 'var', v: s.vars.get(name) };
+      if (s.localFns.has(name)) return { kind: 'fn', sig: s.localFns.get(name) };
+      s = s.parent;
+    }
     return null;
   }
   lookup(name) {

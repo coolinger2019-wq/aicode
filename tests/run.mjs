@@ -3793,16 +3793,21 @@ fn main() with io, fs {
     && JSON.stringify(Object.keys(nowasmJson).sort()) === JSON.stringify(['engine', 'exit_code', 'ms', 'ok', 'stderr', 'stdout', 'wasm']),
     'keys=' + JSON.stringify(Object.keys(nowasmJson).sort()) + ' status=' + JSON.stringify(nowasmJson.wasm_status));
 
-  // M2:Module 校验/实例化回落也要点名 Ming 函数(用 order→compiled.functions 映射;
-  // V8 的 function #N 索引不一定可靠,故同时给 eligible 全表)。
+  // M2(v0.59 翻转):#45 修复后值型 if 的 blocktype 按单字节 valtype 发射,strict 下真实
+  // 经 wasm 执行(不再回落点名 pick)。断言改为:strict --json wasm_status=ok,调试输出
+  // 有 "[wasm] fn pick OK" 且无实例化失败;--json 键集与 v53.1 固化口径一致(additive
+  // wasm_status,不新增/丢失键)。
   const ifExprProg = mingFile('v53-wasm-ifexpr.ming', [
     'fn pick(n: i64) -> i64 { let x = if n > 0 { 1 } else { 2 }; return x; }',
     'fn main() with io { print(str(pick(3))); }',
   ].join('\n'));
-  const ifStrict = runMing(['run', ifExprProg, '--strict-wasm']);
-  check('v53.25:if 表达式回落消息点名疑似函数与 eligible 表(strict exit 2)',
-    ifStrict.code === 2 && (ifStrict.stderr ?? '').includes('疑似函数 pick') && (ifStrict.stderr ?? '').includes('eligible=[0:pick]'),
-    'code=' + ifStrict.code + ' stderr=' + (ifStrict.stderr ?? '').slice(0, 240));
+  const ifJson = JSON.parse(runMing(['run', ifExprProg, '--strict-wasm', '--json']).stdout);
+  const ifDbg = runMing(['run', ifExprProg, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  check('v53.25:if 表达式 strict ok(wasm_status=ok;[wasm] fn pick OK,无实例化失败)',
+    ifJson.exit_code === 0 && ifJson.wasm_status === 'ok' && ifJson.stdout === '1\n'
+    && JSON.stringify(Object.keys(ifJson).sort()) === JSON.stringify(['engine', 'exit_code', 'ms', 'ok', 'stderr', 'stdout', 'wasm', 'wasm_status'])
+    && ifDbg.code === 0 && (ifDbg.stderr ?? '').includes('[wasm] fn pick OK') && !(ifDbg.stderr ?? '').includes('实例化失败'),
+    'code=' + ifDbg.code + ' status=' + ifJson.wasm_status + ' dbg=' + JSON.stringify((ifDbg.stderr ?? '').slice(0, 240)));
 
   // M9:示例 fib 的 strict 门禁必须证明 wasm 真的执行了(不能只信 wasm_status 自报):
   // MING_WASM_DEBUG=1 下 stderr 含 "[wasm] fn fib OK" 且无 "实例化失败";CI test job 跑同一命令。
@@ -6295,7 +6300,9 @@ fn main() with io, fs {
     + `jsonInc=${incSum6051.length} jsonPick=${pickFn6051.length} abs=${JSON.stringify([...absSet6051])}\n`
     + `out=${JSON.stringify((rep6051.stdout ?? '').slice(0, 400))}`);
 
-  // ---- v60.52(B6):本地函数声明由检查器显式拒绝(M3047),三入口/三引擎不再崩溃 ----
+  // ---- v60.52(v0.59 翻转):本地函数恢复(#44,M3047 移除) ----
+  // v0.56 口径:M3047 显式拒绝。v0.59 起 check/run/--tree/--no-wasm 三引擎一致执行;
+  // M3047 不再发射(check stderr 无 M3047);cc(C 后端)仍不支持块内 FnStmt(exit 1 + C1)。
   const localCases6052 = [
     ['top', [
       'fn main() with io {',
@@ -6303,7 +6310,7 @@ fn main() with io, fs {
       '    print(str(twice(3)));',
       '}',
       '',
-    ].join('\n')],
+    ].join('\n'), '6\n'],
     ['nested', [
       'fn main() with io {',
       '    if true {',
@@ -6312,7 +6319,7 @@ fn main() with io, fs {
       '    }',
       '}',
       '',
-    ].join('\n')],
+    ].join('\n'), '7\n'],
     ['value', [
       'fn main() with io {',
       '    fn inc(x: i64) -> i64 { return x + 1; }',
@@ -6320,31 +6327,31 @@ fn main() with io, fs {
       '    print(str(w.len()));',
       '}',
       '',
-    ].join('\n')],
+    ].join('\n'), '3\n'],
     ['contract', [
       'fn main() with io {',
       '    fn inc(a: i64) -> i64 requires a > 0 ensures result > a { return a + 1; }',
       '    print(str(inc(1)));',
       '}',
       '',
-    ].join('\n')],
+    ].join('\n'), '2\n'],
   ];
   let localOk6052 = true;
   const localDetail6052 = [];
-  for (const [kind, src] of localCases6052) {
+  for (const [kind, src, want] of localCases6052) {
     const p = mk('local_fn_' + kind + '.ming', src);
     const runs = [runMing(['check', p]), runMing(['run', p]), runMing(['run', p, '--tree']), runMing(['run', p, '--no-wasm'])];
-    // v0.56(C3):cc 入口同门禁断言(无编译器自动跳过)
+    // cc(C 后端)仍拒绝块内 FnStmt:exit 1 + C1;无编译器自动跳过
     const ccRun6052 = ccAvailA ? runMing(['cc', p]) : null;
-    if (ccRun6052) runs.push(ccRun6052);
-    const ok = runs.every(r => r.code === 1 && (r.stderr ?? '').includes('M3047[local-fn-unsupported]')
-      && (r.stderr ?? '').includes('本地函数') && !(r.stderr ?? '').includes('TypeError'));
-    if (!ok) localOk6052 = false;
-    localDetail6052.push(`${kind}:${JSON.stringify(runs.map(r => r.code))}`
-      + `:cc=${ccRun6052 ? ccRun6052.code : 'skip(无编译器)'}`
-      + `:${JSON.stringify((runs[0].stderr ?? '').split('\n')[0])}`);
+    const runOk = runs[0].code === 0 && !(runs[0].stderr ?? '').includes('M3047')
+      && runs.slice(1).every(r => r.code === 0 && r.stdout === want)
+      && !runs.some(r => (r.stderr ?? '').includes('TypeError'));
+    const ccOk = !ccRun6052 || (ccRun6052.code === 1 && (ccRun6052.stderr ?? '').includes('C1 不支持'));
+    if (!runOk || !ccOk) localOk6052 = false;
+    localDetail6052.push(`${kind}:${JSON.stringify(runs.map(r => r.code))} out=${JSON.stringify(runs[1]?.stdout)}`
+      + `:cc=${ccRun6052 ? ccRun6052.code + ':' + JSON.stringify((ccRun6052.stderr ?? '').split('\n')[0]) : 'skip(无编译器)'}`);
   }
-  check('v60.52(B6):本地函数(顶层/嵌套块/作值/带契约)check/run/--tree/--no-wasm 均 exit 1 + M3047,无 TypeError',
+  check('v60.52(B6,v0.59):本地函数(顶层/嵌套块/作值/带契约)check/run/--tree/--no-wasm exit 0 且三引擎逐字一致;无 M3047;cc 仍 exit 1 + C1',
     localOk6052, localDetail6052.join('\n'));
 
   // ---- v60.53:块级 if 遮蔽的 cc 对照(§60 四引擎一致性;无 gcc 自动跳过)----
@@ -7749,9 +7756,10 @@ fn main() with io, fs {
       `run=${r.code} tree=${rT.code} out=${JSON.stringify(r.stdout)} err=${r.stderr.slice(0, 120)}`);
   }
 
-  // ---- v58.29(任务 28):分配记账不对称(#49 已登记,按现状如实断言) ----
-  // std.str.join 结果不计入分配记账(100KB 结果在 60KB 配额下 exit 0);
-  // Vec 方法 join 按结果长度计费 → 同尺寸结果触发 M4011。行为差异 = #49 文档化口径,非回归。
+  // ---- v58.29(任务 28):分配记账不对称 → v0.59(#49)已对称化 ----
+  // v0.58 口径:std.str.join 结果不计入分配记账(100KB 结果在 60KB 配额下 exit 0);
+  // Vec 方法 join 按结果长度计费 → M4011。#49 起 std.str.join 同样按结果长度计费,
+  // 两形态在紧配额下同口径 M4011(不对称性已消除);此处按实际输出锁定。
   {
     const bigItems = Array.from({ length: 10000 }, () => '"abcdefghij"').join(', ');
     const pStd = mk('b28a_join_std_alloc.ming',
@@ -7760,10 +7768,11 @@ fn main() with io, fs {
     const pVec = mk('b28b_join_vec_alloc.ming',
       'fn main() with io {\n  let v: Vec[str] = [' + bigItems + '];\n  print(str(v.join(",").byte_len()));\n}\n');
     const rVec = runMing(['run', pVec, '--max-alloc', '60000']);
-    check('v58.29:B29 join_alloc_accounting —— --max-alloc 60000 下 100KB 结果:std.str.join 不计费 exit 0(输出 100000);Vec.join 计费 M4011 exit 101(#49 如实登记)',
-      rStd.code === 0 && rStd.stdout === '100000\n'
+    check('v58.29:B29 join_alloc_accounting —— --max-alloc 60000 下 100KB 结果:std.str.join 与 Vec.join 均按结果长度计费 → M4011 exit 101(#49 已对称化)',
+      rStd.code === 101 && rStd.stderr.includes('M4011') && rStd.stderr.includes('累计分配 110000')
       && rVec.code === 101 && rVec.stderr.includes('M4011'),
-      `std=${rStd.code}/${JSON.stringify(rStd.stdout)} vec=${rVec.code} err=${rVec.stderr.split('\n')[0]}`);
+      `std=${rStd.code}/${JSON.stringify((rStd.stderr ?? '').split('\n')[0])} `
+      + `vec=${rVec.code}/${JSON.stringify((rVec.stderr ?? '').split('\n')[0])}`);
   }
 
   // ---- v58.30(任务 29):doc --json schema:六种 kind + 字段 + impl name + 泛型 impl 签名 ----
@@ -7948,6 +7957,1198 @@ fn main() with io, fs {
       && yml.includes(zipName)
       && !yml.includes('ming-v${{'),
       `exists=${yml !== null} uses=${JSON.stringify(usesLines)}`);
+  }
+}
+
+// ===================== 63. v0.59:默认引擎全面性(wasm 覆盖收口 P1 + 本地函数恢复 P2 + invariant bench P3)=====================
+// P1 组(v63.1–v63.21):#40 f64 局部/混合槽序、#42 Vec 多形参组合、#41 Map[str,i64]/i64 值 Index
+//   (宿主补丁解锁)、#43 str 返回、#45 值型 if、#46 块尾 if(while/for/void/嵌套)、#48 记账
+//   (str_cat/嵌套计数/插值不计费)、strConsts 常量非空 + AOT、剩余守护(VecLit/下标/mut/Option)
+//   显式回落具名、Vec[f64] 形参解锁、fib 存活回归。
+// P2 组(v63.22–v63.34):本地函数(#44,M3047 移除)——块级条目/嵌套块/递归/互递归/声明前调用/
+//   作值/契约正例+违反 M4015/捕获拒绝 M3001/泛型 M3003/M3047 不发射/AOT/cc 拒绝/深递归。
+// P3 组(v63.35–v63.36):bench invariant 项存在与基线键(信息性;exit 0 门禁)。
+// P1 审查修复组(v63.37–v63.45):v0.59-P1 独立审查 3 阻塞 + MINOR——`<<` 结果溢出
+//   (wasm/C 后端)、M4007 消息/位置(wasm 宿主 span)、VecLit/MapLit 记费、mut Vec/Vec[f64]
+//   for-in、u64 ≥2^63 字面量 SLEB、i64.min/越界字面量守卫。
+{
+  const dir = path.join(TMP, 'v63');
+  fs.mkdirSync(dir, { recursive: true });
+  const m63 = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags63 = ['', '--no-wasm', '--tree'];
+  const runAll63 = (p, extra = []) => flags63.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const same63 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns63 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const strict63 = (p, extra = []) => runMing(['run', p, '--strict-wasm', ...extra], { env: { MING_WASM_DEBUG: '1' } });
+  const wasmOk63 = (dbg, names) => dbg.code === 0 && names.every(n => (dbg.stderr ?? '').includes(`[wasm] fn ${n} OK`))
+    && !(dbg.stderr ?? '').includes('REJECT') && !(dbg.stderr ?? '').includes('实例化失败');
+  const ccAvail63 = (() => {
+    if (process.env.MING_CC && fs.existsSync(process.env.MING_CC)) return true;
+    for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(c)) return true;
+    }
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+  })();
+  const aot63 = (name, src) => {
+    const proj = path.join(dir, name);
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'ming.toml'),
+      `[project]\nname = "${name}"\nversion = "0.1.0"\nentry = "main.ming"\n`);
+    fs.writeFileSync(path.join(proj, 'main.ming'), src);
+    const b = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    const dist = path.join(proj, 'dist', 'ming-app.mjs');
+    const r = b.status === 0 && fs.existsSync(dist)
+      ? spawnSync(process.execPath, [dist], { encoding: 'utf8', cwd: proj, timeout: 60000 })
+      : { status: -1, stdout: '', stderr: (b.stderr ?? '') + '(build failed)' };
+    return { b, r };
+  };
+
+  // ---- v63.1(#40):f64 局部 + 算术 + 比较,strict ok 且三引擎一致 ----
+  {
+    const p = m63('p1_f40a.ming', [
+      'fn f40a(n: i64, a: f64, b: f64) -> i64 {',
+      '    let x = a + b;',
+      '    let y = x * 2.0;',
+      '    if y > 3.0 { return n + 1; }',
+      '    return n;',
+      '}',
+      'fn main() with io { print(str(f40a(5, 1.5, 2.0))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.1:#40 f64 局部(i64/f64 形参 + let x = a+b + x*2.0 + 比较)f64→i64 三引擎一致且 strict wasm ok',
+      same63(runs, '6\n') && wasmOk63(st, ['f40a']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.2(#40):f64 局部 while 累加(f64 局部记账/回写) ----
+  {
+    const p = m63('p1_f40b.ming', [
+      'fn f40b(n: i64) -> f64 {',
+      '    let mut acc = 0.0;',
+      '    let mut i = 0;',
+      '    while i < n {',
+      '        acc = acc + 0.5;',
+      '        i += 1;',
+      '    }',
+      '    return acc;',
+      '}',
+      'fn main() with io { print(str(f40b(4))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.2:#40 f64 局部 while 累加(acc = acc + 0.5)三引擎一致(2.0)且 strict wasm ok',
+      same63(runs, '2.0\n') && wasmOk63(st, ['f40b']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.3(#40):混合类型局部顺序(i64/f64/Vec[i64] 形参交错) ----
+  {
+    const p = m63('p1_f40c.ming', [
+      'fn f40c(n: i64, a: f64, v: Vec[i64], b: f64) -> i64 {',
+      '    let s = a + b;',
+      '    let mut t = n;',
+      '    for k in v { t += k; }',
+      '    if s > 0.0 { return t; }',
+      '    return n;',
+      '}',
+      'fn main() with io { print(str(f40c(1, 1.0, [1, 2], 2.0))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.3:#40 混合槽序(i64,f64,Vec[i64],f64 形参交错;Vec for-in 与 f64 局部并存)三引擎一致且 strict ok',
+      same63(runs, '4\n') && wasmOk63(st, ['f40c']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.4(#42):Vec[i64]×2 + f64 + i64 多形参 for-in ----
+  {
+    const p = m63('p1_f42a.ming', [
+      'fn f42a(v: Vec[i64], w: Vec[i64], k: f64, n: i64) -> i64 {',
+      '    let mut s = 0;',
+      '    for x in v { s += x; }',
+      '    for y in w { s += y; }',
+      '    if k > 0.0 { return s + n; }',
+      '    return s - n;',
+      '}',
+      'fn main() with io { print(str(f42a([1, 2], [3, 4], 1.0, 5))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.4:#42 Vec[i64]×2 + f64 + i64 多形参(两段 for-in)三引擎一致(15)且 strict ok',
+      same63(runs, '15\n') && wasmOk63(st, ['f42a']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.5(#42):后位 f64 形参(Vec[i64], i64, f64) ----
+  {
+    const p = m63('p1_f42b.ming', [
+      'fn f42b(v: Vec[i64], n: i64, k: f64) -> i64 {',
+      '    let mut s = 0;',
+      '    for x in v { s += x; }',
+      '    if k > 0.0 { return s + n; }',
+      '    return s;',
+      '}',
+      'fn main() with io { print(str(f42b([10, 20], 3, 0.5))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.5:#42 后位 f64 形参(Vec[i64], i64, f64)三引擎一致(33)且 strict ok',
+      same63(runs, '33\n') && wasmOk63(st, ['f42b']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.6(#41 + 宿主补丁):Map[str,i64] for-in + Index 三引擎 + strict ok ----
+  {
+    const p = m63('p1_f41a.ming', [
+      'fn f41a(m: Map[str, i64]) -> i64 {',
+      '    let mut s = 0;',
+      '    for (k, v) in m { s += v; }',
+      '    return s + m["b"];',
+      '}',
+      'fn main() with io { print(str(f41a({"a": 1, "b": 2}))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.6:#41 Map[str,i64] for-in + Index(`m["b"]`)三引擎一致(5)且 strict wasm ok(宿主 map_get_i64 返回 BigInt)',
+      same63(runs, '5\n') && wasmOk63(st, ['f41a']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.7(#41):Map[str,f64]/Map[str,str] for-in 三引擎 + strict ok ----
+  {
+    const pF = m63('p1_f41b.ming', [
+      'fn f41b(m: Map[str, f64]) -> f64 {',
+      '    let mut s = 0.0;',
+      '    for (k, v) in m { s = s + v; }',
+      '    return s;',
+      '}',
+      'fn main() with io { print(str(f41b({"a": 1.5, "b": 2.5}))); }',
+      '',
+    ].join('\n'));
+    const pS = m63('p1_f41c.ming', [
+      'fn f41c(m: Map[str, str]) -> str {',
+      '    let mut s = "";',
+      '    for (k, v) in m { s = s + v; }',
+      '    return s;',
+      '}',
+      'fn main() with io { print(f41c({"a": "x", "b": "y"})); }',
+      '',
+    ].join('\n'));
+    const rF = runAll63(pF);
+    const rS = runAll63(pS);
+    const stF = strict63(pF);
+    const stS = strict63(pS);
+    check('v63.7:#41 Map[str,f64]/Map[str,str] for-in 三引擎一致(4.0 / xy)且 strict wasm ok',
+      same63(rF, '4.0\n') && same63(rS, 'xy\n') && wasmOk63(stF, ['f41b']) && wasmOk63(stS, ['f41c']),
+      `f64=${fmtRuns63(rF)} str=${fmtRuns63(rS)} strictF=${stF.code} strictS=${stS.code}`);
+  }
+
+  // ---- v63.8(#43):str 返回(字面量/形参透传/拼接)+ [wasm 参数] ----
+  {
+    const p = m63('p1_f43a.ming', [
+      'fn r_lit() -> str { return "abc"; }',
+      'fn r_pass(s: str) -> str { return s; }',
+      'fn r_cat(a: str, b: str) -> str { return a + b; }',
+      'fn main() with io {',
+      '    print(r_lit());',
+      '    print(r_pass("hello"));',
+      '    print(r_cat("ab", "cd"));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.8:#43 str 返回(字面量/形参透传/拼接)三引擎一致且 strict ok + [wasm 参数] 可见 str 封送',
+      same63(runs, 'abc\nhello\nabcd\n') && wasmOk63(st, ['r_lit', 'r_pass', 'r_cat'])
+      && (st.stderr ?? '').includes('[wasm 参数] 0 pt= str/b- a= str'),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ---- v63.9(#43):str 返回值型 if / 块尾表达式 ----
+  {
+    const p = m63('p1_f43b.ming', [
+      'fn r_if(n: i64) -> str { return if n > 0 { "pos" } else { "neg" }; }',
+      'fn r_tail(n: i64) -> str {',
+      '    if n > 0 { "yes" } else { "no" }',
+      '}',
+      'fn main() with io {',
+      '    print(r_if(1)); print(r_if(-1));',
+      '    print(r_tail(1)); print(r_tail(-1));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.9:#43 str 返回值型 if / 块尾 if 表达式(i32 句柄 blocktype)三引擎一致且 strict ok',
+      same63(runs, 'pos\nneg\nyes\nno\n') && wasmOk63(st, ['r_if', 'r_tail']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ---- v63.10(#45):值型 if i64/f64/str ----
+  {
+    const p = m63('p1_f45a.ming', [
+      'fn ifi(n: i64) -> i64 { let x = if n > 0 { 1 } else { 2 }; return x; }',
+      'fn iff(n: i64) -> f64 { let y = if n > 0 { 1.5 } else { 2.5 }; return y; }',
+      'fn ifs(n: i64) -> str { let s = if n > 0 { "a" } else { "b" }; return s; }',
+      'fn main() with io {',
+      '    print(str(ifi(1))); print(str(ifi(-1)));',
+      '    print(str(iff(1))); print(str(iff(-1)));',
+      '    print(ifs(1)); print(ifs(-1));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.10:#45 值型 if i64/f64/str(单字节 valtype blocktype)三引擎一致且 strict ok',
+      same63(runs, '1\n2\n1.5\n2.5\na\nb\n') && wasmOk63(st, ['ifi', 'iff', 'ifs']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ---- v63.11(#45):else-if 链 + &&/|| 条件 ----
+  {
+    const p = m63('p1_f45b.ming', [
+      'fn ifchain(n: i64) -> i64 {',
+      '    let x = if n > 5 { 1 } else if n > 0 { 2 } else { 3 };',
+      '    return x;',
+      '}',
+      'fn ifand(a: i64, b: i64) -> i64 { let x = if a > 0 && b > 0 { 1 } else { 0 }; return x; }',
+      'fn ifor(a: i64, b: i64) -> i64 { let x = if a > 0 || b > 0 { 1 } else { 0 }; return x; }',
+      'fn main() with io {',
+      '    print(str(ifchain(9))); print(str(ifchain(3))); print(str(ifchain(-1)));',
+      '    print(str(ifand(1, 1))); print(str(ifand(1, 0)));',
+      '    print(str(ifor(0, 0))); print(str(ifor(1, 0)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.11:#45 值型 else-if 链 + &&/|| 条件三引擎一致且 strict ok',
+      same63(runs, '1\n2\n3\n1\n0\n0\n1\n') && wasmOk63(st, ['ifchain', 'ifand', 'ifor']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ---- v63.12(#46):while/for 语句位 if 的 continue/break ----
+  {
+    const p = m63('p1_f46a.ming', [
+      'fn w46(n: i64) -> i64 {',
+      '    let mut i = 0; let mut s = 0;',
+      '    while i < n {',
+      '        i += 1;',
+      '        if i % 2 == 0 { continue; }',
+      '        s += i;',
+      '    }',
+      '    return s;',
+      '}',
+      'fn f46(v: Vec[i64]) -> i64 {',
+      '    let mut s = 0;',
+      '    for x in v {',
+      '        if x == 0 { continue; }',
+      '        if x > 100 { break; }',
+      '        s += x;',
+      '    }',
+      '    return s;',
+      '}',
+      'fn main() with io {',
+      '    print(str(w46(6)));',
+      '    print(str(f46([5, 0, 7, 200])));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.12:#46 while/for 语句位 if(continue/break;无 else)三引擎一致且 strict ok',
+      same63(runs, '9\n12\n') && wasmOk63(st, ['w46', 'f46']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ---- v63.13(#46):void 函数体尾 if + 嵌套块尾 if(break/return) ----
+  {
+    const p = m63('p1_f46b.ming', [
+      'fn void46(n: i64) {',
+      '    let mut i = 0;',
+      '    while i < n {',
+      '        i += 1;',
+      '        if i == 2 { return; }',
+      '    }',
+      '}',
+      'fn nest46(n: i64) -> i64 {',
+      '    let mut s = 0; let mut i = 0;',
+      '    while i < n {',
+      '        i += 1;',
+      '        if i > 2 {',
+      '            if i == 4 { break; }',
+      '            s += i;',
+      '        }',
+      '    }',
+      '    return s;',
+      '}',
+      'fn main() with io { void46(9); print(str(nest46(10))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.13:#46 void 函数体尾 if + 嵌套块尾 if(break/return;unit 上下文按语句编译)三引擎一致且 strict ok',
+      same63(runs, '3\n') && wasmOk63(st, ['void46', 'nest46']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ---- v63.14(#48):plan §5.1 复现——wasm str_cat 计费三引擎 M4011 累计 120000 ----
+  {
+    const bigA = 'A'.repeat(120000);
+    const p = m63('p1_f48plan.ming',
+      'fn probe(a: str) -> i64 { if a + "' + bigA + '" == "x" { return 1; } return 0; }\n'
+      + 'fn main() with io { print(str(probe(""))); }\n');
+    const runs = runAll63(p, ['--max-alloc', '50000']);
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4011') && (r.stderr ?? '').includes('累计分配 120000'));
+    check('v63.14:#48 plan §5.1 复现(--max-alloc 50000):默认(wasm)/--no-wasm/--tree 均 M4011 exit 101,累计 120000',
+      ok, runs.map(r => `${r.code}:${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | '));
+  }
+
+  // ---- v63.15(#48):嵌套拼接计数——内层 11、外层 15(累计 11 → 26) ----
+  {
+    const p = m63('p1_f48nest.ming', [
+      'fn nest(a: str, b: str, c: str) -> str {',
+      '    return (a + b) + c;',
+      '}',
+      'fn main() with io { print(nest("aaaaa", "bbbbbb", "cccc")); }',
+      '',
+    ].join('\n'));
+    const r10 = runAll63(p, ['--max-alloc', '10']);
+    const r20 = runAll63(p, ['--max-alloc', '20']);
+    const ok = r10.every(r => r.code === 101 && (r.stderr ?? '').includes('累计分配 11'))
+      && r20.every(r => r.code === 101 && (r.stderr ?? '').includes('累计分配 26'));
+    check('v63.15:#48 嵌套拼接计数:内层 11(配额 10 → 累计 11),外层 15(配额 20 → 累计 26);三引擎同口径',
+      ok, `10:${r10.map(r => r.code).join(',')} 20:${r20.map(r => r.code).join(',')}`);
+  }
+
+  // ---- v63.16(#48):插值不计费(与 interp 同口径;--max-alloc 1 三引擎 exit 0) ----
+  {
+    const p = m63('p1_f48interp.ming', [
+      'fn interp(n: i64) -> str {',
+      '    return "v=\\{n}";',
+      '}',
+      'fn main() with io { print(interp(42)); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p, ['--max-alloc', '1']);
+    const st = strict63(p, ['--max-alloc', '1']);
+    check('v63.16:#48 插值不计费(--max-alloc 1 → 三引擎 exit 0 输出 v=42;strict wasm ok)',
+      same63(runs, 'v=42\n') && wasmOk63(st, ['interp']),
+      `${fmtRuns63(runs)} strict=${st.code}`);
+  }
+
+  // ---- v63.17(strConsts):字符串常量不再为空("a"=="b" false / "a"=="a" true) ----
+  {
+    const p = m63('p1_strconsts.ming', [
+      'fn eqab() -> i64 { if "a" == "b" { return 1; } return 0; }',
+      'fn eqaa() -> i64 { if "a" == "a" { return 1; } return 0; }',
+      'fn main() with io { print(str(eqab())); print(str(eqaa())); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.17:strConsts 随产物返回——"a"=="b" 为 0(不再因空常量表误判真),"a"=="a" 为 1;三引擎一致且 strict ok',
+      same63(runs, '0\n1\n') && wasmOk63(st, ['eqab', 'eqaa']),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.18(strConsts/AOT):build 产物中 str 常量与 str 返回正确 ----
+  {
+    const a = aot63('aot_strconsts', [
+      'fn greeting(name: str) -> str {',
+      '    return "hi, " + name;',
+      '}',
+      'fn main() with io {',
+      '    print(greeting("ming"));',
+      '    print(str("a" == "b"));',
+      '}',
+      '',
+    ].join('\n'));
+    check('v63.18:AOT build + dist 运行 str 返回/常量正确(hi, ming + false;strConsts 随 artifact 持久化)',
+      a.b.status === 0 && a.r.status === 0 && a.r.stdout === 'hi, ming\nfalse\n',
+      `build=${a.b.status} run=${a.r.status} out=${JSON.stringify(a.r.stdout)} err=${JSON.stringify((a.r.stderr ?? '').slice(0, 160))}`);
+  }
+
+  // ---- v63.19(引导守护):VecLit/下标/mut 写/Option 链显式回落,原因具名,输出三引擎一致 ----
+  {
+    const cases = [
+      ['veclit', [
+        'fn vl(n: i64) -> i64 { let v = [1, 2, 3]; return v[0] + n; }',
+        'fn main() with io { print(str(vl(4))); }',
+      ].join('\n'), '5\n', 'vl', 'VecLit 数值元素(容器表示待统一)'],
+      ['vecread', [
+        'fn vr(v: Vec[i64]) -> i64 { return v[0]; }',
+        'fn main() with io { print(str(vr([7, 8]))); }',
+      ].join('\n'), '7\n', 'vr', 'Vec 下标读(宿主 panic_m4003 导入待补)'],
+      ['vecwrite', [
+        'fn vw(mut v: Vec[i64]) -> i64 { v[0] = 5; return v[1]; }',
+        'fn main() with io { print(str(vw([1, 2]))); }',
+      ].join('\n'), '2\n', 'vw', 'mut Vec 元素写(宿主 panic_m4003 导入待补)'],
+      ['option', [
+        'fn og(m: Map[str, i64]) -> i64 { return m.get("a").unwrap(); }',
+        'fn main() with io { print(str(og({"a": 3}))); }',
+      ].join('\n'), '3\n', 'og', 'Option 消费链(宿主 M4006/M4007 导入待补)'],
+    ];
+    let allOk = true;
+    const detail = [];
+    for (const [name, src, want, fnName, reason] of cases) {
+      const p = m63('p1_guard_' + name + '.ming', src);
+      const runs = runAll63(p);
+      const st = strict63(p);
+      const ok = same63(runs, want) && st.code === 2 && st.stdout === ''
+        && (st.stderr ?? '').includes(`wasm 编译回落(${fnName})`) && (st.stderr ?? '').includes(reason);
+      if (!ok) allOk = false;
+      detail.push(`${name}:${runs.map(r => r.code).join(',')}:strict=${st.code}`);
+    }
+    check('v63.19:剩余守护(VecLit/下标/mut 写/Option 链)strict exit 2 且回落原因具名;非 strict 三引擎输出逐字一致',
+      allOk, detail.join(' | '));
+  }
+
+  // ---- v63.20(宿主补丁):Vec[f64] 形参解锁,strict wasm ok ----
+  {
+    const p = m63('p1_vecf64param.ming', [
+      'fn vfp(v: Vec[f64]) -> f64 { return 2.5; }',
+      'fn main() with io { print(str(vfp([1.5, 2.5]))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    check('v63.20:Vec[f64] 形参(宿主 wasmWriteVecNum 认 float)三引擎一致且 strict wasm ok + [wasm 参数] vec',
+      same63(runs, '2.5\n') && wasmOk63(st, ['vfp'])
+      && (st.stderr ?? '').includes('[wasm 参数] 0 pt= vec/b- a= vec'),
+      `${fmtRuns63(runs)} strict=${st.code} ${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.21(存活回归):examples/fib strict 下 fib/fib_loop 真实经 wasm ----
+  {
+    const st = strict63(path.join(ROOT, 'examples', 'fib.ming'));
+    const expectFib = Array.from({ length: 11 }, (_, i) => `fib(${i}) = ${[0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55][i]}`).join('\n') + '\n';
+    check('v63.21:examples/fib --strict-wasm exit 0,输出逐字不变且 [wasm] fn fib OK / fib_loop OK,无 REJECT/实例化失败',
+      st.code === 0 && st.stdout === expectFib && wasmOk63(st, ['fib', 'fib_loop']),
+      `code=${st.code} out=${JSON.stringify(st.stdout.slice(0, 80))} ${JSON.stringify((st.stderr ?? '').slice(0, 240))}`);
+  }
+
+  // ================= P2 组:本地函数(#44,M3047 移除) =================
+
+  // ---- v63.22:块顶层本地函数(声明+调用)三引擎一致 ----
+  {
+    const p = m63('p2_top.ming', [
+      'fn main() with io {',
+      '    fn twice(a: i64) -> i64 { return a * 2; }',
+      '    print(str(twice(3)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ck = runMing(['check', p]);
+    check('v63.22:本地函数块顶层——check/run/--tree/--no-wasm exit 0 输出 6;无 M3047',
+      same63(runs, '6\n') && ck.code === 0 && !(ck.stderr ?? '').includes('M3047'),
+      `${fmtRuns63(runs)} check=${ck.code}:${JSON.stringify((ck.stderr ?? '').slice(0, 160))}`);
+  }
+
+  // ---- v63.23:嵌套块内本地函数 ----
+  {
+    const p = m63('p2_nested.ming', [
+      'fn main() with io {',
+      '    if true {',
+      '        fn inner() -> i64 { return 7; }',
+      '        print(str(inner()));',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    check('v63.23:嵌套块本地函数(if 块内声明/调用)三引擎一致(7)',
+      same63(runs, '7\n'), fmtRuns63(runs));
+  }
+
+  // ---- v63.24:本地函数自递归 ----
+  {
+    const p = m63('p2_rec.ming', [
+      'fn main() with io {',
+      '    fn local_fact(n: i64) -> i64 {',
+      '        if n <= 1 { return 1; }',
+      '        return n * local_fact(n - 1);',
+      '    }',
+      '    print(str(local_fact(5)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    check('v63.24:本地函数自递归(独立帧 + 自身可见)三引擎一致(120)',
+      same63(runs, '120\n'), fmtRuns63(runs));
+  }
+
+  // ---- v63.25:互递归 + 声明前调用(块级条目可见性) ----
+  {
+    const p = m63('p2_mutual.ming', [
+      'fn main() with io {',
+      '    print(str(is_even(10)));',
+      '    print(str(later(3)));',
+      '    fn later(n: i64) -> i64 { return n + 100; }',
+      '    fn is_even(n: i64) -> i64 {',
+      '        if n == 0 { return 1; }',
+      '        return is_odd(n - 1);',
+      '    }',
+      '    fn is_odd(n: i64) -> i64 {',
+      '        if n == 0 { return 0; }',
+      '        return is_even(n - 1);',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    check('v63.25:本地函数互递归 + 声明前调用(块级条目,不要求声明序)三引擎一致(1 / 103)',
+      same63(runs, '1\n103\n'), fmtRuns63(runs));
+  }
+
+  // ---- v63.26:本地函数作值(传给 HOF map) ----
+  {
+    const p = m63('p2_value.ming', [
+      'fn main() with io {',
+      '    fn inc(x: i64) -> i64 { return x + 1; }',
+      '    let w = [1, 2, 3].map(inc);',
+      '    print(str(w.len()));',
+      '    print(str(w[2]));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ck = runMing(['check', p]);
+    check('v63.26:本地函数作值(传给 map;LDFN→vclose 路径)三引擎一致(3 / 4)且 check exit 0',
+      same63(runs, '3\n4\n') && ck.code === 0,
+      `${fmtRuns63(runs)} check=${ck.code}`);
+  }
+
+  // ---- v63.27:本地函数契约正例(requires/ensures 三引擎执行) ----
+  {
+    const p = m63('p2_contract.ming', [
+      'fn main() with io {',
+      '    fn inc(a: i64) -> i64 requires a > 0 ensures result > a { return a + 1; }',
+      '    print(str(inc(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ck = runMing(['check', p]);
+    check('v63.27:本地函数契约正例(requires/ensures)check exit 0 且三引擎一致(2)',
+      same63(runs, '2\n') && ck.code === 0, `${fmtRuns63(runs)} check=${ck.code}`);
+  }
+
+  // ---- v63.28:本地函数契约违反 → M4015 exit 101(三引擎逐字) ----
+  {
+    const p = m63('p2_violate.ming', [
+      'fn main() with io {',
+      '    fn inc(a: i64) -> i64 requires a > 0 ensures result > a { return a + 1; }',
+      '    print(str(inc(0)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4015')
+      && (r.stderr ?? '').includes('requires (实际: false)'));
+    check('v63.28:本地函数 requires 违反 → 三引擎 M4015 exit 101(消息逐字)',
+      ok, runs.map(r => `${r.code}:${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | '));
+  }
+
+  // ---- v63.29:本地函数捕获外层局部 → M3001 拒绝(不捕获语义) ----
+  {
+    const p = m63('p2_capture.ming', [
+      'fn main() with io {',
+      '    let base = 10;',
+      '    fn add_base(n: i64) -> i64 { return n + base; }',
+      '    print(str(add_base(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const ck = runMing(['check', p]);
+    const run = runMing(['run', p]);
+    check('v63.29:本地函数引用外层局部 → check/run exit 1 + M3001(帧不捕获外层局部)',
+      ck.code === 1 && (ck.stderr ?? '').includes('M3001') && (ck.stderr ?? '').includes('找不到值 "base"')
+      && run.code === 1 && (run.stderr ?? '').includes('M3001') && !(run.stderr ?? '').includes('M3047'),
+      `check=${ck.code} run=${run.code} ${JSON.stringify((ck.stderr ?? '').split('\n').filter(l => l.includes('M3001')).slice(0, 1))}`);
+  }
+
+  // ---- v63.30:泛型本地函数 → M3048(声明处显式拒绝,专用码;无 T 级联) ----
+  {
+    const p = m63('p2_generic.ming', [
+      'fn main() with io {',
+      '    fn id[T](x: T) -> T { return x; }',
+      '    print(str(id(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const ck = runMing(['check', p]);
+    const run = runMing(['run', p]);
+    check('v63.30:泛型本地函数 → check/run exit 1 + M3048(generic-local-fn-unsupported;无 M3003/实际是 T 级联)',
+      ck.code === 1 && (ck.stderr ?? '').includes('M3048') && (ck.stderr ?? '').includes('不支持类型参数')
+      && !(ck.stderr ?? '').includes('M3003') && !(ck.stderr ?? '').includes('实际是 T')
+      && run.code === 1 && !(ck.stderr ?? '').includes('M3047'),
+      `check=${ck.code} run=${run.code} ${JSON.stringify((ck.stderr ?? '').slice(0, 300))}`);
+  }
+
+  // ---- v63.31:M3047 不再发射(四个本地函数形态 check stderr 均无该码) ----
+  {
+    const cases = [
+      ['top', 'fn main() with io { fn f() -> i64 { return 1; } print(str(f())); }'],
+      ['nested', 'fn main() with io { if true { fn g() -> i64 { return 2; } print(str(g())); } }'],
+      ['value', 'fn main() with io { fn inc(x: i64) -> i64 { return x + 1; } print(str([1].map(inc).len())); }'],
+      ['contract', 'fn main() with io { fn h(a: i64) -> i64 requires a > 0 { return a; } print(str(h(1))); }'],
+    ];
+    let allOk = true;
+    const detail = [];
+    for (const [name, src] of cases) {
+      const p = m63('p2_m3047_' + name + '.ming', src + '\n');
+      const ck = runMing(['check', p]);
+      if (ck.code !== 0 || (ck.stderr ?? '').includes('M3047')) allOk = false;
+      detail.push(`${name}=${ck.code}/${(ck.stderr ?? '').includes('M3047')}`);
+    }
+    check('v63.31:M3047[local-fn-unsupported] 不再发射(四形态 check exit 0 且 stderr 无 M3047)',
+      allOk, detail.join(' '));
+  }
+
+  // ---- v63.32:AOT 字节码产物含本地函数(build + dist 运行) ----
+  {
+    const a = aot63('aot_local_fn', [
+      'fn main() with io {',
+      '    fn twice(a: i64) -> i64 { return a * 2; }',
+      '    print(str(twice(21)));',
+      '}',
+      '',
+    ].join('\n'));
+    check('v63.32:AOT build 本地函数产物 + dist 运行(42;字节码产物非源码回退)',
+      a.b.status === 0 && a.r.status === 0 && a.r.stdout === '42\n'
+      && ((a.b.stdout ?? '') + (a.b.stderr ?? '')).includes('app.bytecode.json')
+      && !((a.b.stdout ?? '') + (a.b.stderr ?? '')).includes('回退源码模式'),
+      `build=${a.b.status} run=${a.r.status} out=${JSON.stringify(a.r.stdout)} log=${JSON.stringify(((a.b.stdout ?? '') + (a.b.stderr ?? '')).slice(0, 200))} err=${JSON.stringify((a.r.stderr ?? '').slice(0, 160))}`);
+  }
+
+  // ---- v63.33:C 后端仍不支持块内 FnStmt(exit 1 + C1;无编译器跳过) ----
+  {
+    const p = m63('p2_cc.ming', [
+      'fn main() with io {',
+      '    fn twice(a: i64) -> i64 { return a * 2; }',
+      '    print(str(twice(3)));',
+      '}',
+      '',
+    ].join('\n'));
+    const rc = ccAvail63 ? runMing(['cc', p]) : null;
+    check('v63.33:cc(C 后端)遇块内 FnStmt → exit 1 + stderr `语句 FnStmt`(无编译器自动跳过)',
+      !rc || (rc.code === 1 && (rc.stderr ?? '').includes('C1 不支持') && (rc.stderr ?? '').includes('语句 FnStmt')),
+      rc ? `cc=${rc.code} ${JSON.stringify((rc.stderr ?? '').split('\n')[0])}` : 'skip(无编译器)');
+  }
+
+  // ---- v63.34:本地函数深递归 M4005(仅断言消息与 exit,不断言帧数) ----
+  {
+    const p = m63('p2_deep.ming', [
+      'fn main() with io {',
+      '    fn down(n: i64) -> i64 {',
+      '        if n == 0 { return 0; }',
+      '        return down(n - 1);',
+      '    }',
+      '    print(str(down(100000)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4005')
+      && (r.stderr ?? '').includes('调用栈过深(>250 层递归);如需更深递归请改写为循环'));
+    check('v63.34:本地函数深递归 → 三引擎 M4005 exit 101(消息逐字;不断言帧数)',
+      ok, runs.map(r => `${r.code}:${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | '));
+  }
+
+  // ================= P1 审查修复组(阻塞 1–3 + MINOR;v63.37–v63.44) =================
+
+  // ---- v63.37(阻塞 1):i64 `<<` 结果溢出——wasm 不再静默回绕,三引擎 M4002 exit 101 ----
+  {
+    const p = m63('p1r_shift_i64.ming', [
+      'fn sh(a: i64, b: i64) -> i64 {',
+      '    return a << b;',
+      '}',
+      'fn main() with io { print(str(sh(3, 62))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4002'))
+      && st.code === 101 && (st.stderr ?? '').includes('M4002')
+      // wasm 层通用文案(既有口径)与 tree/VM 具体文案的差异如实锁定:码/退出码/位置一致
+      && (st.stderr ?? '').includes('整数运算溢出/移位越界') && (st.stderr ?? '').includes(`${p}:2:14:`)
+      && (runs[2].stderr ?? '').includes('整数<<溢出:3 << 62 超出 i64 范围');
+    check('v63.37(阻塞1):i64 `<<` 结果溢出三引擎 M4002 exit 101;strict wasm 不再 ok(wasm 通用文案+同位置,tree 具体文案)',
+      ok, `runs=${fmtRuns63(runs)} strict=${st.code}:${JSON.stringify((st.stderr ?? '').split('\n')[0])}`);
+  }
+
+  // ---- v63.38(阻塞 1):u64 `<<` 结果溢出同上(逻辑右移回检) ----
+  {
+    const p = m63('p1r_shift_u64.ming', [
+      'fn ush(a: u64, b: u64) -> u64 { return a << b; }',
+      'fn main() with io { print(str(ush(3u64, 63u64))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4002'))
+      && st.code === 101 && (st.stderr ?? '').includes('M4002')
+      && (runs[2].stderr ?? '').includes('整数<<溢出:3 << 63 超出 i64u 范围');
+    check('v63.38(阻塞1):u64 `<<` 结果溢出三引擎 M4002 exit 101;strict wasm 不再 ok',
+      ok, `runs=${fmtRuns63(runs)} strict=${st.code}:${JSON.stringify((st.stderr ?? '').split('\n')[0])}`);
+  }
+
+  // ---- v63.39(阻塞 1):范围边界——不溢出的移位保持正确值(含 i64.min/0 位移) ----
+  {
+    const p = m63('p1r_shift_ok.ming', [
+      'fn sh(a: i64, b: i64) -> i64 { return a << b; }',
+      'fn ush(a: u64, b: u64) -> u64 { return a << b; }',
+      'fn main() with io {',
+      '    print(str(sh(1, 62)));',
+      '    print(str(sh(-1, 63)));',
+      '    print(str(sh(0, 63)));',
+      '    print(str(sh(7, 0)));',
+      '    print(str(ush(1u64, 62u64)));',
+      '    print(str(ush(18446744073709551615u64, 0u64)));',
+      '}',
+      '',
+    ].join('\n'));
+    const want = '4611686018427387904\n-9223372036854775808\n0\n7\n4611686018427387904\n18446744073709551615\n';
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const cc = ccAvail63 ? runMing(['cc', p]) : null;
+    const ok = same63(runs, want) && st.code === 0 && st.stdout === want
+      && (!cc || (cc.code === 0 && cc.stdout === want));
+    check('v63.39(阻塞1):不溢出移位边界保持(1<<62/-1<<63/0<<63/7<<0/u64)三引擎 + C 腿逐字',
+      ok, `runs=${fmtRuns63(runs)} strict=${st.code} cc=${cc ? cc.code + ':' + JSON.stringify(cc.stdout) : 'skip'}`);
+  }
+
+  // ---- v63.40(阻塞 1,C 腿):eligible 函数内通用消息 / main 内具体消息(既有 C 对齐口径) ----
+  {
+    const pf = m63('p1r_cc_fn.ming', [
+      'fn sh(a: i64, b: i64) -> i64 { return a << b; }',
+      'fn main() with io { print(str(sh(3, 62))); }',
+      '',
+    ].join('\n'));
+    const pm = m63('p1r_cc_main.ming', [
+      'fn main() with io { let v = 3 << 62; print(str(v)); }',
+      '',
+    ].join('\n'));
+    const r1 = ccAvail63 ? runMing(['cc', pf]) : null;
+    const r2 = ccAvail63 ? runMing(['cc', pm]) : null;
+    check('v63.40(阻塞1/C):C 腿左移溢出 exit 101 M4002——eligible 函数通用文案、main 具体文案(与 tree 逐字);无编译器自动跳过',
+      (!r1 && !r2) || (r1 && r2 && r1.code === 101 && r2.code === 101
+        && (r1.stderr ?? '').includes('M4002') && (r1.stderr ?? '').includes('整数运算溢出/移位越界')
+        && (r2.stderr ?? '').includes('整数<<溢出:3 << 62 超出 i64 范围')),
+      `fn=${r1 ? r1.code + ':' + JSON.stringify((r1.stderr ?? '').split('\n')[0]) : 'skip'} `
+      + `main=${r2 ? r2.code + ':' + JSON.stringify((r2.stderr ?? '').split('\n')[0]) : 'skip'}`);
+  }
+
+  // ---- v63.41(阻塞 2):wasm M4007 消息/位置与 tree/VM 逐字(引号 + 后缀 + file:line:col) ----
+  {
+    const p = m63('p1r_map_missing.ming', [
+      'fn getv(m: Map[str, i64], k: str) -> i64 {',
+      '    return m[k];',
+      '}',
+      'fn main() with io {',
+      '    let m = {"a": 1};',
+      '    print(str(getv(m, "a")));',
+      '    print(str(getv(m, "zz")));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const wantFirst = `${p}:2:13: error M4007[missing-key]: map 中不存在键 "zz"(用 .get(k) 返回 Option)`;
+    const first = (r) => (r.stderr ?? '').split('\n')[0];
+    // strict 运行时 MING_WASM_DEBUG=1 会先打调试行,按 error 行定位
+    const errOf = (r) => ((r.stderr ?? '').split('\n').find(l => l.includes('error M4007')) ?? '');
+    const ok = runs.every(r => r.code === 101 && first(r) === wantFirst)
+      && st.code === 101 && errOf(st) === wantFirst && st.stdout === '1\n';
+    check('v63.41(阻塞2):缺键 M4007 首行三引擎逐字(wasm 宿主 span 实参:引号+后缀+位置,不再 <unknown>:0:0)',
+      ok, `runs=${runs.map(r => r.code + ':' + JSON.stringify(first(r))).join(' | ')} strict=${st.code}:${JSON.stringify(errOf(st))}`);
+  }
+
+  // ---- v63.42(阻塞 3):VecLit/MapLit 记账——--max-alloc 1 下 wasm 不再绕过 ----
+  {
+    const pm = m63('p1r_alloc_map.ming', [
+      'fn f() -> i64 {',
+      '    let m = {"a": 1, "b": 2};',
+      '    return m["a"];',
+      '}',
+      'fn main() with io { print(str(f())); }',
+      '',
+    ].join('\n'));
+    const pv = m63('p1r_alloc_vec.ming', [
+      'fn f() -> i64 {',
+      '    let v = ["a", "b"];',
+      '    return 1;',
+      '}',
+      'fn main() with io { print(str(f())); }',
+      '',
+    ].join('\n'));
+    const runQ = (p, extra) => [[], ['--no-wasm'], ['--tree']].map(f => runMing(['run', p, ...extra, ...f]));
+    const runA = (p) => runQ(p, ['--max-alloc', '1']);
+    const errLine = (r) => ((r.stderr ?? '').split('\n').find(l => l.includes('error M4011')) ?? '');
+    const rm = runA(pm);
+    const rv = runA(pv);
+    const stm = strict63(pm, ['--max-alloc', '1']);
+    const stv = strict63(pv, ['--max-alloc', '1']);
+    const wantM = `${pm}:2:13: error M4011[alloc-quota-exceeded]: 内存配额超限:累计分配 2 超过上限 1(用 --max-alloc 调整)`;
+    const wantV = `${pv}:2:13: error M4011[alloc-quota-exceeded]: 内存配额超限:累计分配 2 超过上限 1(用 --max-alloc 调整)`;
+    const okOvf = rm.every(r => r.code === 101 && errLine(r) === wantM)
+      && rv.every(r => r.code === 101 && errLine(r) === wantV)
+      && stm.code === 101 && errLine(stm) === wantM && stv.code === 101 && errLine(stv) === wantV;
+    // 配额充足:正常输出(strict 下 wasm 真实执行)
+    const okRun = same63(runQ(pm, ['--max-alloc', '100']), '1\n');
+    const stOk = strict63(pm, ['--max-alloc', '100']);
+    check('v63.42(阻塞3):Map/Vec 字面量经 ming_alloc 按元素数记账——--max-alloc 1 三引擎 M4011 首行逐字(含位置);配额充足正常',
+      okOvf && okRun && stOk.code === 0 && stOk.stdout === '1\n'
+      && (stOk.stderr ?? '').includes('[wasm] fn f OK'),
+      `map=${rm.map(r => r.code + ':' + JSON.stringify(errLine(r))).join(' | ')} `
+      + `vec=${rv.map(r => r.code).join(',')} strict=${stm.code}/${stv.code} ok=${stOk.code}:${JSON.stringify(stOk.stdout)}`);
+  }
+
+  // ---- v63.43(MINOR 1/2):mut Vec for-in 解锁(vi64ptrm 剥后缀)+ Vec[f64] 元素值 ----
+  {
+    const p = m63('p1r_for_minor.ming', [
+      'fn sumv(mut v: Vec[i64]) -> i64 {',
+      '    let mut t = 0;',
+      '    for x in v { t = t + x; }',
+      '    return t;',
+      '}',
+      'fn sumf(v: Vec[f64]) -> f64 {',
+      '    let mut t = 0.0;',
+      '    for x in v { t = t + x; }',
+      '    return t;',
+      '}',
+      'fn main() with io {',
+      '    print(str(sumv([1, 2, 3])));',
+      '    print(str(sumf([1.5, 2.5])));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const ok = same63(runs, '6\n4.0\n') && wasmOk63(st, ['sumv', 'sumf']) && st.stdout === '6\n4.0\n';
+    check('v63.43(MINOR1/2):mut Vec for-in(`vi64ptrm` 剥后缀)与 Vec[f64] for-in 元素值 6/4.0;strict wasm sumv/sumf OK',
+      ok, `runs=${fmtRuns63(runs)} strict=${st.code}:${JSON.stringify(st.stdout)} `
+      + `dbg=${(st.stderr ?? '').split('\n').filter(l => l.includes('[wasm] fn')).join(',')}`);
+  }
+
+  // ---- v63.44(MINOR 6):u64 字面量 ≥2^63 的 SLEB 编码——strict wasm 实例化存活 ----
+  {
+    const p = m63('p1r_u64_lit.ming', [
+      'fn f() -> u64 { return 18446744073709551615u64; }',
+      'fn main() with io { print(str(f())); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const ok = same63(runs, '18446744073709551615\n') && wasmOk63(st, ['f']) && st.stdout === '18446744073709551615\n';
+    check('v63.44(MINOR6):u64 字面量 ≥2^63(2^64-1)编码不再 extra bits in varint;strict wasm f OK 且输出逐字',
+      ok, `runs=${fmtRuns63(runs)} strict=${st.code}:${JSON.stringify(st.stdout)} `
+      + `dbg=${(st.stderr ?? '').split('\n').filter(l => l.includes('[wasm]')).join(',')}`);
+  }
+
+  // ---- v63.45(MINOR 6 回归守卫):i64.min 字面量与越界字面量 ----
+  {
+    const pmin = m63('p1r_i64_min.ming', [
+      'fn f() -> i64 { return -9223372036854775808; }',
+      'fn main() with io { print(str(f())); }',
+      '',
+    ].join('\n'));
+    const pover = m63('p1r_i64_over.ming', [
+      'fn f() -> i64 { return -9223372036854775809; }',
+      'fn main() with io { print(str(f())); }',
+      '',
+    ].join('\n'));
+    const runsMin = runAll63(pmin);
+    const stMin = strict63(pmin);
+    const runsOver = runAll63(pover);
+    const stOver = strict63(pover);
+    const ccOver = ccAvail63 ? runMing(['cc', pover]) : null;
+    const ok = same63(runsMin, '-9223372036854775808\n') && wasmOk63(stMin, ['f']) && stMin.stdout === '-9223372036854775808\n'
+      // 越界字面量:wasm 显式回落(不再 asIntN 静默回绕),默认与 --no-wasm 同为 M4002;
+      // strict 原因具名;tree 位置差异(`<unknown>`,字面量 span 既有口径)不断言
+      && runsOver.every(r => r.code === 101 && (r.stderr ?? '').includes('M4002'))
+      && stOver.code === 2 && (stOver.stderr ?? '').includes('i64 字面量越界')
+      && (!ccOver || (ccOver.code === 1 && (ccOver.stderr ?? '').includes('C1 不支持')));
+    check('v63.45(MINOR6 回归):-9223372036854775808 三引擎 + strict wasm f OK;越界字面量 wasm 显式回落(strict 具名)且三引擎 M4002',
+      ok, `min=${fmtRuns63(runsMin)} stMin=${stMin.code} over=${runsOver.map(r => r.code).join(',')} `
+      + `stOver=${stOver.code}:${JSON.stringify((stOver.stderr ?? '').split('\n')[0])} `
+      + `cc=${ccOver ? ccOver.code + ':' + JSON.stringify((ccOver.stderr ?? '').split('\n')[0]) : 'skip'}`);
+  }
+
+  // ================= P2 审查修复组(阻塞 B1–B4 + MINOR;v63.46–v63.56) =================
+
+  // ---- v63.46(B1):本地函数 ensures 引用同块兄弟本地函数(三引擎一致) ----
+  {
+    const p = m63('p2r_sib_ensures.ming', [
+      'fn main() with io {',
+      '    fn positive(x: i64) -> bool { return x > 0; }',
+      '    fn inc(a: i64) -> i64 requires a > 0 ensures positive(result) { return a + 1; }',
+      '    print(str(inc(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ck = runMing(['check', p]);
+    check('v63.46(B1):ensures 引用同块兄弟本地函数(positive(result))三引擎一致(2)且 check exit 0',
+      same63(runs, '2\n') && ck.code === 0, `${fmtRuns63(runs)} check=${ck.code}`);
+  }
+
+  // ---- v63.47(B1):自引用 ensures 与 tree 同行为(无限递归 → M4005,消息首行逐字) ----
+  {
+    const p = m63('p2r_self_ensures.ming', [
+      'fn main() with io {',
+      '    fn f(a: i64) -> i64 ensures f(a) >= 0 { return a; }',
+      '    print(str(f(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const first0 = (runs[0].stderr ?? '').split('\n')[0];
+    const first2 = (runs[2].stderr ?? '').split('\n')[0];
+    const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4005')
+      && (r.stderr ?? '').includes('调用栈过深(>250 层递归);如需更深递归请改写为循环'))
+      && first0 === first2;
+    check('v63.47(B1):自引用 ensures 三引擎 M4005 exit 101;default 与 --tree 首行逐字一致',
+      ok, runs.map(r => `${r.code}:${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | '));
+  }
+
+  // ---- v63.48(B2):lambda 引用外层本地函数(声明-调用)三引擎一致 ----
+  {
+    const p = m63('p2r_lambda_localfn.ming', [
+      'fn main() with io {',
+      '    fn inc(x: i64) -> i64 { return x + 1; }',
+      '    let f = (x: i64) => inc(x);',
+      '    print(str(f(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const ck = runMing(['check', p]);
+    check('v63.48(B2):lambda 引用同块本地函数三引擎一致(2)且 check exit 0',
+      same63(runs, '2\n') && ck.code === 0, `${fmtRuns63(runs)} check=${ck.code}`);
+  }
+
+  // ---- v63.49(B2):HOF 内 lambda 引用本地函数 + 闭包深拷贝保留 mod/localFns ----
+  {
+    const p = m63('p2r_lambda_hof.ming', [
+      'fn main() with io {',
+      '    fn inc(x: i64) -> i64 { return x + 1; }',
+      '    let w = [1, 2, 3].map((x: i64) => inc(x));',
+      '    print(str(w.len()));',
+      '    print(str(w[2]));',
+      '}',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    check('v63.49(B2):[1,2,3].map((x) => inc(x)) 三引擎一致(3 / 4;闭包 deepCopy 保留 mod/localFns)',
+      same63(runs, '3\n4\n'), fmtRuns63(runs));
+  }
+
+  // ---- v63.50(B3):同块 let/fn 同名 → M3009(两种声明顺序同一诊断) ----
+  {
+    const p1 = m63('p2r_let_then_fn.ming', [
+      'fn main() with io {',
+      '    let f = (x: i64) => x + 100;',
+      '    fn f(x: i64) -> i64 { return x + 1; }',
+      '    print(str(f(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const p2 = m63('p2r_fn_then_let.ming', [
+      'fn main() with io {',
+      '    fn f(x: i64) -> i64 { return x + 1; }',
+      '    let f = (x: i64) => x + 100;',
+      '    print(str(f(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const c1 = runMing(['check', p1]);
+    const c2 = runMing(['check', p2]);
+    const ok = [c1, c2].every(r => r.code === 1 && (r.stderr ?? '').includes('M3009')
+      && (r.stderr ?? '').includes('本块已声明为本地函数'))
+      && runMing(['run', p1]).code === 1 && runMing(['run', p2]).code === 1;
+    check('v63.50(B3):同块 let 与 fn 同名 → check/run exit 1 + M3009(两种声明顺序同一诊断,消除顺序敏感)',
+      ok, `c1=${c1.code}:${JSON.stringify((c1.stderr ?? '').split('\n')[0])} c2=${c2.code}:${JSON.stringify((c2.stderr ?? '').split('\n')[0])}`);
+  }
+
+  // ---- v63.51(B3):跨块遮蔽按词法最近块胜(内层 fn 遮蔽外层 let/形参;外层值不变) ----
+  {
+    const pCall = m63('p2r_shadow_call.ming', [
+      'fn main() with io {',
+      '    let f = (x: i64) => x + 100;',
+      '    {',
+      '        fn f(x: i64) -> i64 { return x + 1; }',
+      '        print(str(f(1)));',
+      '    }',
+      '    print(str(f(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const pParam = m63('p2r_shadow_param.ming', [
+      'fn run(f: (i64) -> i64) -> i64 {',
+      '    {',
+      '        fn f(x: i64) -> i64 { return x + 1; }',
+      '        return f(1);',
+      '    }',
+      '}',
+      'fn main() with io { print(str(run((x: i64) => x + 100))); }',
+      '',
+    ].join('\n'));
+    const rCall = runAll63(pCall);
+    const rParam = runAll63(pParam);
+    const ok = same63(rCall, '2\n101\n') && same63(rParam, '2\n');
+    check('v63.51(B3):跨块词法最近块胜——内层 fn 遮蔽外层 let/形参(2/101 与 2;外层绑定不被改写)',
+      ok, `call=${fmtRuns63(rCall)} param=${fmtRuns63(rParam)}`);
+  }
+
+  // ---- v63.52(MINOR1):同块重名本地函数 → M3009(不再静默后者胜) ----
+  {
+    const p = m63('p2r_dup_localfn.ming', [
+      'fn main() with io {',
+      '    fn f() -> i64 { return 1; }',
+      '    fn f() -> i64 { return 2; }',
+      '    print(str(f()));',
+      '}',
+      '',
+    ].join('\n'));
+    const ck = runMing(['check', p]);
+    const run = runMing(['run', p]);
+    check('v63.52(MINOR1):同块重名本地函数 → check/run exit 1 + M3009(note 指向首次声明)',
+      ck.code === 1 && (ck.stderr ?? '').includes('M3009') && (ck.stderr ?? '').includes('重复定义')
+      && (ck.stderr ?? '').includes('首次声明在这里') && run.code === 1,
+      `check=${ck.code} run=${run.code} ${JSON.stringify((ck.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.53(B4):本地函数遮蔽导入模块/模块项 → check 级 M3015(不再 tree 内部错误) ----
+  {
+    const pMath = m63('p2r_shadow_math.ming', [
+      'use std.math;',
+      'fn main() with io {',
+      '    fn math(x: i64) -> i64 { return x + 1; }',
+      '    print(str(math.sqrt(4.0)));',
+      '}',
+      '',
+    ].join('\n'));
+    const pStr = m63('p2r_shadow_str.ming', [
+      'use std.str;',
+      'fn main() with io {',
+      '    fn str(x: i64) -> i64 { return x + 1; }',
+      '    print(str.join(["a", "b"]));',
+      '}',
+      '',
+    ].join('\n'));
+    const c1 = runMing(['check', pMath]);
+    const c2 = runMing(['check', pStr]);
+    const r1 = runMing(['run', pMath]);
+    const r2 = runMing(['run', pMath, '--tree']);
+    const ok = c1.code === 1 && (c1.stderr ?? '').includes('M3015') && (c1.stderr ?? '').includes('本地函数 "math"')
+      && c2.code === 1 && (c2.stderr ?? '').includes('M3015') && (c2.stderr ?? '').includes('本地函数 "str"')
+      && r1.code === 1 && r2.code === 1 && !((r2.stderr ?? '').includes('内部错误'));
+    check('v63.53(B4):本地函数遮蔽导入(math/str)的成员调用 → 三引擎 check 级 M3015 用户诊断(无 tree 内部错误)',
+      ok, `math=${c1.code}:${JSON.stringify((c1.stderr ?? '').split('\n')[0])} str=${c2.code}:${JSON.stringify((c2.stderr ?? '').split('\n')[0])} tree=${r2.code}`);
+  }
+
+  // ---- v63.54(MINOR2):泛型本地函数专用码 M3048 + 无 T/级联 ----
+  {
+    const p = m63('p2r_generic_code.ming', [
+      'fn main() with io {',
+      '    fn id[T](x: T) -> T { return x; }',
+      '    print(str(id(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const ck = runMing(['check', p]);
+    const run = runMing(['run', p]);
+    const msg = (ck.stderr ?? '');
+    const ok = ck.code === 1 && msg.includes('M3048[generic-local-fn-unsupported]')
+      && !msg.includes('M3003') && !msg.includes('实际是 T') && !msg.includes('实际是 ?')
+      && run.code === 1;
+    check('v63.54(MINOR2):泛型本地函数 → 仅 M3048(专用码;无 M3003 / str 类型级联)',
+      ok, `check=${ck.code} run=${run.code} ${JSON.stringify(msg.slice(0, 260))}`);
+  }
+
+  // ---- v63.55(MINOR7):prelude 名(Some/Ok)被本地声明遮蔽——本地优先(三引擎一致) ----
+  {
+    const pSome = m63('p2r_shadow_some.ming', [
+      'fn main() with io {',
+      '    fn Some(x: i64) -> i64 { return x + 1; }',
+      '    print(str(Some(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const pOk = m63('p2r_shadow_ok.ming', [
+      'fn main() with io {',
+      '    fn Ok(x: i64) -> i64 { return x + 2; }',
+      '    print(str(Ok(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const pVar = m63('p2r_shadow_some_var.ming', [
+      'fn main() with io {',
+      '    let Some = (x: i64) => x + 1;',
+      '    print(str(Some(1)));',
+      '}',
+      '',
+    ].join('\n'));
+    const r1 = runAll63(pSome);
+    const r2 = runAll63(pOk);
+    const r3 = runAll63(pVar);
+    const ok = same63(r1, '2\n') && same63(r2, '3\n') && same63(r3, '2\n');
+    check('v63.55(MINOR7):fn Some/fn Ok/let Some 遮蔽 prelude 构造器——本地声明优先(2/3/2 三引擎)',
+      ok, `some=${fmtRuns63(r1)} ok=${fmtRuns63(r2)} var=${fmtRuns63(r3)}`);
+  }
+
+  // ---- v63.56(M4):未被调用的本地函数声明不再使 strict fallback(形状阶段判 ineligible) ----
+  {
+    const p = m63('p2r_strict_fnstmt.ming', [
+      'fn outer(n: i64) -> i64 {',
+      '    fn unused() -> i64 { return 1; }',
+      '    return n + 1;',
+      '}',
+      'fn main() with io { print(str(outer(1))); }',
+      '',
+    ].join('\n'));
+    const runs = runAll63(p);
+    const st = strict63(p);
+    const ok = same63(runs, '2\n') && st.code === 0 && st.stdout === '2\n'
+      && !(st.stderr ?? '').includes('REJECT') && !(st.stderr ?? '').includes('实例化失败');
+    check('v63.56(M4):函数体含 FnStmt 形状阶段 ineligible——未调用本地函数声明不再 strict fallback(exit 0)',
+      ok, `runs=${fmtRuns63(runs)} strict=${st.code}:${JSON.stringify((st.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ================= P3 组:invariant bench(信息性;exit 0) =================
+
+  // ---- v63.35:bench exit 0 且输出含 invariant 新项 ----
+  {
+    const env = { ...process.env };
+    delete env.MING_WASM_STRICT;
+    const b = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'bench.mjs')], {
+      encoding: 'utf8', cwd: ROOT, timeout: 300000, env,
+    });
+    const out = b.stdout ?? '';
+    check('v63.35:node tests/bench.mjs exit 0 且输出含 "契约 invariant 循环" 新项(重查 µs/次)',
+      b.status === 0 && out.includes('契约 invariant 循环') && out.includes('invariant 重查'),
+      `code=${b.status} tail=${JSON.stringify(out.slice(-400))} err=${JSON.stringify((b.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // ---- v63.36:bench 基线含 invariant 项键(loopN/rounds/exits/vmUs/treeUs) ----
+  {
+    let base = null;
+    try { base = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests', 'bench.baseline.json'), 'utf8')); } catch { /* 断言处报错 */ }
+    const it = base?.items?.['契约 invariant 循环']?.invariant;
+    check('v63.36:bench.baseline.json 含 "契约 invariant 循环".invariant 键(loopN=10000/rounds/exits=300000/vmUs/treeUs 数值)',
+      it && it.loopN === 10000 && it.rounds > 0 && it.exits === it.loopN * it.rounds
+      && typeof it.vmUs === 'number' && typeof it.treeUs === 'number',
+      `invariant=${JSON.stringify(it)}`);
   }
 }
 

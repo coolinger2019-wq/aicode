@@ -84,7 +84,10 @@ export function deepCopy(v) {
     case 'closure': {
       const env = new Map();
       for (const [k, val] of v.env.vars) env.set(k, deepCopy(val));
-      return { t: 'closure', params: v.params, body: v.body, env: { vars: env, parent: v.env.parent }, fnType: v.fnType };
+      // v0.59-B2:闭包快照除 vars/parent 外必须保留 mod 与 localFns——此前只复制 vars,
+      // 闭包经 let/实参深拷贝后 mod 丢失(lambda 体内 env.mod.items 取模块项 → TypeError;
+      // 引用外层本地函数时 localFns 也丢失)。localFns 表浅拷贝即可(与 snapshotEnv 同口径)。
+      return { t: 'closure', params: v.params, body: v.body, env: { vars: env, parent: v.env.parent, mod: v.env.mod, localFns: v.env.localFns }, fnType: v.fnType };
     }
     case 'fnref': return v;
     default: return v;
@@ -638,6 +641,11 @@ export class Interp {
     if (clo.t === 'fnref') {
       return this.callUser(clo.mod, clo.entry, null, args, callSpan);
     }
+    // v0.59(#44):本地函数作值(tree 形态 {t:'localfn'})——直接调用路径此前缺失
+    // (callClosure 只有 fnref/closure 分支,HOF/存值调用会 TypeError),现路由 callLocalFn。
+    if (clo.t === 'localfn') {
+      return this.callLocalFn(clo.sig, args, { span: callSpan });
+    }
     const vars = new Map();
     for (let i = 0; i < clo.params.length; i++) {
       vars.set(clo.params[i].name, deepCopy(args[i]));
@@ -683,6 +691,14 @@ export class Interp {
     // 求值(沿 parent 可见外层变量)。if/match 臂/unsafe/sync scope/BlockExpr/循环体/函数体
     // 全部经此入口,自动获得词法块作用域;无绑定块复用父环境(blockNeedsScope)。
     const benv = this.blockNeedsScope(block) ? this.childEnv(env) : env;
+    // v0.59(#44):同块本地函数提升登记——块级条目语义(与 checker checkBlock 预登记、
+    // 编译器 compileBlock 预编译同口径):本地 fn 在整个块内可见,互递归不要求声明序。
+    for (const s of block.stmts) {
+      if (s.nt === 'FnStmt') {
+        if (!benv.localFns) benv.localFns = new Map();
+        benv.localFns.set(s.decl.name, { name: s.decl.name, decl: s.decl, mod: benv.mod, env: benv });
+      }
+    }
     for (const s of block.stmts) this.execStmt(s, benv, ctx);
     if (block.tail) {
       const tv = this.evalExpr(block.tail, benv);
@@ -782,9 +798,10 @@ export class Interp {
       }
       case 'ExprStmt': this.evalExpr(s.expr, env); return;
       case 'FnStmt': {
-        // 本地函数注册到当前 env(可递归调用;不捕获外层局部变量)
+        // 本地函数注册到当前 env(v0.59 #44:execBlock 已提升登记,此处幂等兜底;
+        // env 字段供 callLocalFn 构建同块兄弟可见的帧,支持递归/互递归)
         if (!env.localFns) env.localFns = new Map();
-        env.localFns.set(s.decl.name, { name: s.decl.name, decl: s.decl, mod: env.mod });
+        env.localFns.set(s.decl.name, { name: s.decl.name, decl: s.decl, mod: env.mod, env });
         return;
       }
       default: throw new Error(`execStmt: ${s.nt}`);
@@ -1184,7 +1201,8 @@ export class Interp {
       if (found?.kind === 'var') {
         const f = found.v;
         const args = e.args.map(a => deepCopy(this.evalExpr(a, env)));
-        if (f.t === 'closure' || f.t === 'fnref') return this.callClosure(f, args, e.span);
+        // v0.59(#44):localfn 形态(本地函数作值 let g = twice; g(3))加入可调用集
+        if (f.t === 'closure' || f.t === 'fnref' || f.t === 'localfn') return this.callClosure(f, args, e.span);
         throw new Panic('M4001', `${name} 不是函数`, e.span);
       }
       if (found?.kind === 'localfn') {
@@ -1237,16 +1255,39 @@ export class Interp {
     const decl = sig.decl;
     const vars = new Map();
     decl.params.forEach((p, i) => vars.set(p.name, deepCopy(args[i])));
-    const fenv = { vars, parent: null, mod: sig.mod };
+    // v0.59(#44):帧 = 形参 + 同块兄弟本地 fn(含自身——递归/互递归经声明 env 的
+    // localFns 表解析);parent 恒为 null:不捕获外层局部变量(与 checker 隔离体作用域、
+    // VM 独立子函数帧同口径)。
+    const sibFns = sig.env?.localFns;
+    const fenv = { vars, parent: null, mod: sig.mod, localFns: sibFns ?? new Map([[sig.name, sig]]) };
     this.depth++;
-    if (this.depth > 250) { this.depth--; throw new Panic('M4005', `调用栈过深(>250 层递归)`, e.span); }
+    if (this.depth > 250) { this.depth--; throw new Panic('M4005', `调用栈过深(>250 层递归);如需更深递归请改写为循环`, e.span); }
     this.callStack.push({ name: decl.name, span: e.span });
+    // v0.59(#44):契约按模块函数(callUser)同口径——ensures 覆盖所有返回出口
+    // (ensuresStack),合约名字解析基于形参帧(contractEnvStack)。
+    this.ensuresStack.push(decl.ensures ?? null);
+    this.contractEnvStack.push(fenv);
     try {
+      this.step();
+      if (decl.requires) {
+        const rv = this.evalExpr(decl.requires.expr, fenv);
+        if (!(rv.t === 'bool' && rv.v)) {
+          throw new Panic('M4015', decl.requires.msg ? `契约违反: ${decl.requires.msg} (实际: false)` : '契约违反: requires (实际: false)', decl.requires.span ?? e.span);
+        }
+      }
       const v = this.execBlock(decl.body, fenv, { fnRet: null });
       this.depth--; this.callStack.pop();
+      this.ensuresStack.pop();
+      this.contractEnvStack.pop();
       return v ?? UNIT;
     } catch (ex) {
+      // Panic 调用链在弹帧前填充(与 callUser/callCompiled 同序:最老在前)
+      if (ex instanceof Panic && !ex.stack.length) {
+        ex.stack = this.callStack.slice();
+      }
       this.depth--; this.callStack.pop();
+      this.ensuresStack.pop();
+      this.contractEnvStack.pop();
       if (ex instanceof RetSig) return ex.value;
       throw ex;
     }
@@ -1491,7 +1532,11 @@ export class Interp {
         const parts = args[0].a;
         const buf = new Array(parts.length);
         for (let i = 0; i < parts.length; i++) buf[i] = parts[i].v;
-        return V.str(buf.join(''));
+        const out = buf.join('');
+        // v0.59(#49):按结果长度计费,与 Vec 方法 join(interp 内 out.length)及 `+` 同口径;
+        // 此前不计费 → 同程序 std.join 在紧配额下 exit 0 而 Vec.join M4011(不对称)。
+        this.chargeAllocBytes(out.length, span);
+        return V.str(out);
       }
       // ---- std.json(纯函数)----
       case 'json.stringify': {
@@ -1923,6 +1968,9 @@ export class Interp {
       if (!wf || wf.local || wf.name === '<闭包>') throw new Panic('M4001', 'spawn 目标必须是模块级命名函数,不能是闭包', span);
       fnName = wf.entry.decl.name;
       modFile = wf.modFile;
+    } else if (fnVal && fnVal.t === 'localfn') {
+      // v0.59(#44):本地函数作值传给 spawn——与 VM(vclose wf.local)同一消息
+      throw new Panic('M4001', 'spawn 目标必须是模块级命名函数,不能是闭包', span);
     } else {
       throw new Panic('M4001', '内部错误:spawn 目标必须是模块命名函数值', span);
     }
@@ -1972,6 +2020,9 @@ export class Interp {
       if (!wf || wf.local || wf.name === '<闭包>') throw new Panic('M4001', 'spawn_all 目标必须是模块级命名函数', span);
       fnName = wf.entry.decl.name;
       modFile = wf.modFile;
+    } else if (fnVal && fnVal.t === 'localfn') {
+      // v0.59(#44):本地函数作值传给 spawn_all——与 VM(vclose wf.local)同一消息
+      throw new Panic('M4001', 'spawn_all 目标必须是模块级命名函数', span);
     } else {
       throw new Panic('M4001', '内部错误:spawn_all 目标必须是模块命名函数值', span);
     }

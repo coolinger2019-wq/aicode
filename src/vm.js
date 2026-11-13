@@ -104,7 +104,9 @@ export class VMInterp extends Interp {
               if (!Number.isInteger(idx) || idx < 0 || idx >= a.length) throw new Panic('M4003', `索引越界:长度 \${a.length},访问 \${idx}(用 .get(i) 返回 Option)`);
               const el = a[idx];
               if (el.t !== 'int') throw new Panic('M4001', '内部错误:vec 元素类型', null);
-              return el.v;
+              // v0.59(P1 宿主补丁):wasm i64 结果边界要求 BigInt;V.int 的 v 对小整数
+              // 归一化为 Number → 直接返回会抛 "Cannot convert 1 to a BigInt"。
+              return BigInt(el.v);
             },
             vec_get_f64: (h, i) => {
               const a = objTable[h]?.a ?? [];
@@ -128,23 +130,26 @@ export class VMInterp extends Interp {
             vec_push_str: (h, sh) => { objTable[h]?.a.push(V.str(strTable[sh] ?? '')); },
             map_new: () => { const h = objTable.length; objTable.push(V.map(new Map())); return h; },
             map_len: (h) => BigInt((objTable[h]?.m ?? new Map()).size),
-            map_get_i64: (h, kh) => {
+            map_get_i64: (h, kh, spanIdx) => {
               const m = objTable[h]?.m ?? new Map();
               const k = keyStr(kh);
-              if (!m.has(k)) throw new Panic('M4007', 'map 中不存在键 ' + k + '(用 .get(k) 返回 Option)');
+              // v0.59 P1 审查阻塞 2:消息/位置与 tree/VM 逐字对齐——引号(debugStr)+
+              // 后缀 + 带 span 的 Panic(wasm.js 第三参传 spanId;此前 <unknown>:0:0)。
+              if (!m.has(k)) throw new Panic('M4007', `map 中不存在键 ${debugStr(V.str(k))}(用 .get(k) 返回 Option)`, spans[spanIdx] ?? null);
               const el = m.get(k);
-              return el.v;
+              // v0.59(P1 宿主补丁):同 vec_get_i64——wasm i64 结果必须是 BigInt。
+              return BigInt(el.v);
             },
-            map_get_f64: (h, kh) => {
+            map_get_f64: (h, kh, spanIdx) => {
               const m = objTable[h]?.m ?? new Map();
               const k = keyStr(kh);
-              if (!m.has(k)) throw new Panic('M4007', 'map 中不存在键 ' + k);
+              if (!m.has(k)) throw new Panic('M4007', `map 中不存在键 ${debugStr(V.str(k))}(用 .get(k) 返回 Option)`, spans[spanIdx] ?? null);
               return m.get(k).v;
             },
-            map_get_str: (h, kh) => {
+            map_get_str: (h, kh, spanIdx) => {
               const m = objTable[h]?.m ?? new Map();
               const k = keyStr(kh);
-              if (!m.has(k)) throw new Panic('M4007', 'map 中不存在键 ' + k);
+              if (!m.has(k)) throw new Panic('M4007', `map 中不存在键 ${debugStr(V.str(k))}(用 .get(k) 返回 Option)`, spans[spanIdx] ?? null);
               strTable.push(m.get(k).v);
               return strTable.length - 1;
             },
@@ -177,9 +182,11 @@ export class VMInterp extends Interp {
               return strTable.length - 1;
             },
             // v0.32 补齐:线性内存 bump 分配(发布期门禁:计入 maxAlloc 配额,超限 M4011)
-            ming_alloc: (nBytes) => {
+            ming_alloc: (nBytes, spanIdx) => {
               const n = Number(nBytes);
-              this.chargeAllocBytes(n, null);
+              // v0.59 P1 审查阻塞 2/3:记账点 span 由 wasm 侧传入(M4011 位置对齐
+              // tree/VM,此前 `<unknown>:0:0`);VecLit/MapLit 经本导入计费。
+              this.chargeAllocBytes(n, spans[spanIdx] ?? null);
               const top = (this.wasmParamTop + 7) & ~7;
               this.ensureWasmMem(top + n);
               this.wasmParamTop = top + n;
@@ -307,6 +314,8 @@ export class VMInterp extends Interp {
   }
 
   // Vec[i64]/Vec[f64] 实参 → 线性内存 [len][cap][elems](值语义:总是拷贝)
+  // v0.59(P1 宿主补丁):调用方传的是 pt.el.k('int'/'float'),此前这里只认 'f64'
+  // → f64 元素落入 BigInt(1.5) 分支抛 RangeError。统一按 'float' 识别(兼容 'f64')。
   wasmWriteVecNum(v, kind) {
     const a = v.a ?? [];
     const bytes = 16 + a.length * 8;
@@ -316,7 +325,7 @@ export class VMInterp extends Interp {
     dv.setBigInt64(ptr, BigInt(a.length), true);
     dv.setBigInt64(ptr + 8, BigInt(a.length), true);
     for (let i = 0; i < a.length; i++) {
-      if (kind === 'f64') dv.setFloat64(ptr + 16 + 8 * i, Number(a[i].v), true);
+      if (kind === 'float' || kind === 'f64') dv.setFloat64(ptr + 16 + 8 * i, Number(a[i].v), true);
       else dv.setBigInt64(ptr + 16 + 8 * i, BigInt(a[i].v), true);
     }
     return ptr;

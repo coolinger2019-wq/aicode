@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.58.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.59.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,7 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.58.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（825 项，含各版本分节 §1..§62；每次运行全量，无分节过滤）
+tests/run.mjs        回归套件（881 项，含各版本分节 §1..§63；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/proof_fuzz.mjs 静态证明模糊器（边界证明 1/2 + summaries + v0.57 loops 模式；反例独立求值器）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc；v0.57 基线对比 --write-baseline）
@@ -119,7 +119,8 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 
 ## 9. 已知陷阱
 
-- **wasm 静默回落**：`tryCompileWasm` 失败返回 null 不报错；排查用 `MING_WASM_DEBUG=1`，并要求 `[wasm] fn <名字> OK` 且无 `REJECT`；或加 `--strict-wasm`（回落 → exit 2 并点名函数/原因）。v0.56 已修 W1 一元负号 / W2 循环内 if 的 break-continue br 深度 / F1 for-in continue 自增 / F2 `inferNumType`；**剩余回落形态**（不影响语义，strict 可见）：#40 f64 局部/Map 字面量致 locals 索引偏移（违规函数 REJECT，同模块其他函数仍可经 wasm 执行）、#41 Map 形参 slotTypes、#42 多 Vec/与 f64 形参组合时 locals 类型错位（后位单个 Vec 形参实测 OK）、#43 str 返回 retTy、#45 值型 if blocktype 编码失败、#46 块尾 unit 上下文 if 按值编译（`REJECT: if 无 else`）——见 plan §4.3.8/§5.1。
+- **wasm 静默回落**：`tryCompileWasm` 失败返回 null 不报错；排查用 `MING_WASM_DEBUG=1`，并要求 `[wasm] fn <名字> OK` 且无 `REJECT`；或加 `--strict-wasm`（回落 → exit 2 并点名函数/原因）。v0.56 已修 W1 一元负号 / W2 循环内 if 的 break-continue br 深度 / F1 for-in continue 自增 / F2 `inferNumType`；**v0.59 已收口 #40 f64 局部/混合槽序、#41 Map 形参、#42 Vec 多形参、#43 str 返回、#45 值型 if、#46 块尾 unit if**，并修 6 个潜伏 bug（strConsts 空串 / VECMAP VOID / alloc 导入索引 / map_get 顺序 / 移位 64 / 守护口径）。**剩余守护**（不影响语义，strict 可见且原因具名）：VecLit 数值元素（容器表示未统一）、Vec 下标读/mut 元素写（宿主 `panic_m4003` 导入待补）、Option 消费链（宿主 M4006/M4007 导入待补）、f64 复合赋值等——见 plan §4.3.8/§5.1；改 wasm 签名/槽位/locals 时先跑 §63 P1 组（21 项）。
+- **本地函数四条限制（v0.59 #44）**：函数体内 `fn` 是**块级条目**（同块可见、递归/互递归、契约同模块函数口径），但 (1) **不捕获外层局部**（引用 → check M3001；tree 帧 parent=null / VM 独立子函数帧同口径）；(2) **块级可见**（离开声明块即不可见）；(3) **泛型不支持**（**M3048**，专用码）且 **C 后端不支持**（`C1 不支持该程序形态: 语句 FnStmt`）；(4) **静态证明面不含本地函数**（M3041/M3042/M3045/W3105/proof-report 不遍历；运行时契约 M4015 仍执行）。同块 `let` 与 `fn` 同名、同块重名 `fn` → **M3009**；跨块遮蔽按词法最近块胜。M3047 已废弃不再发射——看到 M3047 即文档/实现漂移。
 - **C 后端 panic 对齐**：`ming run` 的 panic stderr 含源码摘录与调用栈；C 侧只复刻**首行**（差分与测试均按首行比对）。
 - **CRLF**：C 产物用 `_setmode(_O_BINARY)` 关闭 CRLF 翻译；`.gitignore` 与会话工件保持干净。
 - **mingkit 转义**：只认 `\n \t \\` 一层；透明转义不存在，未知转义原样保留——嵌套 shell 时注意层数。
@@ -135,5 +136,6 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 
 ## 10. 当前状态与下一步
 
+- **v0.59.0**（2026-11-13，默认引擎全面性/质量版，无新语言面）：**881 项测试全绿**（§63 共 **56 项**：P1 21 + P2 13 + P3 2 + 审查修复 20）。**P1 wasm 覆盖收口**：修 #40 locals 索引偏移（声明从 `nParams` 起）、#41 Map 形参槽类型（`paramSlotTy` + `__kh/k/v`）、#42 Vec 多形参组合、#43 str 返回 `retTy`（含 strConsts 随产物返回）、#45 值型 if 单字节 valtype、#46 块尾 unit if 按语句编译；**6 个潜伏 bug**（strConsts 空串 / VECMAP VOID 导入 / alloc 导入索引 / map_get 实参顺序 / 移位 64 边界 / 守护口径）；**宿主补丁**（`map_get_i64`/`vec_get_i64` 返回 BigInt、`wasmWriteVecNum` 认 float）解锁 `Map[str,i64]` 与 `Vec[f64]` 形参；strict 语料 **fallback=0**（快照口径），剩余守护（VecLit/下标/mut 写/Option 链）显式回落具名。**P1 审查修复**：`<<` 结果溢出 wasm/C 四引擎 M4002、M4007 消息+位置三引擎逐字（span 实参）、VecLit/MapLit 计费、u64 字面量编码回归。**P2 本地函数恢复（#44）**：VM `precompileLocalFns`/`compileLocalFn`（块级条目 + 递归/互递归 + 契约同模块函数口径 + 作值 LDFN + AOT entry.sig）、tree `callLocalFn` 补齐；**M3047 废弃**；**四条限制**（不捕获外层局部 M3001 / 块级可见 / 泛型 M3048 与 cc 不支持 / 静态证明面不含本地函数）。**P2 审查修复**：兄弟 ensures、lambda 引用本地 fn、遮蔽语义定案（同块 let/fn M3009、跨块词法最近胜）、导入遮蔽 M3015。**P3 invariant bench**：`tests/bench.mjs` 新项"契约 invariant 循环"（300,000 次退出 vs 对照）VM 0.19–0.28µs/次、tree 0.20–0.28µs/次（占循环墙钟 20–27%，按 Starfish 5% 判据如实报告），基线含 `invariant.vmUs/treeUs`。**记账统一**：#48 wasm `str_cat` 计费（嵌套 11+15=26）、#49 `std.str.join` 对称化（§62 v58.29 断言翻转）。fuzz 三种子 0 分歧、proof_fuzz 0 误报。
 - **v0.58.0**（2026-11-13，AI 协作体验与文本工程/开发者体验版）：825 项测试全绿（§62 共 34 项：A LSP 16 + B join/解析 13 + C doc/Release 5）。**A 包 LSP 扩展**：补全（标识符/字段方法/模块成员/枚举变体/关键字；保守策略——类型推不出 → 空列表、语法不可修复 → null、注释与字符串内不补全；打字中间态占位修复 + 第三式吞残余补括号）、跳转定义（模块项/局部绑定/跨文件 use；std 与内置 → null）、文档符号（fn/struct/enum/trait/const + impl 层级）；**非 ASCII 消息体按 Content-Length 字节分帧**（既有 P1 修复回归锁定）；审查修复：坏 JSON 体/空体帧存活（不再 ReferenceError 杀进程）、块注释内不补全（嵌套深度按 lexer 语义）；`completionFor/definitionFor/documentSymbolsFor` 导出供测试/工具直连。**B 包 std.str.join + 编译器名字解析**：`use std.str;` 纯函数 `str.join(Vec[str]) -> str` 单次 O(n) 拼接（**Builder→join 架构调整如实记录**，plan §4.3.5）；`use std.str` 下四形态名字解析三引擎逐字（裸 `str(42)` 内建 / `str.join(v)` 模块 / `as` 别名 / 模块级 `fn str` 遮蔽模块 fn 赢）+ **遮蔽守卫**（基名被局部遮蔽 → 按局部值方法调用，checker 与引擎不再分歧）；wasm：join 所在函数非直接调用 REJECT（`--strict-wasm` 可见回落）；cc C1 发射期显式拒绝；**#49 分配记账差异与 API 不对称如实登记**（`v.join(sep)` 计费 vs `str.join(v)` 不计费）。**C 包 doc --json + Release**：`ming doc --json` 稳定 schema（六种 kind 含 trait/impl；signature 为 AST 重建,impl 方法含 `with` 效果与 requires/ensures）+ `--index` 多文件聚合（默认文本逐字不变）；release.yml（tags `v*` + workflow_dispatch,官方 action,零 npm 校验,artifact `ming-<tag>`,**不自动创建 Release**——维护者手动附 artifact）+ `docs/release.md`。无新诊断码。v0.52–v0.57 路线已全部交付。
-- **plan §4.3 任务已全部清空**（v0.56–v0.58 交付；v0.59/v0.60 以 ADR 收尾）。实现方向（条件化）：`std.net.serve`（ADR-001 清单 16 项裁决）、`Untrusted[T]`（破坏性变更窗口）、#44 本地函数恢复；已知缺陷 #40–#43/#45–#47 与 #48/#49 见 `docs/plan.md §4.3.8/§5.1`（wasm 剩余回落形态不影响语义正确性；#49 join 记账不对称已文档化口径）。
+- **plan §4.3 任务已全部清空**（v0.56–v0.59 交付；v0.60 起以 ADR 条件交付）。实现方向：`std.net.serve`（ADR-001 清单 16 项裁决）+ 覆盖率驱动补测（vm.js 函数覆盖 43.8%→≥70%）+ checker 拆分 → v0.61 污点 `Untrusted[T]`（ADR-002）+ while 守卫证明 + #47 修复。已知缺陷仅余 **#47**（tree 契约求值重入，P3）；#40–#46/#48/#49 已于 v0.59 收口（见 `docs/plan.md §4.4.3/§5.1`）。

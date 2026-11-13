@@ -85,7 +85,8 @@ export function compile(checkResult) {
   const c = new BytecodeCompiler(checkResult);
   const built = c.run();
   built.wasm = c.tryWasm(); // v0.11:纯数值/字符串函数分层编译(失败静默回落 JS VM)
-  if (built.wasm && c.strConsts) built.wasm.strConsts = c.strConsts;
+  // v0.59 P1 审查 MINOR:删除死代码 `if (built.wasm && c.strConsts) ...`——
+  // BytecodeCompiler 无 strConsts 字段;strConsts 已由 WasmCompiler.run() 随产物返回。
   return built;
 }
 
@@ -250,7 +251,12 @@ class BytecodeCompiler {
     }
     // 函数体的块值 = 返回值 → want=true
     this.pushScope(st);
-    for (const s of decl.body.stmts) this.compileStmt(s, st);
+    // v0.59(#44):函数体顶层的本地函数同样预编译(块级条目;compileBlock 不经过这里)
+    this.precompileLocalFns(decl.body.stmts, st);
+    for (const s of decl.body.stmts) {
+      if (s.nt === 'FnStmt') continue;
+      this.compileStmt(s, st);
+    }
     let produced = false;
     if (decl.body.tail) {
       this.compileExpr(decl.body.tail, st);
@@ -310,10 +316,15 @@ class BytecodeCompiler {
   pushScope(st) { st.scopes.push(new Map()); }
   popScope(st) { st.scopes.pop(); }
 
-  // 名字解析:局部槽 | 捕获下标 | null(交由运行时全局解析)
+  // 名字解析:局部槽 | 捕获下标 | 本地函数(函数表下标) | null(交由运行时全局解析)
+  // v0.59-B3:同层内 let 槽(数字)与本地函数绑定('fn:N')都参与解析,按"词法最近层"胜出
+  // (同块同名已由 checker M3009 拒绝,层内先后不敏感);此前只认数字槽,外层变量会
+  // 越过内层本地函数导致 tree/VM 解析优先级相反。
   resolveName(st, name) {
     // v0.56(A1):契约表达式只解析形参槽与 result 槽(函数体局部/捕获不可见)。
     // `result` 恒指返回值槽,即使形参也叫 result(形参槽仍用于函数体)。
+    // v0.59-B1:本地函数自身的契约额外可见同块兄弟(contractFnBinds,含自身——
+    // 自引用 requires/ensures 在 tree 侧即无限递归 M4005,VM 对齐同一行为)。
     if (st.inContract) {
       if (name === 'result' && st.resultSlot != null) return { kind: 'local', slot: st.resultSlot };
       // v0.56(C1):契约表达式自身的作用域(match 臂模式变量、if 块内 let 等)按词法
@@ -322,22 +333,46 @@ class BytecodeCompiler {
       for (let i = st.scopes.length - 1; i >= base; i--) {
         const v = st.scopes[i].get(name);
         if (typeof v === 'number') return { kind: 'local', slot: v };
+        if (typeof v === 'string' && v.startsWith('fn:')) return { kind: 'fn', idx: Number(v.slice(3)) };
       }
       if (st.contractParams?.has(name)) return { kind: 'local', slot: st.contractParams.get(name) };
+      if (st.contractFnBinds?.has(name)) return { kind: 'fn', idx: Number(String(st.contractFnBinds.get(name)).slice(3)) };
       return null;
     }
     for (let i = st.scopes.length - 1; i >= 0; i--) {
-      if (st.scopes[i].has(name)) {
-        return { kind: 'local', slot: st.scopes[i].get(name) };
+      // v0.59(#44):本地 fn 登记的 'fn:N' 字符串值(独立函数下标)——按 LDFN 解析,
+      // 不得当作槽号发射 LD。
+      const v = st.scopes[i].get(name);
+      if (v !== undefined && typeof v === 'number') {
+        return { kind: 'local', slot: v };
+      }
+      if (typeof v === 'string' && v.startsWith('fn:')) {
+        return { kind: 'fn', idx: Number(v.slice(3)) };
       }
     }
     if (st.captures?.has(name)) return { kind: 'cap', idx: st.captures.get(name) };
     return null;
   }
 
+  // v0.59-B2:当前帧可见的本地名字(含 lambda 的 fnBinds——lambda 闭包帧只带形参与
+  // 捕获,外层本地函数经 fnBinds 表静态解析为 LDFN,无需捕获)。
+  resolveLocalName(st, name) {
+    const r = this.resolveName(st, name);
+    if (r) return r;
+    if (!st.inContract && st.fnBinds?.has(name)) return { kind: 'fn', idx: st.fnBinds.get(name) };
+    return null;
+  }
+
   compileBlock(block, st, wantValue) {
     this.pushScope(st);
-    for (const s of block.stmts) this.compileStmt(s, st);
+    // v0.59(#44):同块本地函数预编译——块级条目语义(与 checker checkBlock 预登记、
+    // tree execBlock 提升同口径):体内可见同块全部本地 fn(含自身/后声明者),
+    // 互递归不要求声明序。函数体先编译(独立帧,无栈序依赖),名字登记进当前作用域。
+    this.precompileLocalFns(block.stmts, st);
+    for (const s of block.stmts) {
+      if (s.nt === 'FnStmt') continue; // 已由预编译处理
+      this.compileStmt(s, st);
+    }
     let produced = false;
     if (block.tail) {
       this.compileExpr(block.tail, st);
@@ -346,6 +381,107 @@ class BytecodeCompiler {
     this.popScope(st);
     if (wantValue && !produced) this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, block.span);
     if (!wantValue && produced) this.emit(st, OP.POP, 0, 0, block.span);
+  }
+
+  // v0.59(#44):预编译 stmts 中的本地函数声明,把 名字 → 'fn:idx' 登记进当前顶层
+  // 作用域;返回兄弟绑定表(供子函数帧播种,体内按名解析兄弟/自身)。
+  precompileLocalFns(stmts, st) {
+    const sibs = new Map();
+    for (const s of stmts) {
+      if (s.nt !== 'FnStmt') continue;
+      const idx = this.functions.length;
+      this.functions.push(null); // 占位(LDFN 自引用需要先定下标)
+      sibs.set(s.decl.name, 'fn:' + idx);
+      st.scopes[st.scopes.length - 1].set(s.decl.name, 'fn:' + idx);
+    }
+    for (const s of stmts) {
+      if (s.nt === 'FnStmt') this.compileLocalFn(s.decl, st, sibs);
+    }
+    return sibs;
+  }
+
+  // v0.59(#44):本地函数编译——独立函数帧(与模块函数同机制):
+  //   * 递归方案:LDFN(与模块函数递归/LDFN 引用同源)——自引用与兄弟引用在子帧
+  //     作用域播种为 'fn:idx' 字符串,体内按名调用经 compileIdentValue → LDFN 解析;
+  //   * 捕获:不支持(与 tree callLocalFn 帧 parent:null、checker 隔离体作用域同口径;
+  //     引用外层局部在 check 阶段已被拒绝,这里无需捕获计划);
+  //   * 契约:requires/ensures 按模块函数同口径发射(resultSlot 机制);
+  //   * 作值:名字引用发射 LDFN → vclose(空捕获),callValue/HOF 直接可调。
+  compileLocalFn(d, st, siblingBinds) {
+    const idx = Number(siblingBinds.get(d.name).slice(3));
+    const saved = { scopes: st.scopes, captures: st.captures, nLocals: st.nLocals, mod: st.mod, entry: st.entry, curFnIdx: this.curFnIdx, contractParams: st.contractParams, inContract: st.inContract, contractScopeBase: st.contractScopeBase, resultSlot: st.resultSlot };
+    this.curFnIdx = idx;
+    const checked = d.checkedSig;
+    const sub = {
+      code: [], nLocals: 0,
+      // 作用域布局:[兄弟 fn 绑定(fn:N 字符串), 形参数字槽]——resolveName 从栈顶
+      // 向下扫描,形参(数字)优先命中,fn 绑定仅被 compileIdentValue 的 LDFN 路径消费
+      scopes: [new Map(siblingBinds), new Map()],
+      captures: null,
+      mod: st.mod,
+      // 伪 entry:Return/PostQ 的 ensures 出口检查读取 sub.entry.decl.ensures 与
+      // sub.entry.sig.ret.k(checkedSig 为 checker 解析后的真类型)
+      entry: { kind: 'fn', decl: d, sig: { params: checked?.params ?? [], ret: checked?.ret ?? null, tparams: checked?.tparams ?? [], effects: checked?.effects ?? new Set() } },
+      resultSlot: null,
+      inContract: false,
+      // v0.59-B1:契约域可见同块兄弟本地函数(含自身)——requires/ensures 里
+      // `positive(result)` 经 LDFN 解析;模块函数契约仍不暴露函数体本地 fn
+      // (compileFunctionBody 不设此表,v0.56 A1 语义不变)。
+      contractFnBinds: siblingBinds,
+    };
+    const paramSlots = new Map();
+    for (const p of d.params) {
+      const slot = sub.nLocals++;
+      sub.scopes[1].set(p.name, slot);
+      paramSlots.set(p.name, slot);
+    }
+    sub.contractParams = paramSlots;
+    // 契约:ensures 存在时分配内部 result 槽(不进名字映射;合约解析专用——模块函数同口径)
+    if (d.ensures) {
+      sub.resultSlot = sub.nLocals++;
+    }
+    // 契约:requires 入口检查(模块函数同口径)
+    if (d.requires) {
+      this.compileExpr(d.requires.expr, sub);
+      this.compileContractFail(sub, d.requires.msg ? `契约违反: ${d.requires.msg}` : '契约违反: requires', d.requires.span ?? d.span, (st2) => { this.emit(st2, OP.CONST, this.poolAdd(V.bool(false)), 0, d.requires.span ?? d.span); });
+    }
+    // 函数体:块尾值 = 返回值;ensures 在尾值/return/? 出口检查(经 sub.entry.decl.ensures)
+    this.pushScope(sub);
+    this.precompileLocalFns(d.body.stmts, sub);
+    for (const s of d.body.stmts) {
+      if (s.nt === 'FnStmt') continue;
+      this.compileStmt(s, sub);
+    }
+    let produced = false;
+    if (d.body.tail) {
+      this.compileExpr(d.body.tail, sub);
+      produced = true;
+      const ensures = d.ensures;
+      if (ensures && sub.resultSlot !== null) {
+        this.emit(sub, OP.DUP, 0, 0, d.body.tail.span);
+        this.emit(sub, OP.ST, 0, sub.resultSlot, d.body.tail.span);
+        this.compileContractExpr(ensures.expr, sub);
+        this.compileContractFail(sub, ensures.msg ? `契约违反: ${ensures.msg}` : '契约违反: ensures', ensures.span ?? d.span, (st2) => { this.emit(st2, OP.LD, 0, sub.resultSlot, ensures.span ?? d.span); });
+      }
+    }
+    this.popScope(sub);
+    if (!produced) this.emit(sub, OP.CONST, this.poolAdd(UNIT), 0, d.body.span);
+    this.emit(sub, OP.RET, 0, 0, d.body.span ?? null);
+    // name 用裸 decl 名(与 tree callStack 显示一致;此前 '(local)' 后缀会造成
+    // panic 调用链 tree/VM 首行后的帧名分歧)。
+    // v0.59(#44):附带最小 entry(仅签名、无 decl.body)——AOT artifact 序列化契约要求
+    // 每个函数有 entry.sig(此前本地函数缺签名使 ming build 回退源码模式);无 body 使
+    // wasm 资格判定(isEligibleShape 要求 entry.decl.body)保持保守拒绝,不影响 wasm 覆盖。
+    this.functions[idx] = {
+      name: d.name, modFile: st.mod.file, nParams: d.params.length, nLocals: sub.nLocals, code: sub.code, local: true,
+      entry: {
+        kind: 'fn',
+        decl: { name: d.name, span: d.span ?? null },
+        sig: { params: checked?.params ?? [], ret: checked?.ret ?? { k: 'unit' }, tparams: checked?.tparams ?? [], effects: checked?.effects ?? new Set() },
+      },
+    };
+    this.curFnIdx = saved.curFnIdx;
+    return idx;
   }
 
   compileStmt(s, st) {
@@ -592,29 +728,10 @@ class BytecodeCompiler {
         return;
       }
       case 'FnStmt': {
-        // 本地函数:编译为独立函数,绑定 vclose(无捕获)
-        const d = s.decl;
-        const idx = this.functions.length;
-        this.functions.push(null);
-        const saved = { scopes: st.scopes, captures: st.captures, nLocals: st.nLocals, mod: st.mod, entry: st.entry, curFnIdx: this.curFnIdx };
-        this.curFnIdx = idx;
-        const sub = {
-          code: [], nLocals: 0,
-          scopes: [new Map()],
-          captures: null, // 本地函数不捕获
-          mod: st.mod,
-          entry: st.entry,
-          resultSlot: null, // v0.56(C2):本地函数是独立帧,不得执行外层 ensures
-        };
-        const pseudoSig = { params: d.params.map(p => ({ name: p.name })) };
-        void pseudoSig;
-        for (const p of d.params) sub.scopes[0].set(p.name, sub.nLocals++);
-        this.compileBlock(d.body, sub, false);
-        this.emit(sub, OP.RET, 0, 0, d.body.span);
-        this.functions[idx] = { name: d.name + '(local)', modFile: st.mod.file, nParams: d.params.length, nLocals: sub.nLocals, code: sub.code, local: true };
-        this.curFnIdx = saved.curFnIdx;
-        // 声明在当前作用域
-        st.scopes[st.scopes.length - 1].set(d.name, 'fn:' + idx);
+        // v0.59(#44):本地函数由 precompileLocalFns(compileBlock/compileFunctionBody
+        // 的预编译 pass)统一处理——块级条目语义,语句遍历到此处时必然已被编译过。
+        // 此分支仅为防御:直连 compileStmt 的未知路径不再崩溃(静默跳过,名字未登记
+        // 时调用点会得到明确的"名字未解析"编译错误)。
         return;
       }
       default:
@@ -670,8 +787,9 @@ class BytecodeCompiler {
   compilePlaceRead(e, st) {
     switch (e.nt) {
       case 'Ident': {
-        const r = this.resolveName(st, e.name);
-        if (r) this.emit(st, OP.LD, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
+        const r = this.resolveLocalName(st, e.name);
+        if (r?.kind === 'fn') this.emit(st, OP.LDFN, r.idx, 0, e.span);
+        else if (r) this.emit(st, OP.LD, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
         else this.compileNamedValue(e.name, st, e.span);
         return;
       }
@@ -690,8 +808,9 @@ class BytecodeCompiler {
   compilePlaceStore(e, st) {
     switch (e.nt) {
       case 'Ident': {
-        const r = this.resolveName(st, e.name);
+        const r = this.resolveLocalName(st, e.name);
         if (!r) throw new CompileError('名字未解析:' + e.name + '(赋值目标)', e.span);
+        if (r.kind === 'fn') throw new CompileError('不能给本地函数 "' + e.name + '" 赋值', e.span);
         this.emit(st, OP.SET, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
         return;
       }
@@ -950,20 +1069,15 @@ class BytecodeCompiler {
 
   compileIdentValue(e, st) {
     const name = e.name;
-    const r = this.resolveName(st, name);
+    const r = this.resolveLocalName(st, name);
     if (r) {
+      if (r.kind === 'fn') {
+        // v0.59-B1/B2:本地函数引用发射 LDFN(独立函数表条目;契约域仅限同块兄弟)
+        this.emit(st, OP.LDFN, r.idx, 0, e.span);
+        return;
+      }
       this.emit(st, OP.LD, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
       return;
-    }
-    // 本地函数绑定(fn:N)——v0.56(A1):契约域不可见函数体本地 fn
-    if (!st.inContract) {
-      for (let i = st.scopes.length - 1; i >= 0; i--) {
-        const v = st.scopes[i].get(name);
-        if (typeof v === 'string' && v.startsWith('fn:')) {
-          this.emit(st, OP.LDFN, Number(v.slice(3)), 0, e.span);
-          return;
-        }
-      }
     }
     this.compileNamedValue(name, st, e.span);
   }
@@ -1014,7 +1128,7 @@ class BytecodeCompiler {
     // base 为纯 ident 且是模块/类型/枚举名 → 常量形式
     if (e.base.nt === 'Ident') {
       const n = e.base.name;
-      const local = this.resolveName(st, n);
+      const local = this.resolveLocalName(st, n);
       if (!local) {
         if (n === 'Option' || n === 'Result') {
           // 限定名作为构造器(仅当紧随 Call;此处单独出现:检查器不允许裸 ctor 作为值,防御)
@@ -1074,7 +1188,10 @@ class BytecodeCompiler {
     const callee = e.callee;
 
     // 裸 prelude 变体构造:Some(x) / Ok(v) / Err(e)
-    if (callee.nt === 'Ident' && ['Some', 'Ok', 'Err'].includes(callee.name)) {
+    // v0.59-B4/MINOR7:本地名字(变量/本地函数)优先于 prelude 构造器——checker/tree
+    // 均按"本地声明 > prelude"解析;此前该特例无条件生效,`fn Some(x)`/`let Some = ...`
+    // 在 VM 走构造器而 tree 调用本地值,静默分歧。
+    if (callee.nt === 'Ident' && ['Some', 'Ok', 'Err'].includes(callee.name) && !this.resolveLocalName(st, callee.name)) {
       const spec = callee.name === 'Some' ? { def: 'builtin-opt', tag: 'Some' } : { def: 'builtin-res', tag: callee.name };
       for (const a of e.args) this.compileExpr(a, st);
       this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: spec }), e.args.length, e.span);
@@ -1092,7 +1209,8 @@ class BytecodeCompiler {
     // 方法调用:recv.method(args)
     if (callee.nt === 'Field') {
       // 导入模块的成员调用:geom.dist(a, b) / utils.math.f(x)
-      if (callee.base.nt === 'Ident' && !this.resolveName(st, callee.base.name)) {
+      // v0.58 守卫 + v0.59-B4:基名被局部变量/形参/本地函数遮蔽时,按值的方法调用解析
+      if (callee.base.nt === 'Ident' && !this.resolveLocalName(st, callee.base.name)) {
         const imp = st.mod.imports.get(callee.base.name);
         if (imp?.local) {
           const mEntry = imp.local.items.get(callee.name);
@@ -1162,7 +1280,7 @@ class BytecodeCompiler {
     }
     if (callee.base.nt !== 'Ident') return null;
     const n = callee.base.name;
-    if (this.resolveName(st, n)) return null;
+    if (this.resolveLocalName(st, n)) return null;
     if (n === 'Option') return { def: 'builtin-opt', tag: variant };
     if (n === 'Result') return { def: 'builtin-res', tag: variant };
     const ent = st.mod.items.get(n);
@@ -1187,11 +1305,15 @@ class BytecodeCompiler {
     const seenFree = new Set();
     collectFreeNames(e.body, localNames, free, seenFree);
     // 3) 捕获计划:free 名字在当前函数帧的坐标
+    // v0.59-B2:自由名字若是外层本地函数(fn:N),不进入捕获计划——本地函数是函数表
+    // 全局条目,lambda 体直接 LDFN 即可(闭包帧无需运行时携带;值语义无差)。
     const plan = [];
     const captureMap = new Map();
+    const fnBinds = new Map(st.fnBinds ?? []); // 继承外层 lambda 的本地函数绑定
     for (const name of free) {
       const r = this.resolveName(st, name);
       if (!r) continue; // 全局名(const/fn/builtin)不需要捕获
+      if (r.kind === 'fn') { fnBinds.set(name, r.idx); continue; }
       const idx = plan.length;
       plan.push(r.kind === 'local' ? { local: r.slot } : { cap: r.idx });
       captureMap.set(name, idx);
@@ -1201,7 +1323,7 @@ class BytecodeCompiler {
     this.functions.push(null);
     const savedCur = this.curFnIdx;
     this.curFnIdx = idx;
-    const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry, resultSlot: null }; // v0.56(C2):闭包是独立帧,不得执行外层 ensures
+    const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry, resultSlot: null, fnBinds }; // v0.56(C2):闭包是独立帧,不得执行外层 ensures
     for (const p of e.params) sub.scopes[0].set(p.name, sub.nLocals++);
     if (e.body.nt === 'BlockExpr') this.compileBlock(e.body.block, sub, true);
     else this.compileExpr(e.body, sub, true);
