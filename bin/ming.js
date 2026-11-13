@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.61.0';
+export const VERSION = '0.62.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -1246,6 +1246,15 @@ async function cmdBuild(flags) {
         return eff instanceof Set && eff.has('unsafe');
       }));
       if (usesUnsafe) throw new Error('程序使用 with unsafe 指针操作(C 原生限定,tree/VM 以 M4016 拒绝)');
+      // v0.62(ADR-001 §5.2 任务 6):net 并入同一条效果回退检测——serve 的 accept 线程/
+      // 请求 worker 需要源码编译,与 v0.43 修 spawn"worker 读 '<artifact>' 源路径 →
+      // ENOENT"同款机制;运行时行为不变,net 程序 dist 一律源码模式(http_get 纯客户端
+      // 程序也回退,conservative——失去无明文源 AOT)
+      const usesNet = checkResult.modules.some(m => [...m.items.values()].some(e => {
+        const eff = e.sig?.effects ?? e.effects;
+        return eff instanceof Set && eff.has('net');
+      }));
+      if (usesNet) throw new Error('程序使用 net(serve 的 accept/worker 运行面由源码编译)');
       const compiled = compile(checkResult);
       const artifact = serializeArtifact(compiled, { baseDir: projectRoot });
       artifact.builtBy = VERSION;

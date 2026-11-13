@@ -1585,6 +1585,7 @@ export class Interp {
         if (args[2].t === 'map') for (const [k, v] of args[2].m) hs[String(k)] = String(v.v);
         return this.httpOpts({ method: args[0].v, url: args[1].v, headers: hs, body: args.length > 4 ? args[3].v : '', timeoutMs: Number(args[4].v), redirect: 'follow', withHeaders: true }, span);
       }
+      case 'net.serve': return this.netServe(args, span);
       // ---- std.mem(v0.54;原生存取)----
       // tree/VM 没有真实指针面:C 原生后端(ming cc)兑现,解释执行诚实拒绝。
       // panic 码 M4016[native-only-feature],消息与 panic 首行逐字对齐 plan §4.2.5。
@@ -2459,6 +2460,376 @@ export class Interp {
     }
   }
 
+  // ---------- std.net.serve(v0.62,ADR-001 §5.2 任务 2;worker-per-connection,连接只是传输)----------
+  // serve(端口, handler) -> Result[i64, str]:v1 最小 HTTP server。
+  // 主线程只做绑定协调与驻留(Atomics.wait,与 join/http_get 同款纪律);accept 线程独占 socket
+  // 读写(自带事件循环,绝不阻塞——服务器必须在不被 Atomics 阻塞的线程上 accept);请求 worker
+  // 复用 syncWorkerCode 编译/载入管线,每请求一个隔离子 VM(capture:true,print 捕获丢弃——清单 9),
+  // 按请求分派(keep-alive 空闲连接不占名额)。裁决参数(清单 6/7/8/15):固定 127.0.0.1 回环、
+  // 并发 worker 16 / FIFO 队列 256 / 体上限 8MB / handler 超时 30s(固定)。Err 路径:实参形态
+  // 防御(返回 Err 不 panic)/端口非法/绑定失败(EADDRINUSE 等,消息含端口与原因);Ok 路径 v1
+  // 不可达(无优雅停机,主线程驻留)——清单 5。零新增 M 码(清单 4)。
+  netServe(args, span) {
+    const errServe = (msg) => V.enumv('builtin-res', 'Err', [V.str('serve: ' + msg)]);
+    if (args.length !== 2) return errServe('需要 2 个参数:serve(端口, handler)');
+    const [portV, fnVal] = args;
+    // 端口:i64 值形态(小整数驻留为 number,大值落 BigInt) + 1..65535(错误表:端口参数非法 → Err 值)
+    let port = null;
+    if (portV && portV.t === 'int') {
+      const pv = portV.v;
+      if ((typeof pv === 'number' && Number.isInteger(pv) && pv >= 1 && pv <= 65535)
+        || (typeof pv === 'bigint' && pv >= 1n && pv <= 65535n)) port = Number(pv);
+    }
+    if (port === null) return errServe('端口非法(需 1..65535 的 i64)');
+    // handler:fnref(树引擎)与 vclose(VM 字节码)两种模块级命名函数形态;解析逻辑与 syncSpawn
+    // 同款,但按运行面口径非预期形态返回 Err 而非 M4001 panic(任务规格:checker 已保证形态,
+    // 此处纯防御)
+    let fnName, modFile;
+    if (fnVal && fnVal.t === 'fnref') {
+      fnName = fnVal.entry.decl.name;
+      modFile = fnVal.mod.file;
+    } else if (fnVal && fnVal.t === 'vclose' && this.compiled) {
+      const wf = this.compiled.functions[fnVal.fnIdx];
+      if (!wf || wf.local || wf.name === '<闭包>') return errServe('handler 必须是模块级命名函数,不能是闭包/本地函数');
+      fnName = wf.entry.decl.name;
+      modFile = wf.modFile;
+    } else {
+      return errServe('handler 必须是模块级命名函数 fn(Json) -> Json 的引用值');
+    }
+    const entryPath = this.check.entry.absPath ?? this.check.entry.file;
+    const ERR_CAP = 4096;
+    // 绑定 SAB 布局:i32[0]=绑定标记(0 待定/1 成功/2 失败) i32[1]=消息字节数 i32[2]=致命标记
+    // i32[3]=保留;消息字节从 offset 16 起
+    const sab = new SharedArrayBuffer(16 + ERR_CAP);
+    let accept;
+    try {
+      accept = new Worker(this.serveAcceptCode(), {
+        eval: true,
+        workerData: {
+          sab, port, errCap: ERR_CAP,
+          reqWorkerCode: this.syncWorkerCode(), // 请求 worker 复用 spawn 的编译/载入管线(清单 6:32MB SAB/请求)
+          cap: 32 * 1024 * 1024,
+          bodyLimit: 8 * 1024 * 1024, // 清单 7:体上限 8MB(与 http 客户端同款)
+          maxWorkers: 16, queueLimit: 256, timeoutMs: 30000, // 清单 6/8:16/256/30s 固定,v1 不暴露旗标
+          fnName, modFile, entryPath,
+          checkerUrl: SRC_URL('checker.js'),
+          vmUrl: SRC_URL('vm.js'),
+          interpUrl: SRC_URL('interp.js'),
+          maxSteps: this.maxSteps === Infinity ? 500_000_000 : this.maxSteps,
+          maxAlloc: this.maxAlloc,
+          maxMs: this.maxMs === Infinity ? 3_600_000 : this.maxMs,
+        },
+      });
+    } catch (e) {
+      return errServe('无法启动 accept 线程: ' + e.message);
+    }
+    const i32 = new Int32Array(sab);
+    const readMsg = () => {
+      const len = Atomics.load(i32, 1);
+      return len > 0 ? Buffer.from(sab, 16, len).toString('utf8') : '未知原因';
+    };
+    // 第 3 层护栏(审查修复 B1):主线程观测 accept 线程死亡——'error'(线程内未捕获异常)
+    // 或 'exit' code≠0(异常终止)→ 主线程自写共享内存置致命标记(i32[2]=9,主线程可自写),
+    // 驻留循环下一片(≤60s)唤醒后诚实返回 Err,而非悬挂一个死服务。消息只在尚未有致命
+    // 标记时写入(不覆盖 accept 线程自身 reportFatal 的消息);localFatal 优先于 SAB 消息,
+    // "serve: accept 线程异常终止: …" 与既有兜底("serve: 服务线程异常终止: …")同款可辨。
+    let localFatal = null;
+    const markAcceptDead = (why) => {
+      if (localFatal !== null) return;
+      localFatal = 'accept 线程异常终止: ' + why;
+      try {
+        if (Atomics.load(i32, 2) !== 9) {
+          const b = Buffer.from(localFatal, 'utf8').slice(0, ERR_CAP);
+          Buffer.from(sab).set(b, 16);
+          Atomics.store(i32, 1, b.length);
+          Atomics.store(i32, 2, 9);
+        }
+      } catch { /* SAB 写失败不影响 localFatal 路径 */ }
+    };
+    accept.on('error', (e) => markAcceptDead(String(e && e.message || e)));
+    accept.on('exit', (code) => { if (code !== 0) markAcceptDead('exit code ' + code); });
+    // 绑定结果等待(清单 15:listen(port, '127.0.0.1') 固定回环;失败 → Err 值不 panic)。
+    // m1(审查修复):等待预算可被 --max-ms 截断(不足 30s)——超时消息带实际等待时长,
+    // 不再笼统声称"30s"
+    const bindBudget = Math.max(0, Math.min(30000, this.remainingMs()));
+    const bindWait = Atomics.wait(i32, 0, 0, bindBudget);
+    this.checkTimeQuota(span);
+    if (bindWait === 'timed-out') {
+      try { accept.terminate(); } catch { /* 已退出 */ }
+      if (localFatal !== null) return errServe(localFatal);
+      if (Atomics.load(i32, 2) === 9) return errServe('服务线程异常终止: ' + readMsg());
+      return errServe('绑定超时(实际等待 ' + bindBudget + 'ms,上限 30s): 端口 ' + port);
+    }
+    if (Atomics.load(i32, 0) !== 1) {
+      const msg = readMsg();
+      try { accept.terminate(); } catch { /* 已退出 */ }
+      return errServe('绑定失败(端口 ' + port + '): ' + msg);
+    }
+    // Ok 路径:主线程驻留(服务期间不返回;v1 无优雅停机——清单 5,Ok 返回值为将来 shutdown API 预留)
+    for (;;) {
+      // --max-ms 照常生效:每次唤醒检查熔断(任务 7;服务端进程被熔断属门禁语义)
+      const rem = this.remainingMs();
+      if (rem !== Infinity && rem <= 0) this.checkTimeQuota(span);
+      const chunk = rem === Infinity ? 60000 : Math.min(60000, Math.max(1, rem));
+      // 驻留等待:i32[0] 恒为 1(v1 无停机写入)→ 每片 timed-out;将来 shutdown API 置 2 即唤醒
+      const wr = Atomics.wait(i32, 0, 1, chunk);
+      if (wr !== 'timed-out') break; // 停机信号(v1 不可达,预留)
+      if (Atomics.load(i32, 2) === 9) {
+        // 致命兜底:accept 线程异常终止时诚实返回 Err,而非悬挂一个死服务
+        // (localFatal = 主线程观测的 error/exit≠0;否则取 accept 线程 reportFatal 的消息)
+        try { accept.terminate(); } catch { /* 已退出 */ }
+        return errServe(localFatal !== null ? localFatal : '服务线程异常终止: ' + readMsg());
+      }
+      this.checkTimeQuota(span);
+    }
+    try { accept.terminate(); } catch { /* 已退出 */ }
+    return V.enumv('builtin-res', 'Ok', [V.int(BigInt(port))]);
+  }
+
+  // accept 线程启动代码:node:http 封装 + 体上限 + 背压(16/256)+ 每请求派发隔离子 worker + 响应写回。
+  // 本线程自有事件循环,任何位置都不得 Atomics.wait(会冻住 accept);与主线程只经 SAB 通信
+  // (绑定结果 / 致命标记),与请求 worker 经 SAB + 'done' 消息(syncWorkerCode flush 协议)。
+  // 错误响应体统一 Json{code, message}(ADR §2.1 错误表;事件码为响应载荷字符串,非诊断码,不进
+  // M 码登记);异常响应(413/500/503/504)写完即关闭连接,正常 2xx 保持 keep-alive(连接只是传输)。
+  serveAcceptCode() {
+    return [
+      "import { workerData, parentPort, Worker } from 'node:worker_threads';",
+      "import * as nodeHttp from 'node:http';",
+      'const i32 = new Int32Array(workerData.sab);',
+      'let bindDone = false;',
+      'let active = 0;', // 活跃请求 worker 数(上限 16,清单 6)
+      'const queue = [];', // FIFO 等待队列(上限 256;到达序 = 确定序,ADR 确定性口径)
+      'function report(flag, msg) {',
+      '  if (msg !== undefined) {',
+      '    const b = Buffer.from(String(msg), "utf8").slice(0, workerData.errCap);',
+      '    Buffer.from(workerData.sab).set(b, 16);',
+      '    Atomics.store(i32, 1, b.length);',
+      '  }',
+      '  Atomics.store(i32, 0, flag);',
+      '  Atomics.notify(i32, 0);',
+      '}',
+      // 致命标记只置 i32[2](主线程驻留循环每次唤醒轮询;不 notify——避免被误读为停机信号)
+      'function reportFatal(msg) {',
+      '  const b = Buffer.from(String(msg), "utf8").slice(0, workerData.errCap);',
+      '  Buffer.from(workerData.sab).set(b, 16);',
+      '  Atomics.store(i32, 1, b.length);',
+      '  Atomics.store(i32, 2, 9);',
+      '}',
+      // 错误响应统一 Json;close=true 时响应写完即关闭连接(res.destroy 于 end 回调,flush 后再关)
+      'function writeJson(res, status, bodyObj, close) {',
+      '  if (res.headersSent) return;',
+      '  const headers = { "Content-Type": "application/json" };',
+      '  if (close) headers["Connection"] = "close";',
+      '  res.writeHead(status, headers);',
+      '  if (close) res.end(JSON.stringify(bodyObj), () => { try { res.destroy(); } catch { } });',
+      '  else res.end(JSON.stringify(bodyObj));',
+      '}',
+      // 第 1 层护栏(审查修复 B1):异步回调(settle/admit/流事件)的未捕获异常不得杀死
+      // 本线程——线程死亡 = 主线程驻留无停机的死服务(悬挂,请求侧表现为连接异常)。
+      // 捕获后 reportFatal,主线程驻留循环 ≤60s 内诚实返回 Err(与第 3 层主线程对
+      // worker error/exit 的观测互为双保险)
+      'process.on("uncaughtException", (e) => reportFatal("accept 线程异常: " + String(e && e.message || e)));',
+      // 第 2 层护栏(审查修复 B1):响应写路径的同步异常(非法头/流已毁)降级为 500
+      // internal_error;头已发(半写)→ destroy 连接;降级再失败 → destroy。绝不外抛——
+      // 外抛 = uncaughtException(第 1 层兜底前的最后防线)
+      'function safeWrite(res, fn) {',
+      '  try { fn(); } catch (e) {',
+      '    try {',
+      '      if (!res.headersSent) writeJson(res, 500, { code: "internal_error", message: String(e && e.message || e) }, true);',
+      '      else res.destroy();',
+      '    } catch { try { res.destroy(); } catch { } }',
+      '  }',
+      '}',
+      // 响应头字符白名单(拒绝优于截断,与体超限同口径):允许 \t、可打印 ASCII(0x20-0x7e)
+      // 与 ≥0x80(非 ASCII 文本);拒绝 CR/LF/NUL 等控制字符——CRLF 注入 writeHead 会抛
+      // ERR_INVALID_CHAR(曾因此杀死线程 → 服务悬挂)
+      'function headerSafe(s) {',
+      '  for (let i = 0; i < s.length; i += 1) {',
+      '    const c = s.charCodeAt(i);',
+      '    if (c !== 9 && c < 128 && (c < 32 || c === 127)) return false;',
+      '  }',
+      '  return true;',
+      '}',
+      'function badHeader(res) {',
+      '  safeWrite(res, () => writeJson(res, 500, { code: "internal_error", message: "响应头含非法字符" }, true));',
+      '}',
+      // 请求管线:node:http 解析(宿主语义,不进 Ming 合同)→ 体上限(清单 7/D:超限 413,handler 不执行,
+      // "拒绝优于截断")→ admit 背压 → dispatch 每请求 worker
+      'function handleRequest(req, res) {',
+      '  const cl = Number(req.headers["content-length"]);',
+      '  if (Number.isFinite(cl) && cl > workerData.bodyLimit) {',
+      '    safeWrite(res, () => writeJson(res, 413, { code: "body_too_large", message: "请求体超过 8MB 上限" }, true));',
+      '    return;',
+      '  }',
+      '  const chunks = [];',
+      '  let total = 0;',
+      '  let settled = false;', // 413 后 end/error 再入护栏
+      '  req.on("data", (c) => {',
+      '    if (settled) return;',
+      '    total += c.length;',
+      '    if (total > workerData.bodyLimit) {',
+      '      settled = true;',
+      '      chunks.length = 0;',
+      '      safeWrite(res, () => writeJson(res, 413, { code: "body_too_large", message: "请求体超过 8MB 上限" }, true));',
+      '      return;',
+      '    }',
+      '    chunks.push(c);',
+      '  });',
+      '  req.on("end", () => {',
+      '    if (settled) return;',
+      '    settled = true;',
+      '    admit(Buffer.concat(chunks).toString("utf8"), req, res);',
+      '  });',
+      '  req.on("error", () => { settled = true; });',
+      '}',
+      'function lowerHeaders(h) {',
+      '  const out = {};',
+      '  for (const k of Object.keys(h)) {',
+      '    const v = h[k];',
+      '    out[k.toLowerCase()] = Array.isArray(v) ? v.join(", ") : String(v);',
+      '  }',
+      '  return out;',
+      '}',
+      'function admit(bodyStr, req, res) {',
+      '  // 背压(清单 6/E):活跃满 → FIFO 队列;队列也满 → 到达即拒 503(不排队)',
+      '  const task = { reqJson: {',
+      '    method: String(req.method || "GET"),',
+      '    path: String(req.url || "/"),', // req.url 原样(含 query 串,handler 可自行拆分)
+      '    headers: lowerHeaders(req.headers),', // node:http 已小写化;显式 toLowerCase 再收一道
+      '    body: bodyStr,',
+      '  }, res };',
+      '  if (active >= workerData.maxWorkers) {',
+      '    if (queue.length >= workerData.queueLimit) {',
+      '      safeWrite(res, () => writeJson(res, 503, { code: "queue_full", message: "服务过载:等待队列已满(" + workerData.queueLimit + ")" }, true));',
+      '      return;',
+      '    }',
+      '    queue.push(task);',
+      '    return;',
+      '  }',
+      '  dispatch(task);',
+      '}',
+      'function dispatch(task) {',
+      '  active += 1; // 名额占用;启动失败/结果取回/超时时同步释放(清单 16)',
+      '  const argWire = JSON.stringify([{ w: "json", kind: "obj", v: task.reqJson }]);',
+      '  const sab = new SharedArrayBuffer(8 + workerData.cap);', // 清单 6:复用 spawn 的 32MB/请求 SAB 预留
+      '  const wi32 = new Int32Array(sab);',
+      '  let worker;',
+      '  try {',
+      '    worker = new Worker(workerData.reqWorkerCode, { eval: true, workerData: {',
+      '      sab, cap: workerData.cap, argWire,',
+      '      fnName: workerData.fnName, modFile: workerData.modFile, entryPath: workerData.entryPath,',
+      '      checkerUrl: workerData.checkerUrl, vmUrl: workerData.vmUrl, interpUrl: workerData.interpUrl,',
+      '      maxSteps: workerData.maxSteps, maxAlloc: workerData.maxAlloc, maxMs: workerData.maxMs,',
+      '    } });',
+      '  } catch (e) {',
+      '    release();',
+      '    // 清单 16:启动失败 → 500 + 名额同步释放 + 计入请求计数(响应即计数)',
+      '    safeWrite(task.res, () => writeJson(task.res, 500, { code: "worker_start_failed", message: String(e && e.message || e) }, true));',
+      '    return;',
+      '  }',
+      '  let done = false;',
+      '  const timer = setTimeout(() => {',
+      '    if (done) return;',
+      '    done = true;',
+      '    try { worker.terminate(); } catch { }',
+      '    release();',
+      '    // 清单 8:30s 硬杀(terminate;join_detailed M4010 同款纪律)→ 504',
+      '    safeWrite(task.res, () => writeJson(task.res, 504, { code: "timeout", message: "M4010: handler 超时(" + workerData.timeoutMs + "ms)" }, true));',
+      '  }, workerData.timeoutMs);',
+      '  const settle = (fn) => { if (done) return; done = true; clearTimeout(timer); release(); fn(); };',
+      '  worker.on("message", (m) => {',
+      '    if (m !== "done" || done) return;', // syncWorkerCode flush 后 postMessage("done");SAB 读取有先后边
+      '    settle(() => {',
+      '      let parsed = null;',
+      '      try {',
+      '        const len = Atomics.load(wi32, 1);',
+      '        const text = len > 0 ? Buffer.from(sab, 8, len).toString("utf8") : "";',
+      '        parsed = JSON.parse(text);',
+      '      } catch { parsed = null; }',
+      '      if (!parsed || parsed.ok !== true) {',
+      '        // handler panic:请求级隔离——500 + M 码透传(其余请求不受影响,spawn_all 独立 Err 同款)',
+      '        const code = parsed && parsed.code ? String(parsed.code) : "M4001";',
+      '        const msg = parsed ? String(parsed.error) : "handler 结果损坏";',
+      '        safeWrite(task.res, () => writeJson(task.res, 500, { code: "handler_panic", message: code + ": " + msg }, true));',
+      '      } else safeWrite(task.res, () => respond(task.res, parsed.value));',
+      '      try { worker.terminate(); } catch { } // spawn_all 同款:结果取回即回收',
+      '    });',
+      '  });',
+      '  worker.on("error", (e) => {',
+      '    settle(() => safeWrite(task.res, () => writeJson(task.res, 500, { code: "worker_start_failed", message: String(e && e.message || e) }, true)));',
+      '  });',
+      '  worker.on("exit", () => {',
+      '    settle(() => safeWrite(task.res, () => writeJson(task.res, 500, { code: "worker_start_failed", message: "请求 worker 异常退出" }, true)));',
+      '  });',
+      '}',
+      'function release() {',
+      '  active -= 1;',
+      '  const next = queue.shift();', // FIFO:先到先服务(同步派发,避免 admit 与补位竞争超卖名额)
+      '  if (next) dispatch(next);',
+      '}',
+      'function respond(res, wireVal) {',
+      '  // 响应 Json {status, headers, body};缺省 200 / {} / ""(键集 additive,v1 不深检——清单 3)',
+      '  const v = wireVal && wireVal.w === "json" && wireVal.kind === "obj"',
+      '    && wireVal.v && typeof wireVal.v === "object" ? wireVal.v : {};',
+      '  const status = typeof v.status === "number" && Number.isInteger(v.status)',
+      '    && v.status >= 100 && v.status <= 599 ? v.status : 200;',
+      '  const headers = {};',
+      '  if (v.headers && typeof v.headers === "object" && !Array.isArray(v.headers)) {',
+      '    for (const k of Object.keys(v.headers)) {',
+      '      if (!headerSafe(k)) { badHeader(res); return; }',
+      '      const hv = v.headers[k];',
+      '      if (typeof hv === "string") {',
+      '        if (!headerSafe(hv)) { badHeader(res); return; }',
+      '        headers[k] = hv;',
+      '      }',
+      '      else if (typeof hv === "number" || typeof hv === "boolean") headers[k] = String(hv);',
+      '    }',
+      '  }',
+      '  const body = typeof v.body === "string" ? v.body : "";',
+      '  const blen = Buffer.byteLength(body, "utf8");',
+      '  if (blen > workerData.bodyLimit) {',
+      '    // 清单 7/G:响应体超限 → 500 并关闭连接(不截断——截断破坏 Content-Length)',
+      '    writeJson(res, 500, { code: "response_too_large", message: "响应体超过 8MB 上限(" + blen + " 字节)" }, true);',
+      '    return;',
+      '  }',
+      '  const hasCT = Object.keys(headers).some((k) => k.toLowerCase() === "content-type");',
+      '  if (!hasCT) headers["Content-Type"] = "application/json";',
+      '  res.writeHead(status, headers);',
+      '  res.end(body);',
+      '}',
+      'try {',
+      '  const server = nodeHttp.createServer((req, res) => {',
+      '    // 响应流错误(客户端中途断开等)不监听会走 uncaughtException(第 1 层兜底);',
+      '    // 就地消音 + destroy,不影响其它请求',
+      '    res.on("error", () => { try { res.destroy(); } catch { } });',
+      '    try { handleRequest(req, res); } catch (e) {',
+      '      // accept 线程内部异常护栏:不得让线程死亡(主线程驻留无停机,死服务 = 悬挂)',
+      '      if (!res.headersSent) safeWrite(res, () => writeJson(res, 500, { code: "worker_start_failed", message: String(e && e.message || e) }, true));',
+      '      else { try { res.destroy(); } catch { } }',
+      '    }',
+      '  });',
+      '  server.on("clientError", (err, socket) => {',
+      '    try {',
+      '      const body = JSON.stringify({ code: "bad_request", message: String(err && err.message || err) });',
+      '      if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\\r\\nConnection: close\\r\\nContent-Type: application/json\\r\\nContent-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n" + body);',
+      '      else socket.destroy();',
+      '    } catch { try { socket.destroy(); } catch { } }',
+      '  });',
+      '  server.on("error", (e) => {',
+      '    const msg = String(e && e.message || e);',
+      '    if (!bindDone) { bindDone = true; report(2, msg); }', // 绑定失败:EADDRINUSE/权限等 → 主线程 Err
+      '    else reportFatal("server error: " + msg);', // 绑定成功后的 server 级错误:v1 不恢复,驻留轮询兜底
+      '  });',
+      // 清单 15:签名无 host 参数 = 隐式回环;node:http 缺省绑全部接口,必须显式收窄
+      '  server.listen(workerData.port, "127.0.0.1", () => { bindDone = true; report(1); });',
+      '} catch (e) {',
+      '  const msg = "accept 线程初始化失败: " + String(e && e.message || e);',
+      '  if (!bindDone) { bindDone = true; report(2, msg); }',
+      '  else reportFatal(msg);',
+      '}',
+    ].join('\n');
+  }
+
   // 同步 HTTP GET:worker 线程内 fetch,主线程 Atomics.wait 阻塞,响应经 SharedArrayBuffer 传回。
   // 限制:响应体上限 8MB(超出截断,utf8 断字以替换符容错);固定 35s 总超时。
   // http_get = httpRequest('GET', url, null, '')
@@ -3139,7 +3510,12 @@ export function wireToV(w) {
     case 'bool': return V.bool(w.v);
     case 'str': return V.str(w.v);
     case 'unit': return UNIT;
-    case 'json': return { t: 'json', kind: w.kind, v: jsonUnwire(w.kind, w.v) };
+    // v0.62(S2 serve 修复):顶层 Json 值此前被 jsonUnwire 多包一层(V.json 外壳)——
+    // Ming Json obj 表示是 {t:'json', kind:'obj', v: Map},而非 v: V.json(...);
+    // 双重包裹使 .get/.as_* 全部落 j.v.has is not a function。spawn/join 顶层 Json 载荷
+    // 同受影响(潜伏 bug,serve 请求载荷首触达)。取 .v 解一层,nested 值(jsonUnwire
+    // 返回的 V.json)不受影响——与 parseJsonText 的表示对齐。
+    case 'json': return { t: 'json', kind: w.kind, v: jsonUnwire(w.kind, w.v).v };
     case 'vec': return V.vec(w.a.map(wireToV));
     case 'map': {
       const m = new Map();

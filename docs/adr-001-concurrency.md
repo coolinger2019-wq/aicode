@@ -100,13 +100,15 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 | 调用方未声明 net / handler 签名不符 | 编译期拒绝 | M3029 / M3002·M3005 |
 | handler 非模块级命名函数 | 静态拒绝 + 运行期复查 | M4001(与 spawn 同款) |
 | 请求 worker 启动失败(new Worker 抛错) | 先例:spawn_all 对启动失败的任务记 Err、不影响其余任务(src/interp.js:2001/2008) | 500,响应体 Json{code:'worker_start_failed', message};并发名额同步释放——降级/重试策略与名额语义 = 评审清单第 16 项 |
-| handler panic | 请求级隔离:500 响应,其余请求不受影响(spawn_all 独立 Err 同款) | panic 码透传(M4002 等),响应体 Json{code, message}(join_detailed wire v2 同款) |
-| handler 超时(建议 30s) | terminate 硬杀(与 join_detailed M4010 同款纪律);注意 handler 内 http_get 默认 35s 超时(src/interp.js:1460)> 30s——handler 内慢外呼必先撞 serve 层硬杀,http_get 自身超时在 handler 内不可达 | 504,响应体 Json{code:'M4010', message} |
+| handler panic | 请求级隔离:500 响应,其余请求不受影响(spawn_all 独立 Err 同款) | 500,响应体 Json{code:'handler_panic', message:'<M码>: <消息>'}——M 码进 message(v0.62 实现口径,与 §66 v66.6 断言一致;2026-11-14 审查 M1 同步) |
+| handler 超时(30s,固定) | terminate 硬杀(与 join_detailed M4010 同款纪律);注意 handler 内 http_get 默认 35s 超时(src/interp.js:1460)> 30s——handler 内慢外呼必先撞 serve 层硬杀,http_get 自身超时在 handler 内不可达 | 504,响应体 Json{code:'timeout', message:'M4010: handler 超时(30000ms)'}——M4010 进 message(v0.62 实现口径) |
 | 请求体 > 8MB | handler 不执行 | 413,响应体 Json{code:'body_too_large', message} |
-| 等待队列满 | 到达即拒(按到达序,确定) | 503,响应体 Json{code:'overloaded', message} |
+| 等待队列满 | 到达即拒(按到达序,确定) | 503,响应体 Json{code:'queue_full', message:'服务过载:等待队列已满(256)'}——事件码由 ADR 初稿 `overloaded` 更名(2026-11-14 审查 M1 同步;§66 v66.9 断言一致) |
 | 响应体 > 8MB | 拒绝发送,连接关闭(不截断) | 500,响应体 Json{code:'response_too_large', message} |
+| node:http 请求解析错误(宿主层,不进 Ming 合同) | handler 不执行 | 400,响应体 Json{code:'bad_request', message}(additive,2026-11-14 登记) |
+| accept 线程内部异常(含 handler 响应头非法字符) | uncaughtException → reportFatal;respond 包 try/catch → 500 internal_error;header 值白名单校验(非法 → 500 拒发)——主线程 exit/error 监听置致命标记,驻留循环 ≤60s 返回 Err(2026-11-14 审查 B1 修复,杜绝"死服务 = 悬挂") | 500,响应体 Json{code:'internal_error', message};致命时主线程 Err[str] |
 
-非 2xx 响应体统一为 `Json{code, message}`:code 为透传 M 码(panic / 超时)或事件码字符串(`body_too_large` / `overloaded` / `response_too_large` / `worker_start_failed`——响应载荷,非诊断码,不进 M 码登记)。
+非 2xx 响应体统一为 `Json{code, message}`:code 为**事件码字符串**(`body_too_large` / `queue_full` / `response_too_large` / `worker_start_failed` / `timeout` / `handler_panic` / `bad_request` / `internal_error`——响应载荷,非诊断码,不进 M 码登记);M 码(handler_panic/timeout)透传在 **message** 字段(v0.62 实现口径,2026-11-14 审查 M1 同步,原"code 为透传 M 码"作废)。
 
 **与结构化并发的交互(serve 里能 spawn 吗)**:v1 **编译期拒绝**(handler 效果白名单不含 sync)。机械层面嵌套 spawn 实测可行〔实测:worker 内 spawn 返回 42,exit 0〕,但 serve 场景下 `sync scope` 的"块退出自动 join"缺少自然的块边界(handler 由服务端调用,不是被外层作用域框住),放开需要先定义 scoped 语义在 handler 内的形态并实测深度-2 全管线——登记为评审清单第 11 项,不属于 v1。
 
@@ -229,24 +231,26 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 
 **条件承诺**:以下评审清单 **16 项全勾**后,才按 §5.2 草案实施;任何一项不勾,本 ADR 保持"设计文档"状态,plan 记录"清单未全勾"的具体项与理由(§6 第 4 条)。
 
-**评审清单**(可勾选,维护者逐一确认):
+**评审清单**(16/16 已裁决,2026-11-14;架构师按本 ADR 默认立场逐项确认——目标循环授权下先行落盘,维护者可事后复核;任何一项的复议需新 ADR):
 
-- [ ] **1. 方案采纳**:确认方案 a 为 v0.59 服务端唯一路径;(b)/(c) 按 §5.1 否决理由归档,不再复议(复议需新 ADR)。
-- [ ] **2. 效果语义**:确认 serve 以 `net` 效果声明;handler 效果白名单 = `{io, time, fs, net, env, rand, crypto, proc}`;`sync` / `unsafe` / `ffi` 在 handler 内编译期拒绝(v1)。
-- [ ] **3. handler 载荷形态**:确认请求/响应 = Json(`{method, path, headers, body}` / `{status, headers, body}`,键集固定、additive);若改用 tuple 形态需给出对等论证。
-- [ ] **4. 诊断码**:确认 v1 **零新增 M 码**(绑定失败/端口非法 = Err 值;handler panic = 500 + 捕获码透传;超时 = 504 + M4010)。若改为新增码(M4017 起空闲,M4014 已预留),需按三处登记纪律执行。
-- [ ] **5. serve 返回类型**:确认 `serve(port, handler) -> Result[i64, str]`——Err 为绑定/参数失败;**Ok 路径 v1 不可达**(无优雅停机),返回值为将来 shutdown API 预留。
-- [ ] **6. 背压参数**:确认默认并发 worker 上限(建议 16,§2.4 佐证 = 吞吐饱和点)、FIFO 等待队列上限(建议 256;排队缓冲上界 256 × 8MB = 2GB)、超额响应(队列满 503);并确认 serve 请求/响应通道容量——若沿用 spawn 的每任务 32MB SAB 预留,16 并发即 512MB commit(§2.4 新风险 4),建议按需定容。
-- [ ] **7. 体上限**:确认请求/响应体 8MB(与 http 客户端同款);请求超限 413、响应超限 500 并关闭(不截断)。
-- [ ] **8. handler 超时**:确认缺省 30s(可配与否在实现时定)、terminate 硬杀、504 + M4010;注意与 http_get 默认 35s 超时(src/interp.js:1460)的交互——handler 内慢外呼必先撞 30s 硬杀(504),http_get 自身超时在 handler 内不可达。
-- [ ] **9. io 纪律**:确认请求 worker 内 print 捕获丢弃(spawn 同款纪律),v1 无服务端访问日志(§4 第 5 条)。
-- [ ] **10. 四后端边界**:确认 wasm 资格拒绝(net 效果自动拒绝)+ C 发射期显式拒绝("C1 不支持该程序形态" exit 1)+ tree/VM 真实执行;§66 锁定三引擎拒绝一致。
-- [ ] **11. serve 内 spawn**:确认 v1 拒绝(handler 白名单无 sync);将来放开前需先实测深度-2 全管线并定义 scoped 在 handler 内的形态(§2.1)。
-- [ ] **12. 性能预算**:确认 v1 定位 = "接受 ~60ms/请求冷启动〔实测:§1.2 全管线 ~50ms,§2.4 原型 p50 61ms@10 并发 / 85ms@16 并发〕、并发上限 16〔§2.4 原型实测 = 吞吐饱和点,饱和 ≈ 190 req/s〕、内存 55MB/worker(RSS 口径,§2.3 备注)"的内网/工具/agent 服务,不承诺生产吞吐,不承诺 10 万级连接(北星支柱 3 维持远期)。
-- [ ] **13. 测试形态**:确认 §66 用独立进程回环测试(沿用 tests/net_e2e.mjs 模式),CI 仅 localhost;含并发/panic/超时/上限冒烟。
-- [ ] **14. 文档面**:确认 GUIDE 新增 std.net 服务端节 + capabilities"TCP/UDP/服务端"行 ❌ → 🟡(worker-per-connection、数十级上限如实登记)+ design.md §6.3 补"分阶段"说明(阶段 1 = worker-per-connection,阶段 2 = async 运行时另 ADR)。
-- [ ] **15. 监听地址**:确认 v1 `serve(port, handler)` 固定绑 `127.0.0.1`(签名无 host 参数 = 隐式回环,零配置默认安全;node:http 缺省绑全部接口,必须显式收窄);放开自定义 host/内网监听属后续 ADR(需显式 host 参数与文档警告)。
-- [ ] **16. 请求 worker 启动失败处理**:确认降级策略(先例:spawn_all 对启动失败任务记 Err、不影响其余,src/interp.js:2001/2008;建议 500 + Json{code:'worker_start_failed'} 响应)、并发名额是否同步释放、是否计入请求计数。
+- [x] **1. 方案采纳**:确认方案 a 为 v0.59 服务端唯一路径;(b)/(c) 按 §5.1 否决理由归档,不再复议(复议需新 ADR)。**裁决:确认。**
+- [x] **2. 效果语义**:确认 serve 以 `net` 效果声明;handler 效果白名单 = `{io, time, fs, net, env, rand, crypto, proc}`;`sync` / `unsafe` / `ffi` 在 handler 内编译期拒绝(v1)。**裁决:确认。**
+- [x] **3. handler 载荷形态**:确认请求/响应 = Json(`{method, path, headers, body}` / `{status, headers, body}`,键集固定、additive);若改用 tuple 形态需给出对等论证。**裁决:确认 Json。**
+- [x] **4. 诊断码**:确认 v1 **零新增 M 码**(绑定失败/端口非法 = Err 值;handler panic = 500 + 捕获码透传;超时 = 504 + M4010)。**裁决:确认零新增**(M4014 预留不动)。
+- [x] **5. serve 返回类型**:确认 `serve(port, handler) -> Result[i64, str]`——Err 为绑定/参数失败;**Ok 路径 v1 不可达**(无优雅停机),返回值为将来 shutdown API 预留。**裁决:确认。**
+- [x] **6. 背压参数**:并发 worker 上限 **16**(§2.4 吞吐饱和点)、FIFO 等待队列上限 **256**(排队缓冲上界 256 × 8MB = 2GB 记账口径)、超额响应 **503**;SAB 容量**按需定容 = 每请求 worker 复用 spawn 的 32MB SAB 预留**——16 并发 ≈ 512MB commit(§2.4 实测 421MB commit / 343MB WS@16,如实写入 GUIDE);不引入独立定容机制。**裁决:16/256/8MB/503 + 32MB/请求复用。**
+- [x] **7. 体上限**:确认请求/响应体 8MB(与 http 客户端同款);请求超限 413、响应超限 500 并关闭(不截断)。**裁决:确认。**
+- [x] **8. handler 超时**:缺省 **30s,v1 固定不暴露旗标**(additive 预留),terminate 硬杀、504 + M4010;handler 内慢外呼必先撞 30s 硬杀(http_get 自身 35s 超时在 handler 内不可达——交互如实写入 GUIDE)。**裁决:固定 30s。**
+- [x] **9. io 纪律**:确认请求 worker 内 print 捕获丢弃(spawn 同款纪律),v1 无服务端访问日志。**裁决:确认。**
+- [x] **10. 四后端边界**:确认 wasm 资格拒绝(net 效果自动拒绝)+ C 发射期显式拒绝("C1 不支持该程序形态" exit 1)+ tree/VM 真实执行;§66 锁定三引擎拒绝一致。**裁决:确认(三段式)。**
+- [x] **11. serve 内 spawn**:确认 v1 拒绝(handler 白名单无 sync);将来放开前需先实测深度-2 全管线并定义 scoped 在 handler 内的形态。**裁决:确认拒绝。**
+- [x] **12. 性能预算**:确认 v1 定位 = "接受 ~60ms/请求冷启动〔实测 §2.4:p50 61ms@10 / 85ms@16〕、并发上限 16、饱和 ≈ 190 req/s、内存 55MB/worker(RSS)"的内网/工具/agent 服务,不承诺生产吞吐,不承诺 10 万级连接(北星支柱 3 维持远期)。**裁决:确认。**
+- [x] **13. 测试形态**:确认 §66 用独立进程回环测试(tests/net_e2e.mjs 模式),CI 仅 localhost;含并发/panic/超时/上限冒烟。**裁决:确认。**
+- [x] **14. 文档面**:确认 GUIDE 新增 std.net 服务端节 + capabilities"TCP/UDP/服务端"行 ❌ → 🟡(worker-per-connection、数十级上限如实登记)+ design.md §6.3 补"分阶段"说明。**裁决:确认。**
+- [x] **15. 监听地址**:确认 v1 `serve(port, handler)` 固定绑 `127.0.0.1`(签名无 host 参数 = 隐式回环,node:http 缺省绑全部接口必须显式收窄);放开自定义 host/内网监听属后续 ADR。**裁决:确认。**
+- [x] **16. 请求 worker 启动失败处理**:降级 = **500 + Json{code:'worker_start_failed', message}**(先例:spawn_all 记 Err 不影响其余);**并发名额同步释放**;**计入请求计数**(响应即计数)。**裁决:确认。**
+
+**裁决结论:16/16 全勾,条件满足——serve v1 按 §5.2 草案进入 v0.62 实现(plan §4.4.6);任一实现期风险触顶 → 按 §5.2.6 回退(删增量)。**
 
 ### 5.2 v1 最小 HTTP server 任务草案(仅当上表全勾)
 

@@ -133,6 +133,7 @@ AI 参与编写的代码,质量门禁设在三个时点,各司其职:
 ### 6.3 海量并发网络
 - 现状 worker-per-task 不适合几十万连接。远期:async/green-thread 运行时(与确定性语义的调和是设计难点)。
 - L2/L3 原始包构造/嗅探:std.net 扩展 + `with net` capability,原生后端之后。
+- **分阶段实现(v0.62 起)**:阶段 1 = **worker-per-connection 服务端**(`std.net.serve`,ADR-001 16/16 裁决——每请求隔离子 worker,确定性语义与既有 sync 基建同源;定位内网/工具/agent 服务,~60ms/请求冷启动、并发 16 饱和 ≈190 req/s、55MB/worker);阶段 2 = async/green-thread 运行时(海量并发,另 ADR——确定性调和是设计难点)。两阶段之间不做混合形态。
 
 ### 6.4 动态执行与文本处理
 - **eval/热重载**:Ming 有独特优势——解释器/VM 即 JS 库,`eval` 可作为显式能力(`with eval`)落地,成本远低于多数语言。正则作用于字节流(Vec[u8] 版 std.re):近中期。

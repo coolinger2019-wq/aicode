@@ -1,0 +1,3 @@
+[tryWasm] functions=3 spans=56 entryFnIdx=3
+[wasm run] fns=3
+[wasm] fn pure_add OK

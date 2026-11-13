@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.61.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.62.0** · **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -748,6 +748,50 @@ fn main(args: Vec[str]) with io, net {
 }
 ```
 
+**服务端 `serve`(v0.62;ADR-001 worker-per-connection,16/16 裁决):**
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `serve` | `(port: i64, handler: fn(Json) -> Json) -> Result[i64, str]` | 启动 HTTP 服务(固定绑 **127.0.0.1**);绑定失败/端口非法 → Err;成功后**永不返回**(v1 无优雅停机,Ok 路径预留) |
+
+- **handler**:必须是**同模块命名函数**(闭包/本地函数/变量持函数值/跨模块引用 → M3002);形参 Json = 请求 `{method, path(含 query 原样), headers(键小写), body}`,返回 Json = 响应 `{status, headers, body}`(缺省 200/`{}`/`""`;响应 body 直传 HTTP 体)。handler 效果白名单 `{io, time, fs, net, env, rand, crypto, proc}`——`sync`/`unsafe`/`ffi` 编译期拒绝(M3002)。
+- **背压参数(裁决固化)**:并发 worker 上限 **16**、FIFO 等待队列 **256**(排队缓冲上界 2GB 记账口径;每请求复用 spawn 的 32MB SAB)、请求/响应体上限 **8MB**、handler 超时 **30s** 固定(terminate 硬杀)。
+- **错误响应体统一 `Json{code, message}`**(`Content-Type: application/json`):请求体超限 → **413 `body_too_large`**;队列满 → **503 `queue_full`**(到达即拒);handler panic → **500 `handler_panic`**(M 码进 message);超时 → **504 `timeout`**(message 含 M4010);worker 启动失败 → **500 `worker_start_failed`**(名额同步释放);响应体超限 → **500 `response_too_large`** 并关连接;响应头含非法字符(CR/LF 等) → **500 `internal_error`**(拒绝优于截断,服务不死)。
+- **运维事实**:`--max-ms` 对 serve 程序照常生效——**CLI 缺省 600000ms,长驻服务必须显式调大**(如 `--max-ms 86400000`);`ming build` 对 net 程序一律回退源码模式(accept/worker 运行面由源码编译,http_get 纯客户端程序也回退——conservative);`ming cc` 发射期拒绝(C1);wasm 资格永不进入(net 效果)。
+- **示例**(Json 构造走 Map[str, Json] + `json.stringify→parse` 往返,注入安全):
+
+```ming
+use std.net;
+use std.json;
+
+fn respond(status: i64, body: str) -> Json {
+    let resp: Map[str, Json] = {
+        "status": std.json.parse(std.json.stringify(status)).unwrap(),
+        "headers": std.json.parse("{}").unwrap(),
+        "body": std.json.parse(std.json.stringify(body)).unwrap(),
+    };
+    return std.json.parse(std.json.stringify(resp)).unwrap();
+}
+
+fn handler(req: Json) -> Json with io {
+    let path = match req.get("path") {
+        Some(v) => match v.as_str() { Some(s) => s, None => "" },
+        None => "",
+    };
+    return respond(200, "path=" + path);
+}
+
+fn main() with net {
+    match std.net.serve(8080, handler) {
+        Ok(_) => print("unreachable"),
+        Err(e) => eprint("serve 失败: \{e}"),
+    }
+}
+```
+(长驻运行需显式调大 `--max-ms`;请求:`curl http://127.0.0.1:8080/x` → `path=/x`)
+
+### std.sync(能力:sync,v0.14)
+
 ### std.sync(能力:sync,v0.14)
 
 结构化并发:`spawn` 把函数交给**隔离子 VM**(worker 线程)并行执行,`join` 阻塞取结果。值语义保证确定性——子任务拿到的是参数的完整拷贝,与父任务零共享。
@@ -1123,11 +1167,24 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.59(已完成) | **默认引擎全面性(无新语言面)**:wasm 覆盖收口 #40/#41/#42/#43/#45/#46 + 6 潜伏 bug(A strConsts/B VECMAP VOID/C alloc 索引/D map_get 顺序/E 移位 64/F 守护口径)+ 宿主补丁(Map i64/Vec[f64]);本地函数恢复 #44(M3047 移除;块级条目/递归/契约/AOT;三条限制);记账统一 #48/#49(str_cat 计费、std.str.join 对称化;BMP 口径与 --max-alloc 内存风险登记);invariant bench 项(VM 0.19–0.28µs/次、tree 0.20–0.28µs/次);strict 120 语料 fallback=0;§63 56 项、881 项全绿 |
 | v0.60(已完成) | **资源门禁一致性(质量/安全版,无新语言面)**:#51 wasm 参数搬运计费分歧(`mingAllocRaw` 计费开关 + `wasmParamTop` 调用前保存/finally 复位,线性内存随调用复用)、#52 外部输入边界计费(read_file/read_bytes/read_line/read_to_end/list_dir/proc.exec/http body;计费 = 值创建 + 外部输入边界,派生值不重复计费)、#53 `--max-ms` 阻塞内建钳制(remainingMs + sleep/join/exec/http/sync 等待钳制 → M4012;read_line/RegExp 不可抢占边界具名;checkTimeQuota 边界 `>=`)、#47 tree 契约求值重入(execBlock 仅函数体块尾检查 ensures;bodyBlock 上下文)、#54 `ming test` 旗标传播(tree/no-wasm/max-* 与 run 同默认值;--strict-wasm 仅互斥仲裁并提示忽略)+ `ming init` CLI 回归;§64 24 项、905 项全绿;无新诊断码(复用 M4011/M4012) |
 | v0.61(已完成) | **污点最小片(窄源 v1,安全能力版)**:`Untrusted[str]` 类型标注(编译期标签/运行时擦除,载体仅 str);来源窄源 = `env.get -> Option[Untrusted[str]]`、`read_line -> Untrusted[str]`、extern 返回强制(裸 `-> str` 声明处 M3049);sink 门禁免费(M3049 统一机制 21 槽位 + struct 字段前置);白名单 5 方法(parse_i64/parse_f64/char_len/byte_len/is_empty),其余 M3050;`debug`/插值/`as` 洗白禁面 M3050;`std.unstr` 净化族(mark/sanitize_path/sanitize_cli_path——后者 2026-11-14 裁决:校验不改写,授权位 = 路径实参位 + CLI 匹配/比较串);wasm 资格按载体解包(compiler tryWasm),C 后端载体穿透(mingTyNum/annoTarget);12 个自举工具迁移(sanitize_cli_path 12 处,良性 env 行为逐字不变);wasm 资格按载体判定;§65 40 条 check;新码 **M3049/M3050** 三处登记 |
-| 更远(北星对齐) | v0.62 serve 条件交付(ADR-001 清单 16/16;独立版;污点 v1 载体仅 str,serve 载荷 Json 不声称污点保护)→ v0.63+ 候选/Backlog(wasm 守护 slice 2/walker 统一;while 证明/checker 拆分不承诺);mask 永久否决(ADR-003);async/eval/国密/RSA/形式化验证留待更远(见 plan §4.4/§4.4.10) |
+| v0.62(已完成) | **服务端 v1(条件交付兑现,ADR-001 16/16 裁决)**:`std.net.serve(port, handler) -> Result[i64, str]`(net 效果;固定 127.0.0.1 回环;accept 线程 node:http + 每请求隔离子 worker 复用 syncWorkerCode 管线;并发 16/FIFO 队列 256/体 8MB/超时 30s terminate 硬杀;请求/响应 Json 载荷;错误体统一 `Json{code,message}`:413 body_too_large/503 queue_full/500 handler_panic·worker_start_failed·response_too_large·internal_error/504 timeout/400 bad_request;handler 效果白名单 8、sync/unsafe/ffi 编译期拒绝、跨模块 handler M3002;print 捕获丢弃;`--max-ms` 照常生效——长驻服务须显式调大;`ming build` net 程序一律源码模式;`ming cc` 发射期拒绝;wasm 永不 eligible);checker serve 特例零新码(M3029/M3002/M3005 = spawn 先例);三段式拒绝锁定(§66 tree/VM 真实执行一致 + wasm 资格 + cc);**顺带修复 wire 顶层 Json 多包外壳潜伏 bug**(spawn 顶层 Json 载荷曾 `j.v.has is not a function`);§66 22 项 check;零新增 M 码 |
+| 更远(北星对齐) | v0.63+ 候选/Backlog(wasm 守护 slice 2/walker 统一;while 证明/checker 拆分不承诺;serve 放开项——自定义 host/优雅停机/handler 内 sync·`Untrusted[Json]` 载荷/海量并发——各自另 ADR);mask 永久否决(ADR-003);async/eval/国密/RSA/形式化验证留待更远(见 plan §4.4/§4.4.10) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.62.0(2026-11-14)
+
+- **服务端 v1(条件交付兑现;ADR-001 16/16 裁决后按 §5.2 实现,plan §4.4.6)**——北星支柱 3 的阶段 1(worker-per-connection;阶段 2 async 运行时另 ADR):
+  - **`std.net.serve(port, handler) -> Result[i64, str]`**(net 效果):固定绑 **127.0.0.1**(清单 15);accept 线程(node:http)+ **每请求一个隔离子 worker**(复用 syncWorkerCode 管线,capture:true print 捕获丢弃;连接只是传输、按请求分派);并发 worker 上限 **16**、FIFO 等待队列 **256**(到达即拒 503)、请求/响应体 **8MB**、handler 超时 **30s** 固定(terminate 硬杀 → 504)。绑定失败/端口非法 → Err(不 panic);成功后永不返回(v1 无优雅停机,Ok 预留)。
+  - **checker 面**(零新增 M 码 = 清单 4):serve 特例(参照 spawn 先例)——M3029 效果强制/M3002 handler 形态与效果白名单(白名单 8 效果 `{io,time,fs,net,env,rand,crypto,proc}`;**sync/unsafe/ffi 编译期拒绝**;闭包/本地函数/变量持函数值/**跨模块引用**拒绝)/M3005 参数个数;handler 形参/返回 Json(载荷键集 `{method,path,headers,body}`/`{status,headers,body}`,键集固定 additive)。
+  - **错误响应体统一 `Json{code,message}`**(Content-Type application/json):413 `body_too_large`(handler 不执行)/503 `queue_full`(到达即拒)/500 `handler_panic`(M 码进 message)/504 `timeout`(message 含 M4010)/500 `worker_start_failed`(名额同步释放 + 计入请求计数,清单 16)/500 `response_too_large`(关连接不截断)/500 `internal_error`(响应头含非法字符——拒绝优于截断)/400 `bad_request`(宿主解析层)。**accept 线程三层护栏**(uncaughtException → reportFatal;safeWrite 全写路径包 try + header 键值白名单;主线程 error/exit 监听置致命标记 → 驻留循环 ≤60s 返回 Err)——杜绝"死服务 = 悬挂"(独立审查 B1 实测修复)。
+  - **四后端边界(三段式,清单 10)**:tree/VM 真实执行一致(共享 callStd;worker 管线恒 VMInterp,与 spawn §15 先例同口径);wasm 资格永不进入(net 效果,serve 程序 strict 下 wasm_status 具名不误报);`ming cc` 发射期显式拒绝(C1,exit 1)。
+  - **运维事实**:`--max-ms` 照常生效——**CLI 缺省 600000ms,长驻服务必须显式调大**;`ming build` 对 net 程序**一律回退源码模式**(http_get 纯客户端程序也回退,conservative——失去无明文源 AOT,运行时行为不变);`ming cc` 拒绝;handler 内 print 不进响应/日志(无访问日志,清单 9)。
+  - **顺带修复(wire 共享面潜伏 bug)**:顶层 Json 值经 wire 往返被多包一层 `V.json` 外壳——`spawn`/`join` 的顶层 Json/Vec[Json]/Map[str,Json] 载荷曾报 `j.v.has is not a function`/`v.v is not iterable`(仓库既有测试从未跨任务传过 Json,确系潜伏;serve 请求载荷首触达);修复后 spawn 顶层 Json 三引擎一致,非 Json 载荷 HEAD 逐字不变,fuzz 双种子 0 分歧。
+  - **测试 §66 共 22 项 check**(效果强制/handler 三禁与形态/跨模块收紧/回环 GET·POST/panic 500/超时 504/体超限 413/队列满 503/三引擎一致(含 tree 起服)/wasm 资格/cc 拒绝/并发冒烟/端口占用 Err/CRLF 头注入护栏/9MB 响应护栏);独立进程回环(TCP 探测就绪,端口 26000-27999 段探测重试,finally kill + taskkill 兜底)。
+  - **独立审查(fresh code-reviewer)**:1 BLOCKER(accept 线程异步回调无护栏 → CRLF 头致僵尸服务)三层修复 + M1(ADR §2.1 错误表同步——事件码命名/M 码进 message)/M2(跨模块 handler 收紧 M3002)/M3(§66 tree 腿)全部落实;MINOR m1(绑定超时消息带实际时长)/m3(bin 注释精确化)落实;性能与内存如实:~60ms/请求冷启动、并发 16 饱和 ≈190 req/s、55MB/worker RSS(ADR §2.4)。
 
 ### v0.61.0(2026-11-14)
 

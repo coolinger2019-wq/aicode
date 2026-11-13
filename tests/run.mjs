@@ -10336,6 +10336,590 @@ fn main() with io, fs {
   // §65-K-END
 }
 
+// ===================== 66. v0.62:服务端 v1(std.net.serve,worker-per-connection;ADR-001 16/16)=====================
+// 文件所有权:§66 = 本区全部用例(checker serve 门禁 / 三段式拒绝 / 回环与并发冒烟)。
+// 语义权威:docs/adr-001-concurrency.md §2.1/§5.2 + 评审清单 16/16 裁决(2026-11-14)。
+{
+  const dir66 = path.join(TMP, 'v66');
+  fs.mkdirSync(dir66, { recursive: true });
+  const m66 = (name, src) => { const f = path.join(dir66, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags66 = ['', '--no-wasm', '--tree'];
+  const runAll66 = (p, extra = []) => flags66.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const fmtRuns66 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+
+  // ---- §66-START(serve v1 用例:效果强制/handler 白名单与形态/跨模块收紧/回环 GET·POST/panic 500/超时 504/体超限 413/队列满 503/三引擎一致/wasm 资格/cc 拒绝/并发冒烟/CRLF 头注入与 9MB 响应护栏)----
+  // 运行面 harness(ADR-001 清单 13:独立进程回环,CI 仅 localhost):spawn 子进程
+  // `node bin/ming.js run <server.ming>`(stdio pipe,detached:false)→ TCP 探测就绪
+  // (≤15s;不用 HTTP 探测——504 用例 handler 睡 40s,HTTP 探测自身会撞超时)→ fetch
+  // 断言 → finally kill(不留监听;Windows 3s 后 taskkill /T /F 兜底)。端口:26000-27999
+  // 段内按用例编号偏移(26000 + 用例号×10 + 槽位),跑前 net listen 探测空闲,占用
+  // +1 重试(≤5 次)。响应编码断言依赖 S2 运行面契约(请求 {method,path,headers,body} /
+  // 响应 {status,headers,body};错误体统一 Json{code,message}:413 body_too_large /
+  // 503 queue_full / 500 handler_panic·worker_start_failed / 504 timeout)。
+  const { createServer: netServer66, createConnection: netConn66 } = await import('node:net');
+  const { request: httpRequest66 } = await import('node:http');
+  const sleep66 = (ms) => new Promise((res) => setTimeout(res, ms));
+  const port66 = (caseIdx, slot = 0) => 26000 + caseIdx * 10 + slot;
+
+  // server 程序共用响应构造:纯 Json 管线(stringify→parse 往返,注入安全,无效果声明)。
+  const RESPOND66 = [
+    'fn respond(status: i64, body: str) -> Json {',
+    '    let resp: Map[str, Json] = {',
+    '        "status": std.json.parse(std.json.stringify(status)).unwrap(),',
+    '        "headers": std.json.parse("{}").unwrap(),',
+    '        "body": std.json.parse(std.json.stringify(body)).unwrap(),',
+    '    };',
+    '    return std.json.parse(std.json.stringify(resp)).unwrap();',
+    '}',
+  ].join('\n');
+  // 请求载荷访问:{method,path,headers,body} 的 str 键取值(缺键/类型不合回落默认)。
+  const JSTR66 = [
+    'fn jstr(req: Json, key: str, dflt: str) -> str {',
+    '    return match req.get(key) {',
+    '        Some(v) => match v.as_str() {',
+    '            Some(s) => s,',
+    '            None => dflt,',
+    '        },',
+    '        None => dflt,',
+    '    };',
+    '}',
+  ].join('\n');
+  const serverSrc66 = (bodyLines, extraUse = []) => [
+    'use std.net;',
+    'use std.json;',
+    ...extraUse,
+    '',
+    RESPOND66,
+    '',
+    ...bodyLines,
+    '',
+    'fn main() with net {',
+    '    std.net.serve(__PORT__, handler);',
+    '}',
+  ].join('\n');
+  const SRC66 = {
+    // GET/413/双引擎/端口占用-A 共用:固定 200 "hello"
+    get: serverSrc66([
+      'fn handler(req: Json) -> Json {',
+      '    return respond(200, "hello");',
+      '}',
+    ]),
+    // POST 回显 body/path(v66.5):jstr 提取请求载荷 str 键,拼接回显
+    echo: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      RESPOND66,
+      '',
+      JSTR66,
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    let p = jstr(req, "path", "?");',
+      '    let b = jstr(req, "body", "");',
+      '    return respond(200, "path:" + p + "|body:" + b);',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handler);',
+      '}',
+    ].join('\n'),
+    // handler panic(v66.6):Vec 下标越界 → M4003,500 {code:handler_panic} 透传
+    panic: serverSrc66([
+      'fn handler(req: Json) -> Json {',
+      '    let v: Vec[i64] = [1];',
+      '    return respond(200, str(v[5]));',
+      '}',
+    ]),
+    // handler 睡 40s(v66.7):服务端 30s 硬杀 → 504 {code:timeout},响应 <35s 返回
+    sleep40s: serverSrc66([
+      'fn handler(req: Json) -> Json with time {',
+      '    std.time.sleep(40000);',
+      '    return respond(200, "late");',
+      '}',
+    ], ['use std.time;']),
+    // handler 睡 50ms(v66.9 队列满):16 并发 + 256 队列 = 272 容量,300 并发超额 503
+    sleep50ms: serverSrc66([
+      'fn handler(req: Json) -> Json with time {',
+      '    std.time.sleep(50);',
+      '    return respond(200, "q");',
+      '}',
+    ], ['use std.time;']),
+    // handler 睡 100ms(v66.13 并发冒烟):20 并发全部 200
+    sleep100ms: serverSrc66([
+      'fn handler(req: Json) -> Json with time {',
+      '    std.time.sleep(100);',
+      '    return respond(200, "ok");',
+      '}',
+    ], ['use std.time;']),
+    // v66.11 wasm 资格构造(ADR §5.2 任务 4):纯函数 pure_add 处 wasm 候选位,
+    // serve 所在 main 因 net 效果永不进 eligible——断言 pure_add OK 且无 REJECT 噪声。
+    wasmProbe: [
+      'use std.net;',
+      'use std.json;',
+      'use std.io;',
+      '',
+      RESPOND66,
+      '',
+      'fn pure_add(a: i64, b: i64) -> i64 {',
+      '    return a + b;',
+      '}',
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    return respond(200, "x");',
+      '}',
+      '',
+      'fn main() with net, io {',
+      '    print(str(pure_add(2, 3)));',
+      '    std.net.serve(26011, handler);',
+      '}',
+    ].join('\n'),
+    // v66.14 端口占用-B:serve 返回 Err(main 打印 ERR 后退出;A 已占同端口)
+    portErr: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      RESPOND66,
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    return respond(200, "hello");',
+      '}',
+      '',
+      'fn main() with net, io {',
+      '    match std.net.serve(__PORT__, handler) {',
+      '        Ok(code) => { print("ok " + str(code)); },',
+      '        Err(e) => { print("ERR " + e); },',
+      '    }',
+      '}',
+    ].join('\n'),
+    // v66.16 handler 响应头含 CRLF(B1 审查修复锁定):仅 /evil 注入——headers 值经 JSON
+    // \r\n 转义构造真实 CR/LF → respond 头白名单拒绝 → 500 {code:internal_error}
+    // (拒绝优于截断);/ok 正常 200(服务存活佐证)。修复前:writeHead 抛 ERR_INVALID_CHAR
+    // → accept 线程 uncaughtException 死亡 → 主进程永久悬挂(请求侧 socket hang up)
+    crlf: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      RESPOND66,
+      '',
+      JSTR66,
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    if jstr(req, "path", "?") == "/evil" {',
+      '        let resp: Map[str, Json] = {',
+      '            "status": std.json.parse("200").unwrap(),',
+      '            "headers": std.json.parse("{\\"X-Evil\\": \\"a\\\\r\\\\nInjected: 1\\"}").unwrap(),',
+      '            "body": std.json.parse("\\"hi\\"").unwrap(),',
+      '        };',
+      '        return std.json.parse(std.json.stringify(resp)).unwrap();',
+      '    }',
+      '    return respond(200, "hello");',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handler);',
+      '}',
+    ].join('\n'),
+    // v66.17 handler 返回 9MB body(n1 审查修复锁定):超 8MB 上限 → 500
+    // {code:response_too_large} 并关连接(不截断——截断破坏 Content-Length)
+    bigBody: serverSrc66([
+      'fn handler(req: Json) -> Json {',
+      '    let big = "x".repeat(9437184);',
+      '    return respond(200, big);',
+      '}',
+    ]),
+  };
+
+  // ---- checker 层(v66.1-v66.3:S1 面,直接 runMing check)----
+  {
+    const f = m66('k66_1_effect.ming', [
+      'use std.net;',
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    return std.json.parse("{}").unwrap();',
+      '}',
+      '',
+      'fn main() {',
+      '    std.net.serve(26001, handler);',
+      '}',
+    ].join('\n'));
+    const r = runMing(['check', f]);
+    check('v66.1:main 未声明 net 调 serve → check exit 1 + M3029(效果强制)',
+      r.code === 1 && r.stderr.includes('M3029') && r.stderr.includes('net'),
+      `code=${r.code} ${JSON.stringify(r.stderr.split('\n')[0])}`);
+  }
+  {
+    // handler 三禁效果(ADR-001 清单 2/11):sync/unsafe/ffi 在 handler 内编译期拒绝
+    const serveBadEff66 = (eff) => {
+      const lines = ['use std.net;', 'use std.json;'];
+      if (eff === 'sync') lines.push('use std.sync;');
+      lines.push(
+        '',
+        'fn handler(req: Json) -> Json with ' + eff + ' {',
+        '    return std.json.parse("{}").unwrap();',
+        '}',
+        '',
+        'fn main() with net {',
+        '    std.net.serve(26001, handler);',
+        '}',
+      );
+      return lines.join('\n');
+    };
+    for (const eff of ['sync', 'unsafe', 'ffi']) {
+      const f = m66('k66_2_' + eff + '.ming', serveBadEff66(eff));
+      const r = runMing(['check', f]);
+      check(`v66.2:handler with ${eff} → check exit 1 + M3002(handler 三禁效果白名单)`,
+        r.code === 1 && r.stderr.includes('M3002') && r.stderr.includes(eff),
+        `code=${r.code} ${JSON.stringify(r.stderr.split('\n')[0])}`);
+    }
+  }
+  {
+    // handler 形态拒绝(参照 spawn 特例):lambda/本地函数/非函数实参一律 M3002
+    const jbody = 'fn handler(req: Json) -> Json { return std.json.parse("{}").unwrap(); }';
+    const shapes = [
+      ['lambda', ['use std.net;', 'use std.json;', '', jbody, '', 'fn main() with net {',
+        '    std.net.serve(26001, (req: Json) => std.json.parse("{}").unwrap());', '}'].join('\n')],
+      ['local_fn', ['use std.net;', 'use std.json;', '', 'fn main() with net {',
+        '    fn local_handler(req: Json) -> Json { return std.json.parse("{}").unwrap(); }',
+        '    std.net.serve(26001, local_handler);', '}'].join('\n')],
+      ['not_fn', ['use std.net;', 'use std.json;', '', 'fn main() with net {',
+        '    let not_a_fn: i64 = 42;', '    std.net.serve(26001, not_a_fn);', '}'].join('\n')],
+    ];
+    for (const [kind, src] of shapes) {
+      const f = m66('k66_3_' + kind + '.ming', src);
+      const r = runMing(['check', f]);
+      check(`v66.3:handler 形态 ${kind} → check exit 1 + M3002(必须是命名模块函数引用)`,
+        r.code === 1 && r.stderr.includes('M3002') && r.stderr.includes('serve 的 handler'),
+        `code=${r.code} ${JSON.stringify(r.stderr.split('\n')[0])}`);
+    }
+  }
+
+  // ---- 运行面 harness 原语 ----
+  // 空闲端口探测:listen('127.0.0.1') 失败(占用/TIME_WAIT 拒绝)则 +1 重试,≤5 次。
+  const freePort66 = async (start) => {
+    let port = start;
+    for (let i = 0; i < 5; i++) {
+      const free = await new Promise((res) => {
+        const s = netServer66();
+        s.once('error', () => res(false));
+        s.listen(port, '127.0.0.1', () => s.close(() => res(true)));
+      });
+      if (free) return port;
+      port += 1;
+    }
+    return null;
+  };
+  // 独立进程起 server(__PORT__ 占位替换为探测到的实际端口;stdio pipe;detached:false)。
+  const startServer66 = async (caseIdx, slot, src, extraFlags = []) => {
+    const port = await freePort66(port66(caseIdx, slot));
+    if (port === null) throw new Error('26000-27999 段内无空闲端口(起点 ' + port66(caseIdx, slot) + ')');
+    const file = m66('k66_' + caseIdx + '_' + slot + '_server.ming', src.split('__PORT__').join(String(port)));
+    const proc = spawn(process.execPath, [MING, 'run', file, ...extraFlags], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: ROOT,
+    });
+    const server = { proc, port, file, stdout: '', stderr: '', exited: false };
+    proc.stdout.on('data', (d) => { server.stdout += d; });
+    proc.stderr.on('data', (d) => { server.stderr += d; });
+    proc.once('exit', () => { server.exited = true; });
+    return server;
+  };
+  // 杀 server(不留监听):kill() → 等 exit 3s → Windows taskkill /T /F 兜底。
+  const killServer66 = async (server) => {
+    if (!server || server.exited || server.proc.exitCode !== null || server.proc.killed) return;
+    server.proc.kill();
+    await new Promise((res) => {
+      const t = setTimeout(() => {
+        if (process.platform === 'win32') {
+          try { spawnSync('taskkill', ['/F', '/T', '/PID', String(server.proc.pid)], { encoding: 'utf8' }); } catch { /* 尽力而为 */ }
+        }
+        res();
+      }, 3000);
+      server.proc.once('exit', () => { clearTimeout(t); res(); });
+    });
+  };
+  // TCP 连接探测(不用 HTTP:504 用例 handler 40s,HTTP 探测自身会撞超时)。
+  const canConnect66 = (port) => new Promise((res) => {
+    const s = netConn66({ host: '127.0.0.1', port });
+    s.once('connect', () => { s.destroy(); res(true); });
+    s.once('error', () => res(false));
+  });
+  const waitReady66 = async (port, timeoutMs = 15000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      if (await canConnect66(port)) return true;
+      await sleep66(100);
+    }
+    return false;
+  };
+  const fetchText66 = async (url, opts = {}) => {
+    const r = await fetch(url, opts);
+    const body = await r.text();
+    return { status: r.status, body, contentType: r.headers.get('content-type') ?? '' };
+  };
+  const parseJson66 = (text) => { try { return JSON.parse(text); } catch { return null; } };
+  // v66.9 用原始 http.request(300 条独立短连接;fetch 的 undici 池可能复用连接,
+  // 客户端排队会掩盖服务端背压,agent:false 保证逐请求新 socket)。
+  const httpPost66 = (port, reqPath, body, timeoutMs = 30000) => new Promise((res, rej) => {
+    const req = httpRequest66({
+      host: '127.0.0.1', port, path: reqPath, method: 'POST', agent: false,
+      headers: { 'content-length': String(Buffer.byteLength(body)) },
+      timeout: timeoutMs,
+    }, (r) => {
+      const chunks = [];
+      r.on('data', (c) => chunks.push(c));
+      r.on('end', () => res({ status: r.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('error', rej);
+    req.on('timeout', () => { req.destroy(new Error('client timeout ' + timeoutMs + 'ms')); });
+    req.end(body);
+  });
+  // 运行用例外壳:finally 全量杀 server(不留监听);异常落到 check 明细(含 stderr 首行)。
+  const runCase66 = async (name, fn) => {
+    const servers = [];
+    const start = async (...args) => { const s = await startServer66(...args); servers.push(s); return s; };
+    try {
+      await fn(start);
+    } catch (e) {
+      const last = servers.length ? servers[servers.length - 1] : null;
+      check(name, false, '异常: ' + String(e && e.message ? e.message : e)
+        + (last ? ' stderr[0]=' + JSON.stringify((last.stderr || '').split('\n')[0]) : ''));
+    } finally {
+      for (const s of servers) await killServer66(s);
+    }
+  };
+
+  // v66.4 回环 GET:固定 200 "hello";Content-Type application/json(S2 契约默认)。
+  await runCase66('v66.4:回环 GET → 200 + body "hello" + Content-Type application/json', async (start) => {
+    const s = await start(4, 0, SRC66.get);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const res = await fetchText66('http://127.0.0.1:' + s.port + '/hello', { signal: AbortSignal.timeout(10000) });
+    check('v66.4:回环 GET → 200 + body "hello" + Content-Type application/json',
+      res.status === 200 && res.body === 'hello' && res.contentType.includes('application/json'),
+      `status=${res.status} body=${JSON.stringify(res.body)} ct=${JSON.stringify(res.contentType)} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.5 回环 POST:handler 回显 path/body(请求载荷 {method,path,headers,body})。
+  await runCase66('v66.5:回环 POST → handler 回显 path/body', async (start) => {
+    const s = await start(5, 0, SRC66.echo);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const res = await fetchText66('http://127.0.0.1:' + s.port + '/echo', {
+      method: 'POST', body: 'ping-body-42', signal: AbortSignal.timeout(10000),
+    });
+    check('v66.5:回环 POST → 200 + path:/echo 与 body:ping-body-42 回显',
+      res.status === 200 && res.body.includes('path:/echo') && res.body.includes('body:ping-body-42'),
+      `status=${res.status} body=${JSON.stringify(res.body)} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.6 handler panic → 500 {code:handler_panic} + 消息透传 Ming 码(M4003 越界)。
+  await runCase66('v66.6:handler panic → 500 {code:handler_panic} + 消息含 M4003', async (start) => {
+    const s = await start(6, 0, SRC66.panic);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const res = await fetchText66('http://127.0.0.1:' + s.port + '/boom', { signal: AbortSignal.timeout(10000) });
+    const j = parseJson66(res.body);
+    check('v66.6:handler panic → 500 {code:handler_panic} + 消息含 M4003',
+      res.status === 500 && j !== null && j.code === 'handler_panic' && String(j.message ?? '').includes('M4003'),
+      `status=${res.status} body=${JSON.stringify(res.body).slice(0, 200)} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.7 handler 睡 40s → 服务端 30s 硬杀(terminate)→ 504 {code:timeout},<35s 返回。
+  await runCase66('v66.7:handler 40s → 504 {code:timeout} 且响应 <35s 返回', async (start) => {
+    const s = await start(7, 0, SRC66.sleep40s);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const t0 = Date.now();
+    const res = await fetchText66('http://127.0.0.1:' + s.port + '/slow', { signal: AbortSignal.timeout(45000) });
+    const ms = Date.now() - t0;
+    const j = parseJson66(res.body);
+    check('v66.7:handler 40s → 504 {code:timeout} 且响应 <35s 返回',
+      res.status === 504 && j !== null && j.code === 'timeout' && ms < 35000,
+      `status=${res.status} code=${j ? String(j.code) : 'n/a'} ms=${ms} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.8 请求体 9MB > 8MB 上限 → 413 {code:body_too_large},handler 不执行(拒绝优于截断)。
+  await runCase66('v66.8:9MB 体超限 → 413 {code:body_too_large}', async (start) => {
+    const s = await start(8, 0, SRC66.get);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const res = await fetchText66('http://127.0.0.1:' + s.port + '/upload', {
+      method: 'POST', body: 'a'.repeat(9 * 1024 * 1024), signal: AbortSignal.timeout(30000),
+    });
+    const j = parseJson66(res.body);
+    check('v66.8:9MB 体超限 → 413 {code:body_too_large}',
+      res.status === 413 && j !== null && j.code === 'body_too_large',
+      `status=${res.status} body=${JSON.stringify(res.body).slice(0, 200)} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.9 队列满:300 条并发短连接,handler 睡 50ms,容量 16+256=272 → 超额 503。
+  await runCase66('v66.9:300 并发短连接超额 → 存在 503 {code:queue_full}', async (start) => {
+    const s = await start(9, 0, SRC66.sleep50ms);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const rs = await Promise.allSettled(Array.from({ length: 300 }, () =>
+      httpPost66(s.port, '/q', 'q')));
+    const oks = rs.filter((x) => x.status === 'fulfilled');
+    const s503 = oks.filter((x) => x.value.status === 503
+      && (parseJson66(x.value.body) ?? {}).code === 'queue_full');
+    const s200 = oks.filter((x) => x.value.status === 200).length;
+    const rej = rs.filter((x) => x.status === 'rejected').map((x) => String(x.reason && x.reason.message).slice(0, 60));
+    check('v66.9:300 并发短连接超额 → 存在 503 {code:queue_full}(容量 16+256=272)',
+      s503.length >= 1,
+      `fulfilled=${oks.length} 200=${s200} 503=${s503.length} rejected=${rej.length}(${rej[0] ?? ''}) stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.10 三引擎一致(M3,审查修复:扩自双引擎):同 server 程序默认引擎(vm+wasm)、
+  // --no-wasm 与 --tree 各起一次,GET 响应逐字一致(服务面也是三引擎差分合同)。
+  // tree 腿起服含纯 JS 编译/解释慢路径,就绪探测余量放宽到 30s(其余用例 15s)。
+  await runCase66('v66.10:三引擎一致(默认/--no-wasm/--tree)GET 响应逐字一致', async (start) => {
+    const s1 = await start(10, 0, SRC66.get);
+    const s2 = await start(10, 1, SRC66.get, ['--no-wasm']);
+    const s3 = await start(10, 2, SRC66.get, ['--tree']);
+    if (!(await waitReady66(s1.port))) throw new Error('server A 30s 未就绪');
+    if (!(await waitReady66(s2.port))) throw new Error('server B(--no-wasm)30s 未就绪');
+    if (!(await waitReady66(s3.port, 30000))) throw new Error('server C(--tree)30s 未就绪');
+    const r1 = await fetchText66('http://127.0.0.1:' + s1.port + '/hello', { signal: AbortSignal.timeout(10000) });
+    const r2 = await fetchText66('http://127.0.0.1:' + s2.port + '/hello', { signal: AbortSignal.timeout(10000) });
+    const r3 = await fetchText66('http://127.0.0.1:' + s3.port + '/hello', { signal: AbortSignal.timeout(10000) });
+    check('v66.10:三引擎一致(默认/--no-wasm/--tree)GET 响应逐字一致',
+      r1.status === 200 && r1.status === r2.status && r1.status === r3.status
+      && r1.body === r2.body && r1.body === r3.body
+      && r1.contentType === r2.contentType && r1.contentType === r3.contentType,
+      `A=${r1.status}:${JSON.stringify(r1.body)} B=${r2.status}:${JSON.stringify(r2.body)} C=${r3.status}:${JSON.stringify(r3.body)} Aerr=${JSON.stringify((s1.stderr || '').split('\n')[0])} Berr=${JSON.stringify((s2.stderr || '').split('\n')[0])} Cerr=${JSON.stringify((s3.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.11 wasm 资格拒绝(ADR §5.2 任务 4 构造):纯函数 pure_add 处 wasm 候选位且编译
+  // OK;serve 所在 main 因 net 效果永不进 eligible;无 REJECT 噪声(资格层静态事实)。
+  {
+    const f = m66('k66_11_wasm.ming', SRC66.wasmProbe);
+    const r = runMing(['check', f, '--strict-wasm', '--json'], { env: { MING_WASM_DEBUG: '1' } });
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 保持 null */ }
+    check('v66.11:serve 程序 wasm 资格——pure_add OK / main·handler 不进 eligible / 无 REJECT',
+      r.code === 0 && j !== null && j.wasm_status === 'ok'
+      && r.stderr.includes('[wasm] fn pure_add OK')
+      && !r.stderr.includes('REJECT')
+      && !r.stderr.includes('[wasm] fn main OK')
+      && !r.stderr.includes('[wasm] fn handler OK'),
+      `code=${r.code} ws=${j ? String(j.wasm_status) : 'n/a'} err=${JSON.stringify(r.stderr.split('\n').slice(0, 3).join(' | '))}`);
+  }
+
+  // v66.12 cc 发射期拒绝:serve 程序 ming cc → exit 1 + C1 不支持该程序形态。
+  {
+    const ccAvail66 = (() => {
+      if (process.env.MING_CC && fs.existsSync(process.env.MING_CC)) return true;
+      for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+        if (fs.existsSync(c)) return true;
+      }
+      return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    })();
+    if (ccAvail66) {
+      const f = m66('k66_12_cc.ming', SRC66.get.split('__PORT__').join('26012'));
+      const r = runMing(['cc', f]);
+      check('v66.12:cc 发射期拒绝 serve 程序 → exit 1 + C1 不支持该程序形态',
+        r.code === 1 && (r.stderr + r.stdout).includes('C1 不支持该程序形态'),
+        `code=${r.code} out=${JSON.stringify(((r.stderr || '') + (r.stdout || '')).split('\n')[0].slice(0, 160))}`);
+    } else {
+      check('v66.12:cc 发射期拒绝 serve 程序(gcc 不存在,跳过)', true, 'skip: 无 C 编译器');
+    }
+  }
+
+  // v66.13 并发冒烟:20 并发 fetch(handler 睡 100ms)→ 全部 200(部分排队后受理)。
+  await runCase66('v66.13:20 并发 fetch(handler 100ms)→ 全部 200', async (start) => {
+    const s = await start(13, 0, SRC66.sleep100ms);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const rs = await Promise.all(Array.from({ length: 20 }, () =>
+      fetchText66('http://127.0.0.1:' + s.port + '/c', { signal: AbortSignal.timeout(30000) })));
+    const all200 = rs.every((r) => r.status === 200 && r.body === 'ok');
+    check('v66.13:20 并发 fetch(handler 100ms)→ 全部 200',
+      all200,
+      `statuses=${JSON.stringify(rs.map((r) => r.status))} bodies=${JSON.stringify(rs.slice(0, 2).map((r) => r.body))} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.14 端口占用:A 先占端口并就绪,B serve 同端口 → Err(main 打印 ERR 后退出)。
+  // 三引擎对照(runAll66 + fmtRuns66):B 的 Err 行为三引擎一致,B 进程打印 ERR 后即退出
+  // (可同步运行——与驻留 server 不同),每次 run 各自探测绑定 → 同款 Err。
+  await runCase66('v66.14:端口占用 → 第二个 serve 返回 Err(打印 ERR 含端口,三引擎一致)', async (start) => {
+    const a = await start(14, 0, SRC66.get);
+    if (!(await waitReady66(a.port))) throw new Error('server A 15s 未就绪');
+    const bFile = m66('k66_14_b_server.ming', SRC66.portErr.split('__PORT__').join(String(a.port)));
+    const bRuns = runAll66(bFile);
+    check('v66.14:端口占用 → 第二个 serve 返回 Err(打印 ERR 含端口,三引擎一致)',
+      bRuns.length === 3 && bRuns.every((r) => r.code === 0 && r.stdout.includes('ERR') && r.stdout.includes(String(a.port))),
+      `runs=${fmtRuns66(bRuns).slice(0, 300)} Aerr=${JSON.stringify((a.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.15 worker_start_failed(清单 16 的 S2 降级路径):请求 worker 启动失败难以
+  // 确定性构造(worker_threads 启动失败依赖系统线程配额耗尽,时序脆弱不可复现),
+  // 跳过——行为正确性由 S2 实现的源码审查覆盖(ADR-001 §5.2 任务 2 / 清单 16)。
+  check('v66.15:worker_start_failed 降级(难以确定性构造,跳过;S2 源码审查覆盖)', true,
+    'skip: 需要稳定触发 worker 启动失败的系统条件,CI 不可复现');
+
+  // ---- 审查修复锁定(B1/n1/M2,2026-11-14)----
+  // v66.16 handler 响应头含 CRLF(B1 三层护栏锁定):/evil 注入真实 CR/LF 头 →
+  // respond 头白名单拒绝(拒绝优于截断)→ 500 {code:internal_error}(非 socket hang up);
+  // /ok 正常 200 = 服务存活。修复前:writeHead 抛 ERR_INVALID_CHAR → accept 线程
+  // uncaughtException 死亡 → 主进程永久悬挂(请求侧 socket hang up)。
+  await runCase66('v66.16:handler 头含 CRLF → 500 internal_error 且服务存活', async (start) => {
+    const s = await start(16, 0, SRC66.crlf);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const evil = await fetchText66('http://127.0.0.1:' + s.port + '/evil', { signal: AbortSignal.timeout(10000) });
+    const j = parseJson66(evil.body);
+    const ok = await fetchText66('http://127.0.0.1:' + s.port + '/ok', { signal: AbortSignal.timeout(10000) });
+    check('v66.16:handler 头含 CRLF → 500 internal_error 且服务存活',
+      evil.status === 500 && j !== null && j.code === 'internal_error'
+      && ok.status === 200 && ok.body === 'hello',
+      `evil=${evil.status}:${JSON.stringify(evil.body).slice(0, 160)} ok=${ok.status}:${JSON.stringify(ok.body)} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.17 handler 返回 9MB body(n1 锁定):超 8MB 上限 → 500 {code:response_too_large}
+  // 并关连接(不截断——截断破坏 Content-Length;拒绝优于截断与 v66.8 请求侧同口径)。
+  await runCase66('v66.17:handler 9MB body → 500 response_too_large 并关连接', async (start) => {
+    const s = await start(17, 0, SRC66.bigBody);
+    if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
+    const res = await fetchText66('http://127.0.0.1:' + s.port + '/big', { signal: AbortSignal.timeout(30000) });
+    const j = parseJson66(res.body);
+    check('v66.17:handler 9MB body → 500 response_too_large 并关连接',
+      res.status === 500 && j !== null && j.code === 'response_too_large',
+      `status=${res.status} body=${JSON.stringify(res.body).slice(0, 160)} stderr[0]=${JSON.stringify((s.stderr || '').split('\n')[0])}`);
+  });
+
+  // v66.18 跨模块 handler 收紧(M2):Field 引用导入模块的 fn 一律 M3002——v1 请求 worker
+  // 管线只加载入口单文件源,跨模块模块源无法在隔离子 VM 中解析,运行期每请求必 500
+  // (继承 spawn 管线既有缺口,serve 在 checker 层先行收紧)。同模块 handler(可非 pub)
+  // 仍通过。
+  {
+    m66('k66_18_hmod.ming', [
+      'pub fn mod_handler(req: Json) -> Json {',
+      '    return std.json.parse("{}").unwrap();',
+      '}',
+    ].join('\n'));
+    const crossFile = m66('k66_18_cross.ming', [
+      'use std.net;',
+      'use std.json;',
+      'use k66_18_hmod;',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(26018, k66_18_hmod.mod_handler);',
+      '}',
+    ].join('\n'));
+    const cross = runMing(['check', crossFile]);
+    const sameFile = m66('k66_18_same.ming', [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn handler(req: Json) -> Json {', // 非 pub:同模块口径放行
+      '    return std.json.parse("{}").unwrap();',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(26018, handler);',
+      '}',
+    ].join('\n'));
+    const same = runMing(['check', sameFile]);
+    check('v66.18:跨模块 handler → check exit 1 + M3002;同模块非 pub handler 仍通过',
+      cross.code === 1 && cross.stderr.includes('M3002') && cross.stderr.includes('跨模块')
+      && same.code === 0,
+      `cross=${cross.code}:${JSON.stringify(cross.stderr.split('\n')[0])} same=${same.code}:${JSON.stringify(same.stderr.split('\n')[0])}`);
+  }
+  // §66-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

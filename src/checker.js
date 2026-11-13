@@ -254,6 +254,11 @@ export const PRELUDE_VARIANTS = {
 // ===================== stdlib 模块签名 =====================
 
 function mF(name, params, ret, extra = {}) { return { name, params, ret, ...extra }; }
+// v0.62(ADR-001 清单 2):std.net.serve 的 handler 效果白名单——语言效果全集
+// {io, time, fs, net, env, rand, crypto, proc, sync, unsafe, ffi} 减去三禁效果
+// (sync/unsafe/ffi)恰为本集,白名单外一律编译期拒绝(零新增 M 码,清单 4)。
+export const SERVE_HANDLER_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'env', 'rand', 'crypto', 'proc']);
+
 export const STD_MODULES = {
   math: {
     fns: [
@@ -377,6 +382,12 @@ export const STD_MODULES = {
       mF('http_get', [T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net' }),
       mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net', min: 3, max: 4 }),
       mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR, INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkMap(T_STR, T_STR), T_STR]), T_STR), { effect: 'net' }),
+      // v0.62(ADR-001 §5.2 任务 1):TCP 服务端 v1——固定绑 127.0.0.1(清单 15:签名无
+      // host 参数 = 隐式回环);handler 为命名模块函数引用(fn(Json) -> Json,载荷形态
+      // 清单 3,请求/响应键集固定 additive 由 GUIDE/§66 锁定);Ok 路径 v1 不可达,Result
+      // 为将来 shutdown API 预留(清单 5)。调用面走 checkStdCall 特例(handler 效果
+      // 白名单 + 形态检查,参照 sync.spawn);Ok 的 Err = 绑定/参数失败。
+      mF('serve', [INT_TYPES.i64, mkFn([{ k: 'json' }], { k: 'json' })], mkRes(INT_TYPES.i64, T_STR), { effect: 'net' }),
     ],
   },
   // 格式化(纯函数;v0.27)
@@ -3993,6 +4004,91 @@ export class Checker {
         return null;
       }
       return T_BOOL;
+    }
+    // ---- std.net.serve(v0.62,ADR-001 §5.2 任务 1;参照 sync.spawn 特例)----
+    // 形态:实参必须是命名模块函数引用(闭包/lambda、本地函数、变量持函数值、任意表达式
+    // 一律拒绝——运行面按 fnref 解析,与 spawn 的运行时口径一致);载荷:单参数 Json、
+    // 返回 Json(v1 不深检请求/响应键集——清单 3,键集由 GUIDE/§66 测试锁定);效果白名
+    // 单见 SERVE_HANDLER_EFFECTS,sync/unsafe/ffi 编译期拒绝(清单 2/11;零新增 M 码——
+    // 清单 4,就近复用 M3002 实参形态错)。调用方未声明 with net 由本特例开头的
+    // checkEffects 以 M3029 拒绝(既有机制,登记 effect: 'net' 自动生效)。
+    if (f.mod === 'net' && f.fn.name === 'serve') {
+      if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
+      if (e.args.length !== 2) {
+        this.diags.push(err('M3005', 'serve 需要 2 个参数:serve(端口, handler)', e.span));
+        return null;
+      }
+      const pt = this.checkExpr(e.args[0], ctx, INT_TYPES.i64);
+      const pr = resolveT(pt, new Map());
+      if (!pr || pr.k !== 'int' || pr.bits !== 64 || pr.signed !== true) {
+        this.diags.push(err('M3002', `serve 的端口参数必须是 i64(实际 ${typeStr(pr, new Map())})`, e.args[0].span));
+      }
+      const hArg = e.args[1];
+      if (hArg.nt === 'Lambda') {
+        this.diags.push(err('M3002', 'serve 的 handler 必须是命名模块函数引用,不接受闭包/lambda', hArg.span,
+          '定义模块级 fn handler(req: Json) -> Json { ... },然后 serve(8080, handler)。'));
+        return null;
+      }
+      // 命名引用形态:Ident = 当前模块级 fn(可非 pub——同模块口径放行)。Field(跨模块
+      // 导入)不再放行(M2 收紧,审查修复):v1 请求 worker 管线只加载入口单文件源,跨模块
+      // 模块源无法在隔离子 VM 中解析,跨模块 handler 运行期每请求必 500(继承 spawn 管线
+      // 既有缺口;serve 在 checker 层先行收紧同口径,待 worker 管线支持多模块源后再放开)。
+      // Field 形态一律 M3002 + 专 hint;未定义名/可见性等自然诊断仍由下方 checkExpr 先行
+      // 产出,本特例 M3002 追加其上
+      let namedRef = false;
+      let crossModRef = null;
+      if (hArg.nt === 'Ident') {
+        namedRef = !ctx.scope.lookupValue(hArg.name) && ctx.mod.items.get(hArg.name)?.kind === 'fn';
+      } else if (hArg.nt === 'Field' && hArg.base.nt === 'Ident'
+        && !ctx.scope.lookupValue(hArg.base.name) && ctx.mod.imports.has(hArg.base.name)) {
+        const imp = ctx.mod.imports.get(hArg.base.name);
+        if (!imp.std && imp.local.items.get(hArg.name)?.kind === 'fn') {
+          crossModRef = hArg.base.name + '.' + hArg.name;
+        }
+      }
+      if (!namedRef) {
+        const ft = this.checkExpr(hArg, ctx); // 未定义名等自然诊断先行产出(spawn 同款)
+        const fr = resolveT(ft, new Map());
+        this.diags.push(err('M3002',
+          crossModRef
+            ? `serve 的 handler 不能是跨模块函数引用(${crossModRef};v1 worker 管线不支持跨模块模块源加载,运行期每请求必失败)`
+            : `serve 的 handler 必须是命名模块函数引用 fn(Json) -> Json(不接受闭包/lambda/本地函数/变量/任意表达式;实际 ${typeStr(fr, new Map())})`,
+          hArg.span,
+          crossModRef
+            ? 'v1 worker 管线不支持跨模块模块源加载;handler 须与 serve 同模块(可非 pub,由同模块口径放行)。'
+            : '定义模块级 fn handler(req: Json) -> Json { ... },然后 serve(8080, handler)。'));
+        return null;
+      }
+      const ht = this.checkExpr(hArg, ctx);
+      const hr = resolveT(ht, new Map());
+      if (!hr || hr.k !== 'fn' || hr.ps.length !== 1) {
+        this.diags.push(err('M3002', `serve 的 handler 必须是单参数函数 fn(Json) -> Json(实际 ${typeStr(hr, new Map())})`, hArg.span));
+        return null;
+      }
+      // 载荷形态(清单 3):形参 Json(请求 {method, path, headers, body})、返回 Json(响应
+      // {status, headers, body});键集固定 additive,v1 只检类型不深检键集
+      const pR = resolveT(hr.ps[0], new Map());
+      if (!pR || pR.k !== 'json') {
+        this.diags.push(err('M3002', `serve 的 handler 形参必须是 Json(实际 ${typeStr(hr.ps[0], new Map())})`, hArg.span,
+          '请求载荷是 Json{method, path, headers, body}(键集固定 additive)。'));
+        return null;
+      }
+      const rR = resolveT(hr.ret, new Map());
+      if (!rR || rR.k !== 'json') {
+        this.diags.push(err('M3002', `serve 的 handler 返回类型必须是 Json(实际 ${typeStr(hr.ret, new Map())})`, hArg.span,
+          '响应载荷是 Json{status, headers, body}(键集固定 additive)。'));
+        return null;
+      }
+      // handler 效果白名单(清单 2):SERVE_HANDLER_EFFECTS 之外恰为 sync/unsafe/ffi 三禁效果
+      const badEff = [...(hr.effects ?? new Set())].filter(x => !SERVE_HANDLER_EFFECTS.has(x));
+      if (badEff.length) {
+        this.diags.push(err('M3002',
+          `serve 的 handler "${hArg.name}" 声明了 with ${badEff.join(', ')}(白名单:io, time, fs, net, env, rand, crypto, proc)`,
+          hArg.span,
+          'sync/unsafe/ffi 在 handler 内编译期拒绝(ADR-001 清单 2/11):sync 的结构化并发在 handler 内缺少自然块边界,unsafe/ffi 是 C 原生限定。'));
+        return null;
+      }
+      return mkRes(INT_TYPES.i64, T_STR);
     }
     if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
     // v0.54:std.mem.alloc/free 是原生存取,必须在 unsafe 块内
