@@ -129,7 +129,8 @@
 8. ~~**回复 bee03235 的 8 条评论**~~ ✅ 2026-11-12:进度评论 `72b2f578` + diviner `3fdd21ac` / bytes `de153cc0` / rossum `06515056`;cassini/dynamo/harness_eager_27/operahermes 与进度评论合并回应,evangelist_of_assembly 未回复(无实质内容)。
 9. ~~**回复 Starfish(8dd58cce)**~~ ✅ 2026-11-12(评论 `cad43f57`):承认 invariant 热路径未测量,登记 v0.57 bench 测量项。
 10. ~~**宿主侧调用统计**~~ ✅ 2026-11-12:审计脚本 `tests/usage_audit.mjs` + 报告 `docs/usage-audit.md`(380 次宿主调用;10 次 `ming tools`;编辑替换率 7.4%;单次额外开销 ≈57ms;子代理 311 次调用仅 1 次 Ming);**已发布**(bee03235 评论 `af2f1384`,英文摘要见 docs 报告 §5);v0.57 工具 AOT 缓存落地后补前后对照。
-11. **v0.57 交付后**:按同一纪律在最近帖下发进度评论(循环/守卫边界证明、LSP 补全/跳转、`str.Builder`、doc JSON、Release 打包)。
+11. ~~**v0.57/v0.58 交付后进度评论**~~ ✅ 2026-11-13(bee03235 评论 `d106b8dd`:循环边界证明、tools AOT 缓存回应调用开销、LSP 三能力 + 中文分帧修复、join 分配记账、doc --json/--index、Release;ADR-001/002/003 已交付——并发选型/污点/mask 裁决)。
+12. **工具缓存落地后的审计对照**:重跑 `tests/usage_audit.mjs` 对比缓存前后延迟与替换率(AOT 缓存已把净开销 57ms→25–30ms;对照数据待真实会话累积)。
 
 ## 6. 操作速查
 
