@@ -2,8 +2,8 @@
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
 > 只有进入版本范围才细化到任务级。当前版本：**v0.59.0**（v0.52–v0.58 路线已全部交付；**v0.59 默认引擎全面性已交付(2026-11-13)**：wasm 覆盖收口 #40/#41/#42/#43/#45/#46 + 6 个潜伏 bug(A–F)、宿主补丁(`map_get_i64`/`vec_get_i64` 返回 BigInt、`wasmWriteVecNum` 认 float)、本地函数恢复 #44(M3047 移除;块级条目/递归/契约/AOT;P2 审查后四条限制)、记账统一 #48/#49(str_cat 计费 + std.str.join 对称化)、invariant bench 项(0.19–0.28µs/次);P1/P2 独立审查修复后测试 881 项全绿(§63 共 56 项)）。
-> **下一步规划见 §4.4（v0.60 服务端条件交付 → v0.61 污点条件交付 → v0.62+,software-architect 精读第二轮,2026-11-13；§4.3 已全部清空并交付）**。
-> **§4.3 全部任务已清空（2026-11-13）**：v0.60 起以 ADR 条件交付——ADR-001（并发/服务端,方案 a 条件承诺实施,原型 190 req/s@40 连接）、ADR-002（污点采纳类型级 Untrusted[T],实现推迟）、ADR-003（mask 永久否决）；实现条件见各 ADR 评审清单与 §4.3.9。
+> **下一步规划见 §4.4（2026-11-13 三方评估修订：v0.60 资源门禁一致性 → v0.61 污点窄源条件交付 → v0.62 serve 条件交付 → v0.63+ Backlog；评估记录与证据见 §4.4.10，缺陷 #51–#57）**。
+> **§4.3 全部任务已清空（2026-11-13）**：v0.60 起以 ADR 条件交付——ADR-001（并发/服务端,方案 a 条件承诺实施,原型 190 req/s@40 连接）、ADR-002（污点采纳类型级 Untrusted[T],实现推迟）、ADR-003（mask 永久否决）；实现条件见各 ADR 评审清单与 §4.3.9。**三方评估后 serve 从 v0.60 移至 v0.62（独立条件版），v0.60 改为资源门禁一致性修复——理由与实测证据见 §4.4.10。**
 
 ---
 
@@ -16,9 +16,9 @@
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
-| 质量护栏 | 回归全绿（v0.59.0 起 **881 项**（P1/P2 审查修复后；初版 861），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线**（tests/coverage.mjs；信息性不设门槛） |
-| 能力矩阵 | 54 行口径 ≈82%（docs/capabilities.md；v0.56 新增 WASM 分层覆盖面行；v0.58 新增 LSP 行;v0.59 新增"本地函数"行并更新 WASM 行:41✅ 7🟡 6❌，(41+7×0.5)/54=82.4%≈82%） |
-| 下一步 | **§4.4 v0.60：服务端条件交付（ADR-001 清单 16 项裁决 + `std.net.serve` v1,裁决不通过则只留记录）+ 覆盖率驱动补测（vm.js 函数覆盖 43.8%→≥70%）+ checker 拆分** → v0.61 污点条件交付 |
+| 质量护栏 | 回归全绿（v0.59.0 起 **881 项**（P1/P2 审查修复后；初版 861），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测**（tests/coverage.mjs；93.5% 行 / 88.3% 函数；信息性不设门槛） |
+| 能力矩阵 | 54 行口径 ≈81%（docs/capabilities.md；v0.56 新增 WASM 分层覆盖面行；v0.58 新增 LSP 行;v0.59 新增"本地函数"行并更新 WASM 行;2026-11-13 三方评估将"运行时资源熔断"由 ✅ 改判 🟡（#51–#53 有限口径）:40✅ 8🟡 6❌，(40+8×0.5)/54=81.5%≈81%） |
+| 下一步 | **§4.4（三方评估修订，2026-11-13）：v0.60 资源门禁一致性（#51/#52/#53/#54 + #47 + ADR-002 五处补丁；无新语言面）→ v0.61 污点窄源条件交付（先 spike）→ v0.62 serve 条件交付（ADR-001 16/16）** |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -263,7 +263,7 @@
 
 ---
 
-## 4.3 v0.56–v0.60 规划（software-architect 精读，2026-11-12）
+## 4.3 v0.56–v0.59 规划（含 ADR 研究槽位，software-architect 精读，2026-11-12；v0.60 号已重新分配给 §4.4.4）
 
 > **规划基线(v0.56 规划时)**：v0.55.0；694 项回归全绿；四后端（tree / VM+wasm / VM-only / C）；CI 矩阵就位；能力矩阵 51 行 ≈81%。**v0.56 收口实测(2026-11-12)**:764 项回归全绿、§60 70 项、能力矩阵 52 行 ≈81%（新增 WASM 覆盖面行）。**v0.57 收口实测(2026-11-13)**:791 项全绿、§61 27 项、覆盖率基线 93.0% 行/86.1% 函数、能力矩阵 52 行 ≈81%(无新增行)。
 > **规划立场**：本阶段的目标不是继续加语言面，而是**把已有能力做成可放心使用的工程品**——
@@ -364,7 +364,7 @@
 
 **风险/回退**：补全对泛型/模块解析易错 → 保守策略与开关（已按保守策略交付）；Builder → join 架构调整后为纯 std 函数,不动语法（可整体回退）。
 
-### 4.3.6 v0.59 — 服务端与并发：ADR 先行（条件承诺）✅（2026-11-13 完成）
+### 4.3.6 规划槽位（原 v0.59）— 服务端与并发：ADR 先行（条件承诺）✅（2026-11-13 完成，实际随 v0.59.0 交付）
 
 **目标**：在“确定性 + 效果门禁 + 零依赖 + 四后端”约束下，给出服务端/并发的可信设计，而不是先写实现。
 
@@ -379,7 +379,7 @@
 
 **风险/回退**：方案 b/c 否决理由归档于 ADR §2.2/§2.3;阻塞模型并发上限已量化(16 并发饱和、队列 256 最坏排空 1.4s)。
 
-### 4.3.7 v0.60 — 安全工具面研究项（污点即效应 / mask）✅（2026-11-13 完成）
+### 4.3.7 规划槽位（原 v0.60）— 安全工具面研究项（污点即效应 / mask）✅（2026-11-13 完成，实际随 v0.59.0 交付；v0.60 号已重新分配给 §4.4.4 资源门禁一致性）
 
 **目标**：评估北星支柱 6 的下一块（数据流安全），保持“签名可见”的哲学底线。
 
@@ -402,10 +402,10 @@
 | bench 基线 | `tests/bench.baseline.json` + 阈值告警（如 cc/vm 比值回退 >20% 告警） | **✅ v0.57 交付**(2026-11-13) | bench 输出 Δ基线列;cc/vm 加速比回退 >20% WARN 仍 exit 0(不阻断 CI);`--write-baseline` 刷新。备注:基线数字为**快照口径**(meta.date 标注时点,同机 + 同 Node 主版本对比;重跑 `--write-baseline` 刷新,见 §5.1 备注登记) |
 | checker 拆分 | 契约/证明适配从 checker.js（5.0k 行）迁到 `src/contracts.js`（纯重构，零行为变化） | v0.57–v0.58 择机 | 以全量回归绿为唯一验收；不追求行数指标;v0.57 覆盖率基线(checker 93.4% 行/90.1% 函数)可作重构安全性参考线 |
 | 文档结构 | GUIDE 1.1k 行补目录/交叉引用；不重写 | v0.58 | 降低 onboarding 摩擦 |
-| 安全审计 | unsafe/ffi 的“已声明覆盖/不覆盖清单”每 4 版复核一次 | v0.59/v0.60 | 与能力矩阵同步 |
+| 安全审计 | unsafe/ffi 的“已声明覆盖/不覆盖清单”每 4 版复核一次 | 随版（2026-11-13 三方评估已复核） | 与能力矩阵同步 |
 | `ming tools` 调用开销 | 每次调用重新 check+编译工具本体,超出 Node 基线约 **57ms**(宿主 coreutils ~15ms);AOT 缓存(键 = 版本 + 工具源哈希)目标 **<20ms** 额外开销 | **✅ v0.57 交付**(2026-11-13) | 12 工具全缓存零回退(键 = VERSION + Node 主版本 + compilerSourceHash + 工具 basename + 源文本;原子写;span/declSpans 回填 panic 逐字对齐;旁路旗标不缓存;损坏自愈;`MING_TOOLS_DEBUG=1` 观测)。**实测净开销 ~25–30ms/次,目标 <20ms 未完全达标(如实注明)**;对无缓存路径净改进 12–19ms/次;剩余地板 = bin 顶层导入 ~9ms + 核心模块图 ~15ms,进一步需 src 级瘦身(另行登记);缓存落地后重跑审计对照**待办保留**(docs/usage-audit.md §4) |
 
-### 4.3.9 明确不做（v0.56–v0.60）
+### 4.3.9 明确不做（v0.56–v0.59）
 
 - 不做包管理注册表/第三方依赖；不做跨 OS/跨架构交叉编译；不做 GUI；不做交互式调试器（留 Backlog）；不做 eval/热重载。
 - 不做完整 SMT；证明只在线性/区间子集内推进，超出即静默放弃。
@@ -421,8 +421,8 @@
 | v0.56 | **✅(2026-11-12 实测)**:三引擎作用域/闭包/HOF 一致；契约尾部歧义修复；fmt 契约保真；fuzz 真实 wasm 腿；buildKey 含编译器源(src+bin)；存量 P1/P2 清零；独立审查 A/B 组修复(契约作用域/u64/fmt/#31/#26/M3047)；复审 C1/C2 修复(ensures 内嵌作用域/闭包 return)；#37/#38/#39 收口，新登记 #44–#47 见 §5.1 | §60 实测 70 项(≥15)；回归 **764 项**全绿(≥715)；fuzz 40 程序 0 分歧、wasm 真实执行 20(三种子 20/16/18)；buildKey 敏感性覆盖 src 与 bin；proof_fuzz 三模式 0 误报(实测模式 1 100 例/模式 2 反例 18/18/summaries 100 例 0 误报) |
 | v0.57 | **✅(2026-11-13 实测)**:范围 for 内 `buf[i]` 两向可证明(循环符号 + 区间假设;脏循环/嵌套/while 保守放弃);tools AOT 缓存 12 工具全缓存零回退(热缓存净 ~25–30ms,目标 <20ms 未完全达标如实注明);覆盖率基线 93.0% 行/86.1% 函数;bench Δ基线 + 回退 WARN;codegen 零改动 | §61 实测 27 项(≥12);**791 项**全绿;proof_fuzz loops 200 例 0 误报(反例独立求值器三重验证);check 语料 0.96x HEAD(≤1.3x 达标);既有 §56/§59 全绿 |
 | v0.58 | **✅(2026-11-13 实测)**:LSP 补全/跳转/符号可用(保守策略,§62 直连+管道 16 项);`std.str.join` O(n)(Builder→join 架构调整,如实记录);doc JSON additive(文本黄金锁定逐字不变);Release 打包(artifact + 手动 Release 决策,docs/release.md) | §62 实测 **34 项**(≥15);回归 **825 项**全绿;fuzz 40 程序 0 分歧;proof_fuzz 0 误报;无旗标 doc 输出逐字不变;零新依赖 |
-| v0.59 | **✅(2026-11-13 实测)**:ADR-001 完成,方案 a(worker-per-connection)条件承诺实施;确定性口径收窄、(c) 真实破绽重写、监听地址 127.0.0.1、原型实测 190 req/s@40 连接 | ADR 评审清单 **16 项**(全有默认值);实现待清单逐项裁决;实现时 §63 ≥12 + 三引擎拒绝一致 |
-| v0.60 | **✅(2026-11-13 实测)**:ADR-002(taint 类型级方案采纳,效果建模否决终局)+ ADR-003(mask 永久否决)完成;实现推迟均有条件与理由 | ADR 评审清单 16/9 项全有默认值;实现时 §64 ≥12 |
+| 原 v0.59 槽位 | **✅(2026-11-13 实测,实际随 v0.59.0 交付)**:ADR-001 完成,方案 a(worker-per-connection)条件承诺实施;确定性口径收窄、(c) 真实破绽重写、监听地址 127.0.0.1、原型实测 190 req/s@40 连接 | ADR 评审清单 **16 项**(全有默认值);实现待清单逐项裁决;实现时 **§66** ≥12 + 三引擎拒绝一致(serve 已移至 v0.62 条件版,见 §4.4.6) |
+| 原 v0.60 槽位 | **✅(2026-11-13 实测,实际随 v0.59.0 交付)**:ADR-002(taint 类型级方案采纳,效果建模否决终局)+ ADR-003(mask 永久否决)完成;实现推迟均有条件与理由 | ADR 评审清单 16/9 项全有默认值;实现时 **§65**(污点)/**§66**(serve) ≥12;v0.60 号已重新分配给资源门禁一致性(§4.4.4) |
 
 **跨版本共同门槛**：`node tests/run.mjs` 0 失败；`fuzz` 0 分歧；新增分节测试；GUIDE 修订记录 + README 路线图 + plan 已完成项移动；版本三处同步；诊断码三处登记；不留下未提交生成物；性能数字来自可复现命令。
 
@@ -430,10 +430,11 @@
 
 ---
 
-## 4.4 v0.59–v0.62+ 规划（software-architect 精读第二轮，2026-11-13）
+## 4.4 v0.59–v0.62+ 规划（software-architect 精读第二轮；2026-11-13 三方评估修订）
 
-> **规划基线**：v0.59.0；861 项回归全绿；四后端 + LSP 三查询 + 本地函数 + wasm 覆盖收口 + 契约三层证明（直线体 + 范围 for）；覆盖率基线 93.0% 行 / 86.1% 函数；ADR-001/002/003 已交付（并发选型 / 污点 / mask 三项裁决完成）。
-> **规划立场**：§4.3 清空后，最大的债不在"缺能力"，而在**默认引擎优化层的覆盖面**——真实程序形态（f64 局部、Map/str 签名、值型 if、块尾 if、str 返回）在 wasm 仍是回落；**文档化特性仍在被拒绝**（#44 本地函数）；**配额门禁仍有引擎分歧**（#48/#49 记账）。先把这三件事做成"默认引擎全面性"版本（v0.59），再走服务端与污点的条件承诺（v0.60/v0.61）。
+> **规划基线**：v0.59.0（HEAD 9251e08）；**881 项回归全绿**；四后端 + LSP 三查询 + 本地函数 + wasm 覆盖收口 + 契约三层证明（直线体 + 范围 for）；覆盖率实测 **93.5% 行 / 88.3% 函数**（2026-11-13 复测；vm.js 函数 **63.8%**——旧数字 43.8% 已作废，见 §4.4.10）；ADR-001/002/003 已交付（并发选型 / 污点 / mask 三项裁决完成）。
+> **修订说明（2026-11-13）**：software-architect / security-engineer / minimal-change-engineer 三方独立评估后，v0.60 由"服务端条件交付 + 覆盖率补测 + checker 拆分"改为**资源门禁一致性**——安全侧实测 `--max-ms`/`--max-alloc` 的承诺可被阻塞内建与外部输入绕过（P1）；serve 独立为 v0.62 条件版；污点缩窄为 v0.61 窄源条件版（9 源全量会让 5 个自写工具直接不可写）；checker 拆分/覆盖率门槛/while 证明移出近三版。评估记录与实测证据见 §4.4.10，缺陷登记见 §5.1 #51–#57。
+> **规划立场**：§4.3 清空后，最大的债不在"缺能力"，而在**默认引擎优化层的覆盖面**——真实程序形态（f64 局部、Map/str 签名、值型 if、块尾 if、str 返回）在 wasm 仍是回落；**文档化特性仍在被拒绝**（#44 本地函数）；**配额门禁仍有引擎分歧**（#48/#49 记账）。先把这三件事做成"默认引擎全面性"版本（v0.59），再走污点（v0.61 窄源条件）与服务端（v0.62 条件）的交付。
 
 ### 4.4.1 现状判断（精读结论）
 
@@ -452,17 +453,22 @@
 | 1 | wasm 覆盖面 | **#40 locals 索引偏移**（f64 局部/Map 字面量 → 违规函数 REJECT）/ **#42 Vec 形参组合 locals 错位** / **#45 值型 if blocktype 编码失败** / **#46 块尾 unit if 按值编译**——默认引擎对真实程序形态（f64 数值代码、`while { if c { break; } }` 尾形态）仍回落 JS | **v0.59 必修** |
 | 2 | 本地函数 | **#44 VM 无本地函数编译路径**——文档化特性被 M3047 显式拒绝（v0.56 起）；契约被 tree 静默忽略（tree 支持、VM 崩溃的历史） | **v0.59 必修** |
 | 3 | 分配记账 | **#48 wasm str_cat 不计费**（M4011 引擎分歧，#40–#46 修复后从潜伏变可达）/ **#49 std.str.join 不计费**（与 Vec join 计费不对称） | **v0.59 统一** |
-| 4 | 服务端 | ADR-001 方案 a 条件承诺——**评审清单 16 项未裁决**，serve 实现未启动；原型数据已备（190 req/s@40 连接、0.9GB@16） | **v0.60 条件交付** |
-| 5 | 污点 | ADR-002 类型级方案采纳——**评审清单 16 项未裁决**，Untrusted[T] 实现待破坏性变更窗口 | **v0.61 条件交付** |
-| 6 | 证明覆盖 | while 守卫证明（v0.57 第二子目标）未做；tree 契约求值重入 #47（P3，M4005） | v0.61 |
-| 7 | 测试缺口 | **vm.js 函数覆盖 43.8%**（35/80，大量操作码未触达——覆盖率基线最大线索）；manifest.js 50% 函数；diag.js 行覆盖 37.2%（表常量口径现象） | **v0.60 覆盖率驱动补测** |
-| 8 | 工程债 | **checker.js 5.1k 单体**（拆分登记两轮未执行）；GUIDE 1753 行/124 节（目录已有，交叉引用未补） | 择机（v0.60） |
-| 9 | 社区 | invariant 热路径无 bench 项（Starfish）；缓存后 usage 审计未重跑（moltbook 条 12） | v0.60/v0.61 |
-| 10 | 观测口径 | 覆盖率"始终 exit 0"非无条件（mkdtemp）；bench/coverage 基线为快照口径 | 已登记 N-57.1，维持 |
+| 4 | 资源门禁 | **S1/S2 实测**：`--max-ms` 被 sleep/join 绕过（3.2s @100ms）；`--max-alloc` 对 fs/stdin/proc/net 外部输入与 wasm 参数搬运不计费（#51/#52/#53） | **v0.60 必修** |
+| 5 | CLI 门禁 | **#54**：`ming test`/`ming init` 零 CLI 回归且旗标不传播（`test --no-wasm` 仍走 wasm；`test --max-alloc 5` 通过而 `run` 触发 M4011） | **v0.60 必修** |
+| 6 | 服务端 | ADR-001 方案 a 条件承诺——评审清单 16 项未裁决；原型数据已备（190 req/s@40、0.9GB@16） | **v0.62 条件（独立版）** |
+| 7 | 污点 | ADR-002 类型级方案采纳；**9 源全量会让 5 个自写工具直接 M3002**；五处补丁未落 | **v0.60 文档补丁 / v0.61 窄源条件（先 spike）** |
+| 8 | 证明覆盖 | while 守卫证明（v0.57 可选子目标）未做；tree 契约求值重入 #47（P3，M4005，活分歧） | **#47 v0.60 必修；while → Backlog** |
+| 9 | 测试缺口 | **vm.js 函数覆盖实测 63.8%（51/80）**，非 43.8%；26/29 未覆盖为 wasm 宿主导入闭包，40 opcode 是 `execLoop` 内 case——"opcode 直测"前提不成立 | 信息性，不设门槛 |
+| 10 | 工程债 | **checker.js 5.3k 单体**（5,273 行/310 函数/90.3% 函数覆盖）；GUIDE 1760+ 行（目录已有，交叉引用未补） | 背景项，不进入版本 |
+| 11 | 社区/观测 | usage 审计缓存后未重跑；覆盖率/bench 快照口径；覆盖率"始终 exit 0"非无条件 | 随版附注，维持 N-57.1 |
 
-### 4.4.2 规划原则（沿用 §4.3.2 + 新增两条）
+### 4.4.2 规划原则（沿用 §4.3.2 + 原新增两条 + 三方评估三条）
 
-1. 先一致性/全面性，后能力；2. 证明只报告不删检查；3. 新语义面先 ADR；4. 零依赖与确定性不交换；5. 每版可独立回退；6. **新增**：wasm 专项以 `--strict-wasm` 全语料存活为验收工具（回落清零可度量）；7. **新增**：覆盖率基线短板（函数覆盖 <70% 的文件）作为补测线索，随版收敛。
+1. 先一致性/全面性，后能力；2. 证明只报告不删检查；3. 新语义面先 ADR；4. 零依赖与确定性不交换；5. 每版可独立回退；6. **新增**：wasm 专项以 `--strict-wasm` 全语料存活为验收工具（回落清零可度量）。
+7. **新增**：覆盖率基线短板（函数覆盖 <70% 的文件）作为补测线索，随版收敛。
+8. **修订（三方评估）**：一版一主题且可独立回退——质量/安全修正版不夹带新语义面（v0.60 门禁；serve 独立 v0.62）。
+9. **修订（三方评估）**：计费口径单一事实——值创建 + 外部输入边界计费；派生值（deepCopy/json.parse/re.*/wasm 参数搬运）不重复计费（详见 §4.4.4）。
+10. **修订（三方评估）**：指标不升格为门槛——函数覆盖率是信息性线索，不是版本门槛（40 个 opcode 是 `execLoop` 内 case，不是函数）。
 
 ### 4.4.3 v0.59 — 默认引擎全面性（wasm 覆盖收口 + 本地函数恢复 + 记账统一）— ✅ 已交付（2026-11-13）
 
@@ -473,7 +479,7 @@
 1. ✅ **wasm locals/签名专项（#40/#41/#42）**：locals 声明改从 `nParams` 起（消除形参槽重复计入的类型错位）；Map/Vec[str] 形参经 `paramSlotTy` 登记 `mi64/mf64/mstr`，`__kh/k/v` 槽位补型；Vec 多枚/与 f64 组合随索引模型一并修复。**宿主补丁**：`map_get_i64`/`vec_get_i64` 返回 `BigInt(...)`、`wasmWriteVecNum` 认 `'float'`；删除 Vec[f64] 形参 / Map i64 for-in / Map i64 下标三处守护。strict 全 fuzz 语料 120 程序 **ok=54 / none=66 / fallback=0**——**计数为快照口径**（受生成器种子与 CCBIN 影响；实测其他种子出现 61/59、ok=70/none=50 等变体，`fallback=0` 是实质结论，计数本身不构成门禁）。
 2. ✅ **wasm 返回与块形态专项（#43/#45/#46）**：`retNumTy` 映射 str→i32 句柄；值型 if 按**单字节 valtype** 发射（修 `sleb(0x7e)` 两字节错误）；块尾 unit 上下文 if 按语句编译（while/for/void/嵌套块尾可达）。
 3. ✅ **分配记账统一（#48/#49）**：wasm `str_cat` 经 `str_len(l)+str_len(r)` → `ming_alloc` 计费（嵌套 11+15=26；plan §5.1 复现三引擎 M4011 累计 120000）；**插值与 tree/VM 一致不计费**；**BMP 口径差异**（`str_len` 码点 vs interp UTF-16 长度,代理对每字符差 1）与 **`--max-alloc` 内存风险**（bump 堆不回收,配额放大时驻留随拼接总量增长）如实登记。`std.str.join` 按结果长度计费（#49 对称化;紧配额下 M4011 与 Vec.join 一致）——§62 v58.29 断言按翻转后实际输出改写。
-4. ✅ **本地函数恢复（#44，M3047 移除）**：VM `precompileLocalFns`/`compileLocalFn`（块级条目 + 递归自引用 + 兄弟互递归 + 契约按模块函数同口径 + 作值 LDFN→vclose + AOT 最小 entry.sig）；tree `callLocalFn` 补齐契约/兄弟可见性/作值调用；**三条限制**（不捕获外层局部 M3001 / 块级可见 / 泛型 M3003 与 cc `语句 FnStmt` 不支持）写入 GUIDE；M3047 废弃不再发射（号段保留）。
+4. ✅ **本地函数恢复（#44，M3047 移除）**：VM `precompileLocalFns`/`compileLocalFn`（块级条目 + 递归自引用 + 兄弟互递归 + 契约按模块函数同口径 + 作值 LDFN→vclose + AOT 最小 entry.sig）；tree `callLocalFn` 补齐契约/兄弟可见性/作值调用；**三条限制**（不捕获外层局部 M3001 / 块级可见 / 泛型 M3048 与 cc `语句 FnStmt` 不支持）写入 GUIDE；M3047 废弃不再发射（号段保留）。
 5. ✅ **测试 §63**（36 项 ≥24；P1 审查追加 9 项 → 45；P2 审查追加 11 项 → **56 项**）：P1 21 + P2 13 + P3 2 + P1 审查修复 9 + P2 审查修复 11（B1 兄弟契约/自引用 M4005、B2 lambda 本地函数、B3 遮蔽语义、B4 导入遮蔽、M3048、M4 strict、Some/Ok）；更新三条陈旧断言（v53.25 值型 if strict ok；v60.52 本地函数三引擎支持 + cc 仍拒绝；v63.30 泛型本地函数 → M3048）。
 6. ✅ **P3 invariant bench**（§4.4.4 任务 4 前移落地）：`tests/bench.mjs` 第 5 项"契约 invariant 循环"（10,000×30 = 300,000 次 mut-self 退出 vs 无 invariant 对照）——VM 0.19–0.28µs/次、tree 0.20–0.28µs/次；基线新增 `invariant.vmUs/treeUs`。
 
@@ -487,71 +493,158 @@
 
 **风险/回退**：locals 模型重构动 wasm 编译核心 → 分四步（#40→#42→#43→#45/#46）每步独立回归；任一步 strict 回归不绿即停下评估；不可行形态如实登记（v0.58 已有先例口径）。
 
-### 4.4.4 v0.60 — 服务端条件交付 + 可观测性补强
+### 4.4.4 v0.60 — 资源门禁一致性（质量/安全版，无新语言面）
 
-**任务**
+> 主题唯一：让 `--max-ms` / `--max-alloc` 的承诺与实现、四引擎行为一致；不引入新能力。
+> 背景：2026-11-13 三方评估。原 v0.60 方案（serve + 覆盖率补测 + checker 拆分）被裁决拆掉——三个主题、一个条件新运行时面、一个纯重构、一个指标门槛，无法独立回退（§4.4.10）。
+> 基线：v0.59.0（HEAD 9251e08，881 项全绿；覆盖率实测 93.5% 行 / 88.3% 函数，vm.js 63.8% 函数）。
 
-1. **ADR-001 清单 16 项裁决**（维护者 + 架构师联署；产出裁决记录，逐项留档）。
-2. **std.net.serve v1 实现（裁决通过后）**：按 ADR 方案 a——accept 线程（node:http）+ 每请求 worker 隔离、127.0.0.1、16/256/8MB/30s、错误体 Json{code,message}、零新增 M 码（Err 化/500 透传/504 M4010）；效果白名单 8 个；**§64 ≥12**（本地回环测试：正确性/上限/超时/panic 透传）；tree/VM 对 serve 程序诚实拒绝（三段式口径）；`ming build` 回退检测并入 net（与 sync 同一条 sig.effects 检测）。
-3. **覆盖率驱动补测**：vm.js 函数覆盖 43.8% → 目标 ≥70%（操作码直测：PATMATCH/MAKESTRUCT/CONCAT/RANGE 等未触达组）；manifest.js（50% 函数）与 diag.js 补测；coverage.mjs 重跑刷新基线文档。
-4. ✅ **bench invariant 项（已提前于 v0.59 交付）**：mut-self 高频循环 + invariant 的成本测量（Starfish 回应落地；bench 新项"契约 invariant 循环" + 基线刷新 `invariant.vmUs/treeUs`；VM 0.19–0.28µs/次 / tree 0.20–0.28µs/次）。
-5. **checker 拆分执行**（§4.3.8 择机项转正）：契约/证明适配迁 `src/contracts.js`（纯重构，覆盖率参考线 93.4%/90.1% 为安全验收）。
+**必修（P1，全部有本机实测复现）**
 
-**验收**：裁决记录 + serve 交付（若裁决通过）且 §64 ≥12；vm 函数覆盖 ≥70%；`run.mjs` ≥860+ 全绿；checker 拆分后覆盖率不低于参考线。
+1. **#51 wasm 参数搬运计费分歧 + `wasmParamTop` 未复位（P1）**：`sum(v: Vec[i64])` 传 `[1,2,3]` + `--max-alloc 20` → 默认引擎 exit 101（M4011，累计 43），`--no-wasm`/`--tree` exit 0 输出 6，违反四引擎语义合同。根因：`src/vm.js` 的 `wasmWriteVecNum` → `mingAllocRaw` 把 wasm 实参搬运计入配额；且 `wasmParamTopStack` 在分配之后才保存、调用后 pop 回同一值，线性内存不复用。**最小修法**：先修 param-top（分配前保存、调用后复位），再取消参数/值拷贝搬运计费（派生拷贝不是新值创建）。`ming_grow`/`ming_copy_vec` 的字节口径与 tree/VM 元素口径差异登记为 latent，不在本版扩修。
+2. **#52 外部输入边界未计费（P1）**：`std.fs.read_file` 读 182,819 字节 + `--max-alloc 10` → exit 0（配额完全绕过）。**最小修法**：`read_file` 先 stat 再按 size 预记账；`read_bytes`/`read_line`/`read_to_end`/`list_dir` 按结果长度/条目数记账；`proc.exec` 的 stdout/stderr 与 `net.http_*` 的 body 按结果长度记账。**计费原则**：值创建（Vec/Map 字面量、push/extend、str 拼接/repeat/join）+ 外部输入边界计费；派生值（deepCopy、json.parse、re.*、wasm 参数搬运）不重复计费——关闭无界外部输入，不逐点重写全部调用。
+3. **#53 `--max-ms` 阻塞内建不可抢占（P1）**：`std.time.sleep(3000)` + `--max-ms 100` → 3,213ms exit 0；`join` 子任务同形态 3,283ms exit 0。根因：`checkTimeQuota` 只在每 16,384 步轮询，阻塞内建根本不经过它。**最小修法**：新增 `remainingMs()`；sleep 的 `Atomics.wait`、join/join_detailed/spawn_all/sync scope 的等待钳到剩余预算；exec/http 把钳制后的 timeout 传给 worker（execFile timeout / AbortController），返回后立即 `checkTimeQuota` → M4012。**明确不修（文档化边界）**：`read_line`/`read_to_end` 的 stdin 阻塞与 RegExp 回溯在进程内不可抢占——GUIDE/capabilities 具名列出，不假装已修。复用 M4011/M4012，不新增 M 码。
+4. **#54 `ming test` / `ming init` 旗标不传播 + 零 CLI 回归（P1）**：`test --no-wasm` 仍走 wasm；`test --max-alloc 5` 通过而 `run --max-alloc 5` 触发 M4011。**最小修法**：`ming test` 把 `--tree`/`--no-wasm`/`--strict-wasm`/`--max-steps`/`--max-alloc`/`--max-ms` 原样转发到测试执行路径（与 `run` 同一解析与仲裁，`--strict-wasm` 与解释器旗标互斥口径一致）；`test`/`init` 补 CLI 回归（§64）。
+5. **#47 tree 契约求值重入（P3，必修）**：`ensures if a > 0 { true } else { true }` → tree M4005 exit 101 / VM 输出 5。**最小修法**：`execBlock` 只在函数体块尾检查 ensures（ctx 携带 `bodyBlock`），表达式内嵌块不检查；本地函数补传 `bodyBlock`。不改 VM/编译器。
+6. **ADR-002 五处补丁（v0.61 启动门槛，仅文档）**：(a) 来源表补 `bytes.to_str` 桥接与 `read_bytes` 漏报窗口，裁定 v1 窄源边界（只标 `env.get`/`read_line`/extern 返回；fs/proc/net 内容源不标）——**评估落盘时已完成**（ADR-002 §1.2 修订注 + §3.1 窄源块 + §6.2 ②）；(b) `debug(any) -> str` 是洗白通道，进禁面（与 Ptr 同款，M3002/M3049）；(c) 纯消费者/白名单方法表（parse_i64/parse_f64/char_len/byte_len/is_empty）与自由函数边界；(d) 每个净化器登记"授权的 sink 位"（`sanitize_path` 只授权路径位，不授权 content/URL/exec），并裁决绝对路径/CLI 路径策略；(e) **码号修正**：M3048 已被 v0.59 泛型本地函数占用 → 改为 M3049/M3050；ADR-002 §8 的 §64 改为 §65——**评估落盘时已完成**。**不写实现代码。**
+7. **文档与基线收口**（**评估落盘时已完成大半**：README/design/plan 数字、coverage-baseline v0.59 复测、capabilities 熔断行改判、ADR-001 §63→§66、ADR-002 码号/窄源/§65 已同步）：v0.60 剩余项为 GUIDE 门禁口径（计费原则 + read_line/RegExp 边界 + `std.rand` 非 CSPRNG 声明）与 `docs/plan.md` 验收行回填。
 
-**风险/回退**：裁决不通过 → 只交付裁决记录（serve 推迟有据）；worker 内存压力已量化（0.9GB@16）；serve 出现原型未覆盖的风险 → 按清单项暂停。
+**验收（实测口径）**：`node tests/run.mjs` 881 + 新增 §64 ≥14 全绿；#51 三引擎 `--max-alloc 20` 均 exit 0、`--max-alloc 2` 均 M4011；#52 大文件 `--max-alloc 10` 三引擎 M4011、小文件通过；#53 sleep/join 在 `--max-ms 100` 下 <1.5s M4012（exec/http 视环境，失败则只用 sleep/join 并如实注明）；#54 `test --no-wasm` 的 wasm 状态为 none、`test --max-alloc 5` 触发 M4011；#47 tree/VM 均输出 5；`fuzz --seed 44044 --count 40` 0 分歧；`proof_fuzz` 0 误报；无新 M 码；S1/S2 核心代码 diff 目标 <100 行，#54 转发与回归另计（约 30–60 行）。
 
-### 4.4.5 v0.61 — 污点实现（条件）+ 证明扩展
+**明确不做**：serve、Untrusted 实现、checker 拆分、覆盖率门槛、while 证明、ASan/launcher 沙箱、FFI 扩大、产物签名。
 
-**任务**
+**风险/回退**：取消 wasm 搬运计费前必须验证 param-top 复位（否则线性内存随调用次数增长）；#53 钳制只缩短等待、不改变程序语义（超限本应 M4012）；#52 记账改变大输入程序的配额行为（本应如此，GUIDE 如实说明）；read_line/RegExp 边界不修，文档具名。
 
-1. **ADR-002 清单 16 项裁决** + **Untrusted[T] 实现**（破坏性变更窗口）：类型 + `std.unstr` 净化族 + sink 免费获得 + extern 返回标污 + wasm/C 资格裁定（载体类型解包）+ 诊断码按清单项 12 登记；**§65 ≥12**。
-2. **while 守卫证明**（v0.57 第二子目标）：`while i < len` 单条件形态的归纳变量证明（复用 v0.59 区间机制）。
-3. **tree 契约求值重入修复（#47）**：契约表达式含带尾值块的 M4005/二次求值消除（tree 侧合约环境隔离）。
-4. **moltbook 审计对照**：缓存后 usage 重跑 + 替换率前后对照发布（条 12 销项）。
+### 4.4.5 v0.61 — 污点最小片（条件；安全能力版）
 
-**验收**：裁决记录 + 污点交付（若裁决通过）且 §65 ≥12；while 证明 proof_fuzz 模式 0 误报；#47 关闭；三引擎一致回归全绿。
+> 主题唯一：只做"外部输入 → 路径/命令"注入面的最小污点闭环。
+> **启动门槛（三条全满足才写实现）**：① v0.60 任务 6 的五处 ADR-002 补丁评审通过；② 12 工具迁移 spike 完成（`mingkit`/`json_query`/`diaghot`/`log_analyzer`/`edit` 在窄源方案下不改内容处理逻辑——9 源全量会让这 5 个工具直接 M3002）；③ 净化器策略裁决（`sanitize_path` 拒绝绝对路径 vs `tree`/`wc`/`find_files` 经 `env.get` 接受绝对路径：新增 `sanitize_cli_path`（允许绝对、拒绝 NUL/控制字符），或裁定工具改用 argv 并如实登记 argv v1 漏报窗口）。
 
-**风险/回退**：污点实现期发现与深拷贝/契约的新交互 → 按清单项暂停（ADR-002 已有推迟条件）；while 证明复杂度失控 → 缩回单条件守卫或推迟。
+**最小范围（窄源 v1）**
 
-### 4.4.6 v0.62+ — 北星远期（按 ADR/评估逐项启动，不承诺）
+- 来源仅 `std.env.get`、`std.io.read_line` + extern 返回强制标污；`fs.read_file`/`read_bytes`/`read_to_end`/`proc.exec` stdout/stderr/`net.http_*` body **明确不标**（v1 泄漏窗口，写入 GUIDE 与来源白名单测试）。
+- 载体仅 `str`；`std.unstr.sanitize_path`（或裁决后的 CLI 变体）+ `mark`；白名单 5 个纯产出方法（parse_i64/parse_f64/char_len/byte_len/is_empty）；`debug` 拒绝；**无** concat、bytes/Json/argv 载体、流敏感分析。
+- 运行时擦除：tree/VM/wasm/C 输出逐字一致；只改 checker/interp/diag/文档；wasm `analyze()` 保持单一事实来源（如资格解包确需，仅一行）。
 
-- **流式 IO**（rossum 机器人场景）：`read_bytes_range(path, start, len)` 最小接口评估（ADR 或直接小面交付）。
-- **ffi struct/array ABI**（北星支柱 2）：与 ADR-002 extern 污点规则联动评估。
-- **eval/热重载**（北星支柱 4）：`with eval` 显式能力 ADR。
-- **国密/RSA**（北星支柱 6）、**交叉编译**（北星支柱 2 延伸）：各自独立设计与安全评审。
-- **海量并发网络**（10 万级）：维持北星远期，待方案 a 落地后另 ADR 复核。
-- **Ptr 带长度 / Slice**（与证明联动）：待污点/unsafe 使用数据支撑。
+**任务**：checker 100–200 行；interp ≤50 行；2–3 个签名变更 + 12–20 个调用点迁移；§65 15–20 项；GUIDE/design/capabilities/README。
+**验收**：迁移清单逐项勾；env→write_file 路径静态拒绝、sanitize 后通过；`read_file` 内容仍可 `split/print`（证明窄源不破坏工具）；四引擎标注程序逐字一致；fuzz 0；proof_fuzz 0；check 语料 ≤1.3x。
+
+**若门槛不满足**：本版退化为"测试与观测版"（vm.js +5 个具名函数至 ≥70%、manifest 2 个函数、覆盖率基线刷新），Untrusted 顺延；**不承诺实现**。
+
+**明确不做**：9 源全量、`Untrusted[Json]`/`Vec[u8]`/argv 载体、流敏感/跨函数推断、净化的形式化证明。
+
+**诊断码**：M3049（未净化 Untrusted 值流入受保护 sink）/ M3050（Untrusted 用于不支持的位置或洗白尝试），实现时三处登记；M3048 已由 v0.59 泛型本地函数占用，不得复用。
+
+### 4.4.6 v0.62 — 服务端 v1（条件；独立版）
+
+> 启动条件：ADR-001 评审清单 16 项全勾；v0.60 的 #53 已交付（per-request timeout 依赖钳制）；serve 与污点的载荷问题已裁决（ADR-002 v1 载体仅 str，serve 载荷是 Json——v1 **不声称**请求受污点保护；若需保护，先裁决 `Untrusted[Json]`，不得静默扩载体）。
+
+**范围**：ADR-001 §5.2 原样——127.0.0.1、16/256/8MB/30s、Json 载荷、错误体、零新 M 码、handler 效果白名单 8（io/time/fs/net/env/rand/crypto/proc；sync/unsafe/ffi 拒绝）、无 handler 内 spawn；checker ~60 行 + interp ~350 行 + §66 ≥12。
+**验收**：16/16 决策记录；§66 ≥12；三段式拒绝（tree/VM 双引擎一致、wasm 资格拒绝、cc 发射期拒绝）；190 req/s 量级与 16 worker 内存（0.9GB@16、队列上界 2GB）如实报告；回归全绿。
+**明确不做**：TLS/UDP/自定义 host/WebSocket/keep-alive 调优/流式/handler 内 spawn/`Untrusted[Json]`。
+**风险/回退**：任一清单项不勾 → 只留决策记录，serve 不进版本。
+
+### 4.4.6a 后续与 Backlog（v0.63 起，不承诺）
+
+- **wasm 剩余守护 slice 2（优先候选）**：Vec 下标读/mut 元素写（宿主 `panic_m4003` 导入）、Option 消费链（M4006/M4007 导入）、VecLit 数值容器表示统一、f64 复合赋值。
+- **walker 统一（择机）**：checker 内多处线性体遍历器（walkLinearBody/exprIsLinear/stmtIsLinear）收敛为单一实现——零行为变更，随契约改动顺带，不单独立版。
+- **while 守卫证明（Backlog，不承诺）**：只做"循环条件作为体内假设、赋值即失效"的最小形态；**不做归纳不变式**。proven 不消除运行时 M4003，收益仅为少一条 W3105；无正收益证据前不进入版本。
+- **checker 拆分（背景项，不进入版本）**：5,273 行 / 310 函数 / 90.3% 函数覆盖，纯重构零功能价值；如需结构，只允许"新增模块放新表"（污点表），不搬 5k 行。
+- **其他**：覆盖率/bench 信息性刷新；usage audit 对照；安全审计窗口。
 
 ### 4.4.7 跨版本技术债与观测（延续 §4.3.8）
 
 | 项 | 内容 | 版本 | 说明 |
 |----|------|------|------|
-| wasm 覆盖收口 | #40–#43/#45/#46 + #48 记账 | **✅ v0.59 交付** | 本规划升格为主件(§4.4.3);strict 120 语料 fallback=0 |
-| 本地函数恢复 | #44,VM 编译器支持 | **✅ v0.59 交付** | M3047 移除;GUIDE 恢复表述(三条限制) |
-| 服务端 | ADR-001 清单裁决 + serve v1 | **v0.60 条件** | 裁决不通过则只留记录 |
-| 污点 | ADR-002 清单裁决 + Untrusted[T] | **v0.61 条件** | 同上 |
-| vm.js opcode 补测 | 函数覆盖 43.8% → ≥70% | v0.60 | 覆盖率基线线索 |
-| checker 拆分 | 5.1k → contracts.js 纯重构 | v0.60 | 参考线 93.4%/90.1% |
-| invariant bench 项 | mut-self 循环 + invariant 成本 | **✅ v0.59 交付(提前)** | Starfish 回应落地(0.19–0.28µs/次,占循环墙钟 20–27%,按 5% 判据如实报告);v0.60 不再重复 |
-| moltbook 审计对照 | 缓存后 usage 重跑 + 发布 | v0.61 | 条 12 销项 |
-| GUIDE 交叉引用 | 1753 行/124 节补强 | v0.61 | 目录已有 |
+| 资源门禁一致性 | #51/#52/#53 + #54 CLI 旗标 | **v0.60 必修** | 全部有实测复现；无新 M 码；S1/S2 核心 diff <100 行 |
+| tree 契约重入 | #47 | **v0.60 必修** | tree/VM 输出一致；仅 interp.js |
+| ADR-002 五处补丁 | 来源/白名单/净化器/debug/码号 | **v0.60（仅文档）** | v0.61 启动门槛之一 |
+| 污点窄源 v1 | Untrusted[str] 最小闭环 | **v0.61 条件（先 spike）** | 门槛不满足则退化为测试版 |
+| 服务端 v1 | ADR-001 清单裁决 + serve | **v0.62 条件（独立版）** | 16/16 + §66 ≥12 |
+| wasm 守护 slice 2 | 下标/mut 写/Option 链/VecLit/f64 复合赋值 | v0.63 候选 | 不影响语义，strict 具名 |
+| vm.js 覆盖率 | 实测 63.8%（51/80）；+5 函数即 70% | 信息性，不设门槛 | 40 opcode 是 case，不是函数；43 个 wasm 导入 lambda 稀释函数计数 |
+| checker 拆分 | 背景，不进入版本 | — | 纯重构零功能价值；并行会话冲突风险 |
+| while 守卫证明 | Backlog | — | v0.57 可选子目标；proven 不减 M4003 |
+| invariant bench 项 | mut-self 循环 + invariant 成本 | **✅ v0.59 交付** | 0.19–0.28µs/次（占循环墙钟 20–27%，按 5% 判据如实报告） |
+| moltbook/usage | 缓存后审计对照 | 随版附注（不设版本） | 非代码、非门槛 |
+| GUIDE 交叉引用 | 1760+ 行补强 | 随版附注 | 非代码、非门槛 |
 
 ### 4.4.8 明确不做（v0.59–v0.62+）
 
 - 沿用 §4.3.9 全部条目（包注册表/第三方依赖/交叉编译/GUI/调试器/eval/完整 SMT/删除运行时检查/10 万级连接/WebSocket/流式/keep-alive 调优/TLS/UDP）。
 - **新增**：mask 不复活（ADR-003 永久否决）；污点效果建模不做（ADR-002 终局）；wasm 不支持 `match` 的声明维持（C 行 match 正确性不受影响）；不做"删除运行时边界/契约检查以换性能"。
+- **三方评估新增**：不做 serve + 门禁修复混版；不做 Untrusted 9 源全量 v1；不做 checker 拆分作为版本项；不做 vm 函数覆盖 ≥70% 版本门槛；不做 while 归纳证明（近三版）；不做 ASan 腿/OS 级沙箱/产物签名/Actions SHA 固定/第三方 action；不做 FFI struct/array ABI 扩大；不为 S1/S2 新增 M 码；不做效果 diff 工具（`doc --json` + interface_hashes 已覆盖）；不把 deepCopy/json.parse/re.* 全量计费作为任务（派生值不重复计费）。
 
 ### 4.4.9 成功度量
 
 | 版本 | 完成判定（全部满足） | 量化门槛 |
 |------|---------------------|----------|
 | v0.59 | **✅(2026-11-13)**:strict 模式已知回落清零(保留守护逐条具名);本地函数恢复且三引擎一致;记账统一(#48/#49);P1/P2/P3 独立审查修复全落地(`<<` 溢出/M4007 对齐/字面量计费/兄弟 ensures/lambda 捕获/遮蔽语义/M3015/M3048) | **§63 56 项(≥24);回归 881 全绿(≥860);fuzz eligible 族 120 语料 fallback=0;proof_fuzz 0 误报** |
-| v0.60 | ADR-001 清单裁决记录 + serve 交付(或裁决推迟记录);vm 函数覆盖 ≥70%;~~invariant bench 项~~(**✅ v0.59 提前交付**) | §64 ≥12;回归 ≥870;覆盖率基线刷新 |
-| v0.61 | ADR-002 清单裁决 + Untrusted[T] 交付(或推迟记录);while 证明;#47 关闭 | §65 ≥12;proof_fuzz 污点/while 模式 0 误报 |
-| 持续 | moltbook 审计对照发布;安全审计窗口;覆盖率基线刷新 | — |
+| v0.60 | 资源门禁一致性交付（#51/#52/#53/#54 + #47 + ADR-002 五处补丁 + 文档/基线收口）；无新语言面 | **§64 ≥14；回归 ≥895 全绿；三引擎配额矩阵（max20=0/max2=M4011）；S2-b 大文件 M4011；S1 sleep/join <1.5s M4012；fuzz/proof_fuzz 0；无新 M 码** |
+| v0.61 | 窄源 Untrusted v1 交付（或按门槛退化为测试版并记录）；迁移清单完成 | §65 15–20 项；迁移 ≤20 处；四引擎标注程序逐字一致；回归全绿；M3049/M3050 三处登记 |
+| v0.62 | ADR-001 16/16 + serve v1 交付（或只留决策记录） | §66 ≥12；三段式拒绝；190 req/s 量级与 16 worker 内存如实报告 |
+| 持续 | 覆盖率/bench 信息性刷新；usage audit；安全审计窗口 | 不设门槛 |
 
 **跨版本共同门槛**：沿用 §4.3.10 末行（全量绿/0 分歧/分节测试/文档三处/版本三处/诊断三处/不留生成物/性能可复现）。
+
+### 4.4.10 三方评估记录（2026-11-13；software-architect / security-engineer / minimal-change-engineer）
+
+> 基线：HEAD 9251e08（v0.59.0，881 项全绿，四后端）。三份独立报告 + 主会话复核；结论均有本机实测或源码路径。评估结论已落入 §4.4.4–§4.4.6a（版本重排）、§4.4.7–§4.4.9（范围与度量）与 §5.1（#51–#57）。
+
+**安全审计（S1–S8）**
+
+| # | 项 | 严重度 | 实测/证据 | 处置 |
+|---|----|--------|-----------|------|
+| S1 | `--max-ms` 被阻塞内建绕过 | P1 | `sleep(3000)` + `--max-ms 100` → 3,213ms exit 0；`join` → 3,283ms exit 0；根因 `checkTimeQuota` 每 16,384 步轮询，阻塞内建不经过 | **v0.60 #53**：`remainingMs` 钳制 sleep/join/exec/http；read_line/RegExp 文档化边界 |
+| S2 | `--max-alloc` 记账缺口 | P1 | ① wasm Vec 实参按字节计费（16+8n）而 tree/VM 不计 → `sum([1,2,3])` max20 默认 M4011/`--no-wasm` 0；② `read_file` 182,819B + max10 → exit 0 | **v0.60 #51/#52**：param-top 复位 + 取消搬运计费；外部边界计费；派生不重复计费 |
+| S3 | 污点 `Untrusted[T]` 未实现 | P1（能力） | ADR-002 采纳但 9 源全量会让 `mingkit`/`json_query`/`diaghot`/`log_analyzer`/`edit` 直接 M3002；`debug(any)->str` 是洗白通道；`bytes.to_str` 无桥接规则 | **v0.60 ADR 五处补丁 + v0.61 窄源 v1（条件）** |
+| S4 | FFI str 内嵌 NUL 截断 | P2 | `strlen("ab\0cd")=2`，Ming 侧长度 5 → 静默截断；加载面（RTLD_GLOBAL/LoadLibraryA）未文档化 | 文档 + 回归（#55）；是否拒绝需语义裁决，不进入 v0.60 |
+| S5 | AOT artifact 结构校验缺失 | P2 | 反序列化只验 format/version；损坏 `mainFnIdx`/表长 → raw TypeError | Backlog（#56）；低成本索引/表长校验 |
+| S6 | 安全回归缺位 | P2 | FFI NUL、损坏 artifact、污点负例无测试；M4013 无专项回归 | 随 v0.61 补（#57） |
+| S7 | `std.rand` 非 CSPRNG | P2（文档） | mulberry32 / 32 位状态，可用于非安全随机 | **v0.60 文档声明**：GUIDE 写明不得用于密钥/nonce；不新增 `std.crypto.random_bytes`（无消费方） |
+| S8 | 效果 diff 工具 | P2（建议） | `doc --json --index` 已输出 `with` 效果；`build --json` 的 `interface_hashes` 已含效果 | **拒绝**：重复能力，无消费方 |
+
+**架构评估的关键事实纠正**
+
+1. **覆盖率数字过时**：v0.59 实测 93.5% 行 / 88.3% 函数；`vm.js` 函数覆盖 **63.8%（51/80）**，不是 43.8%。未覆盖的 26/29 是 **wasm 宿主导入闭包**，不是 opcode；40 个 opcode 是 `execLoop` 内的 case（不是函数）——"操作码直测"前提不成立。距 70% 只差 5 个具名函数 → 信息性，不设版本门槛。
+2. **#47 是活分歧**：tree M4005 exit 101 / VM 正常 → 前移 v0.60（原 v0.61）。
+3. **`ming test`/`ming init` 零 CLI 回归且旗标不传播** → 新缺陷 #54，v0.60。
+4. **文档/编号漂移**：README 状态段 v0.57 / design 头 v0.54 / plan §4.4 基线 861；§63/§64/§65 分节分配冲突；ADR-002 拟用 M3048 已被 v0.59 占用 → M3049/M3050。
+
+**版本重排裁决（原 v0.60 为什么拆掉）**
+
+原 v0.60 = serve（条件新运行时面）+ 覆盖率补测（指标门槛）+ checker 拆分（纯重构）。最小变更工程师裁决：三个主题、一个条件大面、一个纯重构、一个指标门槛，无法独立回退——这是 v0.59 之前范围膨胀模式的复发。安全评估的 S1/S2 是**已实测的门禁承诺被绕过**，优先级高于新能力面。重排后：
+
+- **v0.60 = 资源门禁一致性**（#51/#52/#53/#54 + #47 + ADR-002 文档补丁 + 基线收口）——无新语言面，S1/S2 核心 diff <100 行。
+- **v0.61 = 污点窄源 v1（条件）**——先 spike 后实现；门槛不满足退化为测试版。
+- **v0.62 = serve v1（条件，独立版）**——ADR-001 16/16 全勾才启动。
+- **v0.63+ = 候选/Backlog**——wasm 守护 slice 2、walker 统一；while 证明、checker 拆分不承诺。
+
+**明确不做（评估裁决）**
+
+- 不把 serve/覆盖率/checker 拆分合并进任何单版；serve 不早于 v0.62。
+- 不做 9 源全量 Untrusted v1；不做 `Untrusted[Json]`/`Vec[u8]`/argv 载体（v1.1 需载体设计）。
+- 不做 vm 函数覆盖 ≥70% 版本门槛；不做 checker 拆分版本项；不做 while 归纳证明（近三版）。
+- 不做 ASan 腿、OS 级 launcher 配额/沙箱、产物签名、Actions SHA 固定、第三方 action。
+- 不做 FFI struct/array ABI 扩大；不做效果 diff 工具；不为 S1/S2 新增 M 码。
+- 不把 deepCopy/json.parse/re.* 全量计费作为任务（派生值不重复计费）。
+
+**证据（本机实测，2026-11-13，HEAD 9251e08）**
+
+```text
+# S2-a
+sum([1,2,3]) --max-alloc 20: run exit 101 (M4011, 累计 43) / --no-wasm exit 0 (6) / --tree exit 0 (6)
+# S2-b
+fs.read_file("GUIDE.md") 182,819 bytes --max-alloc 10: exit 0, 输出 182819
+# S1
+std.time.sleep(3000) --max-ms 100: 3,213ms exit 0; join 子任务: 3,283ms exit 0
+# #47
+ensures if a > 0 { true } else { true }: --tree M4005 exit 101 / run 输出 5
+# 覆盖率（tests/coverage.mjs --json；881 通过 0 失败，10.4 分钟）
+总行 93.5% / 函数 88.3%; vm.js 行 95.3% / 函数 63.8% (51/80)
+# 工具迁移阻塞（9 源全量污点）
+mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 的 proc.exec stdout 处理全部 M3002
+```
 
 ---
 
@@ -560,9 +653,9 @@
 现行 Backlog 见 **§4.2.8(2026-11-11 重排)**;旧表已并入该表,避免双份漂移。
 
 
-## 5.1 已知缺陷(2026-11-11 code-review,已逐项复核)
+## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估,已逐项复核)
 
-> 来源:两个 code-reviewer 子智能体 + 主会话复现。**状态:v0.50.1–v0.56.0 的已修复项逐行标注;#37–#43 中 #37/#38/#39 已于 v0.56.0 收口;#40–#46/#48/#49 已于 v0.59.0 收口(#40/#41/#42/#43/#45/#46 wasm 覆盖面 + #44 本地函数恢复 + #48/#49 记账统一);仅 #47(tree 契约求值重入,P3)留待 v0.61。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
+> 来源:两个 code-reviewer 子智能体 + 主会话复现 + 2026-11-13 三方评估/安全审计。**状态:v0.50.1–v0.56.0 的已修复项逐行标注;#37–#43 中 #37/#38/#39 已于 v0.56.0 收口;#40–#46/#48/#49 已于 v0.59.0 收口(#40/#41/#42/#43/#45/#46 wasm 覆盖面 + #44 本地函数恢复 + #48/#49 记账统一);仅 #47(tree 契约求值重入,P3)前移 v0.60;#51–#57 为 2026-11-13 三方评估新登记。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
 
 ### 已修复(v0.50.1–v0.51.6)
 
@@ -659,10 +752,22 @@
 | 44 | **本地函数在 VM 无编译支持**:VM/字节码编译器没有本地函数编译路径(本地函数作值使 tree/VM 分歧;契约被 tree 静默忽略) | P1 | **已修(v0.59.0)**:`precompileLocalFns`/`compileLocalFn`(块级条目 + 递归/互递归 + 契约同模块函数口径 + 作值 LDFN→vclose + AOT entry.sig);tree `callLocalFn` 补齐;M3047 废弃不再发射;三条限制写入 GUIDE(§63 v63.22–v63.34)。**v0.59-P2 审查追加**:B1 契约域放行同块兄弟(`contractFnBinds`;自引用 ensures 与 tree 同 M4005)、B2 lambda 经 `fnBinds` 解析本地函数、B3 遮蔽定案(M3009/词法最近块)、B4 导入遮蔽 M3015、泛型专用码 M3048、`Some/Ok` 本地声明优先(§63 v63.46–v63.56) |
 | 45 | **wasm 值型 if 的 blocktype 编码失败**:表达式 `if`(值上下文)静默回落,`--strict-wasm` 可见——导致 W2 的 expr-if 声明不可达(未真实走 wasm) | P2 | **已修(v0.59.0)**:按单字节 valtype 发射(修 `sleb(0x7e)` 两字节 126);i64/f64/str 值型 if/else-if 链/`&&`/`||` strict ok(§63 v63.10/v63.11;v53.25 断言翻转) |
 | 46 | **wasm 块尾 if(unit 上下文)按值编译** → `REJECT: if 无 else` 回落(常见 `while { …; if c { break; } }` 形态;导致 W2/F1 在尾 if 形态上未真实走 wasm) | P2 | **已修(v0.59.0)**:unit 上下文块尾 if/loop 按语句编译;while/for/void/嵌套块尾 break/continue/return 均 strict ok(§63 v63.12/v63.13) |
-| 47 | **tree 引擎 ensures 求值内嵌块尾值重入 checkEnsures**:契约表达式含带尾值的块(`if` 分支、`match` 臂块等)时,块尾求值再次触发同一函数的 checkEnsures,递归至 M4005,或二次求值时 `result` 被错误替换为块尾 bool 而报 `内部错误:match 无分支命中`。HEAD 可复现;VM/VM-only 正常(与本次 C1 编译器修复无关)。**最小复现**:`fn f(a: i64) -> i64 ensures if a > 0 { true } else { true } { return a; }` + `fn main() with io { print(str(f(5))); }` → `run --tree` M4005(exit 101),`run`/`run --no-wasm` 输出 5。**v0.59-P2 审查补充**:同一机制覆盖"ensures 求值途中的块尾中间值"(含本地函数 ensures 的块尾值),即 #47 是 tree 契约求值域的单一根因 | P3 | 未修(tree 契约求值重入专项;§60 v60.55/v60.57 记录已知行为,修复前不锁定 M4005 断言) |
+| 47 | **tree 引擎 ensures 求值内嵌块尾值重入 checkEnsures**:契约表达式含带尾值的块(`if` 分支、`match` 臂块等)时,块尾求值再次触发同一函数的 checkEnsures,递归至 M4005,或二次求值时 `result` 被错误替换为块尾 bool 而报 `内部错误:match 无分支命中`。HEAD 可复现;VM/VM-only 正常(与 C1 编译器修复无关)。**最小复现**:`fn f(a: i64) -> i64 ensures if a > 0 { true } else { true } { return a; }` + `fn main() with io { print(str(f(5))); }` → `run --tree` M4005(exit 101),`run`/`run --no-wasm` 输出 5。**v0.59-P2 审查补充**:同一机制覆盖"ensures 求值途中的块尾中间值"(含本地函数 ensures 的块尾值),即 #47 是 tree 契约求值域的单一根因 | P3 | **v0.60 必修(三方评估前移)**:`execBlock` 仅在函数体块尾检查 ensures(ctx 携带 `bodyBlock`),表达式内嵌块不检查;本地函数补传 `bodyBlock`;tree/VM 输出一致后锁定回归(§64);不改 VM/编译器 |
 | 48 | **wasm 路径 `str_cat` 不计入 allocBytes → M4011 配额门禁引擎分歧**:wasm 把 str `+`/插值编译为 `str_cat` 导入(wasm.js compileBinNum str 分支),而宿主绑定(vm.js `str_cat`)只拼 strTable、**不调 chargeAllocBytes/ming_alloc**;解释器与 VM 字节码路径对 str 拼接按结果长度计费(interp.js `chargeAllocBytes(l.v.length + r.v.length)`)→ 同一程序默认引擎不触发配额、`--no-wasm`/tree 触发 M4011。**已验证(v0.58 审查复现)**:`fn probe(a: str) -> i64 { if a + "<120000×A>" == "x" { return 1; } return 0; }` + `print(str(probe("")))`,`--max-alloc 50000` → 默认 exit 0(输出 1)/`--no-wasm` 与 tree M4011(exit 101,累计 120000)。注:B 审查原报告的"20,000 次 `+` 循环"形态**不复现分歧**——str 累积循环(main 内 mut str 局部/str 返回 helper/Vec.push 方法调用/str 实参递归)今日均不满足 wasm 资格或实例化失败而回落字节码(计费),分歧只在 wasm 真实执行的 str_cat 上;随 #40–#43/#45/#46 修复扩大 str 形态覆盖面,该分歧**从潜伏变可达** | P2 | **已修(v0.59.0)**:wasm `str_cat` 经 `str_len(l)+str_len(r)` → `ming_alloc` 计费(与 interp 同口径;嵌套拼接 11+15=26);插值不计费(与 tree/VM 一致);plan §5.1 复现三引擎 M4011 累计 120000(§63 v63.14–v63.16)。**BMP 口径差异**(`str_len` 码点数 vs interp UTF-16 长度,代理对每字符差 1)与 **`--max-alloc` 内存风险**(bump 堆不回收,配额放大时驻留随拼接总量增长)如实登记 |
 | 49 | **`std.str.join` 结果不计入分配记账,与 Vec 方法 `join` 计费不对称**:Vec 方法 join 按结果长度计费(interp.js `case 'join'` chargeAllocBytes(out.v.length)),v0.58 新增的 `std.str.join`(单次 O(n) 拼接)不调 chargeAllocBytes → 同尺寸结果 std 函数侧不触发 M4011。**已验证(v0.58 审查复现)**:10,000 × "abcdefghij" 入 Vec(`--max-alloc 60000`)→ `str.join(v).byte_len()` exit 0(输出 100000,结果 100KB 未计费)/`v.join(",").byte_len()` M4011(exit 101,累计 119999)。文档须如实标注:"join 的配额优势部分来自不计费";**API 不对称同步登记**:`v.join(sep)`(Vec 方法,带分隔符,计费)与 `str.join(v)`(std 函数,无分隔符,不计费)——GUIDE v0.58 收口条目覆盖该说明 | P3 | **已修(v0.59.0)**:`std.str.join` 按结果长度 `chargeAllocBytes(out.length)`(与 Vec 方法 join / `+` 同口径);紧配额下两形态均 M4011(累计 110000 / 119999;§62 v58.29 断言按翻转后改写;§63 记账组覆盖)。GUIDE/API 不对称说明同步更新为"已对称化" |
 | 50 | **tree `deepCopy` 的 closure 分支丢 `env.mod`/`env.localFns`(pre-existing)**:闭包经 let/实参深拷贝后 `env.mod` 丢失,lambda 体内模块项访问触发 `env.mod.items` TypeError;引用外层本地函数时 `localFns` 也丢失 | P2 | **已修(v0.59-P2 B2)**:`deepCopy` 的 closure 分支保留 `mod`/`localFns`(localFns 表浅拷贝,与 `snapshotEnv` 同口径);`[1,2,3].map((x) => inc(x))` 三引擎一致(§63 v63.48/v63.49) |
+### 新登记(2026-11-13,三方评估/安全审计;状态逐行)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 51 | **wasm 参数搬运计入分配配额,且 `wasmParamTop` 未复位**:`sum(v: Vec[i64])` 传 `[1,2,3]` + `--max-alloc 20` → 默认引擎 M4011(累计 43),`--no-wasm`/tree exit 0;根因 `wasmWriteVecNum`→`mingAllocRaw` 计费 + `wasmParamTopStack` 在分配后才保存→线性内存不复用 | P1 | **v0.60 必修**:先复位 param-top,再取消搬运计费(派生拷贝不是值创建);三引擎配额矩阵(§64) |
+| 52 | **外部输入边界未计入 `--max-alloc`**:`fs.read_file` 182,819 字节 + `--max-alloc 10` → exit 0;`read_bytes`/`read_line`/`read_to_end`/`list_dir`/`proc`/`http` 同源 | P1 | **v0.60 必修**:外部边界计费(值创建 + 外部输入;派生不重复);GUIDE/capabilities 口径同步 |
+| 53 | **`--max-ms` 对阻塞内建不可抢占**:`sleep(3000)` + `--max-ms 100` → 3,213ms;`join` → 3,283ms;根因 `checkTimeQuota` 每 16,384 步轮询,阻塞内建不经过 | P1 | **v0.60 必修**:`remainingMs` 钳制 sleep/join/exec/http→M4012;read_line/RegExp 声明为不可抢占边界(文档) |
+| 54 | **`ming test`/`ming init` 零 CLI 回归且旗标不传播**:`test --no-wasm` 仍走 wasm;`test --max-alloc 5` 通过而 `run --max-alloc 5` 触发 M4011 | P1 | **v0.60 必修**:旗标原样转发(与 run 同一仲裁);test/init CLI 回归(§64) |
+| 55 | **FFI str 内嵌 NUL 静默截断**:`strlen("ab\0cd")=2` 而 Ming 侧长度 5;加载面(RTLD_GLOBAL/LoadLibraryA)未文档化 | P2 | 文档 + 回归(v0.60 文档声明);拒绝截断需语义裁决,不承诺 |
+| 56 | **AOT artifact 结构校验缺失**:反序列化只验 format/version;损坏 `mainFnIdx`/表长 → raw TypeError 而非稳定诊断 | P2 | Backlog;低成本索引/表长校验 + 损坏样例回归 |
+| 57 | **安全回归缺位**:FFI NUL、损坏 artifact、污点负例无测试;M4013 无专项回归 | P2 | 随 v0.61 补(与污点负例同批) |
+
 ### 备注登记(2026-11-13,v0.57 收口;信息性,非缺陷)
 
 | # | 备注 | 级别 | 状态 |

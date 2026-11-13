@@ -4,6 +4,8 @@
 > **关联**:docs/plan.md §4.3.6(v0.59 条件承诺)· docs/design.md §6.3(北星支柱 3:海量并发网络)· docs/capabilities.md(TCP/UDP/服务端 ❌、10 万级连接 ❌)
 > **立场声明**:本 ADR 只交付设计文档,**不写任何语言实现代码**。文中全部数字为仓库现状实测(标注〔实测〕,环境 Node v24.11.0 / win32-x64 / 2026-11-13)、源码确认(标注〔源码确认〕)或 Node 原型实测(标注〔原型实测〕,脚本放系统临时目录不入仓,见 §2.4);无一处来自想象。
 
+> **2026-11-13 三方评估修订**:serve 实现从计划 v0.60 移至 **v0.62 独立条件版**;启动条件仍为评审清单 16 项全勾 + v0.60 资源门禁一致性已交付(per-request timeout 依赖 #53 的 `--max-ms` 钳制)。测试分节号由 §63 改为 **§66**(§63 已被 v0.59 占用)。见 plan §4.4.6/§4.4.10。
+
 ---
 
 ## 1. 背景与问题
@@ -108,7 +110,7 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 
 **与结构化并发的交互(serve 里能 spawn 吗)**:v1 **编译期拒绝**(handler 效果白名单不含 sync)。机械层面嵌套 spawn 实测可行〔实测:worker 内 spawn 返回 42,exit 0〕,但 serve 场景下 `sync scope` 的"块退出自动 join"缺少自然的块边界(handler 由服务端调用,不是被外层作用域框住),放开需要先定义 scoped 语义在 handler 内的形态并实测深度-2 全管线——登记为评审清单第 11 项,不属于 v1。
 
-**四后端行为边界**:tree / VM 真实执行(worker 基建双引擎已一致——测试 §15"spawn_all 双引擎一致"既有);wasm **资格自动拒绝**(net 效果函数永不进 eligible——机制现成,effectful 函数在 sig.effects 处拒绝,与 http_get 现状同构);C 后端**发射期显式拒绝**("C1 不支持该程序形态" exit 1,现成路径)。拒绝不是分歧:三处行为均已登记、可测(§63 会锁定)。
+**四后端行为边界**:tree / VM 真实执行(worker 基建双引擎已一致——测试 §15"spawn_all 双引擎一致"既有);wasm **资格自动拒绝**(net 效果函数永不进 eligible——机制现成,effectful 函数在 sig.effects 处拒绝,与 http_get 现状同构);C 后端**发射期显式拒绝**("C1 不支持该程序形态" exit 1,现成路径)。拒绝不是分歧:三处行为均已登记、可测(§66 会锁定)。
 
 ### 2.2 方案 b:解释器内 green-thread 调度
 
@@ -190,7 +192,7 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 - **② 效果系统表达**:(a)=5——serve 以 net 效果声明(与 http_get 同表),handler 效果白名单编译期检查(调用点检查 handler 值效果 ⊆ 白名单),服务端成为**效果边界**(net 在 serve 进入、在响应退出),与"效果即泛化 unsafe 块"哲学同构。(b)=3——效果照常静态,但阻塞点=切换点把效果与调度耦合,效果函数在 green thread 中的配额/超时语义需全新定义。(c)=2——调用点静态检查同样可用(传播链并不断裂,§2.3),但 handler 与主程序共享运行时状态、io 无捕获纪律、跨 await 效果传播未定义,效果边界不再干净。
 - **③ 零依赖**:三者同分——node:http / node:net / worker_threads 皆内建(先例:worker_threads 自 v0.14、node:crypto 自 v0.34)。(b) 的"纯 JS"没有额外优势,因为 (b) 的底座仍需 Node socket 事件。
 - **④ 四后端一致性**:(a)=4——行为边界与现状完全同构:tree/VM 真实执行、wasm 资格自动拒绝、C 发射期显式拒绝;拒绝面三处已登记可测。扣 1 分是诚实代价:worker 内的执行只发生在 JS 侧,C 后端用户拿不到服务端能力(显式拒绝,不是伪装)。(b)=2、(c)=2——两者的机制都让"拒绝面"从函数资格扩大到整个运行时模型,一致性证明面暴涨。
-- **⑤ 实现成本(以 sync/proc 基建为基准)**:(a)=4——**复用清单**:worker 管线(syncWorkerCode)、wire 序列化(Json/tuple 可跨)、SAB 传输协议(http 三入口同款)、Atomics 阻塞纪律、错误链 wire v2(join_detailed)、worker 启动/终止/上限(spawn_all)、独立进程回环测试模式(tests/net_e2e.mjs)。新增:accept 线程(node:http 封装 + 队列/上限 ≈ 250 行)+ serve builtin + checker 签名特例(参照 spawn 的 checkStdCall)+ §63 测试——**数百行量级,不触碰 interp/vm 语义心脏**。(b)=1——解释器可重入/多实例 + 全部阻塞点(read_line/http_get/exec/sleep)异步化 + 调度器 + wasm 交互:千行级,触碰语义心脏。(c)=2——数百行但全部落在 VM 重入高危区。
+- **⑤ 实现成本(以 sync/proc 基建为基准)**:(a)=4——**复用清单**:worker 管线(syncWorkerCode)、wire 序列化(Json/tuple 可跨)、SAB 传输协议(http 三入口同款)、Atomics 阻塞纪律、错误链 wire v2(join_detailed)、worker 启动/终止/上限(spawn_all)、独立进程回环测试模式(tests/net_e2e.mjs)。新增:accept 线程(node:http 封装 + 队列/上限 ≈ 250 行)+ serve builtin + checker 签名特例(参照 spawn 的 checkStdCall)+ §66 测试——**数百行量级,不触碰 interp/vm 语义心脏**。(b)=1——解释器可重入/多实例 + 全部阻塞点(read_line/http_get/exec/sleep)异步化 + 调度器 + wasm 交互:千行级,触碰语义心脏。(c)=2——数百行但全部落在 VM 重入高危区。
 - **⑥ 可回退性**:(a)=5——独立 std.net 面(新签名 + 新 builtin + 新宿主线程),不改既有语义,整体回退 = 删增量;fuzz 生成器不含 net,不受影响。(b)/(c)=2——动 interp/vm 心脏,回退 = 大手术。
 
 ---
@@ -200,7 +202,7 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 1. **内存是硬上限**〔实测〕:55MB RSS/worker → 16 并发 ≈ 0.9GB、100 并发 ≈ 5.5GB(RSS ≈ 工作集口径;commit 口径的区分与量化见 §2.3 内存口径备注、§2.4)。方案 a 的语义上限是**数十级连接**(上限默认值建议 16,可配;§2.4 佐证 16 = 吞吐饱和点)。它与北星支柱 3 的"10 万级"差约三个数量级——**本 ADR 不承诺也不伪装接近它**。10 万级需要事件驱动的 async 运行时,而 async 与确定性的调和正是方案 b 的全部困难(§2.2),当前无解,维持远期;若 Ming 的真实场景(安全工具/agent 胶水/自举工具)永远不需要,"永不做"也是诚实答案——由后续 ADR 复核,不在此承诺。
 2. **每请求 ~60ms 冷启动**〔实测:§1.2 spawn 全管线 ~50ms;§2.4 原型 p50 61ms@10 并发 / 85ms@16 并发,其中模块导入 ≈ 38ms〕:v1 无 AOT 快路径(注意口径:build 的 AOT 回退目前**只查 sync/unsafe**——bin/ming.js:1215-1232,net 不触发;实现 serve 时必须把 serve 所在程序并入同一条 sig.effects 回退检测,与 v0.43 修 spawn 的机制同款,否则重演"worker 读 '<artifact>' 源路径 → ENOENT";artifact 快路径 = 后续优化,不在 v1)。吞吐定位 ≈ **内网/工具/agent 服务**(§2.4 原型实测吞吐饱和 ≈ **190 req/s**:16 并发 181、40 并发超订阅仍 190——加并发只抬延迟不抬吞吐),不是生产 Web 服务。
 3. **HTTP 解析委托 node:http**:解析细节(头合并、大小写、分块编码)是宿主语义,不在 Ming 合同内;Ming 唯一承诺的形态是请求 Json。
-4. **单维护者的真实成本**:accept 线程是新的宿主并发面(线程间 SAB 协议 + 队列),§63 必须覆盖并发上限/队列溢出/handler panic/超时/双引擎一致/三引擎拒绝一致(草案见 §5.2 任务 4)。
+4. **单维护者的真实成本**:accept 线程是新的宿主并发面(线程间 SAB 协议 + 队列),§66 必须覆盖并发上限/队列溢出/handler panic/超时/双引擎一致/三引擎拒绝一致(草案见 §5.2 任务 4)。
 5. **v1 明确不做**(逐项给出理由,不是"以后再说"):
    - **WebSocket**:协议升级是流式双向,与"worker = 请求→响应纯函数"模型冲突;且 v1 不做任何流式。
    - **流式请求/响应(chunked 透传)**:流式需要请求 worker 持有 socket 并多次进出(要么 handle 转移要么回调),打破"响应 = 纯函数"的确定性结构。
@@ -238,10 +240,10 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 - [ ] **7. 体上限**:确认请求/响应体 8MB(与 http 客户端同款);请求超限 413、响应超限 500 并关闭(不截断)。
 - [ ] **8. handler 超时**:确认缺省 30s(可配与否在实现时定)、terminate 硬杀、504 + M4010;注意与 http_get 默认 35s 超时(src/interp.js:1460)的交互——handler 内慢外呼必先撞 30s 硬杀(504),http_get 自身超时在 handler 内不可达。
 - [ ] **9. io 纪律**:确认请求 worker 内 print 捕获丢弃(spawn 同款纪律),v1 无服务端访问日志(§4 第 5 条)。
-- [ ] **10. 四后端边界**:确认 wasm 资格拒绝(net 效果自动拒绝)+ C 发射期显式拒绝("C1 不支持该程序形态" exit 1)+ tree/VM 真实执行;§63 锁定三引擎拒绝一致。
+- [ ] **10. 四后端边界**:确认 wasm 资格拒绝(net 效果自动拒绝)+ C 发射期显式拒绝("C1 不支持该程序形态" exit 1)+ tree/VM 真实执行;§66 锁定三引擎拒绝一致。
 - [ ] **11. serve 内 spawn**:确认 v1 拒绝(handler 白名单无 sync);将来放开前需先实测深度-2 全管线并定义 scoped 在 handler 内的形态(§2.1)。
 - [ ] **12. 性能预算**:确认 v1 定位 = "接受 ~60ms/请求冷启动〔实测:§1.2 全管线 ~50ms,§2.4 原型 p50 61ms@10 并发 / 85ms@16 并发〕、并发上限 16〔§2.4 原型实测 = 吞吐饱和点,饱和 ≈ 190 req/s〕、内存 55MB/worker(RSS 口径,§2.3 备注)"的内网/工具/agent 服务,不承诺生产吞吐,不承诺 10 万级连接(北星支柱 3 维持远期)。
-- [ ] **13. 测试形态**:确认 §63 用独立进程回环测试(沿用 tests/net_e2e.mjs 模式),CI 仅 localhost;含并发/panic/超时/上限冒烟。
+- [ ] **13. 测试形态**:确认 §66 用独立进程回环测试(沿用 tests/net_e2e.mjs 模式),CI 仅 localhost;含并发/panic/超时/上限冒烟。
 - [ ] **14. 文档面**:确认 GUIDE 新增 std.net 服务端节 + capabilities"TCP/UDP/服务端"行 ❌ → 🟡(worker-per-connection、数十级上限如实登记)+ design.md §6.3 补"分阶段"说明(阶段 1 = worker-per-connection,阶段 2 = async 运行时另 ADR)。
 - [ ] **15. 监听地址**:确认 v1 `serve(port, handler)` 固定绑 `127.0.0.1`(签名无 host 参数 = 隐式回环,零配置默认安全;node:http 缺省绑全部接口,必须显式收窄);放开自定义 host/内网监听属后续 ADR(需显式 host 参数与文档警告)。
 - [ ] **16. 请求 worker 启动失败处理**:确认降级策略(先例:spawn_all 对启动失败任务记 Err、不影响其余,src/interp.js:2001/2008;建议 500 + Json{code:'worker_start_failed'} 响应)、并发名额是否同步释放、是否计入请求计数。
@@ -251,7 +253,7 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 1. **checker**(~60 行,参照 spawn 的 checkStdCall 特例):serve 签名登记(net 效果)+ handler 白名单与形态检查 + 静态拒绝面(M3029/M3002/M3005);零新增码。
 2. **interp**(~350 行):serve builtin(主线程 Atomics.wait 协调)+ accept 线程(node:http 封装,`listen(port, '127.0.0.1')` 固定回环 + FIFO 队列/上限/体上限/超时 + worker 启动失败降级,清单 16)+ 请求 worker(复用 syncWorkerCode,capture:true,print 捕获;**按请求分派**,连接只是传输)。
 3. **载荷**:请求/响应 Json,键集固定、additive;错误响应体统一 Json{code, message}(413 / 503 / 500 / 504 全部,见 §2.1 错误表)。
-4. **测试 §63 ≥12**:效果强制(M3029)/ handler 白名单拒绝(sync·unsafe·ffi 三向)/ handler 形态拒绝(闭包)/ 回环 GET·POST / panic → 500 / 超时 → 504 / 体超限 → 413 / 队列满 → 503 / 双引擎一致 / wasm 资格拒绝(构造说明:程序内放置一个**无 net 效果的纯函数**处于 wasm 候选位置,断言 `[wasm] fn <名> OK`;serve 所在入口函数因 net 效果永不进 eligible——无 REJECT 噪声,证明拒绝是资格层的静态事实而非运行失败)/ cc 发射期拒绝(exit 1)/ 16 并发冒烟。
+4. **测试 §66 ≥12**:效果强制(M3029)/ handler 白名单拒绝(sync·unsafe·ffi 三向)/ handler 形态拒绝(闭包)/ 回环 GET·POST / panic → 500 / 超时 → 504 / 体超限 → 413 / 队列满 → 503 / 双引擎一致 / wasm 资格拒绝(构造说明:程序内放置一个**无 net 效果的纯函数**处于 wasm 候选位置,断言 `[wasm] fn <名> OK`;serve 所在入口函数因 net 效果永不进 eligible——无 REJECT 噪声,证明拒绝是资格层的静态事实而非运行失败)/ cc 发射期拒绝(exit 1)/ 16 并发冒烟。
 5. **文档**:GUIDE std.net 服务端节(含生命周期与检查点表)· capabilities 行 ❌ → 🟡 · design.md §6.3 分阶段说明 · 修订记录。
 6. **回退**:删增量即可(不改既有语义);fuzz 生成器不含 net,模糊器零影响;`ming build` 的 AOT 回退目前只查 sync/unsafe(bin/ming.js:1215-1232),net 不触发——实现时须把 serve 所在程序并入同一条 sig.effects 回退检测(与 v0.43 修 spawn 的机制同款,§4 第 2 条),避免重演"worker 读 '<artifact>' 源路径 → ENOENT"。
 
@@ -262,10 +264,10 @@ Ming 主线程(VM,同步 JS 形态不变)         宿主线程(worker_threads)
 1. **§4.3.6 任务 1**:标注 ✅(2026-11-13,ADR-001 交付;结论:方案 a 条件承诺,文档 docs/adr-001-concurrency.md)。
 2. **§4.3.6 任务 2(原型实验)**:改写为"以实测替代原型"——spawn 全管线 ~50ms/worker、边际 ~6.5–7ms、纯 worker RSS 52–55MB、嵌套 spawn 机械可行、128 worker 全部成功(数据在 ADR §1.2);实现阶段不再另做原型。
 3. **§4.3.6 任务 3(条件承诺)**:细化为"ADR-001 §5.1 评审清单 16 项全勾后才实现",并固化 v1 参数(并发 16 / 队列 256 / 体 8MB / 超时 30s → 504 / 绑定失败 Err 化 / 零新增 M 码 / 载荷 Json / 固定 127.0.0.1)。
-4. **§4.3.6 验收行**:补"实现时 §63 ≥12 + 三引擎拒绝一致(三段式:① tree/VM 真实执行一致——双引擎差分逐字一致;② wasm 资格拒绝锁定——net 效果函数永不进 eligible,strict-wasm/调试旗标可观测,§5.2 任务 4 构造;③ cc 发射期拒绝锁定——exit 1;定义见 §2.1/§5.2)+ 评审清单全勾留档;不实现时 plan 记录'清单未全勾'的具体项与理由"。
+4. **§4.3.6 验收行**:补"实现时 §66 ≥12 + 三引擎拒绝一致(三段式:① tree/VM 真实执行一致——双引擎差分逐字一致;② wasm 资格拒绝锁定——net 效果函数永不进 eligible,strict-wasm/调试旗标可观测,§5.2 任务 4 构造;③ cc 发射期拒绝锁定——exit 1;定义见 §2.1/§5.2)+ 评审清单全勾留档;不实现时 plan 记录'清单未全勾'的具体项与理由"。
 5. **§4.3.6 风险/回退行**:补方案 b/c 否决理由归档(评分表见 ADR §3);并发上限风险已量化(内存 55MB/worker → 数十级)。
 6. **§4.3.9 明确不做**:补"服务端不做 WebSocket / 流式 / keep-alive 调优 / TLS / UDP / 优雅停机 / 访问日志 / handler 内 sync·unsafe·ffi;10 万级连接维持北星远期(另 ADR 复核)"。
-7. **§4.3.10 v0.59 行**:完成判定改为"ADR-001 完成(方案 a + 条件承诺);若实现:评审清单 16 项全勾 + §63 ≥12 + 三引擎拒绝一致(三段式,见 §6 第 4 条)";量化门槛同步。
+7. **§4.3.10 v0.59 行**:完成判定改为"ADR-001 完成(方案 a + 条件承诺);若实现:评审清单 16 项全勾 + §66 ≥12 + 三引擎拒绝一致(三段式,见 §6 第 4 条)";量化门槛同步。
 8. **§0 状态表「下一步」行与 README 路线图**:随 v0.59 收口同步 ADR 交付事实(收口阶段统一)。
 
 ---

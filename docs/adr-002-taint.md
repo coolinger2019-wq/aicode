@@ -5,6 +5,8 @@
 > **结论先行**:污点做——但**不是** `untrusted` 效果,而是**类型级污点标注 `Untrusted[T]`**(编译期标签,运行时擦除)。"污点即效果"在建模层面被否决:效果是函数级事实("这个函数会做什么"),污点是数据级事实("这份数据从哪来"),粒度错位导致净化不可表达、契约不可用、资格面全灭(§2.1)。
 > **关联**:docs/adr-001-concurrency.md(同系列)、docs/adr-003-mask.md(mask 已另行裁决:不做)、docs/plan.md §4.3.7(任务书)与 §4.2.8 Backlog("污点即效应,保留 v0.57+;在 mask 之后")、docs/design.md §2.13(效果系统)、§2.16(三期门禁)、§6(北星)。
 
+> **2026-11-13 三方评估修订(重要)**:本文的 9 源全量标注方案**不是 v1**。v1 定为**窄源**(仅 `env.get`、`read_line` + extern 返回强制;fs/net/proc 内容源为 v1 泄漏窗口),因为 9 源全量会让 `mingkit`/`json_query`/`diaghot`/`log_analyzer`/`edit` 五个自写工具直接 M3002(实测)。同时修正:诊断码由 M3048/M3049 改为 **M3049/M3050**(M3048 已被 v0.59 泛型本地函数占用);分节号由 §64 改为 **§65**。五处补丁(窄源边界/`debug` 洗白禁面/白名单表/净化器授权位/码号)的评审是 v0.61 启动门槛,见 plan §4.4.4 任务 6、§4.4.5、§4.4.10。以下正文保留 2026-11-13 初稿的完整分析(9 源全量属于 v1.1 目标),与窄源 v1 的差异以本注、§1.2 修订注与 §3.1 修订块为准。
+
 ---
 
 ## 1. 背景与威胁模型
@@ -34,7 +36,9 @@ Ming 的定位是 **AI 协作语言**(design §1)与**安全工具语言**(§6 �
 | `std.proc.exec` | `(str, Vec[str]) -> Result[(exit, stdout, stderr), str]` | stdout/stderr(exit 是 i64,无污点意义) |
 | `extern "库" fn ...` | C 世界返回值(v0.42 起数值/str/Ptr) | 全部返回值 |
 
-来源计数口径(与 §3.1/§6.1/§7/§8 的"9 个来源函数"对齐):std 来源函数共 **9 个**(上表 `http_request`/`_opts` 折为一行但计两个;`extern` 行是检查器强制规则,不计入签名变更数,见 §3.1)。签名经 `src/checker.js` STD_MODULES 与 GUIDE §18 双向核对(2026-11-13;初稿 `read_to_end` 误作 `Vec[u8]`,实为 `str`,已更正)。
+来源计数口径(完整攻击面):std 来源函数共 **9 个**(上表 `http_request`/`_opts` 折为一行但计两个;`extern` 行是检查器强制规则,不计入签名变更数,见 §3.1)。**v1 只标其中 3 个**(`env.get`/`read_line`/extern;见下注)。签名经 `src/checker.js` STD_MODULES 与 GUIDE §18 双向核对(2026-11-13;初稿 `read_to_end` 误作 `Vec[u8]`,实为 `str`,已更正)。
+
+> **v1 范围修订(2026-11-13 三方评估)**:上表是**完整攻击面清单**,但 v1 只标其中三个来源——`std.env.get`、`std.io.read_line`、extern 返回(检查器强制)。`read_to_end`/`read_file`/`read_bytes`/`http_*` 响应体/`proc.exec` stdout/stderr 在 v1 **明确不标**,是 v1 泄漏窗口(理由:9 源全量会让 5 个自写工具直接 M3002;v1.1 需先设计 `Untrusted[u8]`/`Untrusted[Json]` 载体与净化器授权矩阵)。详见 §3.1 与 §6.2 ②。
 
 **sink**(不可信值流入即成漏洞的位置,按实参位):
 
@@ -103,21 +107,23 @@ plan §4.3.7 给出二选一:"`untrusted` 效果或 std 类型标注"。本节�
 
 ### 3.1 来源标注:改 std 签名(升 minor,破坏性)
 
-来源函数的返回载荷标 `Untrusted`:
+> **v1 窄源修订(2026-11-13 三方评估)**:v1 **只标以下来源**,不标 fs/net/proc 内容源。
 
 ```ming
-// v1 起(GUIDE §18 对应变更)
+// v1 窄源(2026-11-13 定案)
 std.env.get(k: str) -> Option[Untrusted[str]]
 std.io.read_line() -> Untrusted[str]
-std.io.read_to_end() -> Untrusted[str]
-std.fs.read_file(path: str) -> Result[Untrusted[str], str]
-std.net.http_get(url: str) -> Result[(i64, Untrusted[str]), str]   // 状态码 i64 无污点
-std.proc.exec(cmd, args) -> Result[(i64, Untrusted[str], Untrusted[str]), str]
+extern "c" fn f(...) -> str        // 检查器强制按 -> Untrusted[str] 处理(签名禁写裸 str 返回)
+
+// v1 不标(如实登记的泄漏窗口;v1.1 需载体设计后再扩,不得静默扩载体):
+//   std.io.read_to_end / std.fs.read_file / std.fs.read_bytes
+//   std.net.http_get / http_request / http_request_opts 的响应体与响应头值
+//   std.proc.exec 的 stdout / stderr
 ```
 
-(上为代表性示例;`http_request`/`http_request_opts` 同规则标响应体/头载荷。)
+**为什么窄源**:9 源全量会让 `mingkit`(read_file→split/print)、`json_query`(read_file→json.parse)、`diaghot`(proc.exec stdout→json.parse)、`log_analyzer`(read_file→split)、`edit`(read_file→split)五个自写工具直接 M3002——v1 不可迁移,不是最小可行。窄源换来迁移可行性,代价是 fs/net/proc 的漏报窗口(§6.2 ②),如实写入 GUIDE 与来源白名单测试。
 
-这是破坏性变更。v0.x 阶段升 minor 即可(design §5);调用处迁移是机械的(加 sanitize 或改声明 Untrusted 形参)。**迁移口径**:§1.2 的 9 个来源函数中 **8 个签名变更**——`read_bytes` 的 `Vec[u8]` 载荷 v1 不标、签名不动(漏报窗口见 §6.2 ②);extern 返回强制是检查器规则,非签名变更(见下)。**不做**"新旧入口并存"——两种写法违反"一种结构一个语法"(design §1 原则 5),警告方案(W3xxx "此处返回未标注污点")会制造持续噪音。
+这是破坏性变更。v0.x 阶段升 minor 即可(design §5);调用处迁移是机械的(加 sanitize 或改声明 Untrusted 形参)。**v1 迁移口径**:2 个 std 签名(`env.get`/`read_line`)+ extern 强制,估计 12–20 处调用点;`read_bytes` 的 `Vec[u8]` 载荷与 fs/net/proc 内容源 v1 均不标(漏报窗口见 §6.2 ②)。**不做**"新旧入口并存"——两种写法违反"一种结构一个语法"(design §1 原则 5),警告方案(W3xxx "此处返回未标注污点")会制造持续噪音。
 
 **extern 返回值自动标污**(防漏标):`extern "c" fn f(...) -> str` 一律按 `-> Untrusted[str]` 检查(检查器强制,extern 签名不允许写裸 str 返回)——C 世界的返回值没有可信的,让漏标成为语法错误而非纪律问题。
 
@@ -165,7 +171,7 @@ std.proc.exec(cmd, args) -> Result[(i64, Untrusted[str], Untrusted[str]), str]
 
 `Untrusted[T]` 是类型,效果系统零改动:`KNOWN_EFFECTS` 不动、`checkEffects` 不动、M3029/M3030 不动。交互点两个,均无冲突:
 
-- **带效果函数与污点正交**:`fn f(u: Untrusted[str]) with fs` 合法(处理脏数据 + 声明 fs 效果是两件事);来源函数(如 `read_file`)同时带 fs 效果与 Untrusted 返回——效果陈述"会读盘",类型陈述"读来的不可信"。
+- **带效果函数与污点正交**:`fn f(u: Untrusted[str]) with fs` 合法(处理脏数据 + 声明 fs 效果是两件事);来源函数(如 v1 的 `env.get`/`read_line`)同时带效果与 Untrusted 返回——效果陈述"读外部输入",类型陈述"读来的不可信";fs/net/proc 内容源在 v1 不标(泄漏窗口,见 §3.1/§6.2 ②)。
 - **闭包**:创建处继承效果(effectSink,src/checker.js:1356);污点随参数/返回类型照常传播。**存入数据结构的闭包不追踪调用点效果**(design §2.13 已知限制)对污点无影响——污点是类型事实,不经调用点追踪。
 
 ### 4.2 契约系统(任务书问:"requires 纯函数吃 untrusted 实参会怎样")
@@ -255,15 +261,15 @@ fn port_of(u: Untrusted[str]) -> Option[i64] {
 
 Untrusted 面比两者都小:**无 codegen、无运行时新形态、无资格旗标**。主体:
 
-- checker:类型构造器注册 + unify(unify 对新 `k: 'untrusted'` 分支)+ 白名单方法表 + extern 返回强制 + 诊断发射,估 **200–300 行**(checker 5.1k 行的局部增量);
-- interp:std 来源函数返回值不变(擦除)、std.unstr 净化族实现、`mark`;估 **100 行以内**;
-- diag:新码 2–3 个(见 §8)三处登记;
+- checker:类型构造器注册 + unify(unify 对新 `k: 'untrusted'` 分支)+ 白名单方法表 + extern 返回强制 + 诊断发射,估 **100–200 行**(checker 5.3k 行的局部增量);
+- interp:std 来源函数返回值不变(擦除)、std.unstr 净化族实现、`mark`;估 **50 行以内**;
+- diag:新码 **2 个**(M3049/M3050,见 §8)三处登记;
 - 文档:GUIDE 效果/污点节 + 修订记录、diagnostics、capabilities;
-- **最大成本不在代码在迁移**:§3.1 的 9 个来源函数标注(8 个签名变更,`read_bytes` 除外——其 `Vec[u8]` 载荷 v1 不标)波及现有测试/示例/自举工具的调用点——机械但面广,估计 30–60 处调用点修改 + 新分节测试 §64 约 25–35 项。
+- **最大成本不在代码在迁移**:v1 窄源(2 个 std 签名 + extern 强制,见 §3.1)波及现有测试/示例/自举工具的调用点——机械但面窄,估计 12–20 处调用点修改 + 新分节测试 §65 约 15–20 项。
 
 ### 6.2 误报/漏报风险
 
-**漏报窗口(诚实清单)**:① std 新增来源函数忘标——来源白名单测试锁定;② `Vec[u8]` 载荷 v1 不标——来源中唯一字节面是 `std.fs.read_bytes -> Result[Vec[u8], str]`(`read_to_end` 返回 `str`,已随 §1.2 更正标污,无此窗;初稿误列),其签名 v1 不变——**真实漏报窗口**,如实登记,v1.1 扩 `Untrusted[u8]`(或裁定字节载荷只经 `bytes.to_str()` 桥接时标注);③ 白名单方法若误纳产出载体值的方法——白名单表测试锁定;④ 来源函数的 **Err 载荷不标污**——`read_file`/`http_get` 的 Err 串可含路径回显、`proc.exec` 的 Err 串可含命令回显,错误消息本身可能是不可信内容的载体。v1 接受该窗口(Err 通路典型归宿是日志/诊断面,与"不进 sink 面"的 print 取舍同源,见误报面①),如实登记;v1.1 与清单 9 的字节载荷一并裁决。
+**漏报窗口(诚实清单)**:① std 新增来源函数忘标——来源白名单测试锁定;② **v1 窄源之外的内容来源不标**——`fs.read_file`/`read_bytes`/`read_to_end`/`net.http_*` 响应体/`proc.exec` stdout/stderr 在 v1 明确不标,这是 **v1 的主要漏报窗口**(换来的迁移可行性:9 源全量会让 5 个自写工具直接 M3002);v1.1 需先设计 `Untrusted[u8]`/`Untrusted[Json]` 载体与净化器授权矩阵,不得静默扩载体;③ 白名单方法若误纳产出载体值的方法——白名单表测试锁定;④ 来源函数的 **Err 载荷不标污**——`read_file`/`http_get` 的 Err 串可含路径回显、`proc.exec` 的 Err 串可含命令回显,错误消息本身可能是不可信内容的载体。v1 接受该窗口(Err 通路典型归宿是日志/诊断面,与"不进 sink 面"的 print 取舍同源,见误报面①),如实登记;v1.1 与清单 9 的字节载荷一并裁决。
 
 **误报面(可修,方向是收敛而非发散)**:① 合法低危流(打印脏数据调试)被迫净化——净化损耗内容,调试不便;诚实取舍:print 拒绝 Untrusted 是对的(日志注入正是威胁面之一),不便写进 GUIDE "给 AI 的使用建议";② 透传场景(把 header 原样传给日志函数)需要目标函数显式声明 Untrusted 形参——传播税,design §2.13 明说接受。
 
@@ -281,17 +287,18 @@ Untrusted 面比两者都小:**无 codegen、无运行时新形态、无资格�
 
 **推迟条件(先于实现必须满足,不承诺版本)**:
 
-1. v0.59 服务端 ADR(ADR-001)收口——v0.60 的语言面带宽先让给服务端/并发的落地评估;
-2. 评审清单(§9)逐项裁决,尤其清单 1(类型名)、5(净化族范围)、6(extern 强制标污)、9(v1 载荷仅 str 的漏报窗口是否可接受);
-3. 一次破坏性变更窗口:9 个来源函数标注(8 个签名变更,见 §3.1 迁移口径)+ 迁移,适合与下一个 minor 一起做,不做孤立的破坏版。
+1. v0.60 资源门禁一致性交付 + 本 ADR 五处补丁评审通过(窄源边界/`debug` 洗白禁面/白名单表/净化器授权位/码号 M3049/M3050),见 plan §4.4.4 任务 6;
+2. 评审清单(§9)逐项裁决,尤其清单 1(类型名)、5(净化族范围)、6(extern 强制标污)、9(v1 窄源与载荷窗口是否可接受);
+3. 12 工具迁移 spike:证明窄源方案下 `mingkit`/`json_query`/`diaghot`/`log_analyzer`/`edit` 不改内容处理逻辑;不通过则不实现(退化为测试与观测版,见 plan §4.4.5);
+4. 一次破坏性变更窗口:v1 窄源标注(2 个 std 签名 + extern 强制,见 §3.1 迁移口径)+ 迁移,适合与下一个 minor 一起做,不做孤立的破坏版。
 
 **不做的理由(如果最终否决,应基于以下事实而非成本)**:若评审认为"污点值连 `trim` 都不能调"的操作面过严导致采用率归零,则污点系统没有存在价值——宁可不建一个没人用的门禁,也不放宽到 lint。触发重开条件:出现真实用户/AI 工作流数据表明输入校验缺陷是 Ming 程序的主要缺陷类别(目前无使用数据,如实承认威胁模型是推断不是统计)。
 
-## 8. v1 任务草案(不承诺版本;通过评审后才细化)
+## 8. v1 任务草案(v0.61 条件;启动门槛见 plan §4.4.5)
 
-1. **checker**:Untrusted 类型构造器 + unify 分支 + 白名单方法表 + extern 返回强制 + 诊断(新码建议:`M3048[untrusted-mismatch]`(Untrusted 实参进非 Untrusted 槽,含 hint"先 std.unstr.* 净化")、`M3049[untrusted-method-forbidden]`(白名单外方法);与既有 M3002/M3008/M3012 的分工在实现时按"专用码优先、通用码兜底"裁定);三处登记。
-2. **std 面**:9 个来源函数标注(8 个签名变更,`read_bytes` 的 `Vec[u8]` 载荷 v1 不标);`std.unstr.sanitize_path -> Result[str, str]` + `std.unstr.mark`;GUIDE §18 各节同步。
-3. **测试**:§64 新分节 25–35 项(来源标注正/负例、sink 免费门禁、载荷传播、白名单正/负例、契约内 sanitize、extern 强制、`?`/Result 保留、四引擎运行时一致(擦除验证:同程序标注与否输出逐字同)、来源/白名单/净化测试向量锁定)。
+1. **checker**:Untrusted 类型构造器 + unify 分支 + 白名单方法表 + extern 返回强制 + 诊断(新码:`M3049[untrusted-mismatch]`(Untrusted 实参进非 Untrusted 槽,含 hint"先 std.unstr.* 净化")、`M3050[untrusted-method-forbidden]`(白名单外方法或洗白尝试,含 `debug` 禁面);与既有 M3002/M3008/M3012 的分工在实现时按"专用码优先、通用码兜底"裁定);三处登记。
+2. **std 面**:v1 窄源标注(仅 `env.get`、`read_line` + extern 返回强制;fs/net/proc 内容源不标,见 §3.1);`std.unstr.sanitize_path -> Result[str, str]` + `std.unstr.mark`;GUIDE §18 各节同步。
+3. **测试**:§65 新分节 15–20 项(来源标注正/负例、sink 免费门禁、载荷传播、白名单正/负例、契约内 sanitize、extern 强制、`?`/Result 保留、四引擎运行时一致(擦除验证:同程序标注与否输出逐字同)、来源/白名单/净化测试向量锁定、`debug` 拒绝)。
 4. **文档**:GUIDE 新节(污点标注)+ 修订记录、design.md 新 §6.12(或并入本 ADR 引用)、capabilities "数据流安全(污点标注)" 行 ❌ → ✅(视交付)、README 路线图。
 5. **验证门槛**:`run.mjs` 全绿;`fuzz` 0 分歧;`proof_fuzz` 三模式 0 误报;四引擎对标注程序逐字一致;check 语料耗时 ≤1.3x。
 
@@ -307,11 +314,11 @@ Untrusted 面比两者都小:**无 codegen、无运行时新形态、无资格�
 | 6 | extern 返回值强制标污(签名禁写裸 str 返回) | **强制**;漏标是语法错误而非纪律。ffi struct 面扩大时(Backlog "ffi 面扩大"条目)另行评估污点规则——struct 返回值的字段级标注是新的裁决面,本 ADR 不预支结论 |
 | 7 | 拼接/插值传播:v1 拒绝,还是提供 `std.unstr.concat`(污进污出)? | **拒绝**;若透传场景证明需要,concat 作为族函数加入(签名即传播规则) |
 | 8 | Untrusted 操作面:零操作 vs 白名单(parse_i64/char_len 等产出纯值的方法) | **白名单**;零操作使处理函数不可写;白名单表测试锁定,"产出同污点载体"的方法 v1 不设 |
-| 9 | v1 载荷仅 str 的漏报窗口(`Vec[u8]` 来源不标) | 接受并登记 v1.1;或裁定 `bytes.to_str()` 返回 Untrusted[str] 作为桥接 |
+| 9 | v1 载荷仅 str 的漏报窗口(`Vec[u8]` 来源不标) | v1 窄源(仅 `env.get`/`read_line` + extern)已把 fs/net/proc 内容源列入泄漏窗口,见 §3.1/§6.2 ②;v1.1 按载体设计扩(`Untrusted[u8]`/`Untrusted[Json]`),不得静默扩载体 |
 | 10 | `std.unstr.mark`(标脏)公开 or 仅 test 块 | **公开**;标脏只会更严,公开无危害且简化测试 |
 | 11 | 契约内净化(`requires sanitize_path(u)...`) | **允许**(净化纯函数是关键设计约束,实现必须保持 sanitize 零效果);契约形态经 Result 处理,见 §4.2(`is_ok` 前置 + `unwrap`,双调用为最简可行表述) |
-| 12 | 诊断码:专用码(M3048/3049)vs 复用 M3002 | **专用码**;hint 可携带"先净化"处方,修复处方(fix)指向 sanitize 调用 |
-| 13 | 实现时序:v0.60 vs 让位服务端落地后的下一个 minor | **让位**;见 §7 推迟条件 1/3 |
+| 12 | 诊断码:专用码(M3049/M3050)vs 复用 M3002 | **专用码**;hint 可携带"先净化"处方,修复处方(fix)指向 sanitize 调用;M3048 已被 v0.59 泛型本地函数占用,不得复用 |
+| 13 | 实现时序:v0.61 条件 vs 让位 serve 落地后 | **v0.61 条件实现**;启动门槛见 plan §4.4.5(五处补丁评审 + 工具迁移 spike + 净化器策略裁决),不满足则退化为测试与观测版 |
 | 14 | wasm/C 资格裁定:Untrusted 形参的资格按载体判定;改动面 = checker sig 层/wasm.js `numOk` 解包 Untrusted,运行时擦除 | **按载体判定**;该裁定触及 wasm 资格单一事实来源 `src/wasm.js` `analyze()`(AGENTS 硬规则 6),是实质决策——实现必须保持 `analyze()` 不裂化(§4.3);运行时四后端仍零改动 |
 | 15 | 工具链联动:`ming doc --json`、LSP hover/补全、typeStr 渲染、接口哈希对 `Untrusted[T]` 的处理 | typeStr 渲染为 `Untrusted[T]` 字面串(与 `Vec[str]` 同规则),doc/LSP 随 typeStr 自动覆盖;接口哈希按渲染串计算——污点标注变化即接口变化(显式);v1 实现期逐点核验并补测试,属文档/工具面,非语义面 |
-| 16 | plan 落地同步(评审通过后):§4.3.10 v0.60 行、§4.2.8 污点行处置文字、§4.2.2 编号撞号 | §4.3.10 v0.60 行同步为"ADR-002/003 完成,结论见 docs/adr-002-taint.md / adr-003-mask.md";§4.2.8 "污点即效应"行处置文字改为"类型级方案已通过(ADR-002),实现推迟,条件见 ADR-002 §7";plan §4.2.2 内联 ADR 表与 docs/adr-00N 文件系列**编号撞号**(内联"ADR-002"= mask 不做,而 adr-002-taint.md = 污点)——内联表改称"v0.52 规划期裁决记录(编号已被 docs/adr-00N 文件系列取代)"或加映射(与 ADR-003 清单 9 同步) |
+| 16 | plan 落地同步(评审通过后):§4.4.5/§4.4.10、§4.2.8 污点行处置文字、§4.2.2 编号撞号 | plan §4.4.4 任务 6/§4.4.5/§4.4.10 已记录五处补丁与窄源 v1;§4.2.8 "污点即效应"行处置文字改为"类型级方案已通过(ADR-002),v0.61 窄源条件实现";plan §4.2.2 内联 ADR 表标题已注明"编号已被 docs/adr-00N 文件系列取代"(撞号已处理) |
