@@ -9619,6 +9619,723 @@ fn main() with io, fs {
   // §64-C-END
 }
 
+// ===================== 65. v0.61:污点最小片(窄源 v1;ADR-002)=====================
+// 文件所有权:§65-K = tools/*.ming 迁移(12 处 env.get 解包位)+ 本区全部用例。
+// 语义权威:docs/adr-002-taint.md(窄源/白名单/禁面/sanitize_cli_path 裁决)+ docs/adr-002-spike.md(迁移面 12 处)。
+{
+  const dir65 = path.join(TMP, 'v65');
+  fs.mkdirSync(dir65, { recursive: true });
+  const m65 = (name, src) => { const f = path.join(dir65, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags65 = ['', '--no-wasm', '--tree'];
+  const runAll65 = (p, extra = []) => flags65.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const same65 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns65 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+
+  // ---- §65-K-START(tools 迁移冒烟 + §65 用例:来源标注/sink 门禁/白名单/禁面/净化向量/extern 强制/擦除一致)----
+  // check 层断言口径:runMing(['check', f]) → exit 1 且 stderr 首行含指定码(码在首行 = 消息锁定)。
+  const chk65 = (name, f, code) => {
+    const r = runMing(['check', f]);
+    check(name, r.code === 1 && (r.stderr ?? '').split('\n')[0].includes(code),
+      `code=${r.code} first=${JSON.stringify((r.stderr ?? '').split('\n')[0])}`);
+    return r;
+  };
+  // 三引擎 + 环境变量注入(env.get 来源的运行层用例;V65_VAL 为测试专用变量名)
+  const runsEnv65 = (p, val) => flags65.map(f => runMing(f ? ['run', p, f] : ['run', p], { env: { V65_VAL: val } }));
+  const BS = String.fromCharCode(92); // 反斜杠:ming 源里值内一个反斜杠 = 源码两个(BS+BS),避免多层转义歧义
+
+  // v65.1 来源标注负例:env.get().unwrap() → write_file 路径位 M3049(hint 含 sanitize;全码名锁定)
+  {
+    const f = m65('k1_sink.ming', [
+      'use std.env;',
+      '',
+      'use std.fs;',
+      '',
+      'fn main() with env, fs {',
+      '    let p = std.env.get("V65_ANY").unwrap();',
+      '    std.fs.write_file(p, "data");',
+      '}',
+    ].join('\n'));
+    const r = chk65('v65.1:env.get().unwrap → write_file 路径位 M3049(check exit 1,码在 stderr 首行)', f, 'M3049');
+    check('v65.1:M3049 全码名 untrusted-mismatch + hint 含 sanitize 处方',
+      (r.stderr ?? '').includes('M3049[untrusted-mismatch]') && (r.stderr ?? '').includes('sanitize'),
+      `err=${JSON.stringify((r.stderr ?? '').slice(0, 300))}`);
+  }
+
+  // v65.2 来源标注正例:sanitize_cli_path 净化后 run exit 0,良性 env 值 Ok 原样(三引擎一致)
+  {
+    const f = m65('k2_env_ok.ming', [
+      'use std.env;',
+      '',
+      'use std.unstr;',
+      '',
+      'fn main() with env, io {',
+      '    match std.env.get("V65_VAL") {',
+      '        Some(u) => {',
+      '            match std.unstr.sanitize_cli_path(u) {',
+      '                Ok(p) => {',
+      '                    print("OK " + p);',
+      '                },',
+      '                Err(e) => {',
+      '                    print("ERR " + e);',
+      '                },',
+      '            }',
+      '        },',
+      '        None => {',
+      '            print("NONE");',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runsEnv65(f, 'a.txt');
+    check('v65.2:env.get 经 sanitize_cli_path 后 run exit 0,良性值 Ok 原样(三引擎一致)',
+      same65(runs, 'OK a.txt\n'), fmtRuns65(runs));
+  }
+
+  // v65.3 read_line → print M3049(窄源第 2 来源;check 层)
+  {
+    const f = m65('k3_readline_print.ming', [
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let line = std.io.read_line();',
+      '    print(line);',
+      '}',
+    ].join('\n'));
+    chk65('v65.3:read_line → print M3049(check exit 1,码在 stderr 首行)', f, 'M3049');
+  }
+
+  // v65.4 read_line → parse_i64 白名单 OK(stdin 注入;三引擎一致,污点在数值上终结)
+  {
+    const f = m65('k4_readline_parse.ming', [
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let line = std.io.read_line();',
+      '    match line.parse_i64() {',
+      '        Ok(n) => {',
+      '            print(str(n + 1));',
+      '        },',
+      '        Err(e) => {',
+      '            print("E " + e);',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = flags65.map(fl => runMing(fl ? ['run', f, fl] : ['run', f], { stdin: '41\n' }));
+    check('v65.4:read_line → parse_i64 白名单 OK(stdin "41" → "42",三引擎一致)',
+      runs.every(r => r.code === 0 && r.stdout === '42\n'), fmtRuns65(runs));
+  }
+
+  // v65.5 白名单五方法正例:parse_i64/parse_f64/char_len/byte_len/is_empty(三引擎一致)
+  {
+    const f = m65('k5_whitelist.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("42");',
+      '    match u.parse_i64() {',
+      '        Ok(n) => {',
+      '            print(str(n + 1));',
+      '        },',
+      '        Err(e) => {',
+      '            print("E " + e);',
+      '        },',
+      '    }',
+      '    let w = std.unstr.mark("3.5");',
+      '    match w.parse_f64() {',
+      '        Ok(f) => {',
+      '            print(str(f));',
+      '        },',
+      '        Err(e) => {',
+      '            print("E " + e);',
+      '        },',
+      '    }',
+      '    print(str(u.char_len()));',
+      '    print(str(u.byte_len()));',
+      '    if u.is_empty() {',
+      '        print("empty");',
+      '    } else {',
+      '        print("nonempty");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll65(f);
+    check('v65.5:白名单五方法正例 run 三引擎一致(43/3.5/2/2/nonempty)',
+      same65(runs, '43\n3.5\n2\n2\nnonempty\n'), fmtRuns65(runs));
+  }
+
+  // v65.6 白名单负例:u.trim() → M3050(白名单外方法;check 层)
+  {
+    const f = m65('k6_trim.ming', [
+      'use std.unstr;',
+      '',
+      'fn f(u: Untrusted[str]) -> str {',
+      '    return u.trim();',
+      '}',
+      '',
+      'fn main() with io {',
+      '}',
+    ].join('\n'));
+    chk65('v65.6:u.trim() 白名单外方法 → M3050(check exit 1,码在 stderr 首行)', f, 'M3050');
+  }
+
+  // v65.7 禁面:debug(u) → M3050(调试通道即洗白通道;全码名锁定)
+  {
+    const f = m65('k7_debug.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("x");',
+      '    print(debug(u));',
+      '}',
+    ].join('\n'));
+    const r = chk65('v65.7:debug(u) → M3050(check exit 1,码在 stderr 首行)', f, 'M3050');
+    check('v65.7:M3050 全码名 untrusted-method-forbidden 锁定',
+      (r.stderr ?? '').includes('M3050[untrusted-method-forbidden]'),
+      `err=${JSON.stringify((r.stderr ?? '').slice(0, 200))}`);
+  }
+
+  // v65.8 禁面:插值 \{u} → M3050
+  {
+    const f = m65('k8_interp.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("x");',
+      '    print("v: \\{u}");',
+      '}',
+    ].join('\n'));
+    chk65('v65.8:插值 \\{u} → M3050(check exit 1,码在 stderr 首行)', f, 'M3050');
+  }
+
+  // v65.9 禁面:"a" + u → M3008(拼接通道;专用码不适用,通用码兜底)
+  {
+    const f = m65('k9_plus.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("x");',
+      '    print("a" + u);',
+      '}',
+    ].join('\n'));
+    chk65('v65.9:"a" + u → M3008(check exit 1,码在 stderr 首行)', f, 'M3008');
+  }
+
+  // v65.10 载荷传播:Vec[Untrusted[str]] push/下标取出再净化 OK(三引擎一致)
+  {
+    const f = m65('k10_vec.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let mut v: Vec[Untrusted[str]] = [];',
+      '    v.push(std.unstr.mark("a/./b.txt"));',
+      '    let u = v[0];',
+      '    match std.unstr.sanitize_path(u) {',
+      '        Ok(p) => {',
+      '            print(p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll65(f);
+    check('v65.10:Vec[Untrusted[str]] push/下标取出再净化 OK(a/b.txt,三引擎一致)',
+      same65(runs, 'a/b.txt\n'), fmtRuns65(runs));
+  }
+
+  // v65.11 载荷传播:struct 字段 Untrusted[str] 构造/读取(三引擎一致)
+  {
+    const f = m65('k11_struct.ming', [
+      'use std.unstr;',
+      '',
+      'struct Cfg { path: Untrusted[str] }',
+      '',
+      'fn main() with io {',
+      '    let c = Cfg { path: std.unstr.mark("cfg.json") };',
+      '    match std.unstr.sanitize_path(c.path) {',
+      '        Ok(p) => {',
+      '            print(p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll65(f);
+    check('v65.11:struct 字段 Untrusted[str] 构造/读取再净化 OK(cfg.json,三引擎一致)',
+      same65(runs, 'cfg.json\n'), fmtRuns65(runs));
+  }
+
+  // v65.12 载荷传播:? 与 Result[Untrusted[str], str] 载荷保留(三引擎一致;Err 消息逐字锁定)
+  {
+    const f = m65('k12_result.ming', [
+      'use std.unstr;',
+      '',
+      'fn helper(u: Untrusted[str]) -> Result[str, str] {',
+      '    let p = std.unstr.sanitize_path(u)?;',
+      '    return Ok(p);',
+      '}',
+      '',
+      'fn main() with io {',
+      '    match helper(std.unstr.mark("x/../y")) {',
+      '        Ok(p) => {',
+      '            print("OK " + p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '    let r: Result[Untrusted[str], str] = Ok(std.unstr.mark("cfg.json"));',
+      '    match r {',
+      '        Ok(u2) => {',
+      '            match std.unstr.sanitize_path(u2) {',
+      '                Ok(p) => {',
+      '                    print("R " + p);',
+      '                },',
+      '                Err(e) => {',
+      '                    print("RERR " + e);',
+      '                },',
+      '            }',
+      '        },',
+      '        Err(e) => {',
+      '            print("E " + e);',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll65(f);
+    check('v65.12:? 传播 Err + Result[Untrusted[str]] 载荷保留(三引擎一致,Err 消息逐字)',
+      same65(runs, 'ERR sanitize_path: 拒绝 .. 段: "x/../y"\nR cfg.json\n'), fmtRuns65(runs));
+  }
+
+  // v65.13 unwrap_or 双向:脏载荷 + 干净值 → M3002;净 Option + 脏 fallback → M3049(check 层)
+  {
+    const fDirty = m65('k13a_unwrap_dirty.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let o = Some(std.unstr.mark("dirty"));',
+      '    let s = o.unwrap_or("clean");',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    chk65('v65.13:unwrap_or 干净值 + 脏载荷 → M3002(精确匹配,无隐式转换)', fDirty, 'M3002');
+    const fClean = m65('k13b_unwrap_fallback.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let o: Option[str] = Some("clean");',
+      '    let s = o.unwrap_or(std.unstr.mark("dirty"));',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    chk65('v65.13:净 Option + 脏 fallback → M3049(专用码优先)', fClean, 'M3049');
+  }
+
+  // v65.14 sanitize_path 向量(J 的 Err 消息逐字):7 条,三引擎逐字一致
+  {
+    const f = m65('k14_path_vectors.ming', [
+      'use std.unstr;',
+      '',
+      'fn show(u: Untrusted[str]) with io {',
+      '    match std.unstr.sanitize_path(u) {',
+      '        Ok(p) => {',
+      '            print("OK " + p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+      '',
+      'fn main() with io {',
+      '    show(std.unstr.mark("cfg.txt"));',
+      '    show(std.unstr.mark("./a/./b.txt"));',
+      '    show(std.unstr.mark("/abs"));',
+      '    show(std.unstr.mark("a/../b"));',
+      '    show(std.unstr.mark("a//b"));',
+      '    show(std.unstr.mark(""));',
+      '    show(std.unstr.mark("a/b/"));',
+      '}',
+    ].join('\n'));
+    const want = [
+      'OK cfg.txt',
+      'OK a/b.txt',
+      'ERR sanitize_path: 拒绝绝对路径: "/abs"',
+      'ERR sanitize_path: 拒绝 .. 段: "a/../b"',
+      'ERR sanitize_path: 空段: "a//b"',
+      'ERR sanitize_path: 路径不能为空',
+      'OK a/b',
+    ].join('\n') + '\n';
+    const runs = runAll65(f);
+    check('v65.14:sanitize_path 七向量(规范化/绝对路径/../空段/空串/尾随斜杠)三引擎逐字',
+      same65(runs, want), fmtRuns65(runs));
+  }
+
+  // v65.15 sanitize_cli_path 向量:校验不改写——绝对路径/.. 段/反斜杠路径 Ok 原样,空串 Err(三引擎逐字)
+  {
+    const f = m65('k15_cli_vectors.ming', [
+      'use std.unstr;',
+      '',
+      'fn show(u: Untrusted[str]) with io {',
+      '    match std.unstr.sanitize_cli_path(u) {',
+      '        Ok(p) => {',
+      '            print("OK " + p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+      '',
+      'fn main() with io {',
+      '    show(std.unstr.mark("C:' + BS + BS + 'x"));',
+      '    show(std.unstr.mark("a/../b"));',
+      '    show(std.unstr.mark("rel' + BS + BS + 'dir"));',
+      '    show(std.unstr.mark(""));',
+      '}',
+    ].join('\n'));
+    const want = [
+      'OK C:' + BS + 'x',
+      'OK a/../b',
+      'OK rel' + BS + 'dir',
+      'ERR sanitize_cli_path: 路径不能为空',
+    ].join('\n') + '\n';
+    const runs = runAll65(f);
+    check('v65.15:sanitize_cli_path 校验不改写(绝对路径/.. 段/反斜杠 Ok 原样,空串 Err)三引擎逐字',
+      same65(runs, want), fmtRuns65(runs));
+  }
+
+  // v65.16 控制字符 env 注入:Err 消息含 sanitize_cli_path 与 \uXXXX 转义(确定性,防 stderr 注入)
+  {
+    const f = m65('k16_ctrl.ming', [
+      'use std.env;',
+      '',
+      'use std.unstr;',
+      '',
+      'fn main() with env, io {',
+      '    match std.env.get("V65_VAL") {',
+      '        Some(u) => {',
+      '            match std.unstr.sanitize_cli_path(u) {',
+      '                Ok(p) => {',
+      '                    print("OK " + p);',
+      '                },',
+      '                Err(e) => {',
+      '                    print("ERR " + e);',
+      '                },',
+      '            }',
+      '        },',
+      '        None => {',
+      '            print("NONE");',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runsEnv65(f, 'a\tb'); // 等价 bash ANSI-C $'a\tb':制表符属 C0 控制字符
+    check('v65.16:控制字符 env 注入 → Err 含 sanitize_cli_path 与 \\uXXXX 转义(三引擎一致)',
+      same65(runs, 'ERR sanitize_cli_path: 含控制字符: "a' + BS + 'u0009b"\n'), fmtRuns65(runs));
+  }
+
+  // v65.17 extern 强制三态:裸 str 返回 → M3049 声明处;Untrusted[str] 声明 → check 通过;i64 不受影响
+  {
+    const fBare = m65('k17a_extern_str.ming', [
+      'extern "msvcrt" fn strlen(s: str) -> str;',
+      '',
+      'fn main() {',
+      '}',
+    ].join('\n'));
+    chk65('v65.17:extern 裸 str 返回 → M3049 声明处(C 世界返回值没有可信的)', fBare, 'M3049');
+    const fTagged = m65('k17b_extern_untrusted.ming', [
+      'extern "msvcrt" fn strlen(s: str) -> Untrusted[str];',
+      '',
+      'fn main() {',
+      '}',
+    ].join('\n'));
+    const rTagged = runMing(['check', fTagged]);
+    check('v65.17:extern -> Untrusted[str] 声明 → check exit 0',
+      rTagged.code === 0, `code=${rTagged.code} err=${JSON.stringify((rTagged.stderr ?? '').slice(0, 160))}`);
+    const fI64 = m65('k17c_extern_i64.ming', [
+      'extern "msvcrt" fn _abs64(x: i64) -> i64;',
+      '',
+      'fn main() with io, ffi {',
+      '    print(str(_abs64(-42)));',
+      '}',
+    ].join('\n'));
+    const rI64 = runMing(['check', fI64]);
+    check('v65.17:extern i64 返回不受污点强制影响(check exit 0;对照既有 msvcrt 用例口径)',
+      rI64.code === 0, `code=${rI64.code} err=${JSON.stringify((rI64.stderr ?? '').slice(0, 160))}`);
+  }
+
+  // v65.18 擦除一致:mark/净化版与手写净串版运行输出逐字一致(运行时无污点位;三引擎)
+  {
+    const fDirty = m65('k18a_erasure_dirty.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("hello");',
+      '    print(str(u.char_len()));',
+      '    match std.unstr.sanitize_cli_path(u) {',
+      '        Ok(p) => {',
+      '            print(p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const fClean = m65('k18b_erasure_clean.ming', [
+      'fn main() with io {',
+      '    let s = "hello";',
+      '    print(str(s.char_len()));',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    const runsDirty = runAll65(fDirty);
+    const runsClean = runAll65(fClean);
+    check('v65.18:擦除一致——mark/净化版与净串版输出逐字相同(5/hello,三引擎)',
+      same65(runsDirty, '5\nhello\n') && same65(runsClean, '5\nhello\n'),
+      `dirty=${fmtRuns65(runsDirty)} clean=${fmtRuns65(runsClean)}`);
+  }
+
+  // v65.19 工具冒烟:wc/tree/log_analyzer 良性 env 值输出与 argv 模式(= 迁移前基线)逐字一致;
+  // 控制字符 env 值 → exit 1 + stderr 含 sanitize_cli_path(run 与 tools 路由双口径)。
+  {
+    const fixD = path.join(dir65, 'fix');
+    fs.mkdirSync(path.join(fixD, 'sub'), { recursive: true });
+    const fixA = path.join(fixD, 'a.txt');
+    const fixLog = path.join(fixD, 'a.log');
+    fs.writeFileSync(fixA, 'alpha\nbeta\n', 'utf8'); // 2 行 2 词 11 字节
+    fs.writeFileSync(fixLog, '2026-11-14 ERROR disk full\n2026-11-14 WARN slow\n2026-11-14 INFO ok\nnoise line\n', 'utf8');
+    fs.writeFileSync(path.join(fixD, 'sub', 's.ming'), '// TODO fix me\nfn main() {}\n', 'utf8');
+    const wcP = path.join(ROOT, 'tools', 'wc.ming');
+    const treeP = path.join(ROOT, 'tools', 'tree.ming');
+    const laP = path.join(ROOT, 'tools', 'log_analyzer.ming');
+
+    const wcEnv = runMing(['run', wcP], { env: { WC_FILE: fixA } });
+    const wcArgv = runMing(['run', wcP, '--', fixA]);
+    const wcWant = `2 2 11 ${fixA}\n`;
+    check('v65.19:wc 经 WC_FILE(良性值)输出与 argv 模式逐字一致且精确(2 2 11)',
+      wcEnv.code === 0 && wcArgv.code === 0 && wcEnv.stdout === wcWant && wcArgv.stdout === wcWant,
+      `env=${JSON.stringify(wcEnv.stdout)} argv=${JSON.stringify(wcArgv.stdout)} want=${JSON.stringify(wcWant)}`);
+
+    const wcCtrlRun = runMing(['run', wcP], { env: { WC_FILE: 'a\tb' } });
+    check('v65.19:wc WC_FILE 控制字符 → exit 1 stderr 含 sanitize_cli_path(run 路由)',
+      wcCtrlRun.code === 1 && (wcCtrlRun.stderr ?? '').includes('sanitize_cli_path'),
+      `code=${wcCtrlRun.code} err=${JSON.stringify((wcCtrlRun.stderr ?? '').slice(0, 160))}`);
+    const wcCtrlTools = runMing(['tools', 'wc'], { env: { WC_FILE: 'a\tb' } });
+    check('v65.19:ming tools wc WC_FILE 控制字符 → exit 1 stderr 含 sanitize_cli_path(tools 路由)',
+      wcCtrlTools.code === 1 && (wcCtrlTools.stderr ?? '').includes('sanitize_cli_path'),
+      `code=${wcCtrlTools.code} err=${JSON.stringify((wcCtrlTools.stderr ?? '').slice(0, 160))}`);
+
+    const treeEnv = runMing(['run', treeP, '--', ''], { env: { TREE_ROOT: fixD } });
+    const treeArgv = runMing(['run', treeP, '--', fixD]);
+    check('v65.19:tree 经 TREE_ROOT(良性值)输出与 argv 模式逐字一致(env 回退经净化不改写)',
+      treeEnv.code === 0 && treeArgv.code === 0 && treeEnv.stdout === treeArgv.stdout,
+      `env=${JSON.stringify(treeEnv.stdout.slice(0, 80))}/${treeEnv.code} argv=${JSON.stringify(treeArgv.stdout.slice(0, 80))}/${treeArgv.code}`);
+
+    const laEnv = runMing(['run', laP], { env: { LOG_FILE: fixLog } });
+    const laArgv = runMing(['run', laP, '--', fixLog]);
+    check('v65.19:log_analyzer 经 LOG_FILE(良性值)输出与 argv 模式逐字一致(分类计数不变)',
+      laEnv.code === 0 && laArgv.code === 0 && laEnv.stdout === laArgv.stdout
+      && laEnv.stdout.includes('总行数: 4') && laEnv.stdout.includes('ERROR: 1'),
+      `env=${JSON.stringify(laEnv.stdout)}/${laEnv.code} argv=${JSON.stringify(laArgv.stdout)}/${laArgv.code}`);
+  }
+
+  // v65.20 doc --json:signature 渲染 Untrusted[str](typeStr 渲染串口径,清单 15)
+  {
+    const f = m65('k20_doc.ming', [
+      'fn tagged(u: Untrusted[str]) -> Result[str, str] {',
+      '    return Ok("x");',
+      '}',
+    ].join('\n'));
+    const r = runMing(['doc', f, '--json']);
+    let doc = null;
+    try { doc = JSON.parse(r.stdout); } catch { /* 断言处报错 */ }
+    const sig = doc?.items?.[0]?.signature ?? '';
+    check('v65.20:ming doc --json 的 signature 渲染 Untrusted[str]',
+      r.code === 0 && doc?.ok === true && sig === 'fn tagged(u: Untrusted[str]) -> Result[str, str]',
+      `code=${r.code} sig=${JSON.stringify(sig)} out=${JSON.stringify((r.stdout ?? '').slice(0, 160))}`);
+  }
+
+  // v65.21 契约 sanitize 形态锁定(ADR-002 §4.2 决定性优势:净化器在 requires 内可调用,
+  // 契约成为可信根的静态声明面):check exit 0;运行 f(mark("cfg.txt")) → Ok(cfg.txt)
+  // (三引擎逐字);违约形态(requires 对实际输入恒假)→ 运行时 M4015 exit 101。
+  {
+    const contractSrc = (req) => [
+      'use std.unstr;',
+      '',
+      `fn f(u: Untrusted[str]) -> Result[str, str] requires ${req} {`,
+      '    return std.unstr.sanitize_path(u);',
+      '}',
+      '',
+      'fn main() with io {',
+      '    match f(std.unstr.mark("cfg.txt")) {',
+      '        Ok(p) => {',
+      '            print("OK " + p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+    ].join('\n');
+    const fOk = m65('k21a_contract_ok.ming', contractSrc('u.byte_len() < 256 && std.unstr.sanitize_path(u).is_ok()'));
+    const rOk = runMing(['check', fOk]);
+    check('v65.21:契约 sanitize 形态 check exit 0(requires 内 sanitize_path().is_ok() 可调用)',
+      rOk.code === 0, `code=${rOk.code} err=${JSON.stringify((rOk.stderr ?? '').slice(0, 160))}`);
+    const runsOk = runAll65(fOk);
+    check('v65.21:契约 f(mark("cfg.txt")) → Ok(cfg.txt)(三引擎逐字)',
+      same65(runsOk, 'OK cfg.txt\n'), fmtRuns65(runsOk));
+    const fBad = m65('k21b_contract_violated.ming', contractSrc('u.byte_len() < 1 && std.unstr.sanitize_path(u).is_ok()'));
+    const rBad = runMing(['check', fBad]);
+    const runsBad = runAll65(fBad);
+    check('v65.21:契约 requires 违约(实际 false)→ M4015 exit 101(三引擎)',
+      rBad.code === 0 && runsBad.every(r => r.code === 101 && /M4015/.test(r.stderr)),
+      `check=${rBad.code} runs=${fmtRuns65(runsBad)}`);
+  }
+
+  // v65.22 `as` 洗白禁面 + 载体禁面(M3050 锁码):白名单方法结果经 as 数值位 OK;
+  // 直接 u as str / u as i64 → M3050(洗白通道关闭);Untrusted[i64] 与
+  // Untrusted[Untrusted[str]] 声明 → M3050(载体 v1 仅 str,扩载体不得静默)。
+  {
+    const fWl = m65('k22a_as_whitelist.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("hi");',
+      '    print(str(u.byte_len() as i64));',
+      '}',
+    ].join('\n'));
+    const rWl = runMing(['check', fWl]);
+    const runsWl = runAll65(fWl);
+    check('v65.22:白名单 u.byte_len() as i64 OK(2,三引擎逐字)',
+      rWl.code === 0 && same65(runsWl, '2\n'), `check=${rWl.code} runs=${fmtRuns65(runsWl)}`);
+    const fAsStr = m65('k22b_as_str.ming', [
+      'fn g(u: Untrusted[str]) -> str {',
+      '    return u as str;',
+      '}',
+      '',
+      'fn main() {',
+      '}',
+    ].join('\n'));
+    chk65('v65.22:u as str → M3050(as 是洗白通道,对 Untrusted 关闭)', fAsStr, 'M3050');
+    const fAsI64 = m65('k22c_as_i64.ming', [
+      'fn g(u: Untrusted[str]) -> i64 {',
+      '    return u as i64;',
+      '}',
+      '',
+      'fn main() {',
+      '}',
+    ].join('\n'));
+    chk65('v65.22:u as i64 → M3050(as 是洗白通道,对 Untrusted 关闭)', fAsI64, 'M3050');
+    const fCarI64 = m65('k22d_carrier_i64.ming', [
+      'fn h(x: Untrusted[i64]) {',
+      '}',
+      '',
+      'fn main() {',
+      '}',
+    ].join('\n'));
+    chk65('v65.22:Untrusted[i64] 载体禁面 → M3050(载体 v1 仅 str)', fCarI64, 'M3050');
+    const fCarNest = m65('k22e_carrier_nested.ming', [
+      'fn h(x: Untrusted[Untrusted[str]]) {',
+      '}',
+      '',
+      'fn main() {',
+      '}',
+    ].join('\n'));
+    chk65('v65.22:Untrusted[Untrusted[str]] 嵌套载体禁面 → M3050(载体 v1 仅 str)', fCarNest, 'M3050');
+  }
+
+  // v65.23 cc 擦除一致腿(gcc 存在才跑;探测与 §58/§60 同款;无编译器 → skip 保持绿)。
+  // M1 审查修复后:extern getenv 形态(let 标注 Untrusted[str] + byte_len)可经 ming cc
+  // 编译运行;输出与净串孪生程序的 tree 引擎输出逐字一致——tree 不执行 FFI(M4001 是设计
+  // 行为),故对照面取净串孪生(即 v65.18 擦除一致的跨后端版)。另:emit-c 快照含
+  // const char* 载体槽位签名(Untrusted 擦除 → C ABI 按 str)。
+  {
+    const ccAvail65 = (() => {
+      if (process.env.MING_CC && fs.existsSync(process.env.MING_CC)) return true;
+      for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+        if (fs.existsSync(c)) return true;
+      }
+      return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    })();
+    const fFfi = m65('k23a_ffi_untrusted.ming', [
+      'extern "msvcrt" fn getenv(n: str) -> Untrusted[str];',
+      '',
+      'fn main() with ffi, io {',
+      '    let raw: Untrusted[str] = getenv("V65K_STR");',
+      '    print(raw.byte_len() as i64);',
+      '}',
+    ].join('\n'));
+    const fTwin = m65('k23b_clean_twin.ming', [
+      'fn main() with io {',
+      '    let s = "ming-rocks";',
+      '    print(str(s.byte_len()));',
+      '}',
+    ].join('\n'));
+    if (ccAvail65) {
+      const ccDir = path.join(dir65, 'ccout');
+      fs.mkdirSync(ccDir, { recursive: true });
+      const build = spawnSync(process.execPath, [MING, 'cc', fFfi, '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 180000 });
+      const exe = path.join(ccDir, 'k23a_ffi_untrusted.exe');
+      const rc = build.status === 0 && fs.existsSync(exe)
+        ? spawnSync(exe, [], { encoding: 'utf8', timeout: 30000, env: { ...process.env, V65K_STR: 'ming-rocks' } })
+        : { status: -1, stdout: '', stderr: 'no exe' };
+      const twinTree = runMing(['run', fTwin, '--tree']);
+      check('v65.23:cc extern getenv Untrusted 形态编译运行,输出与净串孪生 tree 输出逐字一致(10)',
+        build.status === 0 && rc.status === 0 && twinTree.code === 0 && rc.stdout === twinTree.stdout && rc.stdout === '10\n',
+        `build=${build.status} rc=${rc.status} cc=${JSON.stringify(rc.stdout)} ccErr=${JSON.stringify((build.stderr ?? '').slice(0, 120))} tree=${twinTree.code}:${JSON.stringify(twinTree.stdout)}`);
+      const emDir = path.join(dir65, 'ccemit');
+      fs.mkdirSync(emDir, { recursive: true });
+      const em = spawnSync(process.execPath, [MING, 'cc', fFfi, '--emit-c', '--out', emDir], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+      const emText = em.status === 0 ? fs.readFileSync(path.join(emDir, 'k23a_ffi_untrusted.c'), 'utf8') : '';
+      check('v65.23:emit-c 快照含 const char* 载体槽位签名(ming_ffi_getenv;Untrusted 擦除按 str)',
+        em.status === 0 && emText.includes('const char* (*ming_ffi_getenv)(const char*)'),
+        `em=${em.status} hasGetenv=${emText.includes('ming_ffi_getenv')}`);
+    } else {
+      check('v65.23:cc extern getenv Untrusted 形态编译运行一致(gcc 不存在,跳过)', true, 'skip: 无 C 编译器');
+      check('v65.23:emit-c 载体槽位签名(gcc 不存在,跳过)', true, 'skip: 无 C 编译器');
+    }
+  }
+
+  // v65.24 sanitize_path 盘符相对路径向量(M2 审查修复锁定):`C:x` 冒号即拒——原实现
+  // 要求冒号后跟分隔符而漏判盘符相对路径;`C:\x` 维持 Err;消息沿用"拒绝绝对路径"
+  // 逐字不变(v65.14 既有绝对路径向量不受影响)。
+  {
+    const f = m65('k24_driveletter.ming', [
+      'use std.unstr;',
+      '',
+      'fn show(u: Untrusted[str]) with io {',
+      '    match std.unstr.sanitize_path(u) {',
+      '        Ok(p) => {',
+      '            print("OK " + p);',
+      '        },',
+      '        Err(e) => {',
+      '            print("ERR " + e);',
+      '        },',
+      '    }',
+      '}',
+      '',
+      'fn main() with io {',
+      '    show(std.unstr.mark("C:x"));',
+      '    show(std.unstr.mark("C:' + BS + BS + 'x"));',
+      '}',
+    ].join('\n'));
+    const want = [
+      'ERR sanitize_path: 拒绝绝对路径: "C:x"',
+      'ERR sanitize_path: 拒绝绝对路径: "C:' + BS + 'x"',
+    ].join('\n') + '\n';
+    const runs = runAll65(f);
+    check('v65.24:sanitize_path 盘符相对路径 C:x 与 C:\\x → Err 拒绝绝对路径(M2 锁定)三引擎逐字',
+      same65(runs, want), fmtRuns65(runs));
+  }
+  // §65-K-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

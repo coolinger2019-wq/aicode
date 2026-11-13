@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.60.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.61.0** · 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -655,7 +655,7 @@ $ node bin/ming.js test mylib.ming
 
 ### std.io
 
-`read_line() -> str` · 效果 `io` — 读一行(去换行);EOF 返回 `""`。
+`read_line() -> Untrusted[str]` · 效果 `io` — 读一行(去换行);EOF 返回 `""`。**v0.61 起返回标污**(窄源来源之一):结果只能经白名单方法(parse_i64/char_len/byte_len/is_empty)消费、声明 `Untrusted[str]` 形参透传,或经 `std.unstr.sanitize_*` 净化后当 `str` 用(直接 print/拼接/当路径 → M3049)。EOF 空串同理标污(空串经 sanitize_cli_path/sanitize_path 判 Err/Ok 见各自语义)。
 
 ### std.time
 
@@ -938,6 +938,34 @@ fn main() with io {
 
 `join(a, b) -> str`、`base_name(p) -> str`、`dir_name(p) -> str`、`extension(p) -> str`(含点,如 ".txt")——无效果,可在纯函数中使用。
 
+### std.env(能力:env,v0.24;污点来源,v0.61)
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `get` | `(str) -> Option[Untrusted[str]]`(**v0.61 起标污**) | 读环境变量;值经白名单方法消费或 `std.unstr.sanitize_*` 净化 |
+| `set` | `(str, str) -> Result[bool, str]` | 写环境变量 |
+| `remove` | `(str) -> bool` | 删环境变量 |
+
+### std.unstr(纯函数,v0.61;污点净化族)
+
+**污点模型(窄源 v1,ADR-002)**:类型 `Untrusted[str]` 是编译期标签、运行时擦除——值就是载体 `str`,四引擎输出与标注无关。**v1 来源仅三处**:`std.env.get`、`std.io.read_line`、extern 返回强制(签名禁写裸 `-> str`,必须 `-> Untrusted[str]`,否则 M3049);`fs.read_file`/`read_bytes`/`read_to_end`/`proc.exec` stdout/stderr/`http` body 在 v1 **不标**(泄漏窗口,如实登记)。
+
+- **sink 门禁免费**:任何期待 `str` 的位置(调用实参/赋值/let 推断/return/Map 键/方法接收者/struct 字段)对 `Untrusted` 报 **M3049[untrusted-mismatch]**(hint 指向净化);反向(期待 Untrusted、给裸 str)→ M3002(必须显式 `mark`)。
+- **操作面白名单(仅 5 个产出纯值的方法)**:`parse_i64 / parse_f64 / char_len / byte_len / is_empty`;白名单外任何载体方法 → **M3050[untrusted-method-forbidden]**。
+- **禁面(洗白通道,与 Ptr 同款)**:`debug(u)`、插值 `\{u}`、`u as T` → **M3050**;`"a" + u` → M3008。
+- **净化族(唯一类型跃迁出口,纯函数,契约内可调用)**:
+
+| 函数 | 签名 | 语义 |
+|------|------|------|
+| `mark` | `(str) -> Untrusted[str]` | 把干净值标脏(测试块/已知干净场景) |
+| `sanitize_path` | `(Untrusted[str]) -> Result[str, str]` | 拒绝绝对路径(**含 `C:x` 盘符相对——冒号即绝对**)、`..` 段、内部空段(连续分隔符)、空串;Ok = 规范化相对路径(`./a/./b/`→`a/b`;尾随分隔符容忍剥除);Err 消息含原因与原串 |
+| `sanitize_cli_path` | `(Untrusted[str]) -> Result[str, str]` | **校验不改写**:非空且不含 NUL/C0 控制字符 → Ok **原串原样**(允许绝对/相对/`..` 段);Err 消息控制字符按 `\uXXXX` 转义。授权位 = 路径实参位 + **CLI 匹配/比较串**(2026-11-14 扩权,ADR-002 §3.4) |
+
+- **惯例**:`env.get(k).unwrap_or("")` 会因"净 Option + 裸 str fallback"报 M3002/脏 fallback 需同污点——回退值请用 `unwrap_or(std.unstr.mark(""))`,或统一走 `match` + 净化(12 个自举工具的迁移形态)。
+- **wasm/C**:资格按载体判定(顶层 `Untrusted[str]` 形参在资格分析前解包为 str,ADR-002 清单 14);嵌套容器形参(`Vec[Untrusted[str]]`)整函数资格拒绝 → 回落 VM,输出三引擎一致(strict 具名)。C 后端按载体发射(`mingTyNum`/`annoTarget` 载体穿透);`Result[str,str]` 的 `let 标注` 仍受 C2 既有载体面限制(显式拒绝,非污点缺口)。
+- **契约可用**:`requires u.byte_len() < 256 && std.unstr.sanitize_path(u).is_ok()` 合法(净化纯函数,M3029 通道完好);违反 → 运行时 M4015。
+- 深拷贝保污点是类型恒等式;`?`/Option/Result/Vec/Map/struct 载荷类型精确传播;容器装脏值与取出值同污点,无旁路。
+
 ### std.mem(能力:unsafe,v0.54;仅 C 原生后端)
 
 | 函数 | 签名 | 说明 |
@@ -1094,11 +1122,26 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 | v0.58(已完成) | **AI 协作体验与文本工程(开发者体验版)**:LSP 补全/跳转定义/文档符号(保守策略 + 字节分帧 + 坏 JSON 存活)、`std.str.join` 单次 O(n) 拼接(Builder 方案最小替代;与 Vec.join 的 API 不对称与 #49 记账差异如实登记)+ `use std.str` 四形态名字解析(内建/模块/别名/遮蔽,三引擎逐字)+ 遮蔽守卫、`ming doc --json` 稳定 schema + `--index` 多文件聚合(默认文本逐字不变)、Release 打包 workflow(官方 action + 零 npm)+ docs/release.md;审查修复:坏 JSON 存活/块注释补全/第三式中间态/遮蔽守卫;§62 34 项、825 项全绿 |
 | v0.59(已完成) | **默认引擎全面性(无新语言面)**:wasm 覆盖收口 #40/#41/#42/#43/#45/#46 + 6 潜伏 bug(A strConsts/B VECMAP VOID/C alloc 索引/D map_get 顺序/E 移位 64/F 守护口径)+ 宿主补丁(Map i64/Vec[f64]);本地函数恢复 #44(M3047 移除;块级条目/递归/契约/AOT;三条限制);记账统一 #48/#49(str_cat 计费、std.str.join 对称化;BMP 口径与 --max-alloc 内存风险登记);invariant bench 项(VM 0.19–0.28µs/次、tree 0.20–0.28µs/次);strict 120 语料 fallback=0;§63 56 项、881 项全绿 |
 | v0.60(已完成) | **资源门禁一致性(质量/安全版,无新语言面)**:#51 wasm 参数搬运计费分歧(`mingAllocRaw` 计费开关 + `wasmParamTop` 调用前保存/finally 复位,线性内存随调用复用)、#52 外部输入边界计费(read_file/read_bytes/read_line/read_to_end/list_dir/proc.exec/http body;计费 = 值创建 + 外部输入边界,派生值不重复计费)、#53 `--max-ms` 阻塞内建钳制(remainingMs + sleep/join/exec/http/sync 等待钳制 → M4012;read_line/RegExp 不可抢占边界具名;checkTimeQuota 边界 `>=`)、#47 tree 契约求值重入(execBlock 仅函数体块尾检查 ensures;bodyBlock 上下文)、#54 `ming test` 旗标传播(tree/no-wasm/max-* 与 run 同默认值;--strict-wasm 仅互斥仲裁并提示忽略)+ `ming init` CLI 回归;§64 24 项、905 项全绿;无新诊断码(复用 M4011/M4012) |
-| 更远(北星对齐) | v0.61 污点窄源条件交付(ADR-002 五处补丁已落;启动门槛 = 12 工具迁移 spike + 净化器策略裁决;9 源全量为 v1.1)→ v0.62 serve 条件交付(ADR-001 清单 16/16);mask 永久否决(ADR-003);async/eval/国密/RSA/形式化验证留待更远(见 plan §4.4/§4.4.10) |
+| v0.61(已完成) | **污点最小片(窄源 v1,安全能力版)**:`Untrusted[str]` 类型标注(编译期标签/运行时擦除,载体仅 str);来源窄源 = `env.get -> Option[Untrusted[str]]`、`read_line -> Untrusted[str]`、extern 返回强制(裸 `-> str` 声明处 M3049);sink 门禁免费(M3049 统一机制 21 槽位 + struct 字段前置);白名单 5 方法(parse_i64/parse_f64/char_len/byte_len/is_empty),其余 M3050;`debug`/插值/`as` 洗白禁面 M3050;`std.unstr` 净化族(mark/sanitize_path/sanitize_cli_path——后者 2026-11-14 裁决:校验不改写,授权位 = 路径实参位 + CLI 匹配/比较串);wasm 资格按载体解包(compiler tryWasm),C 后端载体穿透(mingTyNum/annoTarget);12 个自举工具迁移(sanitize_cli_path 12 处,良性 env 行为逐字不变);wasm 资格按载体判定;§65 40 条 check;新码 **M3049/M3050** 三处登记 |
+| 更远(北星对齐) | v0.62 serve 条件交付(ADR-001 清单 16/16;独立版;污点 v1 载体仅 str,serve 载荷 Json 不声称污点保护)→ v0.63+ 候选/Backlog(wasm 守护 slice 2/walker 统一;while 证明/checker 拆分不承诺);mask 永久否决(ADR-003);async/eval/国密/RSA/形式化验证留待更远(见 plan §4.4/§4.4.10) |
 
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.61.0(2026-11-14)
+
+- **污点最小片(窄源 v1,安全能力版)**——"外部输入 → 路径/命令"注入面的最小类型级闭环(ADR-002;启动门槛①②③全部满足:五处补丁评审 + 12 工具迁移 spike(docs/adr-002-spike.md,12 处/零内容改动)+ sanitize_cli_path 裁决):
+  - **类型 `Untrusted[str]`**:编译期标签、运行时擦除(值即载体);载体 v1 仅 str(`Untrusted[X]` X≠str → M3050);无字面量;深拷贝保污点是类型恒等式;`?`/Option/Result/Vec/Map/struct 载荷精确传播。
+  - **来源窄源**(破坏性签名变更):`env.get -> Option[Untrusted[str]]`、`io.read_line -> Untrusted[str]`、extern 返回强制(声明裸 `-> str` → M3049,必须 `-> Untrusted[str]`;i64/Ptr extern 不受影响);fs/net/proc 内容源 v1 不标(泄漏窗口如实登记)。
+  - **sink 门禁免费**:M3049[untrusted-mismatch] 统一机制(21 处槽位 + struct 字面量字段前置;hint 指向净化;反向裸 str 进 Untrusted 槽 → M3002)。
+  - **操作面白名单**:parse_i64/parse_f64/char_len/byte_len/is_empty 五方法(产出纯值);白名单外方法 → M3050[untrusted-method-forbidden];**禁面**:`debug(u)`、插值、`as` → M3050(洗白通道,与 Ptr 同款);`"a" + u` → M3008。
+  - **`std.unstr` 净化族**(纯函数,契约内可调用):`mark`(标脏)、`sanitize_path`(拒绝绝对路径——**含 `C:x` 盘符相对**、`..` 段、内部空段、空串;Ok 规范化相对路径)、`sanitize_cli_path`(校验不改写:拒 NUL/C0 控制字符,Ok 原样;授权位 = 路径实参位 + CLI 匹配/比较串)。
+  - **wasm/C 按载体判定**(ADR 清单 14):资格分析前 checker/compiler 侧解包顶层 `Untrusted[str]` 形参(wasm.js `analyze()` 单一事实来源零改动);C 后端 `mingTyNum`/`annoTarget` 载体穿透;嵌套容器形参整函数资格拒绝 → 回落(输出三引擎一致)。
+  - **12 个自举工具迁移**(spike 清单):8 工具 12 处 `env.get` 解包位包 `sanitize_cli_path` + 显式 Err(stderr + exit 1);良性 env 值行为与迁移前逐字一致(git worktree 基线 SMOKE-IDENTICAL);控制字符 env 值 → 报错退出(净化器既定收紧)。
+  - **诊断码**:新 **M3049[untrusted-mismatch]** / **M3050[untrusted-method-forbidden]**,三处登记(diag.js CODES+CODE_HINTS / docs/diagnostics.md / §65 断言)。
+  - **测试 §65 共 40 条 check**(来源正负例/sink/传播/白名单正负/禁面/净化向量逐字/extern 三态/擦除一致/契约 sanitize/工具冒烟/doc 渲染);**934+ 全绿**(收口实测见下);独立审查 2 MAJOR(C 后端载体穿透缺失、`C:x` 盘符相对漏判)+ MINOR 全部修复。
+- 顺带修复(污点实现暴露的既有缺口,独立审查确认):Option/Result **变体构造器载荷 tvar 从不绑定**(`Some(脏)` 曾逃过禁面/`take_opt(Some(脏))` 静默通过)→ variantCtorType 补 `ps` + callCtor deepResolveT;struct 字面量字段位原为静默通过 → M3049 前置。fuzz 双种子 0 分歧、examples 全量 check 零诊断确认无回归。
 
 ### v0.60.0(2026-11-13)
 

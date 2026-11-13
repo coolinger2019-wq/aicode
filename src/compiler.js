@@ -202,6 +202,15 @@ class BytecodeCompiler {
   // ---------- WASM 后端(v0.11):纯整数函数分层编译,失败静默回落 JS VM ----------
   tryWasm() {
     if (process.env.MING_WASM_DEBUG) console.error('[tryWasm] functions=' + this.functions.length + ' spans=' + this.spans.length + ' entryFnIdx=' + this.entryFnIdx?.size);
+    // v0.61(ADR-002 清单 14):污点资格按载体判定——喂入 wasm.js analyze()(单一事实
+    // 来源,不改动)前,把 sig 中的 Untrusted[T] 形参/返回解包为载体 T。编译期标签运行时
+    // 擦除:此时全部函数体已编译完毕,就地解包不影响已生成字节码;wasm/C 按载体发射,无感知。
+    for (const f of this.functions) {
+      if (!f?.entry?.sig) continue;
+      const carrier = (t) => (t && t.k === 'untrusted') ? t.el : t;
+      for (const p of f.entry.sig.params ?? []) p.type = carrier(p.type);
+      f.entry.sig.ret = carrier(f.entry.sig.ret);
+    }
     try {
       return tryCompileWasm(this.check, {
         functions: this.functions,

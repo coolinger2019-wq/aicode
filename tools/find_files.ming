@@ -53,7 +53,15 @@ fn main(args: Vec[str]) -> i64 with io, fs, env {
     if root == "" {
         match std.env.get("FIND_ROOT") {
             Some(v) => {
-                root = v;
+                match std.unstr.sanitize_cli_path(v) {
+                    Ok(p) => {
+                        root = p;
+                    },
+                    Err(e) => {
+                        eprint("FIND_ROOT: " + e);
+                        return 1;
+                    },
+                }
             },
             None => {
             },
@@ -62,7 +70,15 @@ fn main(args: Vec[str]) -> i64 with io, fs, env {
     if needle == "" {
         match std.env.get("FIND_NAME") {
             Some(v) => {
-                needle = v;
+                match std.unstr.sanitize_cli_path(v) {
+                    Ok(p) => {
+                        needle = p;
+                    },
+                    Err(e) => {
+                        eprint("FIND_NAME: " + e);
+                        return 1;
+                    },
+                }
             },
             None => {
             },

@@ -1508,6 +1508,52 @@ export class Interp {
         delete process.env[args[0].v];
         return V.bool(had);
       }
+      // ---- std.unstr(v0.61 ADR-002 §3.4;污点净化族,纯函数零效果)----
+      // 运行时擦除:Untrusted 值就是载体值,无污点位——这里只按值形态判定,不做能力检查
+      // (效果门禁在 checker 侧签名;族内全无效果 → 契约内可调用,M4015 场景)。
+      case 'unstr.mark':
+        // 标脏不改值:返回实参原值(值即载体;span 透传由调用层承担)
+        return args[0];
+      case 'unstr.sanitize_path': {
+        // Err 判定顺序固定(ADR §3.4):空串 → 绝对路径 → .. 段 → 空段
+        const raw = args[0].v;
+        if (raw.length === 0) return V.enumv('builtin-res', 'Err', [V.str('sanitize_path: 路径不能为空')]);
+        // v0.61/M2(审查修复):盘符相对路径(`C:x`)也是绝对路径形态——冒号即拒,不要求冒号后跟分隔符
+        if (raw.startsWith('/') || raw.startsWith('\\') || /^[A-Za-z]:/.test(raw)) {
+          return V.enumv('builtin-res', 'Err', [V.str('sanitize_path: 拒绝绝对路径: "' + raw + '"')]);
+        }
+        // 按单个分隔符切分(连续分隔符产生内部空段,a//b 即非法空段判据);尾随分隔符容忍
+        // (即 Ok 规则的"去尾随 /"):先剥掉末尾空段,`a/b/` → Ok a/b 而 `a//b` → Err
+        const segs = raw.split(/[\\/]/);
+        while (segs.length > 0 && segs[segs.length - 1] === '') segs.pop();
+        if (segs.some(s => s === '..')) {
+          return V.enumv('builtin-res', 'Err', [V.str('sanitize_path: 拒绝 .. 段: "' + raw + '"')]);
+        }
+        if (segs.some(s => s.length === 0)) {
+          return V.enumv('builtin-res', 'Err', [V.str('sanitize_path: 空段: "' + raw + '"')]);
+        }
+        // 规范化:丢弃 . 段,统一 / 连接;结果为空(输入全是 . 段)→ 与空串同口径 Err
+        const out = segs.filter(s => s !== '.').join('/');
+        if (out.length === 0) return V.enumv('builtin-res', 'Err', [V.str('sanitize_path: 路径不能为空')]);
+        return V.enumv('builtin-res', 'Ok', [V.str(out)]);
+      }
+      case 'unstr.sanitize_cli_path': {
+        // 校验不改写(2026-11-14 裁决):CLI 用户是参数信任根,允许绝对/相对/.. 段,Ok 原串原样返回
+        const raw = args[0].v;
+        if (raw.length === 0) return V.enumv('builtin-res', 'Err', [V.str('sanitize_cli_path: 路径不能为空')]);
+        // C0 控制字符(码点 < 0x20,含 NUL/换行/制表)→ Err;消息内原串按 \uXXXX 转义,防 stderr 注入(确定性)
+        for (let i = 0; i < raw.length; i++) {
+          if (raw.charCodeAt(i) < 0x20) {
+            let esc = '';
+            for (const ch of raw) {
+              const cp = ch.codePointAt(0);
+              esc += cp < 0x20 ? '\\u' + cp.toString(16).padStart(4, '0') : ch;
+            }
+            return V.enumv('builtin-res', 'Err', [V.str('sanitize_cli_path: 含控制字符: "' + esc + '"')]);
+          }
+        }
+        return V.enumv('builtin-res', 'Ok', [V.str(raw)]);
+      }
       case 'io.read_to_end': {
         if (!this.stdinLoaded) {
           if (this.stdin === null) { try { this.stdin = nodeFs.readFileSync(0, 'utf8'); } catch { this.stdin = ''; } }

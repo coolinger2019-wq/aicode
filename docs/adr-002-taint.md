@@ -155,6 +155,7 @@ extern "c" fn f(...) -> str        // 检查器强制按 -> Untrusted[str] 处�
 ```ming
 // std.unstr.sanitize_path(u: Untrusted[str]) -> Result[str, str]
 // 语义:拒绝绝对路径、.. 段、空段等非法形态,Ok 为规范化相对路径;非法路径 → Err(消息说明原因)
+// (绝对路径判定含 Windows 盘符相对路径 `C:x`——冒号即绝对,2026-11-14 独立审查 M2 修复;尾随分隔符容忍剥除)
 ```
 
 **失败语义(定稿)**:非法路径 → `Err[str]`(错误消息说明原因,与 `read_file` 的 `Result[str, str]` 同风格);净化成功的唯一产出是 `Ok(规范化相对路径)`(**该句限定 `sanitize_path`;`sanitize_cli_path` 的 Ok 为原串原样返回,见下方裁决段**)。返回 `Result` 而非裸 `str` 是刻意选择:净化失败必须被调用方显式处理(`?`/match),不允许"静默吞掉用空串"——若返回裸 `str`,失败只能 panic 或返回魔法值,两者都比 `Err` 差。初稿注释"不合法 → Err 经 Option/Result 表达"与正文按裸 `str` 使用自相矛盾,已按本节统一(独立审查 2026-11-13 指出)。

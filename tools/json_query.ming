@@ -77,7 +77,15 @@ fn main(args: Vec[str]) -> i64 with io, fs, env {
     if path == "" {
         match std.env.get("JSON_FILE") {
             Some(v) => {
-                path = v;
+                match std.unstr.sanitize_cli_path(v) {
+                    Ok(p) => {
+                        path = p;
+                    },
+                    Err(e) => {
+                        eprint("JSON_FILE: " + e);
+                        return 1;
+                    },
+                }
             },
             None => {
             },
@@ -86,7 +94,15 @@ fn main(args: Vec[str]) -> i64 with io, fs, env {
     if first_field == "" {
         match std.env.get("JSON_FIELD") {
             Some(v) => {
-                first_field = v;
+                match std.unstr.sanitize_cli_path(v) {
+                    Ok(p) => {
+                        first_field = p;
+                    },
+                    Err(e) => {
+                        eprint("JSON_FIELD: " + e);
+                        return 1;
+                    },
+                }
             },
             None => {
             },

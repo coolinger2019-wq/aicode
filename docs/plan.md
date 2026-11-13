@@ -1,8 +1,8 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.60.0**（**v0.60 资源门禁一致性已交付(2026-11-13)**：#51 wasm 参数搬运计费分歧 + `wasmParamTop` 复位、#52 外部输入边界计费、#53 `--max-ms` 阻塞内建钳制、#47 tree 契约重入、#54 `ming test` 旗标传播——2026-11-13 三方评估 S1/S2/#54/#47 范围，无新语言面/无新诊断码；3 名 fresh reviewer 审查、阻塞项修复后测试 **905 项全绿**(§63 56 + §64 24)。v0.52–v0.59 路线均已交付）。
-> **下一步规划见 §4.4（v0.60 已交付；v0.61 污点窄源条件交付——启动门槛①②③全部满足（2026-11-14，spike 见 docs/adr-002-spike.md；sanitize_cli_path 裁决见 ADR-002 §3.4），可进入实现；v0.62 serve 条件交付——ADR-001 16/16；v0.63+ Backlog；评估记录与证据见 §4.4.10）**。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.61.0**（**v0.61 污点最小片(窄源 v1)已交付(2026-11-14)**：`Untrusted[str]` 类型标注(编译期标签/运行时擦除)、来源窄源(env.get/read_line/extern 返回强制)、sink 门禁免费(M3049 统一机制 21 槽位)、操作面白名单 5 方法、debug/插值/as 洗白禁面(M3050)、`std.unstr` 净化族(mark/sanitize_path/sanitize_cli_path)、wasm/C 资格按载体、12 自举工具迁移；独立审查 2 MAJOR + MINOR 全部修复后测试 **945 项全绿**(§63 56 + §64 24 + §65 40)；新码 M3049/M3050 三处登记。v0.60 资源门禁一致性已于 2026-11-13 交付）。
+> **下一步规划见 §4.4（v0.61 已交付；v0.62 serve 条件交付——ADR-001 清单 16/16 全勾才启动，独立版，污点 v1 载体仅 str、serve 载荷 Json 不声称污点保护；v0.63+ 候选/Backlog；评估记录与证据见 §4.4.10）**。
 > **§4.3 全部任务已清空（2026-11-13）**：v0.60 起以 ADR 条件交付——ADR-001（并发/服务端,方案 a 条件承诺实施,原型 190 req/s@40 连接）、ADR-002（污点采纳类型级 Untrusted[T],实现推迟）、ADR-003（mask 永久否决）；实现条件见各 ADR 评审清单与 §4.3.9。**三方评估后 serve 从 v0.60 移至 v0.62（独立条件版），v0.60 改为资源门禁一致性修复——理由与实测证据见 §4.4.10。**
 
 ---
@@ -16,9 +16,9 @@
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
-| 质量护栏 | 回归全绿（v0.60.0 起 **905 项**；§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表**（tests/coverage.mjs；**94.0% 行 / 88.7% 函数**，vm.js 65.9%；信息性不设门槛） |
-| 能力矩阵 | 54 行口径 ≈82%（docs/capabilities.md；v0.56 新增 WASM 分层覆盖面行；v0.58 新增 LSP 行;v0.59 新增"本地函数"行并更新 WASM 行;2026-11-13 三方评估将"运行时资源熔断"改判 🟡（#51–#53 有限口径）,**v0.60 交付修复后复核恢复 ✅（边界具名）**:41✅ 7🟡 6❌，(41+7×0.5)/54=82.4%≈82%） |
-| 下一步 | **§4.4：v0.61 污点窄源 v1 实现（门槛①②③全部满足：ADR-002 五处补丁 + 迁移 spike 12 处/12 工具零内容改动 + sanitize_cli_path 裁决）→ v0.62 serve 条件交付（ADR-001 16/16）** |
+| 质量护栏 | 回归全绿（v0.61.0 起 **945 项**；§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表**（tests/coverage.mjs；**94.0% 行 / 88.7% 函数**，vm.js 65.9%；信息性不设门槛） |
+| 能力矩阵 | 55 行口径 ≈83%（docs/capabilities.md；v0.61 新增"数据流安全(污点标注)"行(✅,窄源 v1):42✅ 7🟡 6❌，(42+7×0.5)/55=82.7%≈83%；"运行时资源熔断"经 2026-11-13 评估改判 🟡 后于 v0.60 修复恢复 ✅） |
+| 下一步 | **§4.4：v0.62 serve 条件交付（ADR-001 清单 16/16 全勾才启动；独立版；污点 v1 载体仅 str，serve 载荷 Json 不声称污点保护）→ v0.63+ 候选/Backlog（wasm 守护 slice 2/walker 统一；while 证明/checker 拆分不承诺）** |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -531,6 +531,8 @@
 **任务**：checker 100–200 行；interp ≤50 行；2–3 个签名变更 + 12–20 个调用点迁移；§65 15–20 项；GUIDE/design/capabilities/README。
 **验收**：迁移清单逐项勾；env→write_file 路径静态拒绝、sanitize 后通过；`read_file` 内容仍可 `split/print`（证明窄源不破坏工具）；四引擎标注程序逐字一致；fuzz 0；proof_fuzz 0；check 语料 ≤1.3x。
 
+**验收（2026-11-14 实测）**：`node tests/run.mjs` **945 项 0 失败**（905 + §65 40 条 check）；迁移 12 处完成（8 工具，良性 env 行为与迁移前**逐字一致**——git worktree 基线 SMOKE-IDENTICAL；控制字符 env 值 → stderr + exit 1，净化器既定收紧）；env→write_file 路径静态拒绝（M3049 + hint）+ sanitize 后通过；`read_file` 内容 `split/print` 零改动（SMOKE 证实窄源不破坏工具）；四引擎标注程序逐字一致（默认/--no-wasm/--tree + **cc 擦除一致腿 v65.23**）；`fuzz --seed 44044 --count 40` 0 分歧（C 腿 6）；proof_fuzz 0 误报；新码 M3049/M3050 三处登记。**独立审查（fresh code-reviewer）**：2 MAJOR（C 后端 Untrusted 标注缺口、`C:x` 盘符相对漏判）+ MINOR 4 项全部修复（v65.21–24 补契约 sanitize/`as`/载体禁面/cc 腿）；**顺带修复污点实现暴露的既有缺口**：变体构造器载荷 tvar 从不绑定（`Some(脏)` 曾逃禁面）→ variantCtorType 补 `ps` + callCtor deepResolveT；struct 字面量字段位静默通过 → M3049 前置；latent **N-61.1/N-61.2** 登记。
+
 **若门槛不满足**：本版退化为"测试与观测版"（vm.js +5 个具名函数至 ≥70%、manifest 2 个函数、覆盖率基线刷新），Untrusted 顺延；**不承诺实现**。
 
 **明确不做**：9 源全量、`Untrusted[Json]`/`Vec[u8]`/argv 载体、流敏感/跨函数推断、净化的形式化证明。
@@ -561,7 +563,7 @@
 | 资源门禁一致性 | #51/#52/#53 + #54 CLI 旗标 | **✅ v0.60 交付** | 三引擎配额矩阵（v64.A1/A2/B3–B5）+ tree 腿（v64.B9）；无新 M 码；S1/S2 核心 diff <100 行 |
 | tree 契约重入 | #47 | **✅ v0.60 交付** | tree/VM 输出一致（v64.B1/B2）；仅 interp.js |
 | ADR-002 五处补丁 | 来源/白名单/净化器/debug/码号 | **✅ 已落盘** | 评估期落 a/e + 批次 1 落 b/c/d + 审查修正 |
-| 污点窄源 v1 | Untrusted[str] 最小闭环 | **v0.61 条件（先 spike）** | 门槛不满足则退化为测试版 |
+| 污点窄源 v1 | Untrusted[str] 最小闭环 | **✅ v0.61 交付** | 门槛①②③满足后实现；§65 40 条；迁移 12 处/零内容改动；M3049/M3050 |
 | 服务端 v1 | ADR-001 清单裁决 + serve | **v0.62 条件（独立版）** | 16/16 + §66 ≥12 |
 | wasm 守护 slice 2 | 下标/mut 写/Option 链/VecLit/f64 复合赋值 | v0.63 候选 | 不影响语义，strict 具名 |
 | vm.js 覆盖率 | 实测 65.9%（54/82，v0.60 全表）；+4 具名函数即 70% | 信息性，不设门槛 | 40 opcode 是 case，不是函数；wasm 宿主导入 lambda 稀释函数计数 |
@@ -583,7 +585,7 @@
 |------|---------------------|----------|
 | v0.59 | **✅(2026-11-13)**:strict 模式已知回落清零(保留守护逐条具名);本地函数恢复且三引擎一致;记账统一(#48/#49);P1/P2/P3 独立审查修复全落地(`<<` 溢出/M4007 对齐/字面量计费/兄弟 ensures/lambda 捕获/遮蔽语义/M3015/M3048) | **§63 56 项(≥24);回归 881 全绿(≥860);fuzz eligible 族 120 语料 fallback=0;proof_fuzz 0 误报** |
 | v0.60 | **✅(2026-11-13 实测)**:资源门禁一致性交付(#51/#52/#53/#54 + #47 + ADR-002 五处补丁 + 文档/基线收口);无新语言面/无新诊断码;3 名 fresh reviewer 阻塞项(基类 runTests 透传)修复后全绿 | **§64 24 项(≥14);回归 905 全绿(≥895);三引擎配额矩阵逐字(v64.A1/A2/B3–B5);S1 sleep/join <2s M4012;fuzz 40 程序 0 分歧(wasm 真实执行 20);proof_fuzz 0 误报;无新 M 码** |
-| v0.61 | 窄源 Untrusted v1 交付（或按门槛退化为测试版并记录）；迁移清单完成 | §65 15–20 项；迁移 ≤20 处；四引擎标注程序逐字一致；回归全绿；M3049/M3050 三处登记 |
+| v0.61 | **✅(2026-11-14 实测)**:窄源 Untrusted v1 交付（门槛①②③满足：五处补丁评审 + 12 工具迁移 spike + sanitize_cli_path 裁决）；迁移清单 12 处逐项勾、12/12 工具零内容改动；四引擎标注程序逐字一致；M3049/M3050 三处登记；独立审查 2 MAJOR + MINOR 全部修复 | **§65 40 条(≥15–20 上限)；回归 945 全绿；迁移 ≤20 处(实测 12)；fuzz 40 程序 0 分歧；proof_fuzz 0 误报** |
 | v0.62 | ADR-001 16/16 + serve v1 交付（或只留决策记录） | §66 ≥12；三段式拒绝；190 req/s 量级与 16 worker 内存如实报告 |
 | 持续 | 覆盖率/bench 信息性刷新；usage audit；安全审计窗口 | 不设门槛 |
 
@@ -774,6 +776,8 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 
 | # | 备注 | 级别 | 状态 |
 |---|------|------|------|
+| N-61.1 | 嵌套位置污点诊断回落通用码:`Result[Untrusted[str],str]`→`Result[str,str]` 块尾、match/if 分支混型、spawn_all Vec 元素、用户变体载荷报 M3002(而非 M3049);`json.stringify` 的 M3033 hint 对污点值误导——全部**正确拒绝**,仅诊断质量非旁路 | 信息 | 已登记(审查 m3;后续可把判定改 `typeContainsUntrusted(actual) && !typeContainsUntrusted(expected)`) |
+| N-61.2 | compiler `tryWasm` 的 Untrusted 解包为**原地修改** checker `entry.sig`(运行时擦除下语义自洽;doc/LSP 读 AST 不受影响;AOT 产物存载体签名正确)——卫生债:未来"compile 之后再读 sig 渲染"的功能会踩坑 | 信息 | 已登记(审查 n1;建议将来改 clone 喂 wasm.js,v1 不修) |
 | N-60.1 | #53 钳制等待后的 `checkTimeQuota`（M4012）先于 `worker.terminate()` 抛出（syncSpawnAll/syncJoin/join_detailed/exitSyncScope 四处）——CLI 侧 `process.exit` 收割全部 worker 无碍；"解释器即库"（REPL/嵌入）场景会泄漏运行中 worker 至任务自然结束。修复前该位置无检查，非回归 | 信息 | 已登记（v0.60 批次 1 审查；后续可把 terminate 挪到检查前/finally） |
 | N-60.2 | `read_file` stat 预记账的平台差异：Windows 目录 size 0 不多计（EISDIR Err 与 v0.59 逐字一致）；Linux 目录 size 4096 会多计 4096 后仍回 Err（注释已声明"偏保守"口径） | 信息 | 已登记（v0.60 批次 1 审查） |
 | N-60.3 | `wasmWriteVecNum` 调用点传 3 参（含 mut 旗标）但定义只收 2 参——mut 旗标静默丢弃，`mut 参数预留容量(v0.20 push)` 注释名不副实；v0.59 既有代码，不在 v0.60 改动面 | 信息 | 已登记（latent；单独收口需评估 mut Vec 容量语义） |

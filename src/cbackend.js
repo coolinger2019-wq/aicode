@@ -52,6 +52,9 @@ function mingTyNum(t) {
   if (t.k === 'res' && t.ok?.k === 'int' && t.ok?.bits === 64 && t.ok?.signed && t.err?.k === 'str') return 'ri64';
   // v0.54/C5:Ptr[mut u8] → unsigned char*;Ptr[u8] → const unsigned char*
   if (t.k === 'ptr' && t.el?.k === 'int' && t.el.bits === 8 && t.el.signed === false) return t.mut ? 'pu8' : 'pcu8';
+  // v0.61/M1(审查修复):Untrusted 运行时擦除——已解析形状(checker sig 层 mkUntrusted)按载体判定
+  // (extern 返回/ffi 槽位签名/普通函数返回;载体非 str 时返回 null,沿用既有 Unsupported 拒绝)。
+  if (t.k === 'untrusted') return mingTyNum(t.el);
   return null;
 }
 
@@ -69,6 +72,9 @@ function annoTarget(t) {
   if (!t) return null;
   if (t.nt === 'TName') {
     const n = t.name.split('.').pop();
+    // v0.61/M1(审查修复):Untrusted 是运行时擦除的载体包装——穿透到载体,检查同载体既有规则
+    // (Untrusted[str] 的 let 标注/as 目标按 str 走;载体面非 str 时 annoTarget 返回 null,沿用既有拒绝)。
+    if (n === 'Untrusted' && t.args?.length === 1) return annoTarget(t.args[0]);
     if (n === 'str') return { k: 'str' };
     if ((n === 'Vec') && t.args?.length === 1) {
       const el = annoTarget(t.args[0]);

@@ -44,7 +44,15 @@ fn main(args: Vec[str]) -> i64 with io, fs, env {
     if files.len() == 0 {
         match std.env.get("WC_FILE") {
             Some(v) => {
-                files.push(v);
+                match std.unstr.sanitize_cli_path(v) {
+                    Ok(p) => {
+                        files.push(p);
+                    },
+                    Err(e) => {
+                        eprint("WC_FILE: " + e);
+                        return 1;
+                    },
+                }
             },
             None => {
             },

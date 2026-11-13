@@ -119,6 +119,8 @@
 | M3046 | unsafe-context-required | v0.54:指针操作(`p.load/store/offset`、`std.mem.alloc/free`)、Ptr 实参传递给非 extern 函数,或把含 Ptr 的值装进容器/构造器(`Vec.push/insert/extend`、`Map.set`/Map 字面量、`Some/Ok/Err` 等变体、元组/结构体字面量;判定为递归类型谓词 `typeContainsPtr`,含 Ptr 的容器传给普通函数同样拒绝),出现在 `unsafe { ... }` 块外;所在函数还必须声明 `with unsafe`(缺效果声明报 M3029)。块外只允许 let/赋值/return 传递与 `p.is_null()` |
 | M3047 | local-fn-unsupported | **已废弃(v0.59,#44 本地函数恢复)**:v0.56 曾对本地函数声明统一显式拒绝(VM 无编译路径);v0.59 起三引擎支持本地函数(块级条目语义:同块可见、递归/互递归、requires/ensures 按模块函数同口径),此码不再发射。号段按"已发布码不改号"保留,登记废弃以免复用 |
 | M3048 | generic-local-fn-unsupported | v0.59 P2 审查:本地函数声明带类型参数(泛型本地函数)——本地函数编译为独立函数帧、三引擎均不做单态化,在声明处拒绝(不再复用 M3003 的"类型推断失败"码义);块内调用点按毒化签名(never)收敛,不再级联 `str(...实际是 T)`。修复:把泛型函数声明在模块级,或去掉本地函数的类型参数 |
+| M3049 | untrusted-mismatch | v0.61(ADR-002 污点标注):`Untrusted[str]` 实参进入未显式接受 Untrusted 的槽——函数/方法实参、`let` 标注、赋值、return/块尾、Map 键/值、Vec 元素、结构体字段、`print`/`str` 的显示位、extern 实参等一切"期待 T 实际 Untrusted[T]"的位置(sink 免费门禁:未显式接受 Untrusted 的位置全是 sink);extern 声明写裸 `-> str` 返回同样报此码(C 世界返回值没有可信的,签名须写 `-> Untrusted[str]`)。反向(期待 Untrusted、实参裸载体)报 M3002——必须显式 `std.unstr.mark`。修复:先过 `std.unstr.sanitize_path` / `sanitize_cli_path`(纯函数,返回 `Result[str, str]`),或把形参改声明为 `Untrusted[str]` |
+| M3050 | untrusted-method-forbidden | v0.61(ADR-002 污点标注):Untrusted 的操作面禁例——① 载体方法白名单(`parse_i64`/`parse_f64`/`char_len`/`byte_len`/`is_empty`)之外的任何方法在 `Untrusted[str]` 接收者上调用;② 洗白通道:`debug(x)`(实参含 Untrusted,容器/struct 载荷递归判定)、字符串插值 `\{u}`、`as` 转换;③ 类型声明 `Untrusted[非 str]` 或 `Untrusted[Untrusted[str]]`(载体 v1 仅 str,扩载体需另行设计)。产出净 str 的唯一出口是 `std.unstr.sanitize_path` / `sanitize_cli_path`(净化 = 类型跃迁单点可信根) |
 
 ## 约定
 

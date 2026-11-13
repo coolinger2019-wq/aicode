@@ -58,7 +58,15 @@ fn main(args: Vec[str]) -> i64 with io, fs, env {
     if path == "" {
         match std.env.get("LOG_FILE") {
             Some(v) => {
-                path = v;
+                match std.unstr.sanitize_cli_path(v) {
+                    Ok(p) => {
+                        path = p;
+                    },
+                    Err(e) => {
+                        eprint("LOG_FILE: " + e);
+                        return 1;
+                    },
+                }
             },
             None => {
             },

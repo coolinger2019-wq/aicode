@@ -9,6 +9,7 @@
 //   {k:'struct',name,def,targs} {k:'enum',name,def,targs}   — def 指向 Decl,按引用比较
 //   {k:'range',el}
 //   {k:'ptr',el,mut}   — v0.54:不透明指针(仅 el=u8;mut 区分 Ptr[mut u8]/Ptr[u8],无隐式转换)
+//   {k:'untrusted',el} — v0.61(ADR-002):污点标签 Untrusted[T](编译期,运行时擦除;载体 v1 仅 str)
 //   {k:'param',name}   — 泛型参数(检查体内)
 //   {k:'var',id}       — 推断变量,由 binds 解析
 
@@ -37,6 +38,9 @@ export function mkRange(el) { return { k: 'range', el }; }
 export function mkJoin(el) { return { k: 'join', el }; }
 // v0.54:Ptr 类型面 {k:'ptr', el, mut};el 当前只允许 u8(检查器 resolveTypeAst 强制)
 export function mkPtr(el, mut = false) { return { k: 'ptr', el, mut: !!mut }; }
+// v0.61(ADR-002):污点标签 {k:'untrusted', el};el 当前只允许 str(载体 v1,resolveTypeAst 强制)。
+// 编译期标签、运行时擦除:值表示与载体相同,运行时分发零改动。
+export function mkUntrusted(el) { return { k: 'untrusted', el }; }
 
 export const INT_TYPES = {
   i8: tint(8, true), i16: tint(16, true), i32: tint(32, true), i64: tint(64, true),
@@ -76,6 +80,7 @@ function occurs(t, id, binds) {
     case 'fn': return t.ps.some(x => occurs(x, id, binds)) || occurs(t.ret, id, binds);
     case 'range': return occurs(t.el, id, binds);
     case 'ptr': return occurs(t.el, id, binds);
+    case 'untrusted': return occurs(t.el, id, binds);
     case 'struct': case 'enum': return (t.targs ?? []).some(x => occurs(x, id, binds));
     default: return false;
   }
@@ -117,6 +122,9 @@ export function unify(a, b, binds) {
     case 'range': return unify(a.el, b.el, binds);
     // v0.54:Ptr 精确匹配——mut/非 mut 不同型,无隐式转换
     case 'ptr': return a.mut === b.mut && unify(a.el, b.el, binds);
+    // v0.61(ADR-002):Untrusted 精确匹配(载体也须一致)——Untrusted[T] 不是 T,
+    // 这条免费得到 sink 门禁:未显式接受 Untrusted 的位置全是 sink。
+    case 'untrusted': return unify(a.el, b.el, binds);
     case 'join': return unify(a.el, b.el, binds);
     case 'opt': return unify(a.el, b.el, binds);
     case 'res': return unify(a.ok, b.ok, binds) && unify(a.err, b.err, binds);
@@ -151,6 +159,7 @@ export function typeStr(t, binds = null) {
     case 'range': return `Range[${r(t.el)}]`;
     case 'join': return `Join[${r(t.el)}]`;
     case 'ptr': return `Ptr[${t.mut ? 'mut ' : ''}${r(t.el)}]`; // v0.54
+    case 'untrusted': return `Untrusted[${r(t.el)}]`; // v0.61(ADR-002 清单 15:doc/LSP/接口哈希随渲染串自动覆盖)
     case 'tuple': return t.ts.length === 0 ? '()' : `(${t.ts.map(r).join(', ')})`;
     case 'fn': { const base = `(${t.ps.map(r).join(', ')}) -> ${r(t.ret)}`; const es = [...(t.effects ?? [])]; return es.length ? base + ' with ' + es.join(', ') : base; }
     case 'param': return t.name;
@@ -174,6 +183,7 @@ export function isComparable(t, binds) {
     case 'fn': return false;
     case 'vec': return isComparable(t.el, binds);
     case 'ptr': return false; // v0.54:Ptr 不支持 ==/!=(用 is_null)
+    case 'untrusted': return isComparable(t.el, binds); // v0.61:运行时擦除,相等即载体相等
     case 'map': return isComparable(t.kt, binds) && isComparable(t.vt, binds);
     case 'opt': return isComparable(t.el, binds);
     case 'res': return isComparable(t.ok, binds) && isComparable(t.err, binds);
@@ -265,7 +275,9 @@ export const STD_MODULES = {
   },
   io: {
     fns: [
-      mF('read_line', [], T_STR, { effect: 'io' }),
+      // v0.61(ADR-002 §3.1 窄源 v1):read_line 返回 Untrusted[str](stdin 整行不可信)。
+      // read_to_end 等 fs/net/proc 内容源 v1 不标——泄漏窗口如实登记(ADR §6.2 ②)。
+      mF('read_line', [], mkUntrusted(T_STR), { effect: 'io' }),
       mF('read_to_end', [], T_STR, { effect: 'io' }),
       mF('read_to_end', [], T_STR, { effect: 'io' }),
     ],
@@ -397,9 +409,23 @@ export const STD_MODULES = {
   // 环境变量(能力:env)
   env: {
     fns: [
-      mF('get', [T_STR], mkOpt(T_STR), { effect: 'env' }),
+      // v0.61(ADR-002 §3.1 窄源 v1):环境变量值不可信 → Option[Untrusted[str]]
+      mF('get', [T_STR], mkOpt(mkUntrusted(T_STR)), { effect: 'env' }),
       mF('set', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'env' }),
       mF('remove', [T_STR], T_BOOL, { effect: 'env' }),
+    ],
+  },
+  // 污点净化族(v0.61 ADR-002 §3.4;全部纯函数、无效果——契约可用性的关键约束)。
+  // 唯一类型跃迁出口:Untrusted[str] -> Result[str, str](可信根单点化;族扩展 = 可信根扩权)。
+  //   mark:把干净值标脏(标脏只会更严,公开无危害;测试块与已知干净场景用)
+  //   sanitize_path:拒绝绝对路径/.. 段等非法形态,Ok 为规范化相对路径(路径实参位授权)
+  //   sanitize_cli_path:校验不改写——拒绝 NUL/C0 控制字符,Ok 原串原样返回
+  //     (CLI 匹配/比较串授权位,2026-11-14 裁决,ADR §3.4)
+  unstr: {
+    fns: [
+      mF('mark', [T_STR], mkUntrusted(T_STR)),
+      mF('sanitize_path', [mkUntrusted(T_STR)], mkRes(T_STR, T_STR)),
+      mF('sanitize_cli_path', [mkUntrusted(T_STR)], mkRes(T_STR, T_STR)),
     ],
   },
   // 结构化并发(能力:sync;spawn/join/join_detailed 走特例签名)
@@ -467,6 +493,12 @@ export const TYPE_LEVEL_FNS = {
   int: ['max_value', 'min_value'],
   float: ['infinity', 'neg_infinity', 'nan'],
 };
+
+// v0.61(ADR-002 §3.2):Untrusted 载体方法白名单(checker 内置表,可审计)。
+// 只产出非污点载体(纯值)的方法——污点在数值/长度/布尔上终结;
+// "产出同污点载体"的方法 v1 不设(get(i) 会开 char 重组旁路)。
+// 运行时零改动:Untrusted 值擦除为载体值,方法按载体实现走(白名单校验只在 checker)。
+export const UNTRUSTED_METHODS = new Set(['parse_i64', 'parse_f64', 'char_len', 'byte_len', 'is_empty']);
 
 // ===================== 模块 =====================
 
@@ -650,6 +682,22 @@ export class Checker {
             }
             return mkPtr(el, mut);
           }
+          // v0.61(ADR-002):Untrusted[T] 污点标签——载体 v1 仅 str;
+          // Untrusted[i64] / Untrusted[Untrusted[str]] 均拒绝(M3050,扩载体不得静默)。
+          if (parts.length === 1 && t.name === 'Untrusted') {
+            if (t.args.length !== 1) {
+              self.diagT(t.span, `Untrusted 需要 1 个类型参数,得到 ${t.args.length}`);
+              return mkUntrusted(T_STR);
+            }
+            const el = go(t.args[0]);
+            if (el?.k !== 'str') {
+              self.diags.push(err('M3050',
+                `Untrusted 的载体类型 v1 仅 str,得到 ${typeStr(el)}(扩载体需先设计 Untrusted[u8]/Untrusted[Json] 与净化器授权矩阵,ADR-002 §6.2 ②)`,
+                t.span, CODE_HINTS.M3050));
+              return mkUntrusted(T_STR);
+            }
+            return mkUntrusted(el);
+          }
           if (parts.length === 1 && t.name === 'Vec') {
             if (t.args.length !== 1) self.diagT(t.span, `Vec 需要 1 个类型参数,得到 ${t.args.length}`);
             return mkVec(go(t.args[0]));
@@ -733,6 +781,21 @@ export class Checker {
   }
 
   diagT(span, msg, hint) { this.diags.push(err('M3002', msg, span, hint)); }
+
+  // v0.61(ADR-002 §2.2/§8.1):污点专用码优先——Untrusted 实参进非 Untrusted 槽
+  // (调用实参/赋值/let 标注/return/Map 键/方法实参等一切"期待 T 实际 Untrusted[T]"的位置)
+  // → M3049[untrusted-mismatch]。返回 true 表示已发专用码,调用方跳过通用 M3002(避免双报)。
+  // 反向(期待 Untrusted、实参裸载体)不在此列——由既有 M3002 拒绝(必须显式 mark,无隐式转换)。
+  untrustedMismatchDiag(actualT, expectedT, span, what) {
+    const a = resolveT(actualT, new Map());
+    if (a?.k !== 'untrusted') return false;
+    const e = expectedT != null ? resolveT(expectedT, new Map()) : null;
+    if (e?.k === 'untrusted') return false;
+    this.diags.push(err('M3049',
+      `${what}:期望 ${typeStr(e)},实际 ${typeStr(a)}(不可信值:先净化,或把目标改声明为 Untrusted[str])`,
+      span));
+    return true;
+  }
   cannotFindName(name, span, mod, kindHint = '类型或值') {
     const avail = [...mod.items.keys()].filter(k => !k.startsWith('test:'));
     const near = nearest(name, avail);
@@ -784,6 +847,15 @@ export class Checker {
           ret: d.ret ? this.resolveTypeAst(d.ret, mod, tp) : T_UNIT,
           effects,
         };
+        // v0.61(ADR-002 §3.1):extern 禁止裸 str 返回——C 世界返回值没有可信的,
+        // 让漏标成为声明处错误(M3049)而非纪律问题;签名一律按 -> Untrusted[str] 处理,
+        // 调用处照常接受(声明错误已报,程序不会编译通过)。
+        if (entry.extern && entry.sig.ret?.k === 'str') {
+          this.diags.push(err('M3049',
+            `extern 函数 "${d.name}" 返回 str 必须声明为 Untrusted[str](C 世界返回值没有可信的)`,
+            d.ret?.span ?? d.span));
+          entry.sig.ret = mkUntrusted(T_STR);
+        }
       } else if (entry.kind === 'trait') {
         const d = entry.decl;
         const methodsSig = new Map();
@@ -1288,7 +1360,8 @@ export class Checker {
       if (bt.k === 'unit') {
         this.diags.push(err('M3017', `函数 "${d.name}" 标注返回 ${typeStr(ret)},但有的执行路径不会产生返回值`, d.body.span,
           '补上 return 语句或块尾表达式;检查 if/match 的每个分支是否都返回。'));
-      } else if (!unify(bt, ret, binds) && bt.k !== 'never') {
+      } else if (!this.untrustedMismatchDiag(bt, ret, d.body.span, `函数 "${d.name}" 块尾返回类型不匹配`)
+        && !unify(bt, ret, binds) && bt.k !== 'never') {
         this.diags.push(err('M3002', `函数 "${d.name}" 返回类型是 ${typeStr(ret)},但块产生 ${typeStr(bt, binds)}`, d.body.span));
       }
     }
@@ -1359,7 +1432,8 @@ export class Checker {
       if (bt.k === 'unit') {
         this.diags.push(err('M3017', `函数 "${d.name}" 标注返回 ${typeStr(sig.ret)},但有的执行路径不会产生返回值`, d.body.span,
           '补上 return 语句或块尾表达式;检查 if/match 的每个分支是否都返回。'));
-      } else if (!unify(bt, sig.ret, binds) && bt.k !== 'never') {
+      } else if (!this.untrustedMismatchDiag(bt, sig.ret, d.body.span, `函数 "${d.name}" 块尾返回类型不匹配`)
+        && !unify(bt, sig.ret, binds) && bt.k !== 'never') {
         this.diags.push(err('M3002', `函数 "${d.name}" 返回类型是 ${typeStr(sig.ret)},但块产生 ${typeStr(bt, binds)}`, d.body.span));
       }
     }
@@ -1521,7 +1595,8 @@ export class Checker {
         if (s.value) {
           const t = this.checkExpr(s.value, ctx, ctx.fnRet.k === 'unit' ? undefined : ctx.fnRet);
           if (t === null) break; // 表达式已报错;不再连锁
-          if (!unify(t, ctx.fnRet, binds) && t.k !== 'never' && ctx.fnRet.k !== 'never') {
+          if (!this.untrustedMismatchDiag(t, ctx.fnRet, s.span, 'return 的值类型与函数返回类型不匹配')
+            && !unify(t, ctx.fnRet, binds) && t.k !== 'never' && ctx.fnRet.k !== 'never') {
             this.diags.push(err('M3002', `return 的值类型 ${typeStr(t, binds)} 与函数返回类型 ${typeStr(ctx.fnRet)} 不匹配`, s.span));
           }
         } else if (ctx.fnRet.k !== 'unit' && ctx.fnRet.k !== 'never') {
@@ -1634,7 +1709,8 @@ export class Checker {
     }
     const binds = new Map();
     if (s.init && declared) {
-      if (!unify(initT, declared, binds)) {
+      if (!this.untrustedMismatchDiag(initT, declared, s.span, 'let 标注类型不匹配')
+        && !unify(initT, declared, binds)) {
         this.diags.push(err('M3002', `let 标注类型是 ${typeStr(declared)},但初始化表达式是 ${typeStr(initT, binds)}`, s.span));
       }
     }
@@ -1705,7 +1781,8 @@ export class Checker {
     if (s.op !== '=') {
       // 复合赋值:要求支持对应算术
       this.checkBinaryOp(s.op[0], targetT, valueT, s.span, binds);
-    } else if (targetT && !unify(targetT, valueT, binds)) {
+    } else if (targetT && !this.untrustedMismatchDiag(valueT, targetT, s.span, '赋值类型不匹配')
+      && !unify(targetT, valueT, binds)) {
       this.diags.push(err('M3002', `赋值类型不匹配:目标是 ${typeStr(targetT, binds)},值是 ${typeStr(valueT, binds)}`, s.span));
     } else if (targetT) {
       // v0.54 审查 B4:unify(目标, 值) 的效果子集方向是"目标 ⊆ 值"(为实参→形参而设),
@@ -1783,7 +1860,8 @@ export class Checker {
           return r.el;
         }
         if (r?.k === 'map') {
-          if (!unify(iT, r.kt, new Map())) this.diags.push(err('M3002', `map 键类型是 ${typeStr(r.kt)},实际是 ${typeStr(iT)}`, e.index.span));
+          if (!this.untrustedMismatchDiag(iT, r.kt, e.index.span, 'map 键类型不匹配')
+            && !unify(iT, r.kt, new Map())) this.diags.push(err('M3002', `map 键类型是 ${typeStr(r.kt)},实际是 ${typeStr(iT)}`, e.index.span));
           return r.vt;
         }
         this.diags.push(err('M3020', `${typeStr(baseT)} 不支持索引赋值`, e.span));
@@ -1840,7 +1918,13 @@ export class Checker {
           if (p.expr) {
             const t = this.checkExpr(p.expr, ctx);
             const r = resolveT(t, new Map());
-            if (!isPrimitiveDisplay(r, binds)) {
+            if (r?.k === 'untrusted') {
+              // v0.61(ADR-002 §3.2 补丁 b):插值是洗白通道,对 Untrusted 静态拒绝
+              // (不用 M3012 的通用 hint——它会误导用户改走同样被禁的 debug)。
+              this.diags.push(err('M3050',
+                `插值 \\{...} 不接受 ${typeStr(r)}:插值是洗白通道,污点值禁止转成净 str`,
+                p.expr.span, CODE_HINTS.M3050));
+            } else if (!isPrimitiveDisplay(r, binds)) {
               this.diags.push(err('M3012', `插值 \\{...} 只支持 int/float/bool/str,实际是 ${typeStr(r)}`, p.expr.span,
                 '其他类型用 debug(x) 生成调试字符串,或给它实现 to_str(计划 v0.2)。'));
             }
@@ -1860,7 +1944,8 @@ export class Checker {
           return r.el;
         }
         if (r?.k === 'map') {
-          if (!unify(iT, r.kt, new Map())) this.diags.push(err('M3002', `map 键类型是 ${typeStr(r.kt)},实际是 ${typeStr(iT)}`, e.index.span));
+          if (!this.untrustedMismatchDiag(iT, r.kt, e.index.span, 'map 键类型不匹配')
+            && !unify(iT, r.kt, new Map())) this.diags.push(err('M3002', `map 键类型是 ${typeStr(r.kt)},实际是 ${typeStr(iT)}`, e.index.span));
           return r.vt;
         }
         if (r?.k === 'str') {
@@ -1915,6 +2000,14 @@ export class Checker {
         const target = this.resolveTypeAst(e.type, ctx.mod);
         const r = resolveT(t, new Map()), tr = resolveT(target, new Map());
         const numOk = (x) => x?.k === 'int' || x?.k === 'float';
+        // v0.61(ADR-002 §3.2 补丁 b):as 是洗白通道(M3019 通道对 Untrusted 关闭),
+        // 专用码 M3050 指向净化出口。
+        if (r?.k === 'untrusted') {
+          this.diags.push(err('M3050',
+            `"as" 不接受 ${typeStr(r)}:as 是洗白通道;产出净 str 的唯一出口是 std.unstr.sanitize_path / sanitize_cli_path`,
+            e.span, CODE_HINTS.M3050));
+          return target;
+        }
         if (!numOk(r) || !numOk(tr)) {
           this.diags.push(err('M3019', `"as" 只支持数值类型之间的转换:${typeStr(r)} → ${typeStr(tr)}`, e.span,
             r?.k === 'str' ? '字符串转数字用 s.parse_i64() / s.parse_f64()(返回 Result)' : '数字转字符串用 str(x)'));
@@ -2009,11 +2102,13 @@ export class Checker {
   variantCtorType(enumName, variantName, span) {
     if (enumName === 'Option') {
       const T = tvar();
-      return { k: 'ctor', enumT: mkOpt(T), variant: variantName, tvars: [T], arity: variantName === 'None' ? 0 : 1 };
+      // v0.61:ps 指向载荷槽——callCtor 据此把实参与载荷 tvar 绑定(deepResolveT
+      // 在构造处落定载荷类型;此前载荷 var 从不绑定,污点/类型事实会以 var 外流)。
+      return { k: 'ctor', enumT: mkOpt(T), variant: variantName, tvars: [T], ps: [T], arity: variantName === 'None' ? 0 : 1 };
     }
     if (enumName === 'Result') {
       const T = tvar(), E = tvar();
-      return { k: 'ctor', enumT: mkRes(T, E), variant: variantName, tvars: [T, E], arity: variantName === 'Ok' ? 1 : 1 };
+      return { k: 'ctor', enumT: mkRes(T, E), variant: variantName, tvars: [T, E], ps: [variantName === 'Ok' ? T : E], arity: 1 };
     }
     this.diags.push(err('M3024', `未知枚举 "${enumName}"`, span));
     return null;
@@ -2159,7 +2254,8 @@ export class Checker {
         e.args.forEach((a, i) => {
           const t = this.checkExpr(a, ctx, localFn.params[i]?.type ?? undefined, true);
           argTs.push(t);
-          if (localFn.params[i] && !unify(t, localFn.params[i].type, binds)) {
+          if (localFn.params[i] && !this.untrustedMismatchDiag(t, localFn.params[i].type, a.span, `参数 #${i + 1}(${localFn.params[i].name})类型不匹配`)
+            && !unify(t, localFn.params[i].type, binds)) {
             this.diags.push(err('M3002', `参数 #${i + 1}(${localFn.params[i].name})类型不匹配:期望 ${typeStr(localFn.params[i].type)},实际 ${typeStr(t, binds)}`, a.span));
           }
         });
@@ -2259,7 +2355,8 @@ export class Checker {
     }
     for (let i = 0; i < sig.params.length; i++) {
       const pt = substTypes(sig.params[i].type, sig.tparams, paramMap);
-      if (!unify(argTs[i], pt, binds)) {
+      if (!this.untrustedMismatchDiag(argTs[i], pt, e.args[i].span, `参数 #${i + 1}(${sig.params[i].name})类型不匹配`)
+        && !unify(argTs[i], pt, binds)) {
         this.diags.push(err('M3002', `参数 #${i + 1}(${sig.params[i].name})类型不匹配:期望 ${typeStr(pt, binds)},实际 ${typeStr(argTs[i], binds)}`, e.args[i].span));
       }
     }
@@ -3677,7 +3774,8 @@ export class Checker {
     }
     this.checkPtrArgs(e.args, argTs, ctx, '函数值', !!r.extern); // v0.54
     for (let i = 0; i < Math.min(e.args.length, r.ps.length); i++) {
-      if (!unify(argTs[i], r.ps[i], binds)) {
+      if (!this.untrustedMismatchDiag(argTs[i], r.ps[i], e.args[i].span, `参数 #${i + 1} 类型不匹配`)
+        && !unify(argTs[i], r.ps[i], binds)) {
         this.diags.push(err('M3002', `参数 #${i + 1} 类型不匹配:期望 ${typeStr(r.ps[i], binds)},实际 ${typeStr(argTs[i], binds)}`, e.args[i].span));
       }
     }
@@ -3702,7 +3800,9 @@ export class Checker {
         }
       }
     }
-    return resolveT(ctor.enumT, binds) ?? ctor.enumT;
+    // v0.61:载荷深层落定(deepResolveT)——构造器 tvar 已由实参绑定,不落定会让
+    // Option/Result 的污点载荷以未解析 var 外流(逃过 debug 禁面与 sink 检查)。
+    return deepResolveT(ctor.enumT, binds) ?? ctor.enumT;
   }
 
   checkBuiltinCall(name, e, ctx) {
@@ -3722,15 +3822,26 @@ export class Checker {
         // v0.59 P2 审查 MINOR#2:never 是底类型(表达式已必然终止/被拒绝),
         // 与 str(...) 的显示约束 unify 相容,不再级联 M3002。
         const rt = resolveT(argTs[i], binds);
-        if (rt?.k !== 'never' && !isPrimitiveDisplay(argTs[i], binds)) {
+        // v0.61(ADR-002):print/str 的显示位对 Untrusted 发专用码 M3049
+        // (不能当 str 用;打印通道同属注入面)。
+        if (rt?.k !== 'never' && rt?.k !== 'untrusted' && !isPrimitiveDisplay(argTs[i], binds)) {
           this.diags.push(err('M3002', `${name} 的参数 #${i + 1} 必须是 int/float/bool/str,实际是 ${typeStr(argTs[i], binds)}`, e.args[i].span,
             '其他类型用 debug(x)。'));
+        } else if (rt?.k === 'untrusted') {
+          this.untrustedMismatchDiag(argTs[i], T_STR, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`);
         }
       } else if (p === 'any') {
         const r = resolveT(argTs[i], binds);
         if (spec.noFn && r?.k === 'fn') this.diags.push(err('M3002', 'debug 不能用于函数值', e.args[i].span));
         // v0.54:Ptr 不可打印/调试
         if (r?.k === 'ptr') this.diags.push(err('M3002', `${typeStr(r)} 不能传给 debug(指针不可打印)`, e.args[i].span));
+        // v0.61(ADR-002 §3.2 补丁 b):调试通道即洗白通道——debug(any) 把任意值
+        // 转成净 str,实参"含"Untrusted(含容器/struct 载荷递归)一律静态拒绝(与 Ptr 同款禁面)。
+        if (r?.k === 'untrusted' || typeContainsUntrusted(r)) {
+          this.diags.push(err('M3050',
+            `debug 的参数含 ${typeStr(r)}:debug 是洗白通道(把任意值转成净 str),污点值禁止进入`,
+            e.args[i].span, CODE_HINTS.M3050));
+        }
       } else if (p === 'eq') {
         if (i === 1 && !unify(argTs[0], argTs[1], binds)) {
           this.diags.push(err('M3002', `assert_eq 两侧类型不同:${typeStr(argTs[0], binds)} vs ${typeStr(argTs[1], binds)}`, e.span));
@@ -3738,7 +3849,8 @@ export class Checker {
         if (!isComparable(argTs[i], binds)) this.diags.push(err('M3008', 'assert_eq 不支持函数值', e.args[i].span));
       } else if (p === 'jsonval') {
         this.checkJsonCompatible(argTs[i], binds, e.args[i].span);
-      } else if (!unify(argTs[i], p, binds)) {
+      } else if (!this.untrustedMismatchDiag(argTs[i], p, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`)
+        && !unify(argTs[i], p, binds)) {
         this.diags.push(err('M3002', `${name} 的参数 #${i + 1} 类型不匹配:期望 ${typeStr(p)},实际 ${typeStr(argTs[i], binds)}`, e.args[i].span));
       }
     }
@@ -3789,7 +3901,8 @@ export class Checker {
       }
       e.args.slice(1).forEach((a, i) => {
         const at = this.checkExpr(a, ctx, fnR.ps[i]);
-        if (!unify(at, fnR.ps[i], new Map())) {
+        if (!this.untrustedMismatchDiag(at, fnR.ps[i], a.span, `spawn 参数 #${i + 1} 类型不匹配`)
+          && !unify(at, fnR.ps[i], new Map())) {
           this.diags.push(err('M3002', `spawn 参数 #${i + 1} 类型不匹配:期望 ${typeStr(fnR.ps[i])},实际 ${typeStr(at, new Map())}`, a.span));
         }
       });
@@ -3902,7 +4015,8 @@ export class Checker {
       }
       const t = this.checkExpr(a, ctx, p ?? undefined);
       argTs.push(t);
-      if (p && !unify(t, p, binds)) {
+      if (p && !this.untrustedMismatchDiag(t, p, a.span, `参数 #${i + 1} 类型不匹配`)
+        && !unify(t, p, binds)) {
         this.diags.push(err('M3002', `参数 #${i + 1} 类型不匹配:期望 ${typeStr(p)},实际 ${typeStr(t, binds)}`, a.span));
       }
     });
@@ -3957,6 +4071,19 @@ export class Checker {
       const f = this.stdModuleMember(stdName, name, fieldCallee, ctx, expected);
       if (!f) return null;
       return this.checkStdCall(f, callNode, ctx);
+    }
+
+    // v0.61(ADR-002 §3.2):Untrusted 接收者——白名单方法按载体 str 分派(运行时擦除:
+    // 值就是载体值,方法实现按载体走,interp 无需新方法;白名单校验只在 checker)。
+    // 白名单外(trim/slice/replace/contains/…)一律 M3050[untrusted-method-forbidden]。
+    if (r.k === 'untrusted') {
+      if (!UNTRUSTED_METHODS.has(name)) {
+        this.diags.push(err('M3050',
+          `${typeStr(r)} 没有方法 ".${name}"(白名单外:Untrusted 只能用 ${[...UNTRUSTED_METHODS].join(' / ')};要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path)`,
+          fieldCallee.span, CODE_HINTS.M3050));
+        return null;
+      }
+      return this.strMethod(T_STR, name, args, ctx, callNode, expected, fieldCallee);
     }
 
     const mutNeeded = MUT_METHODS.has(name);
@@ -4018,7 +4145,8 @@ export class Checker {
           const pt = sig.params[i + 1].type;
           const t = this.checkExpr(a, ctx, pt, true);
           argTs.push(t);
-          if (!unify(t, pt, mbinds)) {
+          if (!this.untrustedMismatchDiag(t, pt, a.span, `方法 .${name}() 参数 #${i + 1} 类型不匹配`)
+            && !unify(t, pt, mbinds)) {
             this.diags.push(err('M3002', `方法 .${name}() 参数 #${i + 1} 类型不匹配:期望 ${typeStr(pt, mbinds)},实际 ${typeStr(t, mbinds)}`, a.span));
           }
         });
@@ -4043,7 +4171,8 @@ export class Checker {
         args.forEach((a, i) => {
           const want = resolveT(spec.params[i].type, new Map())?.k === 'selftype' ? r : spec.params[i].type;
           const t = this.checkExpr(a, ctx, want, true);
-          if (!unify(t, want, mbinds)) {
+          if (!this.untrustedMismatchDiag(t, want, a.span, `方法 .${name}() 参数 #${i + 1} 类型不匹配`)
+            && !unify(t, want, mbinds)) {
             this.diags.push(err('M3002', `方法 .${name}() 参数 #${i + 1} 类型不匹配:期望 ${typeStr(want, mbinds)},实际 ${typeStr(t, mbinds)}`, a.span));
           }
         });
@@ -4162,7 +4291,7 @@ export class Checker {
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
         if (mutNeeded) this.checkMutReceiver(fieldCallee.base, ctx, name, span);
         const t = aT(0, T);
-        if (!unify(t, T, binds)) this.diags.push(err('M3002', `push 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t, binds)}`, args[0].span));
+        if (!this.untrustedMismatchDiag(t, T, args[0].span, 'push 的元素类型不匹配') && !unify(t, T, binds)) this.diags.push(err('M3002', `push 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t, binds)}`, args[0].span));
         this.checkPtrPayload(t, args[0].span, ctx, 'Vec 元素'); // v0.54 审查 B3
         return T_UNIT;
       }
@@ -4260,7 +4389,7 @@ export class Checker {
         const t0 = aT(0, INT_TYPES.i64);
         if (!unify(t0, INT_TYPES.i64, binds)) this.diags.push(err('M3002', `insert 的索引必须是 i64`, args[0].span));
         const t1 = aT(1, T);
-        if (!unify(t1, T, binds)) this.diags.push(err('M3002', `insert 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
+        if (!this.untrustedMismatchDiag(t1, T, args[1].span, 'insert 的元素类型不匹配') && !unify(t1, T, binds)) this.diags.push(err('M3002', `insert 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
         this.checkPtrPayload(t1, args[1].span, ctx, 'Vec 元素'); // v0.54 审查 B3
         return T_UNIT;
       }
@@ -4275,7 +4404,7 @@ export class Checker {
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
         this.checkMutReceiver(fieldCallee.base, ctx, name, span);
         const t = aT(0, mkVec(T));
-        if (!unify(t, mkVec(T), binds)) this.diags.push(err('M3002', `extend 的参数类型是 ${typeStr(mkVec(T), binds)},实际 ${typeStr(t, binds)}`, args[0].span));
+        if (!this.untrustedMismatchDiag(t, mkVec(T), args[0].span, 'extend 的参数类型不匹配') && !unify(t, mkVec(T), binds)) this.diags.push(err('M3002', `extend 的参数类型是 ${typeStr(mkVec(T), binds)},实际 ${typeStr(t, binds)}`, args[0].span));
         this.checkPtrPayload(t, args[0].span, ctx, 'Vec 元素'); // v0.54 审查 B3
         return T_UNIT;
       }
@@ -4304,25 +4433,25 @@ export class Checker {
         return name === 'len' ? INT_TYPES.i64 : T_BOOL;
       case 'get':
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
-        { const t = aT(0, K); if (!unify(t, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)},实际 ${typeStr(t, binds)}`, args[0].span)); }
+        { const t = aT(0, K); if (!this.untrustedMismatchDiag(t, K, args[0].span, 'map 键类型不匹配') && !unify(t, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)},实际 ${typeStr(t, binds)}`, args[0].span)); }
         return mkOpt(V);
       case 'set': {
         if (!this.arityCheck(name, args, 2, 2, span)) return null;
         this.checkMutReceiver(fieldCallee.base, ctx, name, span);
-        const t0 = aT(0, K); if (!unify(t0, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)},实际 ${typeStr(t0, binds)}`, args[0].span));
-        const t1 = aT(1, V); if (!unify(t1, V, binds)) this.diags.push(err('M3002', `map 值类型是 ${typeStr(V, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
+        const t0 = aT(0, K); if (!this.untrustedMismatchDiag(t0, K, args[0].span, 'map 键类型不匹配') && !unify(t0, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)},实际 ${typeStr(t0, binds)}`, args[0].span));
+        const t1 = aT(1, V); if (!this.untrustedMismatchDiag(t1, V, args[1].span, 'map 值类型不匹配') && !unify(t1, V, binds)) this.diags.push(err('M3002', `map 值类型是 ${typeStr(V, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
         this.checkPtrPayload(t0, args[0].span, ctx, 'Map 键'); // v0.54 审查 B3
         this.checkPtrPayload(t1, args[1].span, ctx, 'Map 值');
         return T_UNIT;
       }
       case 'has':
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
-        { const t = aT(0, K); if (!unify(t, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)}`, args[0].span)); }
+        { const t = aT(0, K); if (!this.untrustedMismatchDiag(t, K, args[0].span, 'map 键类型不匹配') && !unify(t, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)}`, args[0].span)); }
         return T_BOOL;
       case 'delete':
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
         this.checkMutReceiver(fieldCallee.base, ctx, name, span);
-        { const t = aT(0, K); if (!unify(t, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)}`, args[0].span)); }
+        { const t = aT(0, K); if (!this.untrustedMismatchDiag(t, K, args[0].span, 'map 键类型不匹配') && !unify(t, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)}`, args[0].span)); }
         return T_BOOL;
       case 'keys':
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
@@ -4351,7 +4480,7 @@ export class Checker {
     const aT = (i, exp) => this.checkExpr(args[i], ctx, exp);
     const strArg = (i, what) => {
       const t = aT(i, T_STR);
-      if (!unify(t, T_STR, binds)) this.diags.push(err('M3002', `${what} 的参数必须是 str,实际 ${typeStr(t, binds)}`, args[i].span));
+      if (!this.untrustedMismatchDiag(t, T_STR, args[i].span, `${what} 的参数必须是 str`) && !unify(t, T_STR, binds)) this.diags.push(err('M3002', `${what} 的参数必须是 str,实际 ${typeStr(t, binds)}`, args[i].span));
     };
     const i64Arg = (i, what) => {
       const t = aT(i, INT_TYPES.i64);
@@ -4405,7 +4534,7 @@ export class Checker {
       case 'unwrap_or': {
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
         const t = this.checkExpr(args[0], ctx, T);
-        if (!unify(t, T, binds)) this.diags.push(err('M3002', `unwrap_or 的默认值类型是 ${typeStr(T, binds)},实际 ${typeStr(t, binds)}`, args[0].span));
+        if (!this.untrustedMismatchDiag(t, T, args[0].span, 'unwrap_or 的默认值类型不匹配') && !unify(t, T, binds)) this.diags.push(err('M3002', `unwrap_or 的默认值类型是 ${typeStr(T, binds)},实际 ${typeStr(t, binds)}`, args[0].span));
         return T;
       }
       case 'is_some': case 'is_none':
@@ -4430,7 +4559,7 @@ export class Checker {
         return E;
       case 'unwrap_or':
         if (!this.arityCheck(name, args, 1, 1, span)) return null;
-        { const t = this.checkExpr(args[0], ctx, T); if (!unify(t, T, binds)) this.diags.push(err('M3002', `unwrap_or 的默认值类型不匹配`, args[0].span)); }
+        { const t = this.checkExpr(args[0], ctx, T); if (!this.untrustedMismatchDiag(t, T, args[0].span, 'unwrap_or 的默认值类型不匹配') && !unify(t, T, binds)) this.diags.push(err('M3002', `unwrap_or 的默认值类型不匹配`, args[0].span)); }
         return T;
       case 'is_ok': case 'is_err':
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
@@ -4845,7 +4974,8 @@ export class Checker {
     for (const el of e.elems) {
       const t = this.checkExpr(el, ctx, elT ?? undefined);
       if (elT === null) elT = t;
-      else if (!unify(t, elT, binds)) {
+      else if (!this.untrustedMismatchDiag(t, elT, el.span, 'Vec 元素类型不匹配')
+        && !unify(t, elT, binds)) {
         this.diags.push(err('M3002', `Vec 元素类型不一致:${typeStr(elT, binds)} 与 ${typeStr(t, binds)}`, el.span));
       }
     }
@@ -4878,8 +5008,8 @@ export class Checker {
     for (const en of e.entries) {
       const k = this.checkExpr(en.k, ctx, kt ?? undefined);
       const v = this.checkExpr(en.v, ctx, vt ?? undefined);
-      if (kt === null) kt = k; else if (!unify(k, kt, binds)) this.diags.push(err('M3002', `map 键类型不一致:${typeStr(kt, binds)} 与 ${typeStr(k, binds)}`, en.k.span));
-      if (vt === null) vt = v; else if (!unify(v, vt, binds)) this.diags.push(err('M3002', `map 值类型不一致:${typeStr(vt, binds)} 与 ${typeStr(v, binds)}`, en.v.span));
+      if (kt === null) kt = k; else if (!this.untrustedMismatchDiag(k, kt, en.k.span, 'map 键类型不匹配') && !unify(k, kt, binds)) this.diags.push(err('M3002', `map 键类型不一致:${typeStr(kt, binds)} 与 ${typeStr(k, binds)}`, en.k.span));
+      if (vt === null) vt = v; else if (!this.untrustedMismatchDiag(v, vt, en.v.span, 'map 值类型不匹配') && !unify(v, vt, binds)) this.diags.push(err('M3002', `map 值类型不一致:${typeStr(vt, binds)} 与 ${typeStr(v, binds)}`, en.v.span));
     }
     if (vt) this.checkJoinNotStored(vt, binds, e.span, '作为 Map 值');
     if (e.entries.length > 0) {
@@ -4932,7 +5062,11 @@ export class Checker {
       }
       const expected = substTypes(fd.rtype, decl.tparams, sub);
       const ft = this.checkExpr(f.value, ctx, expected, true);
-      if (ft) unify(expected, ft, binds); // 绑定未定的类型参数
+      // v0.61:污点字段禁面——Untrusted 实参进净字段位必须显式拒绝(此前该位无诊断,
+      // 不堵即成洗白旁路;仅对 untrusted 发 M3049,其余类型维持既有行为)。
+      if (ft && !this.untrustedMismatchDiag(ft, expected, f.value.span, `字段 "${f.name}" 类型不匹配`)) {
+        unify(expected, ft, binds); // 绑定未定的类型参数
+      }
       if (typeContainsPtr(ft)) ptrField = true;
       this.checkFnEffectNarrowing(expected, ft, f.value.span);  // v0.54 审查 B4
     }
@@ -5216,6 +5350,57 @@ export function typeContainsPtr(t, seen = new Set()) {
   }
 }
 
+// v0.61(ADR-002):类型是否(递归地)含 Untrusted 标签——debug 禁面用(实参"含"
+// Untrusted 即拒,容器/struct/Result 载荷不算逃逸)。泛型参数/推断变量无法静态判定 → false。
+export function typeContainsUntrusted(t, seen = new Set()) {
+  if (!t) return false;
+  switch (t.k) {
+    case 'untrusted': return true;
+    case 'vec': case 'opt': case 'range': case 'join': return typeContainsUntrusted(t.el, seen);
+    case 'map': return typeContainsUntrusted(t.kt, seen) || typeContainsUntrusted(t.vt, seen);
+    case 'res': return typeContainsUntrusted(t.ok, seen) || typeContainsUntrusted(t.err, seen);
+    case 'tuple': return (t.ts ?? []).some(x => typeContainsUntrusted(x, seen));
+    case 'struct': {
+      const def = t.def;
+      if (!def?.fields?.length || seen.has(def)) return false;
+      const tps = def.tparams ?? [];
+      const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
+      const seen2 = new Set(seen).add(def);
+      return def.fields.some(f => f.rtype && typeContainsUntrusted(substTypes(f.rtype, tps, sub), seen2));
+    }
+    case 'enum': {
+      const def = t.def;
+      if (!def?.variants?.length || seen.has(def)) return false;
+      const tps = def.tparams ?? [];
+      const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
+      const seen2 = new Set(seen).add(def);
+      return def.variants.some(v => (v.rtypes ?? []).some(x => typeContainsUntrusted(substTypes(x, tps, sub), seen2)));
+    }
+    default: return false;
+  }
+}
+
+// v0.61(ADR-002):深层解析推断变量(有绑定则落定)。callCtor 此前只对返回类型做
+// 顶层 resolveT,载荷 var 未落定即外流——Option/Result 的污点载荷会以"未知 var"
+// 逃过 sink/禁面检查。构造器自身的 tvar 在本次调用内已由实参绑定,此处按绑定落定。
+function deepResolveT(t, binds, depth = 0) {
+  if (!t || depth > 64) return t;
+  switch (t.k) {
+    case 'var': return deepResolveT(resolveT(t, binds), binds, depth + 1);
+    case 'vec': return mkVec(deepResolveT(t.el, binds, depth + 1));
+    case 'opt': return mkOpt(deepResolveT(t.el, binds, depth + 1));
+    case 'res': return mkRes(deepResolveT(t.ok, binds, depth + 1), deepResolveT(t.err, binds, depth + 1));
+    case 'map': return mkMap(deepResolveT(t.kt, binds, depth + 1), deepResolveT(t.vt, binds, depth + 1));
+    case 'tuple': return mkTuple(t.ts.map(x => deepResolveT(x, binds, depth + 1)));
+    case 'untrusted': return mkUntrusted(deepResolveT(t.el, binds, depth + 1));
+    case 'ptr': return mkPtr(deepResolveT(t.el, binds, depth + 1), t.mut);
+    case 'range': return mkRange(deepResolveT(t.el, binds, depth + 1));
+    case 'join': return mkJoin(deepResolveT(t.el, binds, depth + 1));
+    case 'struct': case 'enum': return { ...t, targs: (t.targs ?? []).map(x => deepResolveT(x, binds, depth + 1)) };
+    default: return t;
+  }
+}
+
 export function substTypes(t, tparams, sub) {
   if (!tparams?.length) return t;
   const isMap = !(sub instanceof Array);
@@ -5229,6 +5414,7 @@ export function substTypes(t, tparams, sub) {
     switch (t.k) {
       case 'vec': return mkVec(go(t.el));
       case 'ptr': return mkPtr(go(t.el), t.mut); // v0.54
+      case 'untrusted': return mkUntrusted(go(t.el)); // v0.61(ADR-002)
       case 'map': return mkMap(go(t.kt), go(t.vt));
       case 'opt': return mkOpt(go(t.el));
       case 'res': return mkRes(go(t.ok), go(t.err));
