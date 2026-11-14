@@ -55,7 +55,7 @@
 |------|------|------|
 | 结构化并发(spawn/spawn_all/join/scoped) | ✅ | worker 隔离 + wire 边界 |
 | 子任务错误隔离(Err 化) | ✅ | panic → join Err |
-| 诊断协议(错误码+位置+hint+JSON) | ✅ | src/diag.js CODES 71 码(含 M4013);docs/diagnostics.md 可查 |
+| 诊断协议(错误码+位置+hint+JSON) | ✅ | src/diag.js CODES 78 码(含 M5001 v0.64 补登记;docs/diagnostics.md 可查) |
 | LSP 语言服务器(诊断/hover/补全/跳转/符号) | ✅ | v0.5 诊断推送 + hover;**v0.58 三新查询**:补全(标识符/字段方法/模块成员/枚举变体/关键字;保守策略——类型推不出 → 空列表、语法不可修复 → null、注释与字符串内不补全)、跳转定义(模块项/局部绑定/跨文件 use;std 与内置 → null)、文档符号(fn/struct/enum/trait/const + impl 层级);非 ASCII 消息体按 Content-Length **字节**分帧;坏 JSON 体/空体帧存活;同步、零依赖、单文件协议实现;**未覆盖**:泛型/多文件补全与跨文件 impl 解析(保守不补)、incremental sync(全量重查)、语义 token/重命名 |
 | 静态契约与证明(requires/ensures) | ✅ | v0.45–v0.55:requires/ensures/invariant 运行时检查(M4015);M3040/M3041/M3042/M3043/M3044 静态检查 + M3045/W3105 边界证明;**v0.55 跨函数契约摘要**——纯函数 + 全 i64 参数/返回 + 直线体 + 无环调用图的摘要(Tarjan SCC,被调方优先拓扑序),调用点线性前置证明(M3041 扩展)、后置条件假设(requires 完整且当前路径可证才采用已证 ensures;未证明前置条件绝不假设)、M3042 假设集扩展;`--proof-report` 输出每函数契约状态与调用点统计。**v0.56**:`ming fmt` 保留 requires/ensures/invariant(#36 数据丢失修复);契约尾部裸标识可解析(#33)。**v0.57 循环义务**:范围 for(`for i in lo..hi`)体内 `buf[i]` 义务两向证明(循环变量确定性符号 `i$<n>` + 半开区间假设入集;`buf[i+k]` 位移同口径;break/continue 不破坏不变式;反例枚举含循环符号);义务记录 additive `scope: body\|loop`;M3045/W3105 码与消息不变,proven 不消除运行时 M4003。**未覆盖**:分支敏感体、`while`/`loop`/嵌套 for、脏循环(体内改写外层变量)、递归/互递归、高阶/效果函数、堆/别名、通用 SMT;摘要与证明只报告,不消除运行时 M4015/M4003 |
 | panic 调用栈 | ✅ | Ming 层栈 |

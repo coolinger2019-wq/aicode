@@ -11616,6 +11616,599 @@ fn main() with io, fs {
   // §67-END
 }
 
+// ===================== 68. v0.64:信任边界与诚实失败收口(plan §4.5.1)=====================
+// 文件所有权:§68 = 本区全部用例。覆盖:#56 artifact 四损坏形态统一诊断 / S9 嵌套 serve 编译期拒绝
+// (两遍式;v68.13-16 审查修复批:M1 遮蔽正例不误伤回归 + S12 sanitize_cli_path 闸门扩展向量——
+// DEL(0x7F)/C1(NEL U+0085)/双向符(LRE U+202A) mark 字面量与 env 注入三引擎逐字) /
+// #57 安全回归批(M4013 专项/NUL 黄金/S11 兜底/S13 慢连接)。
+{
+  const dir68 = path.join(TMP, 'v68');
+  fs.mkdirSync(dir68, { recursive: true });
+  const m68 = (name, src) => { const f = path.join(dir68, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags68 = ['', '--no-wasm', '--tree'];
+  const runAll68 = (p, extra = []) => flags68.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const fmtRuns68 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+
+  // ---- §68-START(#56 校验/S9 拒绝+遮蔽正例/S12 向量/M4013 专项/NUL 黄金/S11·S13 断言)----
+  // 测试源(SRC68 与 §66 的 SRC66 同风格;serve 程序 __PORT__ 占位由 startServer68 替换)
+  const SRC68 = {
+    // #56 探针项目入口(纯 io,AOT 资格)
+    probe: 'fn main() with io {\n    print("ok68");\n}\n',
+    // S9 嵌套 serve(全限定 std.net.serve 形态):handler 体内挂内层服务 → M3002
+    s9Nested: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn inner(req: Json) -> Json {',
+      '    return req;',
+      '}',
+      '',
+      'fn handler(req: Json) -> Json with net {',
+      '    std.net.serve(18191, inner);',
+      '    return req;',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(18190, handler);',
+      '}',
+    ].join('\n'),
+    // S9 嵌套 serve(use std.net 别名短形态 net.serve)
+    s9NestedShort: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn inner(req: Json) -> Json {',
+      '    return req;',
+      '}',
+      '',
+      'fn handler(req: Json) -> Json with net {',
+      '    net.serve(18191, inner);',
+      '    return req;',
+      '}',
+      '',
+      'fn main() with net {',
+      '    net.serve(18190, handler);',
+      '}',
+    ].join('\n'),
+    // S9 正例:main 直接 serve(非 handler 体)
+    s9MainDirect: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    return req;',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handler);',
+      '}',
+    ].join('\n'),
+    // S9 正例:handlerA 调 handlerB(嵌套两层 handler,A 体内无 serve)
+    s9HandlerChain: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn handlerB(req: Json) -> Json {',
+      '    return req;',
+      '}',
+      '',
+      'fn handlerA(req: Json) -> Json {',
+      '    return handlerB(req);',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handlerA);',
+      '}',
+    ].join('\n'),
+    // S9 遮蔽正例(v0.64 审查修复 M1):use std.net + handler 内局部 net: S(impl Server
+    // for S)调用同名 trait 方法 net.serve(7)。修前 isDirectServeCall 对 Ident 基名只查
+    // mod.imports、不咨询遮蔽守卫,该形态被误报 M3002"serve 不能在 handler 内调用"(exit 1)。
+    s9Shadow: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'trait Server { fn serve(self, p: i64) -> i64; }',
+      'struct S { v: i64 }',
+      'impl Server for S { fn serve(self, p: i64) -> i64 { return p; } }',
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    let net: S = S { v: 1 };',
+      '    let r = net.serve(7);',
+      '    return req;',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handler);',
+      '}',
+    ].join('\n'),
+    // S9 遮蔽语义锁定:纯方法调用(不挂服务)——net.serve(7) 走 trait 方法返回 7
+    s9ShadowRun: [
+      'use std.net;',
+      '',
+      'trait Server { fn serve(self, p: i64) -> i64; }',
+      'struct S { v: i64 }',
+      'impl Server for S { fn serve(self, p: i64) -> i64 { return p; } }',
+      '',
+      'fn main() with io {',
+      '    let net: S = S { v: 1 };',
+      '    let r = net.serve(7);',
+      '    print(str(r));',
+      '}',
+    ].join('\n'),
+    // M4013 专项(FFI 效果门禁 check 期正反例;extern 隐含 ffi 效果)
+    gate: 'extern "ming_no_such_lib_68" fn boom() -> i64;\nfn main() { boom(); }\n',
+    gateOk: 'extern "ming_no_such_lib_68" fn boom() -> i64;\nfn main() with ffi { boom(); }\n',
+    // M4013 C 后端专项:库加载失败 → 启动绑定阶段 M4013[ffi-load-failed] exit 101
+    boom: 'extern "ming_no_such_lib_68" fn boom() -> i64;\nfn main() with ffi { boom(); }\n',
+    // #55 NUL 黄金:extern 返回 "ab\0cd" → strlen 语义 byte_len=2(__DLL__ = DLL 绝对路径)
+    nul: [
+      'extern "__DLL__" fn nulstr() -> Untrusted[str];',
+      '',
+      'fn main() with io, ffi {',
+      '    let s = nulstr();',
+      '    print(str(s.byte_len()));',
+      '}',
+    ].join('\n'),
+    // S13:快 handler(50 挂起连接期间正常请求仍 200)
+    s13fast: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    let resp: Map[str, Json] = {',
+      '        "status": std.json.parse("200").unwrap(),',
+      '        "headers": std.json.parse("{}").unwrap(),',
+      '        "body": std.json.parse("\\"ok\\"").unwrap(),',
+      '    };',
+      '    return std.json.parse(std.json.stringify(resp)).unwrap();',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handler);',
+      '}',
+    ].join('\n'),
+    // S11:畸形响应兜底语义(/s700 status 700;/harr headers 数组;/numbody 数值 body)
+    s11: [
+      'use std.net;',
+      'use std.json;',
+      '',
+      'fn jstr(req: Json, key: str, dflt: str) -> str {',
+      '    return match req.get(key) {',
+      '        Some(v) => match v.as_str() {',
+      '            Some(s) => s,',
+      '            None => dflt,',
+      '        },',
+      '        None => dflt,',
+      '    };',
+      '}',
+      '',
+      'fn js(v: i64) -> Json {',
+      '    return std.json.parse(str(v)).unwrap();',
+      '}',
+      '',
+      'fn resp700() -> Json {',
+      '    let resp: Map[str, Json] = {',
+      '        "status": js(700),',
+      '        "headers": std.json.parse("{}").unwrap(),',
+      '        "body": std.json.parse("\\"x\\"").unwrap(),',
+      '    };',
+      '    return std.json.parse(std.json.stringify(resp)).unwrap();',
+      '}',
+      '',
+      'fn respHarr() -> Json {',
+      '    let resp: Map[str, Json] = {',
+      '        "status": js(200),',
+      '        "headers": std.json.parse("[\\"a\\",\\"b\\"]").unwrap(),',
+      '        "body": std.json.parse("\\"y\\"").unwrap(),',
+      '    };',
+      '    return std.json.parse(std.json.stringify(resp)).unwrap();',
+      '}',
+      '',
+      'fn respNumBody() -> Json {',
+      '    let resp: Map[str, Json] = {',
+      '        "status": js(200),',
+      '        "headers": std.json.parse("{}").unwrap(),',
+      '        "body": js(42),',
+      '    };',
+      '    return std.json.parse(std.json.stringify(resp)).unwrap();',
+      '}',
+      '',
+      'fn handler(req: Json) -> Json {',
+      '    let p = jstr(req, "path", "?");',
+      '    if p == "/s700" { return resp700(); }',
+      '    if p == "/harr" { return respHarr(); }',
+      '    if p == "/numbody" { return respNumBody(); }',
+      '    return js(0);',
+      '}',
+      '',
+      'fn main() with net {',
+      '    std.net.serve(__PORT__, handler);',
+      '}',
+    ].join('\n'),
+  };
+
+  // ---- #56:损坏产物四形态统一诊断 ----
+  // ming build 真实产物(dist/app.bytecode.json)→ JSON 改写损坏字段 → node dist/ming-app.mjs。
+  // 修前基线(plan §4.5.7 S14):mainFnIdx=99 / functions=[] → raw TypeError(vm.js:283)exit 1;
+  // mainFnIdx=-1 → M3023 exit 101;opcode 999 → M4001 exit 101。修后统一:"不是 Ming 字节码产物:
+  // <具体原因>" Error 通道 exit 1(零新增 M 码,复用 artifact.js 既有 Error 文案)。
+  const proj68 = path.join(dir68, 'proj68');
+  fs.mkdirSync(proj68, { recursive: true });
+  fs.writeFileSync(path.join(proj68, 'ming.toml'), '[project]\nname = "probe68"\n');
+  fs.writeFileSync(path.join(proj68, 'main.ming'), SRC68.probe);
+  const build68 = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj68, timeout: 60000 });
+  const bjson68 = path.join(proj68, 'dist', 'app.bytecode.json');
+  const launcher68 = path.join(proj68, 'dist', 'ming-app.mjs');
+  const pristine68 = fs.existsSync(bjson68) ? JSON.parse(fs.readFileSync(bjson68, 'utf8')) : null;
+  const writeArtifact68 = (a) => fs.writeFileSync(bjson68, JSON.stringify(a));
+  const restore68 = () => writeArtifact68(pristine68);
+  const runLauncher68 = () => {
+    const r = spawnSync(process.execPath, [launcher68], { encoding: 'utf8', cwd: proj68, timeout: 30000 });
+    return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  };
+  const corruptRun68 = (mutate) => {
+    const a = JSON.parse(JSON.stringify(pristine68));
+    mutate(a);
+    writeArtifact68(a);
+    const r = runLauncher68();
+    restore68();
+    return r;
+  };
+  check('v68 前置:ming build 产出 dist(app.bytecode.json + ming-app.mjs)',
+    build68.status === 0 && pristine68 !== null && fs.existsSync(launcher68),
+    `build=${build68.status} stderr=${(build68.stderr ?? '').slice(0, 150)}`);
+
+  // v68.1:mainFnIdx 越界(修前 raw TypeError vm.js:283)
+  {
+    const r = corruptRun68((a) => { a.mainFnIdx = 99; });
+    check('v68.1:损坏产物 mainFnIdx=99 → exit 1 "不是 Ming 字节码产物: mainFnIdx 越界"(不再 raw TypeError)',
+      r.code === 1 && r.stderr.includes('不是 Ming 字节码产物') && r.stderr.includes('mainFnIdx 越界(99')
+        && !r.stderr.includes('TypeError') && r.stdout === '',
+      `code=${r.code} err1=${JSON.stringify((r.stderr ?? '').split('\n').find((l) => l.includes('不是') || l.includes('Error')) ?? '')}`);
+  }
+  // v68.2:functions=[](修前 raw TypeError 同款)
+  {
+    const r = corruptRun68((a) => { a.functions = []; });
+    check('v68.2:损坏产物 functions=[] → exit 1 "不是 Ming 字节码产物: functions 必须是非空数组"(不再 raw TypeError)',
+      r.code === 1 && r.stderr.includes('不是 Ming 字节码产物') && r.stderr.includes('functions 必须是非空数组')
+        && !r.stderr.includes('TypeError') && r.stdout === '',
+      `code=${r.code} err1=${JSON.stringify((r.stderr ?? '').split('\n').find((l) => l.includes('不是') || l.includes('Error')) ?? '')}`);
+  }
+  // v68.3:mainFnIdx=-1(修前 M3023 exit 101——负值越界并入统一通道)
+  {
+    const r = corruptRun68((a) => { a.mainFnIdx = -1; });
+    check('v68.3:损坏产物 mainFnIdx=-1 → exit 1 "不是 Ming 字节码产物"(不再 M3023)',
+      r.code === 1 && r.stderr.includes('不是 Ming 字节码产物') && r.stderr.includes('mainFnIdx 越界(-1')
+        && !r.stderr.includes('M3023') && r.stdout === '',
+      `code=${r.code} err1=${JSON.stringify((r.stderr ?? '').split('\n').find((l) => l.includes('不是') || l.includes('M3023')) ?? '')}`);
+  }
+  // v68.4:坏 opcode 999(修前 M4001 exit 101——统一进反序列化结构校验,损坏不进 VM)
+  {
+    const r = corruptRun68((a) => { a.functions[0].code[0] = 999; });
+    check('v68.4:损坏产物 opcode 999 → exit 1 "不是 Ming 字节码产物: 非法操作码"(不再 M4001)',
+      r.code === 1 && r.stderr.includes('不是 Ming 字节码产物') && r.stderr.includes('非法操作码 999')
+        && !r.stderr.includes('M4001') && r.stdout === '',
+      `code=${r.code} err1=${JSON.stringify((r.stderr ?? '').split('\n').find((l) => l.includes('不是') || l.includes('M4001')) ?? '')}`);
+  }
+  // v68.5:良好产物回归(四形态之外产物必须照常运行)
+  {
+    restore68();
+    const r = runLauncher68();
+    check('v68.5:良好产物回归——node dist/ming-app.mjs 输出 ok68 exit 0',
+      r.code === 0 && r.stdout === 'ok68\n',
+      `code=${r.code} stdout=${JSON.stringify(r.stdout)} err1=${JSON.stringify((r.stderr ?? '').split('\n')[0])}`);
+  }
+
+  // ---- S9:嵌套 serve 编译期拒绝(check 期,引擎无关)----
+  {
+    const f1 = m68('k68_6_nested.ming', SRC68.s9Nested);
+    const f2 = m68('k68_6_nested_short.ming', SRC68.s9NestedShort);
+    const r1 = runMing(['check', f1]);
+    const r2 = runMing(['check', f2]);
+    check('v68.6:handler 体内 serve → check exit 1 M3002(全限定 std.net.serve 与 use 别名 net.serve 两形态)',
+      r1.code === 1 && r1.stderr.includes('M3002') && r1.stderr.includes('serve 不能在 handler 内调用')
+        && r2.code === 1 && r2.stderr.includes('M3002') && r2.stderr.includes('serve 不能在 handler 内调用'),
+      `full=${r1.code}:${JSON.stringify(r1.stderr.split('\n')[0])} short=${r2.code}:${JSON.stringify(r2.stderr.split('\n')[0])}`);
+  }
+  {
+    const f = m68('k68_7_main_direct.ming', SRC68.s9MainDirect.split('__PORT__').join('26987'));
+    const r = runMing(['check', f]);
+    check('v68.7:正例不误伤——main 直接 serve(非 handler 体)check exit 0',
+      r.code === 0, `code=${r.code} stderr=${(r.stderr ?? '').slice(0, 150)}`);
+  }
+  {
+    const f = m68('k68_8_handler_chain.ming', SRC68.s9HandlerChain.split('__PORT__').join('26988'));
+    const r = runMing(['check', f]);
+    check('v68.8:正例不误伤——handlerA 调 handlerB(嵌套两层 handler,体内无 serve)check exit 0',
+      r.code === 0, `code=${r.code} stderr=${(r.stderr ?? '').slice(0, 150)}`);
+  }
+
+  // ---- #57:M4013 FFI 门禁专项 ----
+  // M4013 语义 = C 后端启动绑定阶段的 ffi-load-failed(diagnostics.md;exit 101)——
+  // check 期"无 with ffi 调 extern"的效果门禁是 M3029(§42 已有,本区正反例锁定)。
+  {
+    const fBad = m68('k68_9_gate.ming', SRC68.gate);
+    const fOk = m68('k68_9_gate_ok.ming', SRC68.gateOk);
+    const rBad = runMing(['check', fBad]);
+    const rOk = runMing(['check', fOk]);
+    check('v68.9a:FFI 效果门禁——无 with ffi 调 extern → check M3029 exit 1;with ffi → check exit 0',
+      rBad.code === 1 && rBad.stderr.includes('M3029') && rBad.stderr.includes('ffi')
+        && rOk.code === 0,
+      `bad=${rBad.code}:${JSON.stringify(rBad.stderr.split('\n')[0])} ok=${rOk.code}`);
+  }
+  // cc 腿(gcc 探测照 §34b 口径):M4013 库加载失败 + #55 NUL 黄金;无 gcc skip 注明
+  const detectCC68 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const cc68 = detectCC68();
+  const ffiDir68 = path.join(dir68, 'ffi68');
+  fs.mkdirSync(ffiDir68, { recursive: true });
+  if (!cc68) {
+    check('v68.9b:M4013 专项(cc 无编译器 skip)', true, '无 gcc/clang:cc 腿跳过(M4013 是 C 后端启动绑定阶段诊断,无编译器不可达)');
+    check('v68.10:#55 NUL 黄金(cc 无编译器 skip)', true, '无 gcc/clang:cc 腿跳过(需自编 mini DLL + ming cc)');
+  } else {
+    // v68.9b:坏库名 → 启动绑定 M4013[ffi-load-failed] exit 101
+    {
+      const boomFile = m68('k68_9_boom.ming', SRC68.boom);
+      const ccBoom = spawnSync(process.execPath, [MING, 'cc', boomFile, '--no-run', '--out', path.join(ffiDir68, 'out9')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+      const boomExe = path.join(ffiDir68, 'out9', 'k68_9_boom.exe');
+      const rBoom = fs.existsSync(boomExe) ? spawnSync(boomExe, [], { encoding: 'utf8', timeout: 30000 }) : { status: -1, stderr: '(exe 缺失)' };
+      check('v68.9b:M4013 专项——extern 坏库 → C 后端 exit 101 "error M4013[ffi-load-failed]"',
+        ccBoom.status === 0 && rBoom.status === 101 && (rBoom.stderr ?? '').includes('M4013') && (rBoom.stderr ?? '').includes('ffi-load-failed'),
+        `cc=${ccBoom.status} run=${rBoom.status} err1=${JSON.stringify((rBoom.stderr ?? '').split('\n')[0])}`);
+    }
+    // v68.10:#55 NUL 黄金——自编 mini DLL 返回 "ab\0cd"(6 字节)→ strlen 语义 byte_len=2
+    {
+      fs.writeFileSync(path.join(ffiDir68, 'nul68.c'), '__declspec(dllexport) const char* nulstr(void) { return "ab\\0cd"; }\n');
+      const dllBuild = spawnSync(cc68, ['-shared', '-static-libgcc', '-o', path.join(ffiDir68, 'nul68.dll'), path.join(ffiDir68, 'nul68.c')], { encoding: 'utf8', timeout: 60000 });
+      const dll68 = path.join(ffiDir68, 'nul68.dll');
+      if (dllBuild.status !== 0 || !fs.existsSync(dll68)) {
+        check('v68.10:#55 NUL 黄金(DLL 构建不稳定 skip)', true, `gcc -shared 失败 status=${dllBuild.status}:${(dllBuild.stderr ?? '').split('\n')[0]}`);
+      } else {
+        const nulFile = m68('k68_10_nul.ming', SRC68.nul.split('__DLL__').join(dll68.replace(/\\/g, '/')));
+        const ccNul = spawnSync(process.execPath, [MING, 'cc', nulFile, '--no-run', '--out', path.join(ffiDir68, 'out10')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+        const nulExe = path.join(ffiDir68, 'out10', 'k68_10_nul.exe');
+        const rNul = fs.existsSync(nulExe) ? spawnSync(nulExe, [], { encoding: 'utf8', timeout: 30000 }) : { status: -1, stdout: '(exe 缺失)' };
+        check('v68.10:#55 NUL 黄金——extern 返回 "ab\\0cd" → byte_len=2(strlen 语义;DLL 加载成功同时锁定 M4013 无误报)',
+          ccNul.status === 0 && rNul.status === 0 && rNul.stdout === '2\n',
+          `cc=${ccNul.status} run=${rNul.status} stdout=${JSON.stringify(rNul.stdout)} err1=${JSON.stringify((rNul.stderr ?? '').split('\n')[0])}`);
+      }
+    }
+  }
+
+  // ---- serve 运行面 harness(§68 自持最小版,模式照 §66;端口段 28100-28199 独立)----
+  const { createServer: netServer68, createConnection: netConn68 } = await import('node:net');
+  const sleep68 = (ms) => new Promise((res) => setTimeout(res, ms));
+  const freePort68 = async (start) => {
+    let port = start;
+    for (let i = 0; i < 5; i++) {
+      const free = await new Promise((res) => {
+        const s = netServer68();
+        s.once('error', () => res(false));
+        s.listen(port, '127.0.0.1', () => s.close(() => res(true)));
+      });
+      if (free) return port;
+      port += 1;
+    }
+    return null;
+  };
+  const startServer68 = async (name, src, portHint) => {
+    const port = await freePort68(portHint);
+    if (port === null) throw new Error('28100-28199 段内无空闲端口(起点 ' + portHint + ')');
+    const file = m68(name, src.split('__PORT__').join(String(port)));
+    const proc = spawn(process.execPath, [MING, 'run', file], { stdio: ['ignore', 'pipe', 'pipe'], cwd: ROOT });
+    const server = { proc, port, file, stdout: '', stderr: '', exited: false };
+    proc.stdout.on('data', (d) => { server.stdout += d; });
+    proc.stderr.on('data', (d) => { server.stderr += d; });
+    proc.once('exit', () => { server.exited = true; });
+    return server;
+  };
+  const killServer68 = async (server) => {
+    if (!server || server.exited || server.proc.exitCode !== null || server.proc.killed) return;
+    server.proc.kill();
+    await new Promise((res) => {
+      const t = setTimeout(() => {
+        if (process.platform === 'win32') {
+          try { spawnSync('taskkill', ['/F', '/T', '/PID', String(server.proc.pid)], { encoding: 'utf8' }); } catch { /* 尽力而为 */ }
+        }
+        res();
+      }, 3000);
+      server.proc.once('exit', () => { clearTimeout(t); res(); });
+    });
+  };
+  const canConnect68 = (port) => new Promise((res) => {
+    const s = netConn68({ host: '127.0.0.1', port });
+    s.once('connect', () => { s.destroy(); res(true); });
+    s.once('error', () => res(false));
+  });
+  const waitReady68 = async (port, timeoutMs = 15000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      if (await canConnect68(port)) return true;
+      await sleep68(100);
+    }
+    return false;
+  };
+  const fetchText68 = async (url, opts = {}) => {
+    const r = await fetch(url, opts);
+    const body = await r.text();
+    return { status: r.status, body, contentType: r.headers.get('content-type') ?? '', headerA: r.headers.get('a') };
+  };
+  const errFirst68 = (s) => JSON.stringify(((s && s.stderr) || '').split('\n')[0]);
+  // 运行用例外壳:finally 杀 server + 销毁挂起 socket(不留监听,不留悬连接)。
+  const runCase68 = async (name, fn) => {
+    const servers = [];
+    const sockets = [];
+    try {
+      await fn(async (srcName, src, portHint) => {
+        const s = await startServer68(srcName, src, portHint);
+        servers.push(s);
+        return s;
+      }, sockets);
+    } catch (e) {
+      const last = servers.length ? servers[servers.length - 1] : null;
+      check(name, false, '异常: ' + String(e && e.message ? e.message : e)
+        + (last ? ' stderr[0]=' + errFirst68(last) : ''));
+    } finally {
+      for (const s of sockets) { try { s.destroy(); } catch { /* 尽力而为 */ } }
+      for (const s of servers) await killServer68(s);
+    }
+  };
+
+  // v68.11:S13 慢连接行为锁定——50 挂起连接(半截请求头)期间正常请求仍 200
+  // (S13 实测基线:50 挂起不占 worker;超时余量放宽至 25s,实测 ~0.1s)
+  await runCase68('v68.11:S13 慢连接行为锁定——50 挂起连接期间正常请求仍 200', async (start) => {
+    const s = await start('k68_11_server.ming', SRC68.s13fast, 28110);
+    if (!(await waitReady68(s.port))) throw new Error('server 15s 未就绪');
+    const hung = [];
+    for (let i = 0; i < 50; i++) {
+      const sk = netConn68({ host: '127.0.0.1', port: s.port });
+      sk.on('error', () => { /* 服务端被杀/连接重置:挂起 socket 的预期噪声 */ });
+      sk.once('connect', () => { try { sk.write('GET /slow HTTP/1.1\r\nHost: slow\r\nUser-Agent: hang\r\n'); } catch { /* 尽力而为 */ } });
+      hung.push(sk);
+    }
+    await sleep68(300);
+    const res = await fetchText68('http://127.0.0.1:' + s.port + '/fast', { signal: AbortSignal.timeout(25000) });
+    check('v68.11:S13 慢连接行为锁定——50 挂起连接期间正常请求 200 "ok"',
+      res.status === 200 && res.body === 'ok',
+      `status=${res.status} body=${JSON.stringify(res.body)} hung=${hung.length} stderr[0]=${errFirst68(s)}`);
+  });
+
+  // v68.12:S11 兜底语义锁定(修前 6 形态实测全 200 无诊断;文档化不改 500——语义裁决,
+  // 本批只锁行为):status 700 → 200、headers 数组 → 静默丢弃默认头、数值 body → 空体。
+  await runCase68('v68.12:S11 兜底语义锁定——畸形响应三形态', async (start) => {
+    const s = await start('k68_12_server.ming', SRC68.s11, 28120);
+    if (!(await waitReady68(s.port))) throw new Error('server 15s 未就绪');
+    const r700 = await fetchText68('http://127.0.0.1:' + s.port + '/s700', { signal: AbortSignal.timeout(10000) });
+    check('v68.12a:S11 兜底——status 700(超出 100..599)→ 200,body 保留',
+      r700.status === 200 && r700.body === 'x',
+      `status=${r700.status} body=${JSON.stringify(r700.body)} stderr[0]=${errFirst68(s)}`);
+    const rHarr = await fetchText68('http://127.0.0.1:' + s.port + '/harr', { signal: AbortSignal.timeout(10000) });
+    check('v68.12b:S11 兜底——headers 为数组 → 静默丢弃,默认 Content-Type application/json 兜底',
+      rHarr.status === 200 && rHarr.body === 'y' && rHarr.contentType === 'application/json' && rHarr.headerA === null,
+      `status=${rHarr.status} body=${JSON.stringify(rHarr.body)} ct=${JSON.stringify(rHarr.contentType)} a=${JSON.stringify(rHarr.headerA)}`);
+    const rNum = await fetchText68('http://127.0.0.1:' + s.port + '/numbody', { signal: AbortSignal.timeout(10000) });
+    check('v68.12c:S11 兜底——数值 body → 空体',
+      rNum.status === 200 && rNum.body === '',
+      `status=${rNum.status} body=${JSON.stringify(rNum.body)}`);
+  });
+
+  // ---- S12 向量(v0.64 审查修复 m1):sanitize_cli_path 闸门扩展——DEL/C1/双向符 ----
+  // v65.15/16 只锁了空串与 C0 制表;本区补 S12 收紧后拒绝集的三类字面量向量(三引擎逐字):
+  // DEL(0x7F)/ C1(0x80–0x9F,取 NEL U+0085)/ Unicode 双向控制符(U+202A LRE)。
+  // 字面量向量以码点直写源文件(实测源串字面量可含原始控制码点,不依赖源层 \uXXX 转义);
+  // env 注入走 spawnSync env 块(Windows UTF-16 环境码元原样到达子进程,等价 bash ANSI-C
+  // $'a\x7fb' 的字节注入形态)。Err 消息按拒绝集码点 \uXXXX 小写 4 位转义(interp 既有口径)。
+  const BS68 = String.fromCharCode(92);
+  const same68 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const CTRL68 = {
+    del: String.fromCharCode(0x7F),
+    nel: String.fromCharCode(0x85),
+    lre: String.fromCharCode(0x202A),
+  };
+  const s12show68 = (body) => [
+    'use std.unstr;',
+    '',
+    'fn show(u: Untrusted[str]) with io {',
+    '    match std.unstr.sanitize_cli_path(u) {',
+    '        Ok(p) => {',
+    '            print("OK " + p);',
+    '        },',
+    '        Err(e) => {',
+    '            print("ERR " + e);',
+    '        },',
+    '    }',
+    '}',
+    '',
+    'fn main() with io {',
+    ...body,
+    '}',
+  ].join('\n');
+  const s12env68 = () => [
+    'use std.env;',
+    '',
+    'use std.unstr;',
+    '',
+    'fn main() with env, io {',
+    '    match std.env.get("MING_V64_VAL") {',
+    '        Some(u) => {',
+    '            match std.unstr.sanitize_cli_path(u) {',
+    '                Ok(p) => {',
+    '                    print("OK " + p);',
+    '                },',
+    '                Err(e) => {',
+    '                    print("ERR " + e);',
+    '                },',
+    '            }',
+    '        },',
+    '        None => {',
+    '            print("NONE");',
+    '        },',
+    '    }',
+    '}',
+  ].join('\n');
+  const runsEnv68 = (p, val) => flags68.map(f => runMing(f ? ['run', p, f] : ['run', p], { env: { MING_V64_VAL: val } }));
+
+  // v68.13:mark 字面量向量合一——DEL/C1(NEL)/RTL(LRE) 三类源字面量 → Err 各含对应转义
+  {
+    const f = m68('k68_13_mark_vectors.ming', s12show68([
+      '    show(std.unstr.mark("a' + CTRL68.del + 'b"));',
+      '    show(std.unstr.mark("a' + CTRL68.nel + 'b"));',
+      '    show(std.unstr.mark("a' + CTRL68.lre + 'b"));',
+    ]));
+    const want = [
+      'ERR sanitize_cli_path: 含控制字符: "a' + BS68 + 'u007fb"',
+      'ERR sanitize_cli_path: 含控制字符: "a' + BS68 + 'u0085b"',
+      'ERR sanitize_cli_path: 含控制字符: "a' + BS68 + 'u202ab"',
+    ].join('\n') + '\n';
+    const runs = runAll68(f);
+    check('v68.13:S12 mark 字面量向量(DEL 0x7F/C1 NEL U+0085/双向符 LRE U+202A)→ Err 含对应 \\uXXXX 转义(三引擎逐字)',
+      same68(runs, want), fmtRuns68(runs));
+  }
+  // v68.14:S12 env 注入 DEL(等价 bash ANSI-C V=$'a\x7fb')→ Err \u007f
+  {
+    const f = m68('k68_14_env_del.ming', s12env68());
+    const runs = runsEnv68(f, 'a' + CTRL68.del + 'b');
+    check('v68.14:S12 env 注入 DEL(0x7F)→ Err \\u007f(三引擎逐字)',
+      same68(runs, 'ERR sanitize_cli_path: 含控制字符: "a' + BS68 + 'u007fb"\n'), fmtRuns68(runs));
+  }
+  // v68.15:S12 env 注入 C1(NEL U+0085)→ Err \u0085
+  {
+    const f = m68('k68_15_env_c1.ming', s12env68());
+    const runs = runsEnv68(f, 'a' + CTRL68.nel + 'b');
+    check('v68.15:S12 env 注入 C1(U+0085 NEL)→ Err \\u0085(三引擎逐字)',
+      same68(runs, 'ERR sanitize_cli_path: 含控制字符: "a' + BS68 + 'u0085b"\n'), fmtRuns68(runs));
+  }
+
+  // ---- S9 两遍式回归(v0.64 审查修复 M1):遮蔽 net 名后 trait 方法调用不误伤 ----
+  // 修法:serve 静态判定以 checker 真实解析结果为单一事实来源(checkStdCall 的
+  // std.net.serve 特例解析成功处按 Call 节点引用身份登记 serveCallNodes;run() 收尾
+  // 对每个调用点的 handler 声明体子树做身份扫描)。遮蔽情形(net: S 的 trait 方法
+  // net.serve)走方法调用路径,不进登记集合 → check exit 0;嵌套 serve 正向面
+  // (v68.6 两形态)与本批正例(v68.7/8)行为不变。运行面 net.serve(7) 仍走 trait 方法。
+  {
+    const f = m68('k68_16_shadow.ming', SRC68.s9Shadow.split('__PORT__').join('26989'));
+    const r = runMing(['check', f]);
+    check('v68.16a:M1 修复——handler 内遮蔽 net 名后调用 trait 方法 serve 不误伤(check exit 0,不再 M3002)',
+      r.code === 0 && !(r.stderr ?? '').includes('M3002'),
+      `code=${r.code} stderr=${(r.stderr ?? '').slice(0, 200)}`);
+    const f2 = m68('k68_16_shadow_run.ming', SRC68.s9ShadowRun);
+    const runs = runAll68(f2);
+    check('v68.16b:M1 修复——遮蔽名下 trait 方法 net.serve(7) 语义不变,三引擎逐字输出 7',
+      same68(runs, '7\n'), fmtRuns68(runs));
+  }
+  // §68-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

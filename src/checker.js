@@ -558,6 +558,15 @@ export class Checker {
     // v0.54 审查 B3:容器/构造器载荷点已报 M3046 的 span(参数传递检查据此去重,
     // 避免 "take(H { p: q })" 在字面量点与实参点各报一次)
     this.ptrPayloadSpans = new Set();
+    // v0.64 审查修复 M1(S9 两遍式):serve 静态判定的单一事实来源是 checker 真实解析
+    // 结果——checkStdCall 里 std.net.serve 特例解析成功(白名单/形态检查全过)的 Call
+    // AST 节点按引用身份记入 serveCallNodes(节点引用即身份),serveCallSites 记录
+    // 调用点元数据(handler 名 + 所属模块);run() 收尾统一执行第二遍扫描。
+    // 不再用 AST 独立判定"什么是 serve 调用":遮蔽守卫三处同口径(本文件 lookupValue /
+    // compiler resolveLocalName / interp lookupVar-first),use std.net 下局部 net: S 的
+    // trait 方法 net.serve(7) 解析为方法调用,不进本集合 → 不再误报 M3002。
+    this.serveCallNodes = new Set();
+    this.serveCallSites = [];
   }
 
   // ---------- 加载 ----------
@@ -830,6 +839,20 @@ export class Checker {
     for (const m of this.modules) this.resolveSigs(m);
     for (const m of this.modules) this.resolveImpls(m);
     for (const m of this.modules) this.checkBodies(m);
+    // S9 两遍式·第二遍(v0.64 审查修复 M1):全部函数体检查完成后,对每个 serve 调用点
+    // 扫描其 handler 声明体子树,存在 serveCallNodes 身份命中(嵌套 serve)→ M3002。
+    // 顺序无关:handler 定义可在 serve 调用之前或之后(收集完成后扫描);消息/span/hint
+    // 沿 v1 口径(span = 内层 serve 调用自身;多点时取声明体子树序首个,与修前遍历序一致)。
+    for (const site of this.serveCallSites) {
+      const hEntry = site.mod.items.get(site.handlerName);
+      const innerServes = hEntry?.decl?.body ? this.findServeCalls(hEntry.decl.body) : [];
+      if (innerServes.length) {
+        this.diags.push(err('M3002',
+          'serve 不能在 handler 内调用(v1 嵌套服务未定义;外层超时硬杀会连带内层服务)',
+          innerServes[0].span,
+          '把内层 serve 移到入口函数(main)或独立程序;v1 一个进程只挂一个服务,嵌套服务随外层超时被硬杀。'));
+      }
+    }
     return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords, summaries: this.buildSummaryReport() };
   }
 
@@ -1937,7 +1960,7 @@ export class Checker {
                 p.expr.span, CODE_HINTS.M3050));
             } else if (!isPrimitiveDisplay(r, binds)) {
               this.diags.push(err('M3012', `插值 \\{...} 只支持 int/float/bool/str,实际是 ${typeStr(r)}`, p.expr.span,
-                '其他类型用 debug(x) 生成调试字符串,或给它实现 to_str(计划 v0.2)。'));
+                '其他类型用 debug(x) 生成调试字符串,或为该类型实现 ToStr trait(fn to_str(self) -> str,见 GUIDE 泛型 impl 节)。'));
             }
           }
         }
@@ -3891,6 +3914,32 @@ export class Checker {
     }
   }
 
+  // ---- S9(v0.64,plan §4.5.1/§4.5.7;审查修复 M1 改两遍式)----
+  // v1 不再做 AST 独立判定"什么是 serve 调用"(修前 isDirectServeCall 对 Ident 基名只查
+  // mod.imports、不咨询遮蔽守卫,use std.net + 局部 net: S 时 trait 方法 net.serve(7) 被
+  // 误报 M3002)。两遍式:第一遍在 checkStdCall 的 std.net.serve 特例解析成功处按节点引用
+  // 身份收集(遮蔽情形解析为方法调用,根本不进集合);本函数是第二遍——在 run() 收尾对每个
+  // serve 调用点的 handler 声明体子树做身份扫描。间接封装(handler 调 helper,helper 体内
+  // serve)仍不扫描——检查面是 handler 声明体本身,该残留如实登记(plan §4.5.7 S9/GUIDE)。
+  // 嵌套 fn/lambda/match 臂一并下沉——它们是 handler 声明体的子树,且函数体检查期都会
+  // 经 checkStdCall 解析登记。seen 防环:checker 给表达式回填的 def/mod 反向引用
+  // 可能把扫描带回同一子树。
+  findServeCalls(node, out = [], seen = new Set()) {
+    if (!node || typeof node !== 'object') return out;
+    if (seen.has(node)) return out;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const x of node) this.findServeCalls(x, out, seen);
+      return out;
+    }
+    if (node.nt === 'Call' && this.serveCallNodes.has(node)) out.push(node);
+    for (const [k, v] of Object.entries(node)) {
+      if (k === 'span' || k === 'nameSpan' || k === 'docs') continue;
+      this.findServeCalls(v, out, seen);
+    }
+    return out;
+  }
+
   checkStdCall(f, e, ctx) {
     // ---- std.sync.spawn / std.sync.join(泛型特例)----
     if (f.mod === 'sync' && f.fn.name === 'spawn') {
@@ -4088,6 +4137,16 @@ export class Checker {
           'sync/unsafe/ffi 在 handler 内编译期拒绝(ADR-001 清单 2/11):sync 的结构化并发在 handler 内缺少自然块边界,unsafe/ffi 是 C 原生限定。'));
         return null;
       }
+      // S9 两遍式·第一遍(v0.64,plan §4.5.1;审查修复 M1):嵌套 serve 编译期拒绝——
+      // handler 体内再挂服务在 v1 无 policing(实测:check 放行、内层真实绑定、外层 30s
+      // 硬杀后内层连同在途连接被斩)。此处只登记:本调用已解析为 std.net.serve 且
+      // handler 形态/载荷/效果白名单全过,Call 节点按引用身份入 serveCallNodes。
+      // 第二遍在 run() 收尾统一扫描 handler 声明体子树(顺序无关:handler 定义可在
+      // serve 调用之前或之后,也不再依赖 handler 体与调用点的检查先后);报告位置 =
+      // 内层 serve 调用自身 span(沿 v1 口径)。遮蔽情形(局部 net: S 的 trait 方法
+      // net.serve)走方法调用路径,不进本特例 → 不登记 → 不误伤。
+      this.serveCallNodes.add(e);
+      this.serveCallSites.push({ node: e, handlerName: hArg.name, mod: ctx.mod });
       return mkRes(INT_TYPES.i64, T_STR);
     }
     if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);

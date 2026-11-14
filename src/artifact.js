@@ -10,6 +10,9 @@
 //   - 树引擎(--tree)不支持产物加载(树引擎需要完整 AST)
 import * as path from 'node:path';
 import { vToWire, wireToV } from './interp.js';
+// v0.64(#56/S14):操作码集合取自 compiler.js 的 OP(单一事实来源)——artifact.js 只在
+// 产物加载路径被引用(vm.js/bin/ming.js 均已加载 compiler),无新增加载开销,无循环导入。
+import { OP } from './compiler.js';
 
 export const ARTIFACT_FORMAT = 'ming-bytecode';
 export const ARTIFACT_VERSION = 2; // v0.51.2:sig 改为纯 wire 类型(不再内嵌 AST/mod)
@@ -127,10 +130,83 @@ export function serializeArtifact(compiled, opts = {}) {
   };
 }
 
+// v0.64(#56/S14,plan §4.5.1):反序列化后置结构校验。实测四种损坏形态失败不一致
+// (mainFnIdx 越界/functions=[] → raw TypeError(vm 直接下标访问 undefined)exit 1;
+// mainFnIdx=-1 → M3023 exit 101;坏 opcode → M4001 exit 101)——现统一走"不是 Ming
+// 字节码产物"稳定诊断通道(exit 1,Error 文案带具体原因;零新增 M 码,复用 :132 既有通道)。
+// 校验面 = 运行时被直接下标访问的全部表(任一失败即拒,不再进 VM):
+//   - functions 非空数组,每函数 code 长度为 5 的倍数(指令五元组 [op,a,b,c,spanIdx]);
+//   - mainFnIdx 为整数且 ∈ [0, functions.length);
+//   - pool / spans 为数组;每指令 op ∈ OP(compiler.js 单一事实来源);
+//   - spanIdx ∈ [0, spans.length);池下标操作数 ∈ [0, pool.length);
+//   - 函数下标操作数(CLOSURE/LDFN)与 wasm.eligible 键 ∈ [0, functions.length);
+//   - 跳转目标(JUMP/JUMPFALSE/JUMPNONE/ITERNEXT)∈ [0, 指令数)。
+// 残留(接受):LD/ST/SET/ADDI 的局部槽下标、BINSET2 打包操作数不做界校验(语义按
+// kind 分派,界信息需随函数携带;损坏该面仍可能运行期失败,但不在 S14 四形态)。
+function validateArtifact(a) {
+  const bad = (reason) => { throw new Error(`不是 Ming 字节码产物: ${reason}`); };
+  const int = (x) => typeof x === 'number' && Number.isInteger(x);
+  const desc = (x) => (x === undefined ? '缺失' : Array.isArray(x) ? '空数组' : typeof x);
+  if (!Array.isArray(a.functions) || a.functions.length === 0) {
+    bad(`functions 必须是非空数组(实际 ${desc(a.functions)})`);
+  }
+  if (!Array.isArray(a.pool)) bad(`pool 必须是数组(实际 ${desc(a.pool)})`);
+  if (!Array.isArray(a.spans)) bad(`spans 必须是数组(实际 ${desc(a.spans)})`);
+  const nFns = a.functions.length;
+  if (!int(a.mainFnIdx) || a.mainFnIdx < 0 || a.mainFnIdx >= nFns) {
+    bad(`mainFnIdx 越界(${a.mainFnIdx},functions=${nFns})`);
+  }
+  const opSet = new Set(Object.values(OP));
+  const poolSlot = new Map([ // 操作数是常量池下标的指令(口径 = compiler.js OP 注释与发射点)
+    [OP.CONST, 1], [OP.GETFIELD, 1], [OP.SETFIELD, 1], [OP.CALLMETHOD, 1],
+    [OP.CLOSURE, 2], [OP.PATMATCH, 1], [OP.BIND, 1], [OP.MAKESTRUCT, 1],
+    [OP.MAKEENUM, 1], [OP.CAST, 1], [OP.BINSETI, 2],
+  ]);
+  const jumpSlot = new Map([ // 操作数是跳转目标(指令下标)的指令
+    [OP.JUMP, 1], [OP.JUMPFALSE, 1], [OP.JUMPNONE, 1], [OP.ITERNEXT, 1],
+  ]);
+  for (let fi = 0; fi < nFns; fi++) {
+    const f = a.functions[fi];
+    const fname = f && typeof f.name === 'string' ? `"${f.name}"` : `#${fi}`;
+    if (!f || typeof f !== 'object' || !Array.isArray(f.code)) bad(`函数 ${fname} 缺少 code 数组`);
+    if (f.code.length % 5 !== 0) bad(`函数 ${fname} 的 code 长度不是 5 的倍数(${f.code.length})`);
+    const nIns = f.code.length / 5;
+    for (let k = 0; k < f.code.length; k += 5) {
+      const at = `函数 ${fname} 指令 #${k / 5}`;
+      const op = f.code[k];
+      if (!int(op) || !opSet.has(op)) bad(`非法操作码 ${op}(${at})`);
+      const si = f.code[k + 4];
+      if (!int(si) || si < 0 || si >= a.spans.length) bad(`span 下标越界 ${si}(${at},spans=${a.spans.length})`);
+      const ps = poolSlot.get(op);
+      if (ps !== undefined) {
+        const pi = f.code[k + ps];
+        if (!int(pi) || pi < 0 || pi >= a.pool.length) bad(`常量池下标越界 ${pi}(${at},pool=${a.pool.length})`);
+      }
+      if ((op === OP.CLOSURE || op === OP.LDFN)) {
+        const fj = f.code[k + 1];
+        if (!int(fj) || fj < 0 || fj >= nFns) bad(`函数下标越界 ${fj}(${at},functions=${nFns})`);
+      }
+      const js = jumpSlot.get(op);
+      if (js !== undefined) {
+        const jt = f.code[k + js];
+        if (!int(jt) || jt < 0 || jt >= nIns) bad(`跳转目标越界 ${jt}(${at},指令数 ${nIns})`);
+      }
+    }
+  }
+  if (a.wasm) {
+    if (!Array.isArray(a.wasm.eligible)) bad(`wasm.eligible 必须是数组(实际 ${desc(a.wasm.eligible)})`);
+    for (const e of a.wasm.eligible) {
+      const fj = Array.isArray(e) ? e[0] : null;
+      if (!int(fj) || fj < 0 || fj >= nFns) bad(`wasm eligible 函数下标越界(${fj},functions=${nFns})`);
+    }
+  }
+}
+
 // JSON 对象 → 运行时 compiled 形态(含最小 entry 对象)
 export function deserializeArtifact(a) {
   if (!a || a.format !== ARTIFACT_FORMAT) throw new Error('不是 Ming 字节码产物');
   if (a.version !== ARTIFACT_VERSION) throw new Error(`产物版本不支持: ${a.version}(本工具链支持 ${ARTIFACT_VERSION})`);
+  validateArtifact(a);
   const functions = a.functions.map((f) => {
     const code = [];
     for (let k = 0; k + 4 < f.code.length; k += 5) {

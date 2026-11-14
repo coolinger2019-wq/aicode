@@ -36,7 +36,8 @@ export function startRepl() {
   let counter = 0;
   let pending = '';
 
-  process.stdout.write('Ming v0.8.0 REPL — 输入表达式或声明;:help 帮助,:quit 退出\n');
+  // 横幅版本与 bin/ming.js 的 VERSION 手工同步(曾漂移 v0.8.0→v0.63.0;动态导入会造 src→bin 环,故硬编码)
+  process.stdout.write('Ming v0.63.0 REPL — 输入表达式或声明;:help 帮助,:quit 退出\n');
   rl.prompt();
 
   rl.on('line', (line) => {

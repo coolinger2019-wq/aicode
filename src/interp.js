@@ -1541,13 +1541,19 @@ export class Interp {
         // 校验不改写(2026-11-14 裁决):CLI 用户是参数信任根,允许绝对/相对/.. 段,Ok 原串原样返回
         const raw = args[0].v;
         if (raw.length === 0) return V.enumv('builtin-res', 'Err', [V.str('sanitize_cli_path: 路径不能为空')]);
-        // C0 控制字符(码点 < 0x20,含 NUL/换行/制表)→ Err;消息内原串按 \uXXXX 转义,防 stderr 注入(确定性)
+        // v0.64/S12(净化器既定收紧,拒绝优于含糊):拒绝集扩展——C0(<0x20,含 NUL/换行/制表)/
+        // DEL(0x7F)/ C1(0x80–0x9F)/ Unicode 双向控制符(U+202A–202E,LRE/RLE/PDF/LRO/RLO,
+        // 防终端呈现欺骗)。按 UTF-16 码元遍历;代理对码元 0xD800–0xDFFF 不在任何拒绝区间,
+        // 明确放行(≥0x10000 的字符两个码元均 >0x202E,不误拒)
+        const badCu = (cu) => cu < 0x20 || cu === 0x7F || (cu >= 0x80 && cu <= 0x9F) || (cu >= 0x202A && cu <= 0x202E);
         for (let i = 0; i < raw.length; i++) {
-          if (raw.charCodeAt(i) < 0x20) {
+          if (badCu(raw.charCodeAt(i))) {
+            // 消息内原串按 \uXXXX 转义(拒绝集内逐码点,确定性小写 4 位 hex),防 stderr 注入;
+            // 按 UTF-16 码点遍历——代理对成单字符,超 BMP 不在拒绝集,原样保留
             let esc = '';
             for (const ch of raw) {
               const cp = ch.codePointAt(0);
-              esc += cp < 0x20 ? '\\u' + cp.toString(16).padStart(4, '0') : ch;
+              esc += badCu(cp) ? '\\u' + cp.toString(16).padStart(4, '0') : ch;
             }
             return V.enumv('builtin-res', 'Err', [V.str('sanitize_cli_path: 含控制字符: "' + esc + '"')]);
           }
@@ -2803,8 +2809,10 @@ export class Interp {
       '    // 就地消音 + destroy,不影响其它请求',
       '    res.on("error", () => { try { res.destroy(); } catch { } });',
       '    try { handleRequest(req, res); } catch (e) {',
-      '      // accept 线程内部异常护栏:不得让线程死亡(主线程驻留无停机,死服务 = 悬挂)',
-      '      if (!res.headersSent) safeWrite(res, () => writeJson(res, 500, { code: "worker_start_failed", message: String(e && e.message || e) }, true));',
+      '      // accept 线程内部异常护栏:不得让线程死亡(主线程驻留无停机,死服务 = 悬挂);',
+      '      // v0.64/S16 标签拆分:同步异常是请求处理故障,非 worker 启动失败 → internal_error',
+      '      // (worker_start_failed 仅保留给 dispatch 的 new Worker 抛错 / worker error·exit 事件)',
+      '      if (!res.headersSent) safeWrite(res, () => writeJson(res, 500, { code: "internal_error", message: String(e && e.message || e) }, true));',
       '      else { try { res.destroy(); } catch { } }',
       '    }',
       '  });',

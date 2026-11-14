@@ -87,6 +87,7 @@ export const CODES = {
   M4013: 'ffi-load-failed',
   M4015: 'contract-violation',
   M4016: 'native-only-feature', // v0.54:tree/VM 执行指针操作/std.mem
+  M5001: 'invalid-manifest', // v0.64 补登记:src/manifest.js 实际发射,此前仅 docs/diagnostics.md 有——单一事实来源缺口(第四轮 V3 发现)
 };
 
 export const CODE_HINTS = {

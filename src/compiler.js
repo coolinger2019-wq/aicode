@@ -564,7 +564,9 @@ class BytecodeCompiler {
           } else {
             this.compileExpr(s.value, st);
           }
-          this.emit(st, OP.SETINDEX, 0, 0, s.span);
+          // v0.64 #58:SETINDEX span 用 target.span(Index 节点,`[` 起)对齐 tree(interp.js:856)
+          // 与 wasm(wasm.js Assign 元素写,span = target.span)——越界写 M4003 位置三引擎一致
+          this.emit(st, OP.SETINDEX, 0, 0, s.target.span);
           return;
         }
         if (s.target.nt === 'Field') {
