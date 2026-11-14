@@ -3457,14 +3457,16 @@ fn main() with io, fs {
 // M2 点名函数 / M9 fib 真 wasm 执行 / B3 C for-in 遮蔽 / M12 除号 opcode / M6 env 剥离 / M7 纯 JSON)
 {
   // ---------- A. strict wasm(--strict-wasm / MING_WASM_STRICT=1;判定本体 src/wasm.js wasmLayerStatus)----------
-  // fallback 构造:eligible 形态(f64→f64)但 wasm 不支持 f64 复合赋值(§47 同类:整体静默回落,exit 0)
+  // fallback 构造:eligible 形态但 wasm 守护具名回落(整体静默回落,exit 0)。v0.63 翻转校准:
+  // 原夹具 `y += 1.0`(f64 复合赋值)已解锁 → strict 直接 ok;换成仍守护的 Option expect
+  // (§67 同源形态)。函数名 g 与 eligible=1 口径保持,断言仅替换原因子串与非 strict 输出 2.5→1。
   const okProg = mingFile('v53-wasm-ok.ming', [
     'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }',
     'fn main() with io { print(str(fib(10))); }',
   ].join('\n'));
   const fbProg = mingFile('v53-wasm-fallback.ming', [
-    'fn g(x: f64) -> f64 { let mut y = x; y += 1.0; return y; }',
-    'fn main() with io { print(str(g(1.5))); }',
+    'fn g(v: Vec[i64]) -> i64 { return v.get(0).expect("need"); }',
+    'fn main() with io { print(str(g([1, 2]))); }',
   ].join('\n'));
   const noneProg = mingFile('v53-wasm-none.ming', 'fn main() with io { print("e"); }');
 
@@ -3486,17 +3488,19 @@ fn main() with io, fs {
   // 2) fallback:strict exit 2 并点名函数与原因(文本 stderr 与 --json 两路)
   const fbStrict = runMing(['run', fbProg, '--strict-wasm']);
   const fbJson = JSON.parse(runMing(['run', fbProg, '--strict-wasm', '--json']).stdout);
+  // v0.63 校准:回落原因随夹具翻转(f64 复合赋值已解锁 → Option 消费链 expect 仍具名守护)
   check('v53.2:strict fallback exit 2 + 点名函数与原因',
-    fbStrict.code === 2 && fbStrict.stdout === '' && (fbStrict.stderr ?? '').includes('wasm 编译回落(g)') && (fbStrict.stderr ?? '').includes('f64 复合赋值')
-    && fbJson.exit_code === 2 && fbJson.wasm_status === 'fallback' && (fbJson.error ?? '').includes('f64 复合赋值'),
+    fbStrict.code === 2 && fbStrict.stdout === '' && (fbStrict.stderr ?? '').includes('wasm 编译回落(g)') && (fbStrict.stderr ?? '').includes('Option 消费链 expect')
+    && fbJson.exit_code === 2 && fbJson.wasm_status === 'fallback' && (fbJson.error ?? '').includes('Option 消费链 expect'),
     'code=' + fbStrict.code + ' stderr=' + (fbStrict.stderr ?? '').slice(0, 160) + ' json=' + JSON.stringify(fbJson));
 
   // 3) 非 strict 静默回落行为逐字不变(exit 0 + 正确结果 + stderr 干净);--json 仅 additive 多 wasm_status
+  //    v0.63 校准:夹具翻转后正确结果 2.5 → 1(expect 界内取值)
   const fbPlain = runMing(['run', fbProg]);
   const fbJsonNon = JSON.parse(runMing(['run', fbProg, '--json']).stdout);
   check('v53.3:非 strict 静默回落行为不变(json 仅 additive wasm_status=fallback)',
-    fbPlain.code === 0 && fbPlain.stdout === '2.5\n' && (fbPlain.stderr ?? '') === ''
-    && fbJsonNon.exit_code === 0 && fbJsonNon.stdout === '2.5\n' && fbJsonNon.wasm_status === 'fallback',
+    fbPlain.code === 0 && fbPlain.stdout === '1\n' && (fbPlain.stderr ?? '') === ''
+    && fbJsonNon.exit_code === 0 && fbJsonNon.stdout === '1\n' && fbJsonNon.wasm_status === 'fallback',
     'code=' + fbPlain.code + ' stdout=' + JSON.stringify(fbPlain.stdout) + ' status=' + fbJsonNon.wasm_status);
 
   // 4) 零 eligible → none(exit 0;main 带 io 不 eligible,无分层可验)
@@ -3529,7 +3533,7 @@ fn main() with io, fs {
   const stNone = mkStatus(noneProg);
   check('v53.7:wasmLayerStatus 纯函数三态(ok/fallback 点名/none)',
     stOk.status === 'ok' && stOk.eligible >= 1 && stOk.reason === null
-    && stFb.status === 'fallback' && (stFb.reason ?? '').includes('编译回落(g)') && (stFb.reason ?? '').includes('f64 复合赋值') && stFb.eligible === 1
+    && stFb.status === 'fallback' && (stFb.reason ?? '').includes('编译回落(g)') && (stFb.reason ?? '').includes('Option 消费链 expect') && stFb.eligible === 1
     && stNone.status === 'none' && stNone.eligible === 0,
     'ok=' + JSON.stringify(stOk) + ' fb=' + JSON.stringify(stFb) + ' none=' + JSON.stringify(stNone));
 
@@ -3767,13 +3771,16 @@ fn main() with io, fs {
   // ---------- F. v0.53.0 独立审查修复回归(2026-11-12)----------
   // B2:check --strict-wasm 的 fallback 与正常路径共用同一 out 构造——ok:false、
   // diagnostics(含 warning)与 --proof-report 的 proofs 都不能丢。
+  // v0.63 校准:原夹具 g 体 `y += 1.0`(f64 复合赋值)已解锁 → strict 直接 ok;换成仍守护的
+  // Option expect(§67 同源),函数名 g 与 fallback 触发口径保持;pick/eqf 原样保留
+  // (proof 报告 pick: 义务 1 + W3102 浮点等值断言均不受翻转影响)。
   const pfProg = mingFile('v53-proof-fb.ming', [
     'fn pick(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
     '    return buf[i];',
     '}',
     'fn eqf(x: f64) -> bool { return x == 1.0; }',
-    'fn g(x: f64) -> f64 { let mut y = x; y += 1.0; return y; }',
-    'fn main() with io { print(str(pick([10, 20, 30], 1))); print(str(g(1.5))); }',
+    'fn g(v: Vec[i64]) -> i64 { return v.get(0).expect("need"); }',
+    'fn main() with io { print(str(pick([10, 20, 30], 1))); print(str(g([1, 2]))); }',
   ].join('\n'));
   const pfR = runMing(['check', pfProg, '--proof-report', '--json', '--strict-wasm']);
   const pfJ = JSON.parse(pfR.stdout);
@@ -3917,7 +3924,7 @@ fn main() with io, fs {
   if (savedShellStrict === undefined) delete process.env.MING_WASM_STRICT; else process.env.MING_WASM_STRICT = savedShellStrict;
   const injectedStrict = runMing(['run', fbProg], { env: { MING_WASM_STRICT: '1' } });
   check('v53.30:夹具默认剥离 MING_WASM_STRICT(shell 导出不致假失败;显式注入仍生效)',
-    shellStrictIgnored.code === 0 && shellStrictIgnored.stdout === '2.5\n'
+    shellStrictIgnored.code === 0 && shellStrictIgnored.stdout === '1\n'
     && injectedStrict.code === 2 && (injectedStrict.stderr ?? '').includes('wasm 编译回落(g)'),
     'shell=' + shellStrictIgnored.code + '/' + JSON.stringify(shellStrictIgnored.stdout) + ' injected=' + injectedStrict.code);
 
@@ -8376,29 +8383,53 @@ fn main() with io, fs {
       `build=${a.b.status} run=${a.r.status} out=${JSON.stringify(a.r.stdout)} err=${JSON.stringify((a.r.stderr ?? '').slice(0, 160))}`);
   }
 
-  // ---- v63.19(引导守护):VecLit/下标/mut 写/Option 链显式回落,原因具名,输出三引擎一致 ----
+  // ---- v63.19(引导守护,v0.63 翻转校准):原四守护形态中 VecLit/下标读/mut 写已解锁
+  // (strict exit 0,[wasm] fn OK 且无 REJECT);Option 消费链仍守护。改写为两段口径(单 check
+  // 保持总数不变):(a) 已解锁三形态 strict ok + fn OK + 非 strict 三引擎逐字;(b) 剩余守护
+  // 三形态(Map unwrap / Vec[str] 下标读 / 下标复合赋值,与 §67 v67.19-25 同源具名文本)
+  // strict exit 2 原因具名 + 非 strict 三引擎逐字。"剩余守护"清单随解锁收窄。
   {
-    const cases = [
+    const unlockedCases = [
       ['veclit', [
         'fn vl(n: i64) -> i64 { let v = [1, 2, 3]; return v[0] + n; }',
         'fn main() with io { print(str(vl(4))); }',
-      ].join('\n'), '5\n', 'vl', 'VecLit 数值元素(容器表示待统一)'],
+      ].join('\n'), '5\n', 'vl'],
       ['vecread', [
         'fn vr(v: Vec[i64]) -> i64 { return v[0]; }',
         'fn main() with io { print(str(vr([7, 8]))); }',
-      ].join('\n'), '7\n', 'vr', 'Vec 下标读(宿主 panic_m4003 导入待补)'],
+      ].join('\n'), '7\n', 'vr'],
       ['vecwrite', [
         'fn vw(mut v: Vec[i64]) -> i64 { v[0] = 5; return v[1]; }',
         'fn main() with io { print(str(vw([1, 2]))); }',
-      ].join('\n'), '2\n', 'vw', 'mut Vec 元素写(宿主 panic_m4003 导入待补)'],
-      ['option', [
+      ].join('\n'), '2\n', 'vw'],
+    ];
+    const guardedCases = [
+      ['mapunwrap', [
         'fn og(m: Map[str, i64]) -> i64 { return m.get("a").unwrap(); }',
         'fn main() with io { print(str(og({"a": 3}))); }',
-      ].join('\n'), '3\n', 'og', 'Option 消费链(宿主 M4006/M4007 导入待补)'],
+      ].join('\n'), '3\n', 'og', 'Option 消费链 unwrap'],
+      ['vecstr', [
+        'fn vs(s: Vec[str]) -> str { return s[0]; }',
+        'fn main() with io { print(vs(["a", "b"])); }',
+      ].join('\n'), 'a\n', 'vs', 'Vec 下标读 vstr'],
+      ['idxcompound', [
+        'fn ic(mut v: Vec[i64]) -> i64 { v[0] += 5; return v[0]; }',
+        'fn main() with io { print(str(ic([1, 2]))); }',
+      ].join('\n'), '6\n', 'ic', '下标复合赋值 +='],
     ];
     let allOk = true;
     const detail = [];
-    for (const [name, src, want, fnName, reason] of cases) {
+    for (const [name, src, want, fnName] of unlockedCases) {
+      const p = m63('p1_unlock_' + name + '.ming', src);
+      const runs = runAll63(p);
+      const st = strict63(p);
+      const dbg = st.stderr ?? '';
+      const ok = same63(runs, want) && st.code === 0 && st.stdout === want
+        && dbg.includes(`[wasm] fn ${fnName} OK`) && !dbg.includes('REJECT') && !dbg.includes('回落');
+      if (!ok) allOk = false;
+      detail.push(`${name}:strict=${st.code}:runs=${runs.map(r => r.code).join(',')}`);
+    }
+    for (const [name, src, want, fnName, reason] of guardedCases) {
       const p = m63('p1_guard_' + name + '.ming', src);
       const runs = runAll63(p);
       const st = strict63(p);
@@ -8407,7 +8438,7 @@ fn main() with io, fs {
       if (!ok) allOk = false;
       detail.push(`${name}:${runs.map(r => r.code).join(',')}:strict=${st.code}`);
     }
-    check('v63.19:剩余守护(VecLit/下标/mut 写/Option 链)strict exit 2 且回落原因具名;非 strict 三引擎输出逐字一致',
+    check('v63.19:守护翻转——已解锁(VecLit/下标读/mut 写)strict ok 且 [wasm] fn OK 无 REJECT;剩余守护(Map unwrap/Vec[str] 下标/下标复合赋值)strict exit 2 原因具名;非 strict 三引擎输出逐字一致',
       allOk, detail.join(' | '));
   }
 
@@ -10735,12 +10766,29 @@ fn main() with io, fs {
   });
 
   // v66.8 请求体 9MB > 8MB 上限 → 413 {code:body_too_large},handler 不执行(拒绝优于截断)。
+  // v0.63 校准:隔离 harness 10/10 稳定;全量套件上下文偶发 fetch failed(服务端对超限体
+  // 提前关闭连接,客户端仍在写 9MB → ECONNRESET 竞态,undici 抛错而非交付响应)。
+  // 就绪探测已在(waitReady66);对 fetch 抛错重试 ≤2 次、间隔 200ms——仅传输层失败重试,
+  // 拿到 HTTP 响应(含非 413)即停:语义失败不得被重试掩盖;最终失败明细带 server stderr 首行。
   await runCase66('v66.8:9MB 体超限 → 413 {code:body_too_large}', async (start) => {
     const s = await start(8, 0, SRC66.get);
     if (!(await waitReady66(s.port))) throw new Error('server 15s 未就绪');
-    const res = await fetchText66('http://127.0.0.1:' + s.port + '/upload', {
-      method: 'POST', body: 'a'.repeat(9 * 1024 * 1024), signal: AbortSignal.timeout(30000),
-    });
+    let res = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await fetchText66('http://127.0.0.1:' + s.port + '/upload', {
+          method: 'POST', body: 'a'.repeat(9 * 1024 * 1024), signal: AbortSignal.timeout(30000),
+        });
+        break;
+      } catch (e) {
+        const cause = e && e.cause ? ' cause=' + String(e.cause.code ?? e.cause) : '';
+        if (attempt === 2) {
+          throw new Error(`413 请求 3 次均传输失败: ${String(e && e.message ? e.message : e)}${cause}`
+            + ' stderr[0]=' + JSON.stringify((s.stderr || '').split('\n')[0]));
+        }
+        await sleep66(200);
+      }
+    }
     const j = parseJson66(res.body);
     check('v66.8:9MB 体超限 → 413 {code:body_too_large}',
       res.status === 413 && j !== null && j.code === 'body_too_large',
@@ -10918,6 +10966,654 @@ fn main() with io, fs {
       `cross=${cross.code}:${JSON.stringify(cross.stderr.split('\n')[0])} same=${same.code}:${JSON.stringify(same.stderr.split('\n')[0])}`);
   }
   // §66-END
+}
+
+// ===================== 67. v0.63:wasm 剩余守护收口 slice 2(plan §4.4.6b)=====================
+// 文件所有权:§67 = 本区全部用例。五形态:mut Vec 元素写 / Vec 下标读 / Option unwrap·expect /
+// VecLit 数值元素 / f64 复合赋值——正例三引擎逐字 + 越界/None 的 M4003/M4006 消息-span-退出码逐字 + strict 存活。
+{
+  const dir67 = path.join(TMP, 'v67');
+  fs.mkdirSync(dir67, { recursive: true });
+  const m67 = (name, src) => { const f = path.join(dir67, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags67 = ['', '--no-wasm', '--tree'];
+  const runAll67 = (p, extra = []) => flags67.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const same67 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns67 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const strict67b = (p, extra = []) => runMing(['run', p, '--strict-wasm', ...extra], { env: { MING_WASM_DEBUG: '1' } });
+
+  // ---- §67-START(slice 2 用例:五形态正例/panic 对齐/strict 存活/Err unwrap 守护具名)----
+
+  // 源码池:正例函数独立可 eligible(main 持 io 不可 eligible,经 OP.CALL 快路径进 wasm);
+  // panic 类函数同样独立 eligible,越界经 panic_m4003/panic_m4003w/panic_m4006 导入还原为 Ming Panic。
+  const SRC67 = {
+    // 形态 1:数值 VecLit + 下标读
+    posRead: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v[1];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 形态 2:mut 元素写 + 值语义(调用方 a 不变)
+    posWrite: [
+      'fn f(mut v: Vec[i64]) -> i64 {',
+      '    v[0] = 99;',
+      '    return v[0];',
+      '}',
+      'fn main() with io {',
+      '    let a: Vec[i64] = [1, 2, 3];',
+      '    print(f(a));',
+      '    print(a[0]);',
+      '}',
+    ].join('\n'),
+    // 形态 3:Option get(i).unwrap() 界内
+    posUnwrap: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [10, 20, 30];',
+      '    return v.get(2).unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 形态 4:f64 复合赋值
+    posF64: [
+      'fn f() -> f64 {',
+      '    let mut x: f64 = 1.5;',
+      '    x /= 0.5;',
+      '    x += 0.25;',
+      '    return x;',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 形态 5:五形态组合(VecLit + 下标读 + mut 写 + Option unwrap + f64 复合赋值)+ 值语义
+    posCombo: [
+      'fn combo(mut v: Vec[i64], idx: i64) -> f64 {',
+      '    let w: Vec[i64] = [4, 5, 6];',
+      '    v[idx] = w.get(1).unwrap();',
+      '    let mut x: f64 = 2.0;',
+      '    x /= 4.0;',
+      '    if v[0] > 0 {',
+      '        x += 1.0;',
+      '    }',
+      '    return x;',
+      '}',
+      'fn main() with io {',
+      '    let a: Vec[i64] = [1, 2, 3];',
+      '    print(combo(a, 1));',
+      '    print(a[0]);',
+      '    print(a[1]);',
+      '}',
+    ].join('\n'),
+    // f64 除零:IEEE → Infinity,不 panic
+    posDivZero: [
+      'fn f() -> f64 {',
+      '    let mut x: f64 = 1.0;',
+      '    x /= 0.0;',
+      '    return x;',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 计费矩阵:main 持 io 不可 eligible,计费点在 eligible 的 bill() 内经 ming_alloc_elem 导入
+    billLen3: [
+      'fn bill() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v[0];',
+      '}',
+      'fn main() with io { print(bill()); }',
+    ].join('\n'),
+    billLen0: [
+      'fn bill() -> i64 {',
+      '    let v: Vec[i64] = [];',
+      '    return v.len();',
+      '}',
+      'fn main() with io { print(bill()); }',
+    ].join('\n'),
+    // panic:越界读(M4003 读 flavor,消息带 Option 提示后缀)
+    panicRead: [
+      'fn boom() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v[10];',
+      '}',
+      'fn main() with io { print(boom()); }',
+    ].join('\n'),
+    // panic:mut 元素写越界(M4003 写 flavor,消息无后缀)
+    panicWrite: [
+      'fn boom(mut v: Vec[i64]) {',
+      '    v[10] = 5;',
+      '}',
+      'fn main() with io { boom([1, 2, 3]); }',
+    ].join('\n'),
+    // panic:None unwrap(M4006)
+    panicUnwrap: [
+      'fn boom() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(10).unwrap();',
+      '}',
+      'fn main() with io { print(boom()); }',
+    ].join('\n'),
+    // panic:panic 点直接在 wasm eligible 的 main 内(无辅助函数)
+    panicInMain: [
+      'fn main() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v[10];',
+      '}',
+    ].join('\n'),
+    // panic:空 Vec 越界读(长度 0,访问 0)
+    panicEmpty: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [];',
+      '    return v[0];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 守护:Map unwrap(strict 下具名回落,非 strict 经 VM 正确执行)
+    guardMapUnwrap: [
+      'fn f() -> i64 {',
+      '    let m: Map[str, i64] = {"a": 1};',
+      '    return m.get("a").unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 守护:Err unwrap(Err 构造先行拒绝——具名"调用 Err",守护未静默)
+    guardErrUnwrap: [
+      'fn f() -> i64 {',
+      '    let r: Result[i64, str] = Err("bad");',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // 守护:expect(自定义 msg)(具名 Option 消费链 expect)
+    guardExpect: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(0).expect("need");',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // M2 v67.20:嵌套 panic(main→f→g,g 内越界)——wasm→wasm 直调不经 callCompiled,
+    // 按现状断言 wasm 栈缺内层 g 帧(已知残留,登记 GUIDE §19/修订记录)。
+    nestedPanic: [
+      'fn g() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v[10];',
+      '}',
+      'fn f() -> i64 {',
+      '    return g();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.21 守护:unwrap_or(无 panic 面,具名回落)
+    guardUnwrapOr: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(10).unwrap_or(7);',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.22 守护:is_some——bool 局部 + 数值返回形态具名回落;bool 返回形态本就不 eligible
+    guardIsSome: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let b = v.get(0).is_some();',
+      '    return if b { 10 } else { 20 };',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    guardIsSomeBoolRet: [
+      'fn f() -> bool {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(0).is_some();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.23 守护:is_none(同 is_some 双形态)
+    guardIsNone: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let b = v.get(0).is_none();',
+      '    return if b { 10 } else { 20 };',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    guardIsNoneBoolRet: [
+      'fn f() -> bool {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(0).is_none();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.24 守护:Vec[str] 下标读(句柄容器,具名回落)
+    guardVecStrRead: [
+      'fn f() -> str {',
+      '    let s: Vec[str] = ["a", "b"];',
+      '    return s[0];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.25 守护:下标复合赋值(具名回落)
+    guardIdxCompound: [
+      'fn f() -> i64 {',
+      '    let mut v: Vec[i64] = [1, 2, 3];',
+      '    v[0] += 5;',
+      '    return v[0];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.26 审查 B1 回归锁定:嵌套下标读三复现(外层 base ptr 曾被子表达式覆盖 → 静默错值)
+    b1VeclitRead: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let mut w: Vec[i64] = [v[2], v[1], v[0]];',
+      '    return w[0] * 100 + w[1] * 10 + w[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    b1WriteIdxRead: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [0, 1, 2];',
+      '    let mut w: Vec[i64] = [0, 0, 0];',
+      '    w[v[0]] = 9;',
+      '    return w[0] * 10 + w[1] + w[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    b1UnwrapArgRead: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let mut w: Vec[i64] = [7, 8, 9];',
+      '    return w.get(v[0]).unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    b1ValuePosRead: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let mut w: Vec[i64] = [0, 0, 0];',
+      '    w[0] = v[2];',
+      '    return w[0] * 100 + w[1] * 10 + w[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.27 审查 B1 深组合:双层嵌套 + 跨变量嵌套 + Map 读嵌套(读路径/Map 读路径同修)
+    b1DeepVeclit: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [2, 0, 1];',
+      '    let mut w: Vec[i64] = [v[v[0]], v[v[1]], v[v[2]]];',
+      '    return w[0] * 100 + w[1] * 10 + w[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    b1DeepWriteIdx: [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [2, 0, 1];',
+      '    let mut w: Vec[i64] = [0, 0, 0];',
+      '    w[v[v[1]]] = 9;',
+      '    return w[0] * 100 + w[1] * 10 + w[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    b1CrossVarNested: [
+      'fn f() -> i64 {',
+      '    let a: Vec[i64] = [2, 0, 1];',
+      '    let b: Vec[i64] = [0, 1, 2];',
+      '    let mut w: Vec[i64] = [0, 0, 0];',
+      '    w[0] = a[b[0]];',
+      '    return w[0] * 100 + a[1] * 10 + b[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    b1MapReadNested: [
+      'fn f() -> i64 {',
+      '    let m: Map[str, i64] = {"k": 1};',
+      '    let v: Vec[i64] = [5, 6, 7];',
+      '    let x = v[m["k"]];',
+      '    return x * 10 + v[2];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+    // v67.28 审查 M1 回归锁定:ming_copy_vec 搬运不计费(派生拷贝,与 tree/VM deepCopy 同口径)
+    m1BillCopy: [
+      'fn bill() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let mut w = v;',
+      '    return w[0];',
+      '}',
+      'fn main() with io { print(bill()); }',
+    ].join('\n'),
+    m1InnerCall: [
+      'fn g(mut v: Vec[i64]) -> i64 {',
+      '    v[0] = 99;',
+      '    return v[0];',
+      '}',
+      'fn f() -> i64 {',
+      '    let a: Vec[i64] = [1, 2, 3];',
+      '    return g(a);',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'),
+  };
+  const firstLine67 = (r) => (r.stderr ?? '').split('\n')[0];
+  const dbg67 = (p, extra = []) => runMing(['run', p, ...extra], { env: { MING_WASM_DEBUG: '1' } });
+
+  // v67.1 正例形态 1:数值 VecLit + 下标读——三引擎 stdout 逐字 + wasm 编译存活
+  {
+    const p = m67('k67_1_read.ming', SRC67.posRead);
+    const runs = runAll67(p);
+    const dbg = dbg67(p);
+    check('v67.1:VecLit+下标读 三引擎逐字 + [wasm] fn f OK 无 REJECT',
+      same67(runs, '2\n') && dbg.code === 0 && dbg.stderr.includes('[wasm] fn f OK') && !dbg.stderr.includes('REJECT'),
+      fmtRuns67(runs) + ` dbg=${dbg.code}:${JSON.stringify(dbg.stderr.slice(0, 200))}`);
+  }
+
+  // v67.2 正例形态 2:mut 元素写 + 值语义(函数内 v[0]=99,调用方 a[0] 仍为 1)
+  {
+    const p = m67('k67_2_write.ming', SRC67.posWrite);
+    const runs = runAll67(p);
+    const dbg = dbg67(p);
+    check('v67.2:mut 元素写 三引擎逐字 + 值语义(调用方不变) + wasm 存活',
+      same67(runs, '99\n1\n') && dbg.code === 0 && dbg.stderr.includes('[wasm] fn f OK') && !dbg.stderr.includes('REJECT'),
+      fmtRuns67(runs) + ` dbg=${dbg.code}:${JSON.stringify(dbg.stderr.slice(0, 200))}`);
+  }
+
+  // v67.3 正例形态 3:Option get(i).unwrap() 界内
+  {
+    const p = m67('k67_3_unwrap.ming', SRC67.posUnwrap);
+    const runs = runAll67(p);
+    const dbg = dbg67(p);
+    check('v67.3:Option get(i).unwrap() 界内 三引擎逐字 + wasm 存活',
+      same67(runs, '30\n') && dbg.code === 0 && dbg.stderr.includes('[wasm] fn f OK') && !dbg.stderr.includes('REJECT'),
+      fmtRuns67(runs) + ` dbg=${dbg.code}:${JSON.stringify(dbg.stderr.slice(0, 200))}`);
+  }
+
+  // v67.4 正例形态 4:f64 复合赋值
+  {
+    const p = m67('k67_4_f64.ming', SRC67.posF64);
+    const runs = runAll67(p);
+    const dbg = dbg67(p);
+    check('v67.4:f64 复合赋值(/= +=) 三引擎逐字 + wasm 存活',
+      same67(runs, '3.25\n') && dbg.code === 0 && dbg.stderr.includes('[wasm] fn f OK') && !dbg.stderr.includes('REJECT'),
+      fmtRuns67(runs) + ` dbg=${dbg.code}:${JSON.stringify(dbg.stderr.slice(0, 200))}`);
+  }
+
+  // v67.5 正例形态 5:五形态组合函数 + 值语义(combo 内改 v[1],调用方 a[1] 仍为 2)
+  {
+    const p = m67('k67_5_combo.ming', SRC67.posCombo);
+    const runs = runAll67(p);
+    check('v67.5:五形态组合 三引擎逐字 + 值语义(调用方不变)',
+      same67(runs, '1.5\n1\n2\n'), fmtRuns67(runs));
+  }
+
+  // v67.6 strict 存活:五形态组合单函数 --strict-wasm exit 0 且无 REJECT
+  {
+    const p = m67('k67_6_strict.ming', SRC67.posCombo);
+    const s = strict67b(p);
+    check('v67.6:五形态组合 --strict-wasm exit 0 + fn combo OK 无 REJECT',
+      s.code === 0 && s.stderr.includes('[wasm] fn combo OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落'),
+      `code=${s.code} stderr=${JSON.stringify(s.stderr.slice(0, 240))}`);
+  }
+
+  // v67.7 f64 除零:IEEE 语义 → Infinity,不 panic,三引擎逐字
+  {
+    const p = m67('k67_7_divzero.ming', SRC67.posDivZero);
+    const runs = runAll67(p);
+    check('v67.7:f64 /= 0.0 → Infinity(IEEE 不 panic)三引擎逐字',
+      same67(runs, 'Infinity\n'), fmtRuns67(runs));
+  }
+
+  // v67.8 panic 对齐 1:越界读 v[10](len3)——三引擎 stderr 首行逐字(含 Option 提示后缀)+ exit 101
+  {
+    const p = m67('k67_8_pread.ming', SRC67.panicRead);
+    const runs = runAll67(p);
+    const msg = '索引越界:长度 3,访问 10(用 .get(i) 返回 Option)';
+    check('v67.8:越界读 M4003 三引擎首行逐字 + exit 101',
+      runs.every(r => r.code === 101) && runs.every(r => firstLine67(r).includes(msg))
+        && firstLine67(runs[0]) === firstLine67(runs[1]) && firstLine67(runs[0]) === firstLine67(runs[2]),
+      fmtRuns67(runs));
+  }
+
+  // v67.9 panic 对齐 2:mut 写越界——消息无后缀逐字;完整 stderr wasm==tree。
+  // 注:VM(--no-wasm)与 wasm/tree 的写 panic 位置差 1 列(wasm/tree 2:6 vs VM 2:5)
+  // 为 HEAD 预存(G1 实测登记),断言按 wasm==tree 写;VM 列差由架构师单独记账。
+  {
+    const p = m67('k67_9_pwrite.ming', SRC67.panicWrite);
+    const runs = runAll67(p);
+    const msg = '索引越界:长度 3,访问 10';
+    check('v67.9:mut 写越界 M4003 消息无后缀逐字 + exit 101 + 完整 stderr wasm==tree',
+      runs.every(r => r.code === 101) && runs.every(r => firstLine67(r).includes(msg))
+        && !firstLine67(runs[0]).includes('.get(i)') && runs[0].stderr === runs[2].stderr,
+      fmtRuns67(runs));
+  }
+
+  // v67.10 panic 对齐 3:None unwrap——M4006 消息逐字 + 完整 stderr 三引擎逐字
+  {
+    const p = m67('k67_10_punwrap.ming', SRC67.panicUnwrap);
+    const runs = runAll67(p);
+    const msg = '对 None 调用 unwrap()';
+    check('v67.10:None unwrap M4006 首行逐字 + exit 101 + 完整 stderr 三引擎逐字',
+      runs.every(r => r.code === 101) && runs.every(r => firstLine67(r).includes(msg))
+        && firstLine67(runs[0]) === firstLine67(runs[1]) && firstLine67(runs[0]) === firstLine67(runs[2])
+        && runs[0].stderr === runs[1].stderr && runs[0].stderr === runs[2].stderr,
+      fmtRuns67(runs));
+  }
+
+  // v67.11 计费矩阵(G2 硬验收):len3 VecLit --max-alloc 3 → 三引擎 exit 0(3 不大于 3)
+  {
+    const p = m67('k67_11_bill3.ming', SRC67.billLen3);
+    const runs = runAll67(p, ['--max-alloc', '3']);
+    check('v67.11:计费对齐 len3 --max-alloc 3 三引擎 exit 0 输出 1',
+      same67(runs, '1\n'), fmtRuns67(runs));
+  }
+
+  // v67.12 计费矩阵:len3 --max-alloc 2 → 三引擎均 M4011 且累计值一致(3>2,元素口径)
+  {
+    const p = m67('k67_12_bill2.ming', SRC67.billLen3);
+    const runs = runAll67(p, ['--max-alloc', '2']);
+    const msg = '内存配额超限:累计分配 3 超过上限 2';
+    check('v67.12:计费对齐 len3 --max-alloc 2 三引擎 M4011 累计 3 一致 + exit 101',
+      runs.every(r => r.code === 101) && runs.every(r => firstLine67(r).includes(msg))
+        && firstLine67(runs[0]) === firstLine67(runs[1]) && firstLine67(runs[0]) === firstLine67(runs[2]),
+      fmtRuns67(runs));
+  }
+
+  // v67.13 计费矩阵:len0 空 Vec --max-alloc 0 → 0 计费(n<=0 早退),三引擎 exit 0
+  {
+    const p = m67('k67_13_bill0.ming', SRC67.billLen0);
+    const runs = runAll67(p, ['--max-alloc', '0']);
+    check('v67.13:计费对齐 len0 --max-alloc 0 三引擎 exit 0 输出 0',
+      same67(runs, '0\n'), fmtRuns67(runs));
+  }
+
+  // v67.14 空 Vec 构造 + 越界读 panic(G1 补位锁定):长度 0,访问 0,三引擎首行逐字
+  {
+    const p = m67('k67_14_empty.ming', SRC67.panicEmpty);
+    const runs = runAll67(p);
+    const dbg = dbg67(p);
+    const msg = '索引越界:长度 0,访问 0(用 .get(i) 返回 Option)';
+    check('v67.14:空 Vec 越界读 M4003 三引擎首行逐字 + exit 101 + wasm 存活',
+      runs.every(r => r.code === 101) && runs.every(r => firstLine67(r).includes(msg))
+        && firstLine67(runs[0]) === firstLine67(runs[1]) && firstLine67(runs[0]) === firstLine67(runs[2])
+        && dbg.code === 101 && dbg.stderr.includes('[wasm] fn f OK'),
+      fmtRuns67(runs) + ` dbg=${dbg.code}`);
+  }
+
+  // v67.15 任务 2 验收:越界读 panic 的完整 stderr(含调用栈尾帧)三引擎逐字——
+  // G2 候选修复(callCompiled catch 先填 e.stack 再 pop)实测逐字一致后保留。
+  {
+    const p = m67('k67_15_stack.ming', SRC67.panicRead);
+    const runs = runAll67(p);
+    check('v67.15:M4003 越界读完整 stderr(含栈)三引擎逐字',
+      runs.every(r => r.code === 101) && runs[0].stderr === runs[1].stderr && runs[0].stderr === runs[2].stderr
+        && runs[0].stderr.includes('at boom (') && runs[0].stderr.includes('at main ('),
+      `w=${JSON.stringify(runs[0].stderr.slice(-260))} n=${JSON.stringify(runs[1].stderr.slice(-260))}`);
+  }
+
+  // v67.16 任务 2 验收:panic 点直接在 wasm eligible 的 main 内——完整 stderr 三引擎逐字
+  {
+    const p = m67('k67_16_pmain.ming', SRC67.panicInMain);
+    const runs = runAll67(p);
+    check('v67.16:main 内越界读完整 stderr(含栈)三引擎逐字',
+      runs.every(r => r.code === 101) && runs[0].stderr === runs[1].stderr && runs[0].stderr === runs[2].stderr,
+      `w=${JSON.stringify(runs[0].stderr.slice(-260))} n=${JSON.stringify(runs[1].stderr.slice(-260))}`);
+  }
+
+  // v67.17 具名守护 1:Map unwrap——strict exit 2,stderr 含具名 Option 消费链 unwrap(守护未静默)
+  {
+    const p = m67('k67_17_mapunwrap.ming', SRC67.guardMapUnwrap);
+    const s = strict67b(p);
+    const ns = runAll67(p);
+    check('v67.17:Map unwrap strict exit 2 + REJECT Option 消费链 unwrap;非 strict 三引擎正确输出 1',
+      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 unwrap') && same67(ns, '1\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ns=${fmtRuns67(ns)}`);
+  }
+
+  // v67.18 具名守护 2:Err unwrap——strict exit 2 + 具名拒绝。
+  // 注:计划文案为 "REJECT: Option 消费链...",实测 Err("bad") 构造表达式先行拒绝
+  // (具名 "调用 Err",BEFORE unwrap 链)——同为具名回落、守护未静默,文案差异登记。
+  {
+    const p = m67('k67_18_errunwrap.ming', SRC67.guardErrUnwrap);
+    const s = strict67b(p);
+    check('v67.18:Err unwrap strict exit 2 + 具名 REJECT(调用 Err)',
+      s.code === 2 && s.stderr.includes('REJECT') && s.stderr.includes('回落'),
+      `code=${s.code} stderr=${JSON.stringify(s.stderr.split('\n').filter(l => l.includes('REJECT') || l.includes('strict-wasm')).join(' | ').slice(0, 240))}`);
+  }
+
+  // v67.19 具名守护 3:expect(自定义 msg)——strict exit 2 + 具名 Option 消费链 expect
+  {
+    const p = m67('k67_19_expect.ming', SRC67.guardExpect);
+    const s = strict67b(p);
+    check('v67.19:expect strict exit 2 + REJECT Option 消费链 expect',
+      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 expect'),
+      `code=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')}`);
+  }
+
+  // v67.20 审查 M2:嵌套 panic(main→f→g,g 内越界)——wasm→wasm 直调不经 callCompiled,
+  // 深层帧不进 callStack → wasm panic 栈缺 `at g` 帧。修复需调用点 span 透传,超本片范围
+  // (已知残留,登记 GUIDE §19/修订记录)。本用例按**现状**断言:首行/位置/exit 与 tree 逐字,
+  // 栈帧数 = 当前真实行为(wasm 仅 main→f 两帧;tree/VM 三帧齐全)。残留修复落地时翻转本断言。
+  {
+    const p = m67('k67_20_npanic.ming', SRC67.nestedPanic);
+    const runs = runAll67(p);
+    const msg = '索引越界:长度 3,访问 10(用 .get(i) 返回 Option)';
+    check('v67.20:嵌套 panic 首行/exit 三引擎逐字 + wasm 栈缺内层 g 帧(已知残留,按现状断言)',
+      runs.every(r => r.code === 101)
+        && firstLine67(runs[0]) === firstLine67(runs[1]) && firstLine67(runs[0]) === firstLine67(runs[2])
+        && firstLine67(runs[0]).includes(msg)
+        && runs[0].stderr.includes('at f (') && runs[0].stderr.includes('at main (')
+        && !runs[0].stderr.includes('at g (')
+        && runs[2].stderr.includes('at g (') && runs[2].stderr.includes('at f (') && runs[2].stderr.includes('at main ('),
+      fmtRuns67(runs) + ` wasmStack=${JSON.stringify(runs[0].stderr.slice(-200))}`);
+  }
+
+  // v67.21 具名守护 4:unwrap_or——strict exit 2 + 具名 Option 消费链 unwrap_or;非 strict 三引擎界外取默认
+  {
+    const p = m67('k67_21_unwrapor.ming', SRC67.guardUnwrapOr);
+    const s = strict67b(p);
+    const ns = runAll67(p);
+    check('v67.21:unwrap_or strict exit 2 + REJECT Option 消费链 unwrap_or;非 strict 三引擎输出 7',
+      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 unwrap_or') && same67(ns, '7\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ns=${fmtRuns67(ns)}`);
+  }
+
+  // v67.22 具名守护 5:is_some——bool 局部+数值返回形态具名回落(strict exit 2);
+  // bool 返回形态函数本就不 eligible(strict exit 0,无 wasm 尝试)——GUIDE §19 措辞双形态锁定
+  {
+    const p = m67('k67_22_issome.ming', SRC67.guardIsSome);
+    const s = strict67b(p);
+    const ns = runAll67(p);
+    const pb = m67('k67_22b_issome_ret.ming', SRC67.guardIsSomeBoolRet);
+    const sb = strict67b(pb);
+    const nsb = runAll67(pb);
+    check('v67.22:is_some bool 局部 strict exit 2 + REJECT is_some;bool 返回形态不 eligible(strict exit 0);非 strict 三引擎 10/true',
+      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 is_some') && same67(ns, '10\n')
+        && sb.code === 0 && same67(nsb, 'true\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ret=${sb.code} ns=${fmtRuns67(ns)} nsb=${fmtRuns67(nsb)}`);
+  }
+
+  // v67.23 具名守护 6:is_none——同 v67.22 双形态口径
+  {
+    const p = m67('k67_23_isnone.ming', SRC67.guardIsNone);
+    const s = strict67b(p);
+    const ns = runAll67(p);
+    const pb = m67('k67_23b_isnone_ret.ming', SRC67.guardIsNoneBoolRet);
+    const sb = strict67b(pb);
+    const nsb = runAll67(pb);
+    check('v67.23:is_none bool 局部 strict exit 2 + REJECT is_none;bool 返回形态不 eligible(strict exit 0);非 strict 三引擎 20/false',
+      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 is_none') && same67(ns, '20\n')
+        && sb.code === 0 && same67(nsb, 'false\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ret=${sb.code} ns=${fmtRuns67(ns)} nsb=${fmtRuns67(nsb)}`);
+  }
+
+  // v67.24 具名守护 7:Vec[str] 下标读(句柄容器)——strict exit 2 + 具名 'Vec 下标读 vstr';非 strict 三引擎 'a'
+  {
+    const p = m67('k67_24_vecstr.ming', SRC67.guardVecStrRead);
+    const s = strict67b(p);
+    const ns = runAll67(p);
+    check('v67.24:Vec[str] 下标读 strict exit 2 + REJECT Vec 下标读 vstr;非 strict 三引擎输出 a',
+      s.code === 2 && s.stderr.includes('REJECT') && s.stderr.includes('Vec 下标读 vstr') && same67(ns, 'a\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT') || l.includes('回落')) ?? '')} ns=${fmtRuns67(ns)}`);
+  }
+
+  // v67.25 具名守护 8:下标复合赋值 v[i] += x——strict exit 2 + 具名 '下标复合赋值 +=';非 strict 三引擎 6
+  {
+    const p = m67('k67_25_compound.ming', SRC67.guardIdxCompound);
+    const s = strict67b(p);
+    const ns = runAll67(p);
+    check('v67.25:下标复合赋值 strict exit 2 + REJECT 下标复合赋值 +=;非 strict 三引擎输出 6',
+      s.code === 2 && s.stderr.includes('REJECT: 下标复合赋值 +=') && same67(ns, '6\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ns=${fmtRuns67(ns)}`);
+  }
+
+  // v67.26 审查 B1 回归锁定:嵌套下标读三复现——修复前 wasm 静默错值(121/0/2 vs tree 321/90/8),
+  // 根因 = 外层 base ptr 存共享 iscratch,被下标读子表达式的编译覆盖;现 base ptr 走专属 tempSlot。
+  // 值位(w[0] = v[2])本就无冲突(求值序 value 先于 base 入槽),一并锁定防回归。
+  {
+    const p1 = m67('k67_26a_veclit.ming', SRC67.b1VeclitRead);
+    const p2 = m67('k67_26b_write.ming', SRC67.b1WriteIdxRead);
+    const p3 = m67('k67_26c_unwrap.ming', SRC67.b1UnwrapArgRead);
+    const p4 = m67('k67_26d_value.ming', SRC67.b1ValuePosRead);
+    const r1 = runAll67(p1); const r2 = runAll67(p2); const r3 = runAll67(p3); const r4 = runAll67(p4);
+    const dbg1 = dbg67(p1);
+    check('v67.26:B1 嵌套读三复现(321/90/8)+ 值位(300)三引擎逐字 + wasm 编译存活无 REJECT',
+      same67(r1, '321\n') && same67(r2, '90\n') && same67(r3, '8\n') && same67(r4, '300\n')
+        && dbg1.code === 0 && dbg1.stderr.includes('[wasm] fn f OK') && !dbg1.stderr.includes('REJECT'),
+      `r1=${fmtRuns67(r1)} r2=${fmtRuns67(r2)} r3=${fmtRuns67(r3)} r4=${fmtRuns67(r4)} dbg=${dbg1.code}`);
+  }
+
+  // v67.27 审查 B1 深组合:双层嵌套(v[v[0]])/元素写下标双层(w[v[v[1]]])/跨变量嵌套(a[b[0]])/
+  // Map 读作下标(v[m["k"]])——读路径与 Map 读路径的 base ptr 同走专属槽,三引擎逐字。
+  {
+    const p1 = m67('k67_27a_deep.ming', SRC67.b1DeepVeclit);
+    const p2 = m67('k67_27b_deepw.ming', SRC67.b1DeepWriteIdx);
+    const p3 = m67('k67_27c_cross.ming', SRC67.b1CrossVarNested);
+    const p4 = m67('k67_27d_mapread.ming', SRC67.b1MapReadNested);
+    const r1 = runAll67(p1); const r2 = runAll67(p2); const r3 = runAll67(p3); const r4 = runAll67(p4);
+    const dbg1 = dbg67(p1);
+    check('v67.27:B1 深组合(120/9/202/67)三引擎逐字 + wasm 编译存活无 REJECT',
+      same67(r1, '120\n') && same67(r2, '9\n') && same67(r3, '202\n') && same67(r4, '67\n')
+        && dbg1.code === 0 && dbg1.stderr.includes('[wasm] fn f OK') && !dbg1.stderr.includes('REJECT'),
+      `r1=${fmtRuns67(r1)} r2=${fmtRuns67(r2)} r3=${fmtRuns67(r3)} r4=${fmtRuns67(r4)} dbg=${dbg1.code}`);
+  }
+
+  // v67.28 审查 M1 回归锁定:ming_copy_vec 搬运不计费(charge=false,与 wasmWriteVecNum #51
+  // "派生拷贝不计费"同口径)。修复前 wasm 按字节计费(16+8n),--max-alloc 5 下 wasm M4011 累计 43
+  // 而 tree/VM exit 0;现三引擎一致。--max-alloc 2 → VecLit 自身计 3 > 2,三引擎 M4011 首行逐字
+  // (计费口径不被 copy 破坏;注:--max-alloc 3 三引擎 exit 0,与 v67.11 元素口径一致)。
+  {
+    const p1 = m67('k67_28a_copy.ming', SRC67.m1BillCopy);
+    const p2 = m67('k67_28b_call.ming', SRC67.m1InnerCall);
+    const r1ok = runAll67(p1, ['--max-alloc', '5']);
+    const r2ok = runAll67(p2, ['--max-alloc', '5']);
+    const r1lim = runAll67(p1, ['--max-alloc', '2']);
+    const r2lim = runAll67(p2, ['--max-alloc', '2']);
+    check('v67.28:M1 copy 不计费 —— bill_copy/inner_call --max-alloc 5 三引擎 exit 0(1/99);--max-alloc 2 三引擎 M4011 首行逐字',
+      same67(r1ok, '1\n') && same67(r2ok, '99\n')
+        && r1lim.every(r => r.code === 101) && firstLine67(r1lim[0]) === firstLine67(r1lim[1]) && firstLine67(r1lim[0]) === firstLine67(r1lim[2])
+        && firstLine67(r1lim[0]).includes('M4011')
+        && r2lim.every(r => r.code === 101) && firstLine67(r2lim[0]) === firstLine67(r2lim[1]) && firstLine67(r2lim[0]) === firstLine67(r2lim[2])
+        && firstLine67(r2lim[0]).includes('M4011'),
+      `r1ok=${fmtRuns67(r1ok)} r2ok=${fmtRuns67(r2ok)} r1lim=${fmtRuns67(r1lim)} r2lim=${fmtRuns67(r2lim)}`);
+  }
+
+  // §67-END
 }
 
 

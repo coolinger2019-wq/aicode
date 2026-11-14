@@ -212,12 +212,16 @@ export class VMInterp extends Interp {
               return newTop;
             },
             // v0.32 补齐:值语义快照——按 len 紧凑拷贝(新块 cap=len)
+            // v0.63 审查 M1:搬运不计费(charge=false,与 wasmWriteVecNum #51 同口径,
+            // "派生拷贝不计费")。此前 charge=true 按 16+8n 字节计费,而 tree/VM 的
+            // deepCopy 不计费 → VecLit 局部化后 let w = v / w = v / mut 实参三处可达,
+            // --max-alloc 下 wasm 多算 16+8n 字节先触 M4011(wasm 43 vs tree/VM 3)。
             ming_copy_vec: (ptr) => {
               const p = Number(ptr);
               const dv0 = new DataView(this.wasmMemory.buffer);
               const len = Number(dv0.getBigInt64(p, true));
               const block = 16 + len * 8;
-              const newTop = this.mingAllocRaw(block);
+              const newTop = this.mingAllocRaw(block, false);
               this.ensureWasmMem(newTop + block);
               const dv = new DataView(this.wasmMemory.buffer);
               dv.setBigInt64(newTop, BigInt(len), true);
@@ -227,6 +231,31 @@ export class VMInterp extends Interp {
                   .set(new Uint8Array(this.wasmMemory.buffer).slice(p + 16, p + 16 + len * 8), newTop + 16);
               }
               return newTop;
+            },
+            // v0.63 G2(计费口径裁决,plan §4.4.6b):数值 VecLit 专用导入——
+            // 按 **n 元素**计费(interp.js:1102 chargeAllocBytes(e.elems.length) 同口径,
+            // n<=0 早退) + 按 16+8n 字节 bump 分配(经 mingAllocRaw(charge=false),
+            // 字节口径不重复计费)。此前 wasm 经 ming_alloc 按 16+8n 字节计费,
+            // --max-alloc 下与 tree/VM(计 n)分歧(len3:wasm 累计 40 vs 3)。
+            // n/spanIdx 为 i32(Number);span 用于 M4011 定位(与 ming_alloc 同口径)。
+            ming_alloc_elem: (nElems, spanIdx) => {
+              const n = Number(nElems);
+              this.chargeAllocBytes(n, spans[spanIdx] ?? null);
+              return this.mingAllocRaw(16 + n * 8, false);
+            },
+            // v0.63 §4.4.6b slice 2:wasm 守护收口——下标读/写与 Option unwrap 的越界 panic。
+            // 消息与 interp 逐字同源:下标**读**路径(interp.js:1009)带 "(用 .get(i) 返回 Option)"
+            // 后缀,元素**写**赋值路径(interp.js:856)不带 → 两个导入分 flavor;
+            // unwrap 的 None 分支是 M4006(interp.js:3246)。idx/len 为 i64(BigInt),
+            // 模板串渲染与 tree/VM 的 Number 口径逐字一致(非负整数/负号)。
+            panic_m4003: (spanIdx, idx, len) => {
+              throw new Panic('M4003', `索引越界:长度 ${len},访问 ${idx}(用 .get(i) 返回 Option)`, spans[spanIdx] ?? null);
+            },
+            panic_m4003w: (spanIdx, idx, len) => {
+              throw new Panic('M4003', `索引越界:长度 ${len},访问 ${idx}`, spans[spanIdx] ?? null);
+            },
+            panic_m4006: (spanIdx) => {
+              throw new Panic('M4006', '对 None 调用 unwrap()', spans[spanIdx] ?? null);
             },
           },
         };
@@ -311,8 +340,8 @@ export class VMInterp extends Interp {
   // v0.60(#51)计费原则(plan §4.4.4 任务 2 口径):值创建 + 外部输入边界计费;
   // 派生值(deepCopy、json.parse、re.*、wasm 参数搬运)不重复计费——
   // 参数搬运只是既有值的派生拷贝,tree/VM 均不计费,wasm 侧同口径。
-  // charge=false 供派生拷贝调用;latent:ming_grow/ming_copy_vec 的字节口径与
-  // tree/VM 元素口径差异已登记 plan §5.1(不在本版修)。
+  // charge=false 供派生拷贝调用(ming_copy_vec v0.63 审查 M1 已改;ming_grow 仍
+  // charge=true,其字节口径与 tree/VM 不计费的差异为已登记 latent——plan §5.1)。
   mingAllocRaw(n, charge = true) {
     const top = (this.wasmParamTop + 7) & ~7;
     if (charge) this.chargeAllocBytes(n, null);
@@ -428,6 +457,19 @@ export class VMInterp extends Interp {
             ? V.float(raw, 64)
             : V.int(retSigned ? raw : BigInt.asUintN(64, raw), 64, retSigned);
         } catch (e) {
+          // v0.63 G2(候选修复,plan §4.4.6b):wasm panic 的调用栈尾帧对齐——此前先 pop
+          // 再抛,boom 帧丢失(仅剩 main);interp callUser(interp.js:615)与字节码路径
+          // (vm.js:488)都是**先填 e.stack 再 pop**(含最深帧,展示层反转"最新在前")。
+          // !e.stack.length 防重:嵌套更深帧已填链时外层不覆盖(同既有口径)。
+          // 逐字对照验证:wasm 与 --no-wasm 的 panic stderr(含栈)完全一致后保留;
+          // 不一致则回退(纪律见 §67 测试注释)。
+          // v0.63 已知残留(wasm→wasm 直调):wasm 代码内部对 eligible 函数的直调不经
+          // callCompiled(见 compileCallNum resolveWasmCallIdx),内层帧不进 callStack——
+          // 嵌套调用(main→f→g,g 内 panic)的 panic 栈缺 g 帧(仅 main→f)。
+          // 修复需调用点 span 透传,超本片范围;§67 v67.20 按现状断言,登记 plan/GUIDE。
+          if (e instanceof Panic && !e.stack.length) {
+            e.stack = this.callStack.slice();
+          }
           this.depth--;
           this.callStack.pop();
           if (e instanceof Panic) throw e;
