@@ -1,8 +1,8 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.67.0**（**v0.67 诊断协议校准已交付(2026-11-15)**：切口 1 毒化收敛双路径（消除 M3003 先行/M3001 假 fix/M3002 级联——**顺带修复基线双崩溃** let x;）、切口 2 M3012 语境化、切口 3 M3015 nearest 四发射点、nearest 排除内置构造器、REPL let 回显+横幅单一事实来源（#60/#64）——**快照复测：误导 7→1/fix 错误 4→0/级联 3.8→1.4 三判据全达标**；独立审查通过（0 BLOCKER/0 MAJOR）后测试 **1049 项全绿**(§63 56 + §64 24 + §65 40 + §66 22 + §67 28 + §68 21 + §69 19 + §70 14)。v0.66 观测与反馈、v0.65 slice 3、v0.64 信任边界、v0.62 serve、v0.61 污点、v0.60 门禁一致性已交付）。
-> **下一步规划见 §4.6/§4.7（v0.67 已交付；v0.68 候选 = Untrusted[Json] 实现（ADR-004 条件③ go，①②④ 待位）或 AI onboarding 包（条件不齐时退）；v0.69 = eval 实现（ADR-005 12 项清单）+ #65 顺带；v0.70 候选 = 诊断校准二期（#63 parser 级联）；第五/六轮记录见 §4.6/§4.7）**。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.68.0**（**v0.68 Untrusted[Json] 已交付(2026-11-15)**：ADR-004 14/14 裁决 go 后实现——serve 签名翻转（handler: fn(Untrusted[Json]) -> Json，升 minor）、载体白名单 {str, Json}、投影表 14 方法（get/at 递归污/as_str 收窄/as_num·as_bool·is_*·eq 净值/as_arr·as_obj 容器保污）、stringify 拒绝（M3049 Json→str 唯一整体出口闭合）、mark_json +1（净化器族不扩）、迁移 31 处（tests §66+§68 + GUIDE 示例；examples/tools 0）；**零新增 M 码**（hint 载体感知——M1 审查修复 diag.js 两行 + §71.18 锁定）；**顺带修复 pre-existing as_obj 键缺陷**（Map 键误存包装值 → get/has 查不到/keys 双包装，最小 diff 修复 + §71.17 三形态回归）；独立审查通过（0 BLOCKER——投影表完备/sink 矩阵全拦/as_obj 根因正确；1 MAJOR diag hint 载体感知已修）后测试 **1066 项全绿**(§70 14 + §71 18 + 既有 1034)。v0.67 诊断校准、v0.66 观测、v0.65 slice 3、v0.64 信任边界、v0.62 serve、v0.61 污点、v0.60 门禁一致性已交付；GUIDE 修订记录整段重复截断（2766→2002 行，审查 n1）。
+> **下一步规划见 §4.7（v0.68 已交付；v0.69 候选 = eval 实现（ADR-005 12 项清单）+ #65 顺带；v0.70 候选 = 诊断校准二期（#63 parser 级联）；Backlog：v1.2 内容源扩面（json.parse 接缝）/stringify_untrusted/净化器族真实用例驱动；第六/五轮记录见 §4.7/§4.6）**。
 > **§4.3 全部任务已清空（2026-11-13）**：v0.60 起以 ADR 条件交付——ADR-001（并发/服务端,方案 a 条件承诺实施,原型 190 req/s@40 连接）、ADR-002（污点采纳类型级 Untrusted[T],实现推迟）、ADR-003（mask 永久否决）；实现条件见各 ADR 评审清单与 §4.3.9。**三方评估后 serve 从 v0.60 移至 v0.62（独立条件版），v0.60 改为资源门禁一致性修复——理由与实测证据见 §4.4.10。**
 
 ---
@@ -18,7 +18,7 @@
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
 | 质量护栏 | 回归全绿（v0.63.0 起 **995 项**；§67 为 v0.63 wasm 守护收口 slice 2 **28 项**，§66 为 v0.62 服务端 v1 **22 项**，§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表**（tests/coverage.mjs；**94.0% 行 / 88.7% 函数**，vm.js 65.9%；信息性不设门槛） |
 | 能力矩阵 | 55 行口径 ≈84%（docs/capabilities.md；v0.61 新增"数据流安全(污点标注)"行(✅,窄源 v1)、v0.62"TCP/UDP/服务端"行 ❌→🟡(serve v1):42✅ 8🟡 5❌，(42+8×0.5)/55=83.6%≈84%；"运行时资源熔断"经 2026-11-13 评估改判 🟡 后于 v0.60 修复恢复 ✅） |
-| 下一步 | **v0.68 候选**：Untrusted[Json] 实现（ADR-004 条件③ go/①②④ 待位，条件不齐退 AI onboarding 包）→ v0.69 = eval 实现（ADR-005 12 项清单全勾后）+ #65 顺带 → v0.70 候选 = 诊断校准二期（#63 parser 级联）；bench WARN 维护者复测（随时） |
+| 下一步 | **v0.69 候选**：eval 实现（ADR-005 12 项清单全勾后，src ~60–90 行 additive）+ #65 顺带（serve Err exit 行为变更裁决）→ v0.70 候选 = 诊断校准二期（#63 parser 级联 11x）；Backlog：v1.2 内容源扩面（json.parse 接缝）、stringify_untrusted（真实用例驱动）、Slice/流式（待 unsafe 使用数据） |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -767,7 +767,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | # | 项 | 严重度 | 实测/证据 | 处置 |
 |---|----|--------|-----------|------|
 | S9 | 嵌套 serve 无 policing：checker 放行 handler 内 serve；内层服务真实绑定运行，外层 30s 硬杀后内层连同在途连接被斩；未文档化 | P2（回环内） | handler 内 serve(18191,inner)：check exit 0；t+10s 内层 200；外层 504@30.02s 后内层拒连 | **修（v0.64）**：checker 静态拒绝 handler 体内 serve 调用（spawn 纪律，~20 行） |
-| S10 | serve 载荷不进污点面且无警告：请求 body→write_file 路径 check 直通；GUIDE serve 节无"handler 载荷全部不可信"警告 | P2（文档） | t12 check exit 0（实测） | **文档化（v0.64）**：GUIDE 警告；v1.1 Untrusted[Json] 时 serve 载荷列第一扩面候选 |
+| S10 | serve 载荷不进污点面且无警告：请求 body→write_file 路径 check 直通；GUIDE serve 节无"handler 载荷全部不可信"警告 | P2（文档） | t12 check exit 0（实测） | **✅ 已收口(v0.68)**：GUIDE 警告升级为编译期强制（M3049 整树标污）；Untrusted[Json] 已实现（ADR-004） |
 | S11 | handler 畸形响应静默兜底：status 700/"200"/99→200、headers 数组/嵌套值→静默丢弃、数值 body→空体，无诊断 | P3 | 6 形态实测全 200 | **文档化（v0.64）**：GUIDE 补兜底语义；改 500 属语义裁决，Backlog |
 | S12 | sanitize_cli_path 闸门仅拒 <0x20：DEL(0x7F)/C1(0x80–0x9F)/Unicode 双向控制符（U+202A–202E）放行——实测 RTL 视觉反转（`exe‮txt‬`）；CLI 回显显示欺骗窗口 | P3 | 5 向量实测 | **修（v0.64，裁决：扩拒绝集）**：+DEL/C1/双向符 + 测试向量；不接受含糊 |
 | S13 | accept 层连接级资源无 Ming 上限（无 maxConnections；在途体缓冲无并发上限；队列无超时，队尾上限 480s）；慢连接不占 worker（实测 50 挂起期间正常请求 8.1s 返回 200） | P3（回环内） | 慢连接实测 + 源码确认 | **接受并登记**；作为 serve 放开项 ADR（自定义 host）的前置义务 |
@@ -903,7 +903,7 @@ x + 1;
 
 | 版本 | 主题 | 条件/规模 |
 |------|------|-----------|
-| v0.68 | **Untrusted[Json] 实现**（首选；条件不齐退 AI onboarding 包：N-64 examples×2+N-67 元组文档+N-68 文案+GUIDE 惯用法节，零语义） | ADR-004 条件①维护者 14 项复核+②工具面复核存档+④窗口落位（③已 go）；约 130 行+30 处迁移，升 minor |
+| v0.68 | **✅ Untrusted[Json] 交付**（14/14 裁决 go 后实现；约 130 行 + 迁移 31 处 + §71 18 项；顺带修复 pre-existing as_obj 键缺陷；AI onboarding 包未触发——条件全齐） | ADR-004 四条件 2026-11-15 全核销 |
 | v0.69 | **eval 实现**（若 ADR-005 §7 12 项裁决全勾；零新码/零资格面改动）+ #65 顺带候选（诚实失败小批，行为变更实现期评估） | src 约 60–90 行；additive |
 | v0.70 候选 | **诊断校准二期**（#63 parser 级联抑制） | 级联 11x 实测；需 parser 错误恢复设计，工程量最大，排后 |
 | 随时 | bench WARN 维护者复测（§4.6.3 裁决：闲置时段 2 次复测后再定刷新）；热重载不排期（ADR-005 §2.4：需求实证后另 ADR） | — |
@@ -912,8 +912,8 @@ x + 1;
 
 | 项 | 处置 | 理由 |
 |----|------|------|
-| eval/热重载 ADR | **✅ 已落盘（ADR-005，docs/adr-005-eval.md）** | 四轮零触碰承诺兑现；实现走 12 项清单条件承诺；北星支柱 4 变"有裁决" |
-| Untrusted[Json] 实现 | 维持 v0.68 候选首选 | 条件③已 go；①②④ 待维护者/窗口 |
+| eval/热重载 ADR | **✅ 已落盘（ADR-005）**；实现 = v0.69 候选 | 12 项清单条件承诺；北星支柱 4 变"有裁决" |
+| Untrusted[Json] 实现 | **✅ v0.68 交付** | ADR-004 14/14 裁决 + 四条件核销（2026-11-15 go）；投影表/stringify 拒绝/mark_json/迁移 31 处 |
 | #65 serve Err exit 0 | v0.69 顺带候选（原 v0.68 候选顺延） | 行为变更独立裁决；与 eval 同属"运行时诚实面"，同版评估 |
 | N-64/N-67/N-68/惯用法节 | v0.68 备选主题（AI onboarding 包） | Untrusted[Json] 条件不齐时先行，不空转 |
 | #63 parser 级联抑制 | v0.70 候选 | 需 parser 错误恢复设计；一版一主题 |
@@ -1065,6 +1065,12 @@ x + 1;
 | 63 | **parser 级联雪崩**:test 块误置函数体内 → 1 根因 11 条 M2001 级联 + unused 误报 + 1 条错误 fix(建议加冒号);parser 层级联比 11x(checker 层 1.75 对照)——第五轮走查实测 | P3 | **登记**(v0.68 诊断校准二期候选:parser 错误恢复/级联抑制;首条 M2001 有指向性) |
 | 64 | **REPL 横幅版本漂移机制性复发**:src/repl.js:39-40 硬编码手工同步(注释自认"曾漂移"),v0.64 修 v0.8.0→v0.63.0 后 v0.65/66 又落后两版(第五轮 REPL 冒烟横幅仍 v0.63.0) | P3 | **v0.67 顺带修**:横幅改从单一事实来源读(manifest/package.json,不引 src→bin 环) |
 | 65 | **serve 绑定失败 Err 后 exit 0**:serve-observation §4-4 实测——服务没起来但退出码成功(运维陷阱);main/serve Err → exit 非 0 属行为变更 | P3 | **登记**(v0.68 候选:行为变更需独立裁决;或 GUIDE 文档化) |
+
+### 新登记(2026-11-15,v0.68 实现期;#66 已修)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 66 | **`as_obj` 副本 Map 键误存包装值**:jsonMethodImpl as_obj 用 `m.set(V.str(k), val)` 把键存成 Ming 包装值,而 Map get/has 经 normKey 用裸 string 查找 → 对存在键 get 返回 None/has false/keys 双包装(打印 [object Object]);HEAD 逐字复现三引擎,既有测试零覆盖(引用 0)——v0.68 投影流触达后修复(m.set(k, val) 直存裸键,最小 diff;json_demo 黄金三引擎逐字不变) | P2 | **已修(v0.68)**:§71.17 三形态回归锁定(简单键/数字型字符串键/Unicode·emoji 键) |
 
 ### 备注登记(2026-11-13,v0.57 收口;信息性,非缺陷)
 

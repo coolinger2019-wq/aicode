@@ -102,8 +102,8 @@ export const CODE_HINTS = {
   M3046: '给函数签名加 "with unsafe",并把指针读写/传递放进 unsafe { ... } 块;块外只允许 let/赋值/return 传递与 p.is_null()。',
   // M3047 已废弃(v0.59 #44 本地函数恢复):不再发射,hint 一并移除。号段保留不改号。
   M3048: '本地函数编译为独立函数帧、不做单态化:把泛型函数声明在模块级(顶层),或去掉本地函数的类型参数。',
-  M3049: '先净化:std.unstr.sanitize_path / std.unstr.sanitize_cli_path(路径/CLI 串,返回 Result[str, str]);或把被调方形参改声明为 Untrusted[str]。Ming 无任何隐式转换,Untrusted 不能当载体类型用。',
-  M3050: 'Untrusted 的操作面只有白名单方法(parse_i64/parse_f64/char_len/byte_len/is_empty);产出净 str 的唯一出口是 std.unstr.sanitize_path / sanitize_cli_path。',
+  M3049: "先净化(str 载体:std.unstr.sanitize_path / sanitize_cli_path)或投影后净化(Json 载体:.as_str() 取出 Untrusted[str] 字段再净化);或把形参/目标改声明为 Untrusted[str] / Untrusted[Json]。Ming 无任何隐式转换,Untrusted 不能当载体类型用。",
+  M3050: "Untrusted 的操作面只有载体白名单(str:parse_i64/parse_f64/char_len/byte_len/is_empty;Json:投影表 get/at/as_*/is_*/eq,见 ADR-004);产出净 str 的唯一出口是 std.unstr.sanitize_path / sanitize_cli_path(经 as_str 投影)。",
   M4016: 'unsafe 指针操作仅由 C 原生后端(ming cc)执行;tree/VM 不伪装内存语义。',
   W3105: '这是"无法证明"而非"确定越界":证明器只处理 requires 线性边界下的直线体。可补充线性 requires(如 i < buf.len() && i >= 0),或改用 buf.get(i)。',
 };

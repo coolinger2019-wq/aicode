@@ -1514,6 +1514,10 @@ export class Interp {
       case 'unstr.mark':
         // 标脏不改值:返回实参原值(值即载体;span 透传由调用层承担)
         return args[0];
+      case 'unstr.mark_json':
+        // v0.68/ADR-004 §3.3:标脏入口(Json→Untrusted[Json])——运行时擦除直返,与 mark 同款
+        // (值即载体,无污点位;span 透传由调用层承担)
+        return args[0];
       case 'unstr.sanitize_path': {
         // Err 判定顺序固定(ADR §3.4):空串 → 绝对路径 → .. 段 → 空段
         const raw = args[0].v;
@@ -1895,8 +1899,11 @@ export class Interp {
       case 'as_arr': return j.kind === 'arr' ? V.enumv('builtin-opt', 'Some', [V.vec(j.v.slice())]) : V.enumv('builtin-opt', 'None', []);
       case 'as_obj': {
         if (j.kind !== 'obj') return V.enumv('builtin-opt', 'None', []);
+        // 副本键保持裸形态(同 normKey 口径):Ming Map 的键存原始 string/bigint/bool/number,
+        // get/has/delete 经 normKey 归一、keys/items 经 keyValue 还原;此前误存 Ming 包装值
+        // (V.str(k))导致 get/has 对存在的键查不到、keys() 双重包装([object Object])。
         const m = new Map();
-        for (const [k, val] of j.v) m.set(V.str(k), val);
+        for (const [k, val] of j.v) m.set(k, val);
         return V.enumv('builtin-opt', 'Some', [V.map(m)]);
       }
       case 'get': {

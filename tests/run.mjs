@@ -10418,11 +10418,16 @@ fn main() with io, fs {
     '}',
   ].join('\n');
   // 请求载荷访问:{method,path,headers,body} 的 str 键取值(缺键/类型不合回落默认)。
+  // v0.68/ADR-004 §3.2 投影形态:污接收者 get→Option[Untrusted[Json]]、as_str→Option[Untrusted[str]];
+  // 净 str 出口唯一 = sanitize_cli_path(校验不改写,Err 回落默认)——echo 合法形态 = 投影+净化(ADR-004 §4.3)。
   const JSTR66 = [
-    'fn jstr(req: Json, key: str, dflt: str) -> str {',
+    'fn jstr(req: Untrusted[Json], key: str, dflt: str) -> str {',
     '    return match req.get(key) {',
     '        Some(v) => match v.as_str() {',
-    '            Some(s) => s,',
+    '            Some(s) => match std.unstr.sanitize_cli_path(s) {',
+    '                Ok(p) => p,',
+    '                Err(_) => dflt,',
+    '            },',
     '            None => dflt,',
     '        },',
     '        None => dflt,',
@@ -10442,10 +10447,11 @@ fn main() with io, fs {
     '    std.net.serve(__PORT__, handler);',
     '}',
   ].join('\n');
+  // v0.68/ADR-004:handler 形参统一 Untrusted[Json];触载荷取值走 JSTR66 投影+净化(§3.2/§4.3)。
   const SRC66 = {
     // GET/413/双引擎/端口占用-A 共用:固定 200 "hello"
     get: serverSrc66([
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    return respond(200, "hello");',
       '}',
     ]),
@@ -10453,12 +10459,13 @@ fn main() with io, fs {
     echo: [
       'use std.net;',
       'use std.json;',
+      'use std.unstr;',
       '',
       RESPOND66,
       '',
       JSTR66,
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    let p = jstr(req, "path", "?");',
       '    let b = jstr(req, "body", "");',
       '    return respond(200, "path:" + p + "|body:" + b);',
@@ -10470,28 +10477,28 @@ fn main() with io, fs {
     ].join('\n'),
     // handler panic(v66.6):Vec 下标越界 → M4003,500 {code:handler_panic} 透传
     panic: serverSrc66([
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    let v: Vec[i64] = [1];',
       '    return respond(200, str(v[5]));',
       '}',
     ]),
     // handler 睡 40s(v66.7):服务端 30s 硬杀 → 504 {code:timeout},响应 <35s 返回
     sleep40s: serverSrc66([
-      'fn handler(req: Json) -> Json with time {',
+      'fn handler(req: Untrusted[Json]) -> Json with time {',
       '    std.time.sleep(40000);',
       '    return respond(200, "late");',
       '}',
     ], ['use std.time;']),
     // handler 睡 50ms(v66.9 队列满):16 并发 + 256 队列 = 272 容量,300 并发超额 503
     sleep50ms: serverSrc66([
-      'fn handler(req: Json) -> Json with time {',
+      'fn handler(req: Untrusted[Json]) -> Json with time {',
       '    std.time.sleep(50);',
       '    return respond(200, "q");',
       '}',
     ], ['use std.time;']),
     // handler 睡 100ms(v66.13 并发冒烟):20 并发全部 200
     sleep100ms: serverSrc66([
-      'fn handler(req: Json) -> Json with time {',
+      'fn handler(req: Untrusted[Json]) -> Json with time {',
       '    std.time.sleep(100);',
       '    return respond(200, "ok");',
       '}',
@@ -10509,7 +10516,7 @@ fn main() with io, fs {
       '    return a + b;',
       '}',
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    return respond(200, "x");',
       '}',
       '',
@@ -10525,7 +10532,7 @@ fn main() with io, fs {
       '',
       RESPOND66,
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    return respond(200, "hello");',
       '}',
       '',
@@ -10543,12 +10550,13 @@ fn main() with io, fs {
     crlf: [
       'use std.net;',
       'use std.json;',
+      'use std.unstr;',
       '',
       RESPOND66,
       '',
       JSTR66,
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    if jstr(req, "path", "?") == "/evil" {',
       '        let resp: Map[str, Json] = {',
       '            "status": std.json.parse("200").unwrap(),',
@@ -10567,7 +10575,7 @@ fn main() with io, fs {
     // v66.17 handler 返回 9MB body(n1 审查修复锁定):超 8MB 上限 → 500
     // {code:response_too_large} 并关连接(不截断——截断破坏 Content-Length)
     bigBody: serverSrc66([
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    let big = "x".repeat(9437184);',
       '    return respond(200, big);',
       '}',
@@ -10579,7 +10587,7 @@ fn main() with io, fs {
     const f = m66('k66_1_effect.ming', [
       'use std.net;',
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    return std.json.parse("{}").unwrap();',
       '}',
       '',
@@ -10599,7 +10607,7 @@ fn main() with io, fs {
       if (eff === 'sync') lines.push('use std.sync;');
       lines.push(
         '',
-        'fn handler(req: Json) -> Json with ' + eff + ' {',
+        'fn handler(req: Untrusted[Json]) -> Json with ' + eff + ' {',
         '    return std.json.parse("{}").unwrap();',
         '}',
         '',
@@ -10619,12 +10627,12 @@ fn main() with io, fs {
   }
   {
     // handler 形态拒绝(参照 spawn 特例):lambda/本地函数/非函数实参一律 M3002
-    const jbody = 'fn handler(req: Json) -> Json { return std.json.parse("{}").unwrap(); }';
+    const jbody = 'fn handler(req: Untrusted[Json]) -> Json { return std.json.parse("{}").unwrap(); }';
     const shapes = [
       ['lambda', ['use std.net;', 'use std.json;', '', jbody, '', 'fn main() with net {',
-        '    std.net.serve(26001, (req: Json) => std.json.parse("{}").unwrap());', '}'].join('\n')],
+        '    std.net.serve(26001, (req: Untrusted[Json]) => std.json.parse("{}").unwrap());', '}'].join('\n')],
       ['local_fn', ['use std.net;', 'use std.json;', '', 'fn main() with net {',
-        '    fn local_handler(req: Json) -> Json { return std.json.parse("{}").unwrap(); }',
+        '    fn local_handler(req: Untrusted[Json]) -> Json { return std.json.parse("{}").unwrap(); }',
         '    std.net.serve(26001, local_handler);', '}'].join('\n')],
       ['not_fn', ['use std.net;', 'use std.json;', '', 'fn main() with net {',
         '    let not_a_fn: i64 = 42;', '    std.net.serve(26001, not_a_fn);', '}'].join('\n')],
@@ -10947,7 +10955,7 @@ fn main() with io, fs {
   // 仍通过。
   {
     m66('k66_18_hmod.ming', [
-      'pub fn mod_handler(req: Json) -> Json {',
+      'pub fn mod_handler(req: Untrusted[Json]) -> Json {',
       '    return std.json.parse("{}").unwrap();',
       '}',
     ].join('\n'));
@@ -10965,7 +10973,7 @@ fn main() with io, fs {
       'use std.net;',
       'use std.json;',
       '',
-      'fn handler(req: Json) -> Json {', // 非 pub:同模块口径放行
+      'fn handler(req: Untrusted[Json]) -> Json {', // 非 pub:同模块口径放行
       '    return std.json.parse("{}").unwrap();',
       '}',
       '',
@@ -11665,6 +11673,8 @@ fn main() with io, fs {
 
   // ---- §68-START(#56 校验/S9 拒绝+遮蔽正例/S12 向量/M4013 专项/NUL 黄金/S11·S13 断言)----
   // 测试源(SRC68 与 §66 的 SRC66 同风格;serve 程序 __PORT__ 占位由 startServer68 替换)
+  // v0.68/ADR-004:handler 形参统一 Untrusted[Json](整树标污);原 `return req` 透传
+  // 属 M3049 拦截面(§4.3 回显免费拦截),S9 夹具统一换合法净体(断言意图不变)。
   const SRC68 = {
     // #56 探针项目入口(纯 io,AOT 资格)
     probe: 'fn main() with io {\n    print("ok68");\n}\n',
@@ -11673,13 +11683,13 @@ fn main() with io, fs {
       'use std.net;',
       'use std.json;',
       '',
-      'fn inner(req: Json) -> Json {',
-      '    return req;',
+      'fn inner(req: Untrusted[Json]) -> Json {',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
-      'fn handler(req: Json) -> Json with net {',
+      'fn handler(req: Untrusted[Json]) -> Json with net {',
       '    std.net.serve(18191, inner);',
-      '    return req;',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
       'fn main() with net {',
@@ -11691,13 +11701,13 @@ fn main() with io, fs {
       'use std.net;',
       'use std.json;',
       '',
-      'fn inner(req: Json) -> Json {',
-      '    return req;',
+      'fn inner(req: Untrusted[Json]) -> Json {',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
-      'fn handler(req: Json) -> Json with net {',
+      'fn handler(req: Untrusted[Json]) -> Json with net {',
       '    net.serve(18191, inner);',
-      '    return req;',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
       'fn main() with net {',
@@ -11709,8 +11719,8 @@ fn main() with io, fs {
       'use std.net;',
       'use std.json;',
       '',
-      'fn handler(req: Json) -> Json {',
-      '    return req;',
+      'fn handler(req: Untrusted[Json]) -> Json {',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
       'fn main() with net {',
@@ -11722,11 +11732,11 @@ fn main() with io, fs {
       'use std.net;',
       'use std.json;',
       '',
-      'fn handlerB(req: Json) -> Json {',
-      '    return req;',
+      'fn handlerB(req: Untrusted[Json]) -> Json {',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
-      'fn handlerA(req: Json) -> Json {',
+      'fn handlerA(req: Untrusted[Json]) -> Json {',
       '    return handlerB(req);',
       '}',
       '',
@@ -11745,10 +11755,10 @@ fn main() with io, fs {
       'struct S { v: i64 }',
       'impl Server for S { fn serve(self, p: i64) -> i64 { return p; } }',
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    let net: S = S { v: 1 };',
       '    let r = net.serve(7);',
-      '    return req;',
+      '    return std.json.parse("{}").unwrap();',
       '}',
       '',
       'fn main() with net {',
@@ -11788,7 +11798,7 @@ fn main() with io, fs {
       'use std.net;',
       'use std.json;',
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    let resp: Map[str, Json] = {',
       '        "status": std.json.parse("200").unwrap(),',
       '        "headers": std.json.parse("{}").unwrap(),',
@@ -11805,11 +11815,16 @@ fn main() with io, fs {
     s11: [
       'use std.net;',
       'use std.json;',
+      'use std.unstr;',
       '',
-      'fn jstr(req: Json, key: str, dflt: str) -> str {',
+      // ADR-004 §3.2:投影(get/as_str 保污)+ sanitize_cli_path 净化后才能产净 str
+      'fn jstr(req: Untrusted[Json], key: str, dflt: str) -> str {',
       '    return match req.get(key) {',
       '        Some(v) => match v.as_str() {',
-      '            Some(s) => s,',
+      '            Some(s) => match std.unstr.sanitize_cli_path(s) {',
+      '                Ok(p) => p,',
+      '                Err(_) => dflt,',
+      '            },',
       '            None => dflt,',
       '        },',
       '        None => dflt,',
@@ -11847,7 +11862,7 @@ fn main() with io, fs {
       '    return std.json.parse(std.json.stringify(resp)).unwrap();',
       '}',
       '',
-      'fn handler(req: Json) -> Json {',
+      'fn handler(req: Untrusted[Json]) -> Json {',
       '    let p = jstr(req, "path", "?");',
       '    if p == "/s700" { return resp700(); }',
       '    if p == "/harr" { return respHarr(); }',
@@ -12916,7 +12931,7 @@ fn main() with io, fs {
   const e16 = m70('e16_serve_sync.ming', [
     'use std.net;',
     'use std.json;',
-    'fn handler(req: Json) -> Json with sync {',
+    'fn handler(req: Untrusted[Json]) -> Json with sync {',
     '    return std.json.parse("{}").unwrap();',
     '}',
     'fn main() with net, io {',
@@ -12929,7 +12944,7 @@ fn main() with io, fs {
   const e21 = m70('e21_serve_ok.ming', [
     'use std.net;',
     'use std.json;',
-    'fn handler(req: Json) -> Json {',
+    'fn handler(req: Untrusted[Json]) -> Json {',
     '    return std.json.parse("{}").unwrap();',
     '}',
     'fn main() with net, io {',
@@ -13240,6 +13255,611 @@ fn main() with io, fs {
   }
 
   // §70-END
+}
+
+// ===================== 71. v0.68:Untrusted[Json] 载体解锁(ADR-004 §7.1 测试清单;serve 签名翻转/投影表/mark_json)=====================
+// 文件所有权:§71 = 本区全部用例。签名破坏正负例 / 投影表逐条(标注赋值锁定) / sink 拦截矩阵(M3049 载体感知) /
+// mark_json 构造面 / 深拷贝保污 / 净 Json 对照不误伤 + 工具冒烟 / 擦除一致孪生 / 禁面 M3050 / 投影表外 M3050 /
+// as_obj 副本键形态修复回归 / wasm-C 资格核验(ADR-004 清单 12) / 契约内投影。
+// 纪律:全部先实测后断言;投影/禁面/sink 消息逐字取自实测。
+{
+  const dir71 = path.join(TMP, 'v71');
+  fs.mkdirSync(dir71, { recursive: true });
+  const m71 = (name, src) => { const f = path.join(dir71, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags71 = ['', '--no-wasm', '--tree'];
+  const runAll71 = (p, extra = []) => flags71.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const fmtRuns71 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const chk71 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const codes71 = (res) => (res.j ? res.j.diagnostics.map((d) => d.code + (d.fix ? '(fix:' + d.fix.replacement + ')' : '')).join(',') : '(no-json:exit ' + res.code + ')');
+  const diag71 = (res, code) => (res.j ? res.j.diagnostics.find((d) => d.code === code) : null);
+  const same3_71 = (runs) => runs.length === 3 && runs.every((r) => r.code === runs[0].code && r.stdout === runs[0].stdout && r.stderr === runs[0].stderr);
+
+  // 语料公用:Ming 源内的 JSON 字面量(双引号串内转义引号;JS 单引号串写 \\" 落盘为 \")。
+  const JDOC71 = '{\\"a\\":{\\"b\\":1},\\"s\\":\\"x\\",\\"n\\":1.5,\\"f\\":true,\\"arr\\":[1],\\"o\\":{}}';
+  const PJDOC71 = 'std.json.parse("' + JDOC71 + '")';
+
+  // ---- v71.1 serve 签名正负例(ADR-004 清单 14/§2.1 候选 A)----
+  const sigOk71 = m71('v71_sig_ok.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Untrusted[Json]) -> Json {',
+    '    return std.json.parse("{}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27101, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const sigOld71 = m71('v71_sig_old.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Json) -> Json {',
+    '    return std.json.parse("{}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27102, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const rSigOk = chk71(sigOk71);
+  const rSigOld = chk71(sigOld71);
+  check('v71.1:serve 签名——Untrusted[Json] 正例 check exit 0;旧签名 Json → M3002"形参必须是 Untrusted[Json]"+Err 臂毒化 M3012',
+    rSigOk.code === 0 && !!rSigOk.j && rSigOk.j.ok === true && rSigOk.j.diagnostics.length === 0
+      && rSigOld.code === 1 && !!rSigOld.j && rSigOld.j.diagnostics.length === 2
+      && rSigOld.j.diagnostics.some((d) => d.code === 'M3002' && d.message.includes('形参必须是 Untrusted[Json]') && (d.hint ?? '').includes('请求载荷不可信'))
+      && rSigOld.j.diagnostics.some((d) => d.code === 'M3012'),
+    `ok=${rSigOk.code}/${codes71(rSigOk)} old=${rSigOld.code}/${codes71(rSigOld)}`);
+
+  // ---- v71.2 投影表逐条(ADR-004 清单 4/8/9;标注赋值锁定形态)----
+  // get/at → Option[Untrusted[Json]](递归污:unwrap 后再 get 仍成立);as_str → Option[Untrusted[str]]
+  // (载体收窄);as_num/as_bool → 净值;as_arr → Option[Vec[Untrusted[Json]]](Vec 侧 get);
+  // as_obj → Option[Map[str, Untrusted[Json]]];is_* → bool。全部以"标注 let 赋值 + 全量使用"锁定。
+  const proj71 = m71('v71_proj_table.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = ' + PJDOC71 + '.unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let g: Option[Untrusted[Json]] = u.get("a");',
+    '    let gg: Option[Untrusted[Json]] = g.unwrap().get("b");',
+    '    let at: Option[Untrusted[Json]] = u.at(0);',
+    '    let at2: Option[Untrusted[Json]] = u.as_arr().unwrap().get(0);',
+    '    let s: Option[Untrusted[str]] = u.as_str();',
+    '    let n: Option[f64] = u.as_num();',
+    '    let b: Option[bool] = u.as_bool();',
+    '    let arr: Option[Vec[Untrusted[Json]]] = u.as_arr();',
+    '    let o: Option[Map[str, Untrusted[Json]]] = u.as_obj();',
+    '    let t: bool = u.is_obj();',
+    '    print(str(t) + str(at.is_some()) + str(at2.is_some()) + str(s.is_some()) + str(n.is_some()) + str(b.is_some()) + str(arr.is_some()) + str(o.is_some()) + str(gg.is_some()));',
+    '}',
+  ].join('\n'));
+  const rProj = chk71(proj71);
+  check('v71.2:投影表标注赋值锁定——get/at 递归污/as_str 收窄/as_num·as_bool 净值/as_arr·as_obj 容器保污/is_* 净值,check exit 0 零诊断',
+    rProj.code === 0 && !!rProj.j && rProj.j.ok === true && rProj.j.diagnostics.length === 0,
+    `exit=${rProj.code} diags=${codes71(rProj)}`);
+
+  // ---- v71.3 eq 净污均可(清单 9:污点在布尔上终结)----
+  const eq71 = m71('v71_eq.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let u2: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{}").unwrap());',
+    '    let e1: bool = u.eq(std.json.parse("{}").unwrap());',
+    '    let e2: bool = u.eq(u2);',
+    '    print(str(e1) + " " + str(e2));',
+    '}',
+  ].join('\n'));
+  const rEq = chk71(eq71);
+  const runsEq = runAll71(eq71);
+  check('v71.3:eq 实参净污均可——净 Json 与 Untrusted[Json] 实参均 check exit 0,三引擎输出 "true true" 逐字',
+    rEq.code === 0 && !!rEq.j && rEq.j.ok === true && rEq.j.diagnostics.length === 0
+      && same3_71(runsEq) && runsEq[0].code === 0 && runsEq[0].stdout === 'true true\n',
+    `check=${codes71(rEq)} runs=${fmtRuns71(runsEq)}`);
+
+  // ---- v71.4 sink 矩阵 1(ADR-004 §4.2):stringify(Json→str 唯一整体出口)/ write_file 形参位 ----
+  // M3049 消息含载体感知 remedy(不可信 Json:先经 .as_str() 投影……);stringify 专用码后不再级联。
+  const sinkStr71 = m71('v71_sink_stringify.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    print(std.json.stringify(u));',
+    '}',
+  ].join('\n'));
+  const sinkWf71 = m71('v71_sink_writefile.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io, fs {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    std.fs.write_file(u, "x");',
+    '}',
+  ].join('\n'));
+  const rSinkStr = chk71(sinkStr71);
+  const rSinkWf = chk71(sinkWf71);
+  check('v71.4:sink 拦截——stringify(Untrusted[Json]) 与 write_file 形参位各一发 M3049,消息含载体感知 remedy(不可信 Json:先经 .as_str() 投影)',
+    rSinkStr.code === 1 && !!rSinkStr.j && rSinkStr.j.diagnostics.length === 1
+      && rSinkStr.j.diagnostics[0].code === 'M3049' && rSinkStr.j.diagnostics[0].message.includes('不可信 Json:先经 .as_str() 投影')
+      && rSinkWf.code === 1 && !!rSinkWf.j && rSinkWf.j.diagnostics.length === 1
+      && rSinkWf.j.diagnostics[0].code === 'M3049' && rSinkWf.j.diagnostics[0].message.includes('期望 str,实际 Untrusted[Json]'),
+    `stringify=${codes71(rSinkStr)} wf=${codes71(rSinkWf)}`);
+
+  // ---- v71.5 sink 矩阵 2:Map 值槽(set 方法 + 字面量构造)各一发 M3049 ----
+  const sinkMapSet71 = m71('v71_sink_map_set.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let mut m: Map[str, Json] = {};',
+    '    m.set("a", u);',
+    '    print(str(m.len()));',
+    '}',
+  ].join('\n'));
+  const sinkMapLit71 = m71('v71_sink_map_lit.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let m: Map[str, Json] = { "a": u };',
+    '    print(str(m.len()));',
+    '}',
+  ].join('\n'));
+  const rSinkMSet = chk71(sinkMapSet71);
+  const rSinkMLit = chk71(sinkMapLit71);
+  check('v71.5:sink 拦截——Map 值槽两形态(set 方法/字面量)各一发 M3049"map 值类型不匹配",无级联',
+    rSinkMSet.code === 1 && !!rSinkMSet.j && rSinkMSet.j.diagnostics.length === 1
+      && rSinkMSet.j.diagnostics[0].code === 'M3049' && rSinkMSet.j.diagnostics[0].message.includes('map 值类型不匹配')
+      && rSinkMLit.code === 1 && !!rSinkMLit.j && rSinkMLit.j.diagnostics.length === 1
+      && rSinkMLit.j.diagnostics[0].code === 'M3049' && rSinkMLit.j.diagnostics[0].message.includes('map 值类型不匹配'),
+    `set=${codes71(rSinkMSet)} lit=${codes71(rSinkMLit)}`);
+
+  // ---- v71.6 sink 矩阵 3:struct 字段 / 透传 fn(Json) 形参 ----
+  const sinkStruct71 = m71('v71_sink_struct.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'struct Box { j: Json }',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let b = Box { j: u };',
+    '    print(b.j.is_obj());',
+    '}',
+  ].join('\n'));
+  const sinkFn71 = m71('v71_sink_fn.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn sink(j: Json) -> Json {',
+    '    return j;',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    print(str(sink(u).is_obj()));',
+    '}',
+  ].join('\n'));
+  const rSinkStruct = chk71(sinkStruct71);
+  const rSinkFn = chk71(sinkFn71);
+  check('v71.6:sink 拦截——struct 字段位与透传 fn(Json) 形参位各一发 M3049,无级联',
+    rSinkStruct.code === 1 && !!rSinkStruct.j && rSinkStruct.j.diagnostics.length === 1
+      && rSinkStruct.j.diagnostics[0].code === 'M3049' && rSinkStruct.j.diagnostics[0].message.includes('字段 "j"')
+      && rSinkFn.code === 1 && !!rSinkFn.j && rSinkFn.j.diagnostics.length === 1
+      && rSinkFn.j.diagnostics[0].code === 'M3049' && rSinkFn.j.diagnostics[0].message.includes('参数 #1(j)'),
+    `struct=${codes71(rSinkStruct)} fn=${codes71(rSinkFn)}`);
+
+  // ---- v71.7 sink 矩阵 4(清单 6):响应回显——裸 fn return 位 + serve 语境同码;净化后回显对照放行 ----
+  const echo71 = m71('v71_sink_echo.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn echo(u: Untrusted[Json]) -> Json {',
+    '    return u;',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    print(str(echo(u).is_obj()));',
+    '}',
+  ].join('\n'));
+  const echoServe71 = m71('v71_sink_echo_serve.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Untrusted[Json]) -> Json {',
+    '    return req;',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27103, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const echoOk71 = m71('v71_echo_sanitized.ming', [
+    'use std.net;',
+    'use std.json;',
+    'use std.unstr;',
+    'fn handler(req: Untrusted[Json]) -> Json {',
+    '    let body = match req.get("body").unwrap().as_str() {',
+    '        Some(s) => match std.unstr.sanitize_cli_path(s) {',
+    '            Ok(p) => p,',
+    '            Err(_) => "?",',
+    '        },',
+    '        None => "?",',
+    '    };',
+    '    return std.json.parse("{\\"status\\":200,\\"headers\\":{},\\"body\\":\\"" + body + "\\"}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27104, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const rEcho = chk71(echo71);
+  const rEchoServe = chk71(echoServe71);
+  const rEchoOk = chk71(echoOk71);
+  check('v71.7:sink 拦截——回显 return 位(裸 fn 与 serve handler 同码)一发 M3049"return 的值类型";投影+净化后 echo 合法 exit 0',
+    rEcho.code === 1 && !!rEcho.j && rEcho.j.diagnostics.length === 1
+      && rEcho.j.diagnostics[0].code === 'M3049' && rEcho.j.diagnostics[0].message.includes('return 的值类型')
+      && rEchoServe.code === 1 && !!rEchoServe.j && rEchoServe.j.diagnostics.length === 1
+      && rEchoServe.j.diagnostics[0].code === 'M3049' && rEchoServe.j.diagnostics[0].message.includes('return 的值类型')
+      && rEchoOk.code === 0 && !!rEchoOk.j && rEchoOk.j.ok === true,
+    `echo=${codes71(rEcho)} serve=${codes71(rEchoServe)} ok=${rEchoOk.code}/${codes71(rEchoOk)}`);
+
+  // ---- v71.8 mark_json(ADR-004 清单 4):构造面 + unwrap_or fallback + 三引擎擦除一致 ----
+  const mj71 = m71('v71_mark_json.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{\\"k\\":\\"v\\"}").unwrap());',
+    '    let g = u.get("k").unwrap_or(std.unstr.mark_json(std.json.parse("\\"d\\"").unwrap()));',
+    '    let s = g.as_str().unwrap();',
+    '    print(str(s.char_len()));',
+    '}',
+  ].join('\n'));
+  const rMj = chk71(mj71);
+  const runsMj = runAll71(mj71);
+  check('v71.8:mark_json 构造面 + Option[Untrusted[Json]] unwrap_or fallback——check exit 0,三引擎输出 "1" 逐字(运行时擦除)',
+    rMj.code === 0 && !!rMj.j && rMj.j.ok === true && rMj.j.diagnostics.length === 0
+      && same3_71(runsMj) && runsMj[0].code === 0 && runsMj[0].stdout === '1\n',
+    `check=${codes71(rMj)} runs=${fmtRuns71(runsMj)}`);
+
+  // ---- v71.9 深拷贝保污(值语义:let a = req 深拷贝,标注赋值锁定副本仍污)----
+  const cp71 = m71('v71_deepcopy.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = std.json.parse("{\\"k\\":\\"v\\"}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let a = u;',
+    '    let g: Option[Untrusted[Json]] = a.get("k");',
+    '    print(str(g.is_some()));',
+    '}',
+  ].join('\n'));
+  const rCp = chk71(cp71);
+  const runsCp = runAll71(cp71);
+  check('v71.9:深拷贝保污——let a = u 后 a.get("k") 仍按 Option[Untrusted[Json]] 类型成立,三引擎输出 "true" 逐字',
+    rCp.code === 0 && !!rCp.j && rCp.j.ok === true && rCp.j.diagnostics.length === 0
+      && same3_71(runsCp) && runsCp[0].code === 0 && runsCp[0].stdout === 'true\n',
+    `check=${codes71(rCp)} runs=${fmtRuns71(runsCp)}`);
+
+  // ---- v71.10 洗白禁面(ADR-002 清单机制载体无关):debug / 插值 / as 各一发 M3050 ----
+  const fbDebug71 = m71('v71_forbid_debug.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{}").unwrap());',
+    '    debug(u);',
+    '}',
+  ].join('\n'));
+  const fbInterp71 = m71('v71_forbid_interp.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{}").unwrap());',
+    '    print("v=\\{u}");',
+    '}',
+  ].join('\n'));
+  const fbAs71 = m71('v71_forbid_as.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{}").unwrap());',
+    '    let j = u as Json;',
+    '    print(str(j.is_obj()));',
+    '}',
+  ].join('\n'));
+  const rFbDebug = chk71(fbDebug71);
+  const rFbInterp = chk71(fbInterp71);
+  const rFbAs = chk71(fbAs71);
+  check('v71.10:洗白禁面——debug/插值/as 各一发 M3050,消息点名 Untrusted[Json] 载体',
+    rFbDebug.code === 1 && !!rFbDebug.j && rFbDebug.j.diagnostics.length === 1
+      && rFbDebug.j.diagnostics[0].code === 'M3050' && rFbDebug.j.diagnostics[0].message.includes('debug 的参数含 Untrusted[Json]')
+      && rFbInterp.code === 1 && !!rFbInterp.j && rFbInterp.j.diagnostics.length === 1
+      && rFbInterp.j.diagnostics[0].code === 'M3050' && rFbInterp.j.diagnostics[0].message.includes('插值')
+      && rFbAs.code === 1 && !!rFbAs.j && rFbAs.j.diagnostics.length === 1
+      && rFbAs.j.diagnostics[0].code === 'M3050' && rFbAs.j.diagnostics[0].message.includes('"as" 不接受 Untrusted[Json]'),
+    `debug=${codes71(rFbDebug)} interp=${codes71(rFbInterp)} as=${codes71(rFbAs)}`);
+
+  // ---- v71.11 投影表外方法 → M3050(消息列投影表 + nearest 近名后缀,M3015 口径)----
+  const tblOut71 = m71('v71_table_out.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{}").unwrap());',
+    '    let _ = u.len();',
+    '}',
+  ].join('\n'));
+  const rTblOut = chk71(tblOut71);
+  check('v71.11:投影表外——u.len() 一发 M3050,消息含"投影表"全表与 nearest "get" 建议',
+    rTblOut.code === 1 && !!rTblOut.j && rTblOut.j.diagnostics.length === 1
+      && rTblOut.j.diagnostics[0].code === 'M3050'
+      && rTblOut.j.diagnostics[0].message.includes('Untrusted[Json] 没有方法 ".len"')
+      && rTblOut.j.diagnostics[0].message.includes('投影表 get / at / as_str')
+      && rTblOut.j.diagnostics[0].message.includes('最接近的方法是 "get"'),
+    `tblout=${codes71(rTblOut)}`);
+
+  // ---- v71.12 对照不误伤(净值 Json 全方法)+ 工具冒烟(ADR-004 迁移面 tools = 0)----
+  const clean71 = m71('v71_clean.ming', [
+    'use std.json;',
+    'fn main() with io {',
+    '    let j = ' + PJDOC71 + '.unwrap();',
+    '    let g: Option[Json] = j.get("a");',
+    '    let gg: Option[Json] = g.unwrap().get("b");',
+    '    let s: Option[str] = j.get("s").unwrap().as_str();',
+    '    let n: Option[f64] = j.get("n").unwrap().as_num();',
+    '    let b: Option[bool] = j.get("f").unwrap().as_bool();',
+    '    let arr: Option[Vec[Json]] = j.get("arr").unwrap().as_arr();',
+    '    let o: Option[Map[str, Json]] = j.get("o").unwrap().as_obj();',
+    '    let t: bool = j.is_obj();',
+    '    let e: bool = j.eq(' + PJDOC71 + '.unwrap());',
+    '    print(str(t) + str(e) + str(gg.is_some()) + str(s.unwrap().char_len()) + str(n.unwrap()) + str(b.unwrap()) + str(arr.unwrap().len()) + str(o.unwrap().len()));',
+    '}',
+  ].join('\n'));
+  const rClean = chk71(clean71);
+  const runsClean = runAll71(clean71);
+  const jqFile71 = path.join(dir71, 'v71_cfg.json');
+  fs.writeFileSync(jqFile71, '{"a":{"b":"deep"}}', 'utf8');
+  const jq71 = runMing(['tools', 'json_query', jqFile71, 'a.b']);
+  check('v71.12:对照不误伤——净 Json(json.parse 字面量)全方法净值 check exit 0,三引擎 "truetruetrue11.5true10" 逐字;tools json_query 冒烟 a.b→deep',
+    rClean.code === 0 && !!rClean.j && rClean.j.ok === true && rClean.j.diagnostics.length === 0
+      && same3_71(runsClean) && runsClean[0].code === 0 && runsClean[0].stdout === 'truetruetrue11.5true10\n'
+      && jq71.code === 0 && jq71.stdout.includes('deep'),
+    `check=${codes71(rClean)} runs=${fmtRuns71(runsClean)} jq=${JSON.stringify(jq71.stdout.slice(0, 20))}`);
+
+  // ---- v71.13 运行时擦除一致(ADR-004 清单 12/实现注记:标注与否输出逐字)----
+  // 污净孪生:同一计算(投影 + char_len/len 观察)污标与净标六跑(2 程序 × 3 引擎)输出逐字同。
+  const twin71 = m71('v71_clean_twin.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let j = ' + PJDOC71 + '.unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    let g: Option[Untrusted[Json]] = u.get("a");',
+    '    let gg: Option[Untrusted[Json]] = g.unwrap().get("b");',
+    '    let s: Option[Untrusted[str]] = u.get("s").unwrap().as_str();',
+    '    let n: Option[f64] = u.get("n").unwrap().as_num();',
+    '    let b: Option[bool] = u.get("f").unwrap().as_bool();',
+    '    let arr: Option[Vec[Untrusted[Json]]] = u.get("arr").unwrap().as_arr();',
+    '    let o: Option[Map[str, Untrusted[Json]]] = u.get("o").unwrap().as_obj();',
+    '    let t: bool = u.is_obj();',
+    '    let e: bool = u.eq(' + PJDOC71 + '.unwrap());',
+    '    print(str(t) + str(e) + str(gg.is_some()) + str(s.unwrap().char_len()) + str(n.unwrap()) + str(b.unwrap()) + str(arr.unwrap().len()) + str(o.unwrap().len()));',
+    '}',
+  ].join('\n'));
+  const runsTwin = runAll71(twin71);
+  check('v71.13:运行时擦除一致——污标孪生与净标对照六跑(2 程序 × 3 引擎)输出逐字 "truetruetrue11.5true10"',
+    same3_71(runsTwin) && runsTwin[0].code === 0 && runsTwin[0].stdout === 'truetruetrue11.5true10\n'
+      && runsClean[0].stdout === runsTwin[0].stdout,
+    `twin=${fmtRuns71(runsTwin)}`);
+
+  // ---- v71.14 wasm/C 资格核验(ADR-004 清单 12:解包后与裸 Json 形参同款资格拒绝回落)----
+  // 形态 A(Json/污标形参函数独占):eligible=0 → 层级 'none',strict exit 0,三引擎输出逐字;
+  // 形态 B(混合:i64 fn + Json fn):i64 fn 真实入 wasm([wasm] fn numf OK),污标/裸 Json fn 同款拒绝,
+  // MING_WASM_DEBUG=1 下两变体均点名 numf OK 且无 REJECT。
+  const wUt71 = m71('v71_wasm_ut.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn probe(u: Untrusted[Json]) -> bool {',
+    '    return u.is_obj();',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    print(str(probe(u)));',
+    '}',
+  ].join('\n'));
+  const wBare71 = m71('v71_wasm_bare.ming', [
+    'use std.json;',
+    'fn probe(j: Json) -> bool {',
+    '    return j.is_obj();',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    print(str(probe(j)));',
+    '}',
+  ].join('\n'));
+  const wMixUt71 = m71('v71_wasm_mix_ut.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn numf(x: i64) -> i64 {',
+    '    return x * 2;',
+    '}',
+    'fn probe(u: Untrusted[Json]) -> bool {',
+    '    return u.is_obj();',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    print(str(numf(21)) + str(probe(u)));',
+    '}',
+  ].join('\n'));
+  const wMixBare71 = m71('v71_wasm_mix_bare.ming', [
+    'use std.json;',
+    'fn numf(x: i64) -> i64 {',
+    '    return x * 2;',
+    '}',
+    'fn probe(j: Json) -> bool {',
+    '    return j.is_obj();',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{}").unwrap();',
+    '    print(str(numf(21)) + str(probe(j)));',
+    '}',
+  ].join('\n'));
+  const runsWUt = runAll71(wUt71);
+  const runsWBare = runAll71(wBare71);
+  const runsWMixUt = runAll71(wMixUt71);
+  const runsWMixBare = runAll71(wMixBare71);
+  const strictUt = runMing(['run', wUt71, '--strict-wasm']);
+  const strictBare = runMing(['run', wBare71, '--strict-wasm']);
+  const strictMixUt = runMing(['run', wMixUt71, '--strict-wasm']);
+  const strictMixBare = runMing(['run', wMixBare71, '--strict-wasm']);
+  const dbgMixUt = runMing(['run', wMixUt71], { env: { MING_WASM_DEBUG: '1' } });
+  const dbgMixBare = runMing(['run', wMixBare71], { env: { MING_WASM_DEBUG: '1' } });
+  check('v71.14:wasm 资格——Json/Untrusted[Json] 形参同款拒绝(独占形态 strict exit 0 + 三引擎 "true" 逐字;混合形态 strict exit 0 + 三引擎 "42true" 逐字 + debug 双变体点名 numf OK 无 REJECT)',
+    same3_71(runsWUt) && runsWUt[0].code === 0 && runsWUt[0].stdout === 'true\n'
+      && same3_71(runsWBare) && runsWBare[0].code === 0 && runsWBare[0].stdout === 'true\n'
+      && strictUt.code === 0 && strictUt.stdout === 'true\n' && strictBare.code === 0 && strictBare.stdout === 'true\n'
+      && same3_71(runsWMixUt) && runsWMixUt[0].code === 0 && runsWMixUt[0].stdout === '42true\n'
+      && same3_71(runsWMixBare) && runsWMixBare[0].code === 0 && runsWMixBare[0].stdout === '42true\n'
+      && strictMixUt.code === 0 && strictMixUt.stdout === '42true\n' && strictMixBare.code === 0 && strictMixBare.stdout === '42true\n'
+      && dbgMixUt.stderr.includes('[wasm] fn numf OK') && !dbgMixUt.stderr.includes('REJECT') && dbgMixUt.stdout === '42true\n'
+      && dbgMixBare.stderr.includes('[wasm] fn numf OK') && !dbgMixBare.stderr.includes('REJECT') && dbgMixBare.stdout === '42true\n',
+    `ut=${fmtRuns71(runsWUt)} bare=${fmtRuns71(runsWBare)} strict=${strictUt.code}/${strictBare.code}/${strictMixUt.code}/${strictMixBare.code} dbg=${JSON.stringify(dbgMixUt.stderr.split('\n').filter(l => l.includes('[wasm]')).join('|').slice(0, 120))}`);
+
+  // ---- v71.15 C 后端发射期拒绝(清单 12:解包后与裸 Json 形参逐字一致;--emit-c 不需 gcc,拒绝发生在发射期)----
+  const ccUt = runMing(['cc', wMixUt71, '--emit-c']);
+  const ccBare = runMing(['cc', wMixBare71, '--emit-c']);
+  check('v71.15:cc 发射期拒绝——Untrusted[Json] 与裸 Json 两变体 exit 1,stderr 逐字一致(同款 C1 拒绝)',
+    ccUt.code === 1 && ccBare.code === 1 && ccUt.stderr === ccBare.stderr && ccUt.stderr.includes('C1 不支持该程序形态'),
+    `ut=${ccUt.code}:${JSON.stringify(ccUt.stderr.split('\n')[0])} bare=${ccBare.code}:${JSON.stringify(ccBare.stderr.split('\n')[0])}`);
+
+  // ---- v71.16 契约内投影(投影纯函数口径;requires 内 unwrap 后 as_str().is_some())----
+  const contract71 = m71('v71_contract.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn path_len(req: Untrusted[Json]) -> i64',
+    '    requires req.get("path").unwrap().as_str().is_some() {',
+    '    let s = req.get("path").unwrap().as_str().unwrap();',
+    '    return s.char_len() as i64;',
+    '}',
+    'fn main() with io {',
+    '    let j = std.json.parse("{\\"path\\":\\"/abc\\"}").unwrap();',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(j);',
+    '    print(str(path_len(u)));',
+    '}',
+  ].join('\n'));
+  const rContract = chk71(contract71);
+  const runsContract = runAll71(contract71);
+  check('v71.16:契约内投影——requires 投影链(get→unwrap→as_str→is_some)check exit 0,三引擎输出 "4" 逐字',
+    rContract.code === 0 && !!rContract.j && rContract.j.ok === true && rContract.j.diagnostics.length === 0
+      && same3_71(runsContract) && runsContract[0].code === 0 && runsContract[0].stdout === '4\n',
+    `check=${codes71(rContract)} runs=${fmtRuns71(runsContract)}`);
+
+  // ---- v71.17 as_obj 副本键形态修复回归(v0.68 触达即修:副本键裸形态,同 normKey 口径)----
+  // 修复前:get/has 对存在的 str 键查不到(Map 键误存 Ming 包装值)、keys() 双重包装([object Object])。
+  // 三形态:净 Json as_obj 链 / parse→at→as_obj 嵌套链 / 污标 as_obj(Map[str, Untrusted[Json]])。
+  const aoMin71 = m71('v71_asobj_min.ming', [
+    'use std.json;',
+    'fn main() with io {',
+    '    let j = std.json.parse("{\\"k\\":\\"v\\"}").unwrap();',
+    '    let m = j.as_obj().unwrap();',
+    '    let got = m.get("k");',
+    '    if got.is_some() {',
+    '        print("get=some(" + got.unwrap().as_str().unwrap() + ")");',
+    '    } else {',
+    '        print("get=none");',
+    '    }',
+    '    print("has=" + str(m.has("k")));',
+    '    print("len=" + str(m.len()));',
+    '    let ks = m.keys();',
+    '    print("keys_len=" + str(ks.len()));',
+    '    let k0 = ks.get(0);',
+    '    if k0.is_some() {',
+    '        print("keys0=" + k0.unwrap());',
+    '    } else {',
+    '        print("keys0=none");',
+    '    }',
+    '}',
+  ].join('\n'));
+  const aoChain71 = m71('v71_asobj_chain.ming', [
+    'use std.json;',
+    'fn main() with io {',
+    '    let j = std.json.parse("[1,{\\"k\\":\\"v\\"}]").unwrap();',
+    '    let inner = j.at(1).unwrap().as_obj().unwrap();',
+    '    let got = inner.get("k");',
+    '    if got.is_some() {',
+    '        print("v=" + got.unwrap().as_str().unwrap());',
+    '    } else {',
+    '        print("none");',
+    '    }',
+    '}',
+  ].join('\n'));
+  const aoTaint71 = m71('v71_asobj_taint.ming', [
+    'use std.json;',
+    'use std.unstr;',
+    'fn main() with io {',
+    '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{\\"k\\":\\"v\\"}").unwrap());',
+    '    let m: Map[str, Untrusted[Json]] = u.as_obj().unwrap();',
+    '    let got = m.get("k");',
+    '    if got.is_some() {',
+    '        print("v=" + str(got.unwrap().as_str().unwrap().char_len()));',
+    '    } else {',
+    '        print("none");',
+    '    }',
+    '    let k0 = m.keys().get(0);',
+    '    if k0.is_some() {',
+    '        print("k0=" + k0.unwrap());',
+    '    } else {',
+    '        print("k0=none");',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runsAoMin = runAll71(aoMin71);
+  const runsAoChain = runAll71(aoChain71);
+  const runsAoTaint = runAll71(aoTaint71);
+  const rAoChainChk = chk71(aoChain71);
+  check('v71.17:as_obj 副本键修复——净链 get=some(v)/has=true/keys0=k、parse→at→as_obj 嵌套链 v=v、污标链 v=1/k0=k,三引擎逐字',
+    same3_71(runsAoMin) && runsAoMin[0].code === 0 && runsAoMin[0].stdout === 'get=some(v)\nhas=true\nlen=1\nkeys_len=1\nkeys0=k\n'
+      && same3_71(runsAoChain) && runsAoChain[0].code === 0 && runsAoChain[0].stdout === 'v=v\n'
+      && rAoChainChk.code === 0
+      && same3_71(runsAoTaint) && runsAoTaint[0].code === 0 && runsAoTaint[0].stdout === 'v=1\nk0=k\n',
+    `min=${fmtRuns71(runsAoMin)} chain=${fmtRuns71(runsAoChain)} taint=${fmtRuns71(runsAoTaint)}`);
+  // ---- v71.18(M1 审查修复):M3049 的 hint 字段载体中性(--json 是 AI 直接消费面,v0.67 同类风险收口) ----
+  {
+    const f = m71('hint_carrier.ming', [
+      'use std.json;',
+      'use std.unstr;',
+      'use std.fs;',
+      'fn handler(req: Untrusted[Json]) -> Json with fs {',
+      '    std.json.stringify(req);',
+      '    return std.json.parse("{}").unwrap();',
+      '}',
+      '',
+    ].join('\n'));
+    const ck = runMing(['check', f, '--json']);
+    const j = (() => { try { return JSON.parse(ck.stdout); } catch { return null; } })();
+    const d49 = j && j.diagnostics ? j.diagnostics.find(d => d.code === 'M3049') : null;
+    const hint = d49 ? (d49.hint || '') : '';
+    check('v71.18:M3049 hint 字段载体中性——str 与 Json 两条净化路径都在 hint 中(--json 消费面口径)',
+      d49 && hint.includes('str 载体') && hint.includes('Json 载体'),
+      'code=' + (d49 ? d49.code : 'none') + ' hint=' + JSON.stringify(hint.slice(0, 120)));
+  }
+
+  // ---- §71-END
 }
 
 

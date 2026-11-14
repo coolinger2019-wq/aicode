@@ -38,7 +38,8 @@ export function mkRange(el) { return { k: 'range', el }; }
 export function mkJoin(el) { return { k: 'join', el }; }
 // v0.54:Ptr 类型面 {k:'ptr', el, mut};el 当前只允许 u8(检查器 resolveTypeAst 强制)
 export function mkPtr(el, mut = false) { return { k: 'ptr', el, mut: !!mut }; }
-// v0.61(ADR-002):污点标签 {k:'untrusted', el};el 当前只允许 str(载体 v1,resolveTypeAst 强制)。
+// v0.61(ADR-002):污点标签 {k:'untrusted', el};el 允许 str/Json(载体 v1 仅 str,
+// v0.68 ADR-004 §2.4 扩 Json,resolveTypeAst 白名单强制)。
 // 编译期标签、运行时擦除:值表示与载体相同,运行时分发零改动。
 export function mkUntrusted(el) { return { k: 'untrusted', el }; }
 
@@ -389,11 +390,12 @@ export const STD_MODULES = {
       mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net', min: 3, max: 4 }),
       mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR, INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkMap(T_STR, T_STR), T_STR]), T_STR), { effect: 'net' }),
       // v0.62(ADR-001 §5.2 任务 1):TCP 服务端 v1——固定绑 127.0.0.1(清单 15:签名无
-      // host 参数 = 隐式回环);handler 为命名模块函数引用(fn(Json) -> Json,载荷形态
-      // 清单 3,请求/响应键集固定 additive 由 GUIDE/§66 锁定);Ok 路径 v1 不可达,Result
+      // host 参数 = 隐式回环);handler 为命名模块函数引用(fn(Untrusted[Json]) -> Json,
+      // v0.68 ADR-004 §2.1 候选 A:请求载荷不可信,整树以 Untrusted[Json] 进入 handler,
+      // 清单 3 请求/响应键集固定 additive 由 GUIDE/§66 锁定);Ok 路径 v1 不可达,Result
       // 为将来 shutdown API 预留(清单 5)。调用面走 checkStdCall 特例(handler 效果
       // 白名单 + 形态检查,参照 sync.spawn);Ok 的 Err = 绑定/参数失败。
-      mF('serve', [INT_TYPES.i64, mkFn([{ k: 'json' }], { k: 'json' })], mkRes(INT_TYPES.i64, T_STR), { effect: 'net' }),
+      mF('serve', [INT_TYPES.i64, mkFn([mkUntrusted({ k: 'json' })], { k: 'json' })], mkRes(INT_TYPES.i64, T_STR), { effect: 'net' }),
     ],
   },
   // 格式化(纯函数;v0.27)
@@ -435,12 +437,15 @@ export const STD_MODULES = {
   // 污点净化族(v0.61 ADR-002 §3.4;全部纯函数、无效果——契约可用性的关键约束)。
   // 唯一类型跃迁出口:Untrusted[str] -> Result[str, str](可信根单点化;族扩展 = 可信根扩权)。
   //   mark:把干净值标脏(标脏只会更严,公开无危害;测试块与已知干净场景用)
+  //   mark_json:v0.68(ADR-004 §3.3 清单 4)——Json 的标脏入口(非净化出口,sanitize_json
+  //     不预支);测试块与 Option[Untrusted[Json]] 的 unwrap_or fallback 需要它
   //   sanitize_path:拒绝绝对路径/.. 段等非法形态,Ok 为规范化相对路径(路径实参位授权)
   //   sanitize_cli_path:校验不改写——拒绝 NUL/C0 控制字符,Ok 原串原样返回
   //     (CLI 匹配/比较串授权位,2026-11-14 裁决,ADR §3.4)
   unstr: {
     fns: [
       mF('mark', [T_STR], mkUntrusted(T_STR)),
+      mF('mark_json', [{ k: 'json' }], mkUntrusted({ k: 'json' })),
       mF('sanitize_path', [mkUntrusted(T_STR)], mkRes(T_STR, T_STR)),
       mF('sanitize_cli_path', [mkUntrusted(T_STR)], mkRes(T_STR, T_STR)),
     ],
@@ -511,11 +516,17 @@ export const TYPE_LEVEL_FNS = {
   float: ['infinity', 'neg_infinity', 'nan'],
 };
 
-// v0.61(ADR-002 §3.2):Untrusted 载体方法白名单(checker 内置表,可审计)。
-// 只产出非污点载体(纯值)的方法——污点在数值/长度/布尔上终结;
-// "产出同污点载体"的方法 v1 不设(get(i) 会开 char 重组旁路)。
-// 运行时零改动:Untrusted 值擦除为载体值,方法按载体实现走(白名单校验只在 checker)。
-export const UNTRUSTED_METHODS = new Set(['parse_i64', 'parse_f64', 'char_len', 'byte_len', 'is_empty']);
+// v0.61(ADR-002 §3.2):Untrusted 载体方法白名单(checker 内置表,可审计);v0.68
+// (ADR-004 §3.2)改载体键控——str → 5 方法(只产出非污点载体(纯值)的方法,污点在
+// 数值/长度/布尔上终结;"产出同污点载体"的方法 v1 不设,get(i) 会开 char 重组旁路);
+// json → §3.2 投影表(污进污出、载体随投影收窄;返回类型由 untrustedJsonMethod 分派)。
+// 其它载体无键 = 全拒。运行时零改动:Untrusted 值擦除为载体值,方法按载体实现走
+// (白名单校验只在 checker;投影表测试锁定,ADR-004 清单 8 口径)。
+export const UNTRUSTED_METHODS = {
+  str: ['parse_i64', 'parse_f64', 'char_len', 'byte_len', 'is_empty'],
+  json: ['get', 'at', 'as_str', 'as_num', 'as_bool', 'as_arr', 'as_obj',
+    'is_null', 'is_bool', 'is_num', 'is_str', 'is_arr', 'is_obj', 'eq'],
+};
 
 // ===================== 模块 =====================
 
@@ -713,17 +724,20 @@ export class Checker {
             }
             return mkPtr(el, mut);
           }
-          // v0.61(ADR-002):Untrusted[T] 污点标签——载体 v1 仅 str;
-          // Untrusted[i64] / Untrusted[Untrusted[str]] 均拒绝(M3050,扩载体不得静默)。
+          // v0.61(ADR-002):Untrusted[T] 污点标签;v0.68(ADR-004 §2.4/清单 3)载体白名单
+          // 扩为 {str, Json}——Untrusted[Json] 复用同一构造器(泛型标注,不做别名),
+          // unify/typeStr/doc/LSP 渲染全部自动覆盖(清单 15 口径)。其余载体仍拒
+          // (M3050,扩载体不得静默):剩余待解锁清单 = u8/argv/容器等,v1.2+ 另裁决
+          // (ADR-004 §6.1);Untrusted[Untrusted[...]] 嵌套仍拒。
           if (parts.length === 1 && t.name === 'Untrusted') {
             if (t.args.length !== 1) {
               self.diagT(t.span, `Untrusted 需要 1 个类型参数,得到 ${t.args.length}`);
               return mkUntrusted(T_STR);
             }
             const el = go(t.args[0]);
-            if (el?.k !== 'str') {
+            if (el?.k !== 'str' && el?.k !== 'json') {
               self.diags.push(err('M3050',
-                `Untrusted 的载体类型 v1 仅 str,得到 ${typeStr(el)}(扩载体需先设计 Untrusted[u8]/Untrusted[Json] 与净化器授权矩阵,ADR-002 §6.2 ②)`,
+                `Untrusted 的载体类型只支持 str/Json,得到 ${typeStr(el)}(其余载体待解锁清单:u8/argv/容器等,v1.2+ 按净化器授权矩阵另裁决,ADR-004 §6.1)`,
                 t.span, CODE_HINTS.M3050));
               return mkUntrusted(T_STR);
             }
@@ -822,8 +836,14 @@ export class Checker {
     if (a?.k !== 'untrusted') return false;
     const e = expectedT != null ? resolveT(expectedT, new Map()) : null;
     if (e?.k === 'untrusted') return false;
+    // v0.68(ADR-004 §7.2):hint 文本载体感知——str 载荷先净化;Json 载荷先投影出
+    // Untrusted[str] 字段再净化(污点树不能整体进槽,stringify/parse 不开旁路,§4.2)。
+    const carrier = resolveT(a.el, new Map());
+    const remedy = carrier?.k === 'json'
+      ? '不可信 Json:先经 .as_str() 投影取出 Untrusted[str] 字段并净化(重建 Json 走 std.json.parse),或把目标改声明为 Untrusted[Json]'
+      : '不可信值:先净化,或把目标改声明为 Untrusted[str]';
     this.diags.push(err('M3049',
-      `${what}:期望 ${typeStr(e)},实际 ${typeStr(a)}(不可信值:先净化,或把目标改声明为 Untrusted[str])`,
+      `${what}:期望 ${typeStr(e)},实际 ${typeStr(a)}(${remedy})`,
       span));
     return true;
   }
@@ -3945,6 +3965,9 @@ export class Checker {
         }
         if (!isComparable(argTs[i], binds)) this.diags.push(err('M3008', 'assert_eq 不支持函数值', e.args[i].span));
       } else if (p === 'jsonval') {
+        // v0.68(ADR-004 §4.2):与 checkStdCall 的 jsonval 位同口径——顶层 Untrusted 实参
+        // 发专用码 M3049(唯一整体出口闭合),已发专用码则跳过通用 JSON 兼容检查。
+        if (this.untrustedMismatchDiag(argTs[i], { k: 'json' }, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`)) continue;
         this.checkJsonCompatible(argTs[i], binds, e.args[i].span);
       } else if (!this.untrustedMismatchDiag(argTs[i], p, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`)
         && !unify(argTs[i], p, binds)) {
@@ -4119,10 +4142,12 @@ export class Checker {
     }
     // ---- std.net.serve(v0.62,ADR-001 §5.2 任务 1;参照 sync.spawn 特例)----
     // 形态:实参必须是命名模块函数引用(闭包/lambda、本地函数、变量持函数值、任意表达式
-    // 一律拒绝——运行面按 fnref 解析,与 spawn 的运行时口径一致);载荷:单参数 Json、
-    // 返回 Json(v1 不深检请求/响应键集——清单 3,键集由 GUIDE/§66 测试锁定);效果白名
-    // 单见 SERVE_HANDLER_EFFECTS,sync/unsafe/ffi 编译期拒绝(清单 2/11;零新增 M 码——
-    // 清单 4,就近复用 M3002 实参形态错)。调用方未声明 with net 由本特例开头的
+    // 一律拒绝——运行面按 fnref 解析,与 spawn 的运行时口径一致);载荷:单参数
+    // Untrusted[Json](v0.68 ADR-004 §2.1 候选 A——请求载荷是网络内容源,整树污进
+    // handler,期待 Json 的一切位置自动 M3049,sink 门禁免费)、返回 Json(响应是 Ming
+    // 产出,不标,清单 6;v1 不深检请求/响应键集——清单 3,键集由 GUIDE/§66 测试锁定);
+    // 效果白名单见 SERVE_HANDLER_EFFECTS,sync/unsafe/ffi 编译期拒绝(清单 2/11;零新增
+    // M 码——清单 4,就近复用 M3002 实参形态错)。调用方未声明 with net 由本特例开头的
     // checkEffects 以 M3029 拒绝(既有机制,登记 effect: 'net' 自动生效)。
     if (f.mod === 'net' && f.fn.name === 'serve') {
       if (f.fn.effect) this.checkEffects(ctx, new Set([f.fn.effect]), e.callee?.span ?? e.span);
@@ -4138,7 +4163,7 @@ export class Checker {
       const hArg = e.args[1];
       if (hArg.nt === 'Lambda') {
         this.diags.push(err('M3002', 'serve 的 handler 必须是命名模块函数引用,不接受闭包/lambda', hArg.span,
-          '定义模块级 fn handler(req: Json) -> Json { ... },然后 serve(8080, handler)。'));
+          '定义模块级 fn handler(req: Untrusted[Json]) -> Json { ... },然后 serve(8080, handler)。'));
         return null;
       }
       // 命名引用形态:Ident = 当前模块级 fn(可非 pub——同模块口径放行)。Field(跨模块
@@ -4164,25 +4189,26 @@ export class Checker {
         this.diags.push(err('M3002',
           crossModRef
             ? `serve 的 handler 不能是跨模块函数引用(${crossModRef};v1 worker 管线不支持跨模块模块源加载,运行期每请求必失败)`
-            : `serve 的 handler 必须是命名模块函数引用 fn(Json) -> Json(不接受闭包/lambda/本地函数/变量/任意表达式;实际 ${typeStr(fr, new Map())})`,
+            : `serve 的 handler 必须是命名模块函数引用 fn(Untrusted[Json]) -> Json(不接受闭包/lambda/本地函数/变量/任意表达式;实际 ${typeStr(fr, new Map())})`,
           hArg.span,
           crossModRef
             ? 'v1 worker 管线不支持跨模块模块源加载;handler 须与 serve 同模块(可非 pub,由同模块口径放行)。'
-            : '定义模块级 fn handler(req: Json) -> Json { ... },然后 serve(8080, handler)。'));
+            : '定义模块级 fn handler(req: Untrusted[Json]) -> Json { ... },然后 serve(8080, handler)。'));
         return null;
       }
       const ht = this.checkExpr(hArg, ctx);
       const hr = resolveT(ht, new Map());
       if (!hr || hr.k !== 'fn' || hr.ps.length !== 1) {
-        this.diags.push(err('M3002', `serve 的 handler 必须是单参数函数 fn(Json) -> Json(实际 ${typeStr(hr, new Map())})`, hArg.span));
+        this.diags.push(err('M3002', `serve 的 handler 必须是单参数函数 fn(Untrusted[Json]) -> Json(实际 ${typeStr(hr, new Map())})`, hArg.span));
         return null;
       }
-      // 载荷形态(清单 3):形参 Json(请求 {method, path, headers, body})、返回 Json(响应
-      // {status, headers, body});键集固定 additive,v1 只检类型不深检键集
+      // 载荷形态(清单 3):形参 Untrusted[Json](v0.68 ADR-004 §2.1——请求载荷不可信,
+      // 整树污进 handler)、返回 Json(响应 {status, headers, body} 是 Ming 产出,不标,
+      // 清单 6);键集固定 additive,v1 只检类型不深检键集
       const pR = resolveT(hr.ps[0], new Map());
-      if (!pR || pR.k !== 'json') {
-        this.diags.push(err('M3002', `serve 的 handler 形参必须是 Json(实际 ${typeStr(hr.ps[0], new Map())})`, hArg.span,
-          '请求载荷是 Json{method, path, headers, body}(键集固定 additive)。'));
+      if (!pR || pR.k !== 'untrusted' || resolveT(pR.el, new Map())?.k !== 'json') {
+        this.diags.push(err('M3002', `serve 的 handler 形参必须是 Untrusted[Json](实际 ${typeStr(hr.ps[0], new Map())})`, hArg.span,
+          '请求载荷不可信(ADR-004):字段经 .get()/.as_str() 投影后净化使用;返回 Json 不标(响应是 Ming 产出)。'));
         return null;
       }
       const rR = resolveT(hr.ret, new Map());
@@ -4228,6 +4254,10 @@ export class Checker {
         // JSON 兼容性静态检查(stringify 等)
         const t = this.checkExpr(a, ctx);
         argTs.push(t);
+        // v0.68(ADR-004 §4.2):stringify 是 Json→str 的唯一整体出口(支点)——顶层
+        // Untrusted 实参发专用码 M3049(载体感知 hint 由 untrustedMismatchDiag 统一给),
+        // 已发专用码则跳过通用 JSON 兼容检查(避免双报);含污容器维持既有 M3033 口径。
+        if (this.untrustedMismatchDiag(t, { k: 'json' }, a.span, `参数 #${i + 1} 类型不匹配`)) return;
         this.checkJsonCompatible(t, binds, a.span);
         return;
       }
@@ -4291,13 +4321,20 @@ export class Checker {
       return this.checkStdCall(f, callNode, ctx);
     }
 
-    // v0.61(ADR-002 §3.2):Untrusted 接收者——白名单方法按载体 str 分派(运行时擦除:
+    // v0.61(ADR-002 §3.2):Untrusted 接收者——白名单方法按载体分派(运行时擦除:
     // 值就是载体值,方法实现按载体走,interp 无需新方法;白名单校验只在 checker)。
-    // 白名单外(trim/slice/replace/contains/…)一律 M3050[untrusted-method-forbidden]。
+    // v0.68(ADR-004 §3.2):载体键控——json 载体走投影表 untrustedJsonMethod(整树保污);
+    // str 载体维持白名单 5 方法;白名单外(trim/slice/replace/contains/…)一律
+    // M3050[untrusted-method-forbidden]。
     if (r.k === 'untrusted') {
-      if (!UNTRUSTED_METHODS.has(name)) {
+      const carrier = resolveT(r.el, new Map());
+      if (carrier?.k === 'json') {
+        return this.untrustedJsonMethod(r, name, args, ctx, callNode, expected);
+      }
+      const wl = UNTRUSTED_METHODS[carrier?.k] ?? [];
+      if (!wl.includes(name)) {
         this.diags.push(err('M3050',
-          `${typeStr(r)} 没有方法 ".${name}"(白名单外:Untrusted 只能用 ${[...UNTRUSTED_METHODS].join(' / ')};要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path)`,
+          `${typeStr(r)} 没有方法 ".${name}"(白名单外:Untrusted[str] 只能用 ${wl.join(' / ')};要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path)`,
           fieldCallee.span, CODE_HINTS.M3050));
         return null;
       }
@@ -4862,6 +4899,64 @@ export class Checker {
       default:
         this.diags.push(err('M3015', 'Json 没有方法 ".' + name + '"(有:is_null is_bool is_num is_str is_arr is_obj as_bool as_num as_str as_arr as_obj get at eq)', span));
         return null;
+    }
+  }
+
+  // v0.68(ADR-004 §3.2):Untrusted[Json] 接收者的方法投影表——污进污出、载体随投影
+  // 收窄(整树递归标注,清单 2/8/9)。运行时擦除:方法实现零新增,interp 按 Json 载体走
+  // 既有 json 运行面;本方法只管 checker 类型面。表外方法 → M3050(消息列投影表 +
+  // nearest 近名建议,沿 M3015 口径)。签名与净值 jsonMethod 同形,仅返回类型按投影表替换。
+  untrustedJsonMethod(r, name, args, ctx, callNode, expected) {
+    const span = callNode.span, binds = new Map();
+    const UJ = mkUntrusted({ k: 'json' });
+    switch (name) {
+      // 谓词:净值(污点在布尔上终结,清单 9)
+      case 'is_null': case 'is_bool': case 'is_num': case 'is_str': case 'is_arr': case 'is_obj':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return T_BOOL;
+      // 数值/布尔投影:净值;as_str:载体收窄为 Untrusted[str](清单 8,接 v1 str 全套面)
+      case 'as_bool': case 'as_num': case 'as_str': {
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        const inner = { as_bool: T_BOOL, as_num: tfloat(64), as_str: mkUntrusted(T_STR) }[name];
+        return mkOpt(inner);
+      }
+      // 容器投影:载荷保污(泛型精确传播,免费)
+      case 'as_arr':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return mkOpt(mkVec(UJ));
+      case 'as_obj':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return mkOpt(mkMap(T_STR, UJ));
+      // 子树访问:整树污(递归);键/下标参数与净值签名同形
+      case 'get': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        const t = this.checkExpr(args[0], ctx, T_STR);
+        if (!unify(t, T_STR, binds)) this.diags.push(err('M3002', 'get 的键必须是 str', args[0].span));
+        return mkOpt(UJ);
+      }
+      case 'at': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        const t = this.checkExpr(args[0], ctx, INT_TYPES.i64);
+        if (!unify(t, INT_TYPES.i64, binds)) this.diags.push(err('M3002', 'at 的下标必须是 i64', args[0].span));
+        return mkOpt(UJ);
+      }
+      // 相等:净值(污点在布尔上终结);实参净或污均可(Json 或 Untrusted[Json]——否则
+      // 两个污子树无法比较,清单 9),其余实参类型错维持 M3002 口径
+      case 'eq': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        const t = this.checkExpr(args[0], ctx, { k: 'json' });
+        const ar = resolveT(t, new Map());
+        const jsonish = ar?.k === 'json' || (ar?.k === 'untrusted' && resolveT(ar.el, new Map())?.k === 'json');
+        if (!jsonish) this.diags.push(err('M3002', 'eq 的参数必须是 Json', args[0].span));
+        return T_BOOL;
+      }
+      default: {
+        const table = UNTRUSTED_METHODS.json;
+        this.diags.push(err('M3050',
+          `${typeStr(r)} 没有方法 ".${name}"(表外:Untrusted[Json] 只能用投影表 ${table.join(' / ')};取字段用 .get()/.as_str() 后经 std.unstr 净化)${methodNearSuffix(name, table)}`,
+          span, CODE_HINTS.M3050));
+        return null;
+      }
     }
   }
 
