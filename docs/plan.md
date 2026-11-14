@@ -1,8 +1,8 @@
 # Ming 实施计划（v0.45 起）
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
-> 只有进入版本范围才细化到任务级。当前版本：**v0.64.0**（**v0.64 信任边界与诚实失败收口已交付(2026-11-14)**：#56 AOT artifact 结构校验（四损坏形态统一稳定诊断"不是 Ming 字节码产物"）、S9 嵌套 serve 编译期拒绝（两遍式）、S12 sanitize_cli_path 闸门扩展（DEL/C1/双向符）、#57 安全回归批 §68 21 项（M4013 首破）、#58 mut 写 panic 位置三引擎逐字、M5001 补登记、文档漂移清扫——**零新增 M 码**；独立审查通过（遮蔽误伤 M1 两遍式修复 + S12 向量补齐）后测试 **1016 项全绿**(§63 56 + §64 24 + §65 40 + §66 22 + §67 28 + §68 21)。v0.63 wasm 守护 slice 2、v0.62 serve v1、v0.61 污点窄源 v1、v0.60 资源门禁一致性已交付）。
-> **下一步规划见 §4.5（2026-11-14 架构第三轮 + 安全第二轮：v0.64 信任边界与诚实失败收口（#55/#56/#57 + S9/S12）→ v0.65 wasm 守护收口 slice 3 + #59 → v0.66 观测与反馈（纯校准版）；安全新登记 S9–S16 见 §4.5.7；§4.4.10 为 2026-11-13 三方评估记录）**。
+> 只有进入版本范围才细化到任务级。当前版本：**v0.65.0**（**v0.65 wasm 守护收口 slice 3 终章已交付(2026-11-14)**：expect(字面量 msg)/Map unwrap(map_has)/Err unwrap·expect(句柄 display 逐字)/Vec[str] 下标读(vecstr_get)/下标复合赋值(interp 双重求值口径；标量 &= |= ^= 顺带)真实经 wasm；**#59 嵌套直调栈帧兑现**(frame_push/pop)——**守护具名清单清零**，守护类工作移出 Backlog；strict 自造语料残留 0；独立审查 2 MAJOR 修复后测试 **1035 项全绿**(§63 56 + §64 24 + §65 40 + §66 22 + §67 28 + §68 21 + §69 19)。v0.64 信任边界收口、v0.62 serve v1、v0.61 污点窄源 v1、v0.60 资源门禁一致性已交付）。
+> **下一步规划见 §4.5（v0.65 已交付；v0.66 观测与反馈——纯校准版：usage audit 重跑/moltbook ≥1 条/真实 serve 服务观察(serve v1.1 go/no-go)/基线刷新/Untrusted[Json] ADR/AI 修正回路快照；src 零语义改动；安全登记 S9–S16 见 §4.5.7；第四轮复核见 §4.5.8）**。
 > **§4.3 全部任务已清空（2026-11-13）**：v0.60 起以 ADR 条件交付——ADR-001（并发/服务端,方案 a 条件承诺实施,原型 190 req/s@40 连接）、ADR-002（污点采纳类型级 Untrusted[T],实现推迟）、ADR-003（mask 永久否决）；实现条件见各 ADR 评审清单与 §4.3.9。**三方评估后 serve 从 v0.60 移至 v0.62（独立条件版），v0.60 改为资源门禁一致性修复——理由与实测证据见 §4.4.10。**
 
 ---
@@ -18,7 +18,7 @@
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
 | 质量护栏 | 回归全绿（v0.63.0 起 **995 项**；§67 为 v0.63 wasm 守护收口 slice 2 **28 项**，§66 为 v0.62 服务端 v1 **22 项**，§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表**（tests/coverage.mjs；**94.0% 行 / 88.7% 函数**，vm.js 65.9%；信息性不设门槛） |
 | 能力矩阵 | 55 行口径 ≈84%（docs/capabilities.md；v0.61 新增"数据流安全(污点标注)"行(✅,窄源 v1)、v0.62"TCP/UDP/服务端"行 ❌→🟡(serve v1):42✅ 8🟡 5❌，(42+8×0.5)/55=83.6%≈84%；"运行时资源熔断"经 2026-11-13 评估改判 🟡 后于 v0.60 修复恢复 ✅） |
-| 下一步 | **§4.5：v0.64 信任边界与诚实失败收口**✅**已交付 → v0.65 wasm 守护收口 slice 3 + #59 → v0.66 观测与反馈（纯校准版）；eval ADR 为规划期任务** |
+| 下一步 | **§4.5：v0.65 wasm slice 3 终章**✅**已交付 → v0.66 观测与反馈（纯校准版：usage audit/moltbook/serve 真实服务观察(serve v1.1 go/no-go)/基线刷新/Untrusted[Json] ADR/AI 修正回路快照；src 零语义改动）** |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -707,6 +707,8 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 6. **#59 顺带（P3）**：wasm→wasm 直调 panic 栈缺内层帧——调用点 span 透传 callStack；与本版 msg/载荷穿越机制同源，一次改齐；§67 v67.20 按现状的断言翻转锁定。
 
 **验收（实测口径）**：守护具名清单五项全部解锁；自造语料 strict 残留 = 0（或仅具名不可达项 `?`）；§69 ≥12（五形态正例三引擎逐字 + panic 消息-span-退出码逐字 + strict 存活断言 + #59 栈帧逐字）；fuzz 双种子 0 分歧；回归全绿。
+
+**验收（2026-11-14 实测）**：`node tests/run.mjs` **1035 项 0 失败**（1016 + §69 19 项）；五形态 + 组合函数 strict exit 0（自造语料 c01–c18 残留 0）；panic 三条（Map 缺键/Err(str) unwrap/expect msg）三引擎 stderr 首行+位置+exit 101 逐字；#59 嵌套栈帧三引擎完整 stderr 逐字（at g 回归）；Err display 三型（i64/u64 位型保真/f64）逐字；下标复合赋值全操作矩阵 + 双重求值副作用锁定（VM 路径）+ wasm 步数可观测对照（v69.10c）；守护余项全部 strict 具名（v69.14/15）；计费回归三引擎一致；`fuzz --seed 44044 --count 40` 0 分歧。**独立审查**：通过——2 MAJOR 修复（M1 无标注 Result let 的 resCtorSlotTy ReferenceError 非具名回落 → 签名补 ctx + 标注非标量具名守护；M2 Result.expect 求值序 msg 先于接收者 → recv→args 恢复，双 panic span 三引擎逐字）；**导入 69→80 尾部追加零错位**（WebAssembly.Module.imports 枚举核对）；遗留登记 N-65.1–65.4（句柄池无回收/直调 +18%/is_some 口径修正/M4002 消息口径 HEAD 预存）。
 **风险/回退**：三类新导入（map_has / panic 带 str 槽 / Err 载荷 display）各独立登记与测试，任一项 strict 回归不绿即停下评估（§4.4.3 四步纪律）；导入表追加沿用 v0.63 教训（尾部追加 + 索引逐处核对 + `iscratch` 类跨表达式槽复用审查——v0.63 B1 教训入审查清单）。
 
 ### 4.5.3 v0.66 — 观测与反馈（校准版，零语义改动）
@@ -753,7 +755,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | 版本 | 完成判定（全部满足） | 量化门槛 |
 |------|---------------------|----------|
 | v0.64 | **✅(2026-11-14 实测)**:#55 裁决落盘（文档 + 前置义务 + NUL 黄金回归，M4017 提案经安全实测否决存档）；#56 校验 + 四损坏形态统一（validateArtifact，21 变体）；#57 安全回归批落地（M4013 专项首破）；S9 编译期拒绝（两遍式）；S12 扩集；#58 顺带（三引擎逐字）；文档漂移清扫（77→78 码对齐/M3012/REPL 横幅） | **§68 21 项(≥10)；回归 1016 全绿；损坏 artifact → 稳定诊断统一；`M4013` 专项断言 ≥1（首破）；fuzz 双种子 0 分歧；无新语言面、零新增 M 码** |
-| v0.65 | slice 3 五形态解锁 + #59 栈帧补齐；守护具名清单清零（仅剩注释登记不可达 `?`） | §69 ≥12；回归 ≥1017 全绿；strict 自造语料残留 = 0；panic 消息-span-退出码三引擎逐字；fuzz 双种子 0 分歧 |
+| v0.65 | **✅(2026-11-14 实测)**:slice 3 五形态解锁（expect 字面量 msg/Map unwrap/Err unwrap·expect/Vec[str] 读/下标复合赋值+标量 &=|=^=）+ #59 栈帧兑现（Route E 帧透传）；守护具名清单清零（余项全部 strict 具名）；导入 69→80 尾部追加零错位；独立审查 2 MAJOR 修复 | **§69 19 项(≥12)；回归 1035 全绿；strict 自造语料残留 0；panic 消息-span-退出码三引擎逐字；fuzz 双种子 0 分歧** |
 | v0.66 | usage audit 重跑 + moltbook ≥1 条 + serve 真实服务观察 + 基线刷新四项全落地 + AI 修正回路快照；Untrusted[Json] ADR 或 go/no-go 记录；**eval ADR 落盘（规划期任务，规划落盘时完成，不占版本主题——第四轮修正措辞）** | 三报告新时点快照；src 零语义改动；回归计数不变全绿；产出 serve v1.1 与 taint v1.1 的裁决记录 |
 
 ### 4.5.7 安全评估第二轮登记（S9–S16；security-engineer，全部实测）
@@ -929,7 +931,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | # | 缺陷 | 严重度 | 状态 |
 |---|------|--------|------|
 | 58 | **mut Vec 元素写越界的 panic 位置三引擎差 1 列**:wasm/tree 用 `target.span`(`[` 列,interp.js:856),字节码 VM 用 Assign 语句/base span——`w[10]=x` 越界时 VM 位置列号小 1。HEAD 预存(非 v0.63 引入);v0.63 wasm 按 interp 源码口径对齐 tree | P3 | **登记未修**(v0.63 审查预存发现 A;修复需 compiler SETINDEX span 调整,涉及既有 panic 位置断言面) | **JS 引擎已修(v0.64)**:compiler SETINDEX span 对齐——三引擎 panic 位置逐字;**cc 侧残留**(cbackend.js:986 语句列 + ming_vec_set 消息带读后缀)登记,FFI/cc 触碰时顺带 
-| 59 | **wasm→wasm 直调 panic 栈缺内层帧**:main→f→g(g 内越界)wasm stderr 缺 `at g` 帧(2 帧 vs tree/VM 3 帧)——wasm 直调不经 callCompiled,深层 Ming 帧不入 callStack;首行/位置/exit 101 已对齐;v0.63 已把单层栈补齐(严格改善),嵌套残留登记 | P3 | **登记未修**(v0.63 审查 M2;修复需每个 wasm 调用点下发调用点 span 透传 callStack;§67 v67.20 按现状断言) |
+| 59 | **wasm→wasm 直调 panic 栈缺内层帧**:main→f→g(g 内越界)wasm stderr 缺 `at g` 帧(2 帧 vs tree/VM 3 帧)——wasm 直调不经 callCompiled,深层 Ming 帧不入 callStack;首行/位置/exit 101 已对齐;v0.63 已把单层栈补齐(严格改善),嵌套残留登记 | P3 | **登记未修**(v0.63 审查 M2;修复需每个 wasm 调用点下发调用点 span 透传 callStack;§67 v67.20 按现状断言) | **已修(v0.65)**:Route E 调用点帧透传——frame_push/frame_pop 导入对(正常返回弹出;panic 穿透时宿主 wasmCallFrames 并入 e.stack 后清空);main→f→g 三引擎完整 stderr 逐字(at g 帧回归);递归正常;**代价:wasm 直调 +18%**(fib30 167→197ms,信息性)
 
 ### 新登记(2026-11-14,第四轮复核——AI 协作面实测;#60–#62 先登记不修)
 
@@ -948,6 +950,10 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | N-62.3 | §66 v66.15(worker 启动失败)skip:`new Worker` 抛错难确定性构造;行为正确性由源码审查覆盖(五条释放路径 done/error/exit/timeout/启动失败均有 release 且 done 防双释放——审查确认) | 信息 | 已登记(v0.62 审查 n2) |
 | N-64 | examples 零覆盖 v0.61/v0.62 能力面:Untrusted/std.unstr 与 std.net.serve 各 0 示例(18 文件 grep 证实)——AI 靠 examples 学惯用法,两个新能力面"文档化但不可见" | 信息 | Backlog:各补 1 个 ≤30 行示例(模板 fs_demo/unsafe_demo);第四轮复核登记 |
 | N-64b | 使命层端到端实测结论(AI 修正回路):17 错误程序 100% 被 `check --json` 捕获(码/位置/消息全准)、多错误一次报告 5 条、warning-only ok:true、panic 形态三引擎一致、LSP/REPL/test/fmt/doc/init 冒烟正常——AI 修正回路主干健康,是当前最强协作面 | 信息 | 第四轮复核登记(plan §4.5.8);v0.67 主题裁决证据基线 |
+| N-65.1 | wasm Result 句柄表示:Ok/Err 构造入 objTable 句柄池,无回收(循环内构造单调增长;实测 100,000 次构造 exit 0 正确无上限)——与既有 Vec/Map 句柄、callCompiled 参数入表同一 pre-existing 模式;语义安全(Result 无变异方法,句柄共享无别名风险;Result 形参/返回不 eligible,句柄不跨函数边界) | 信息 | 已登记(v0.65 审查 NOTE 1) |
+| N-65.2 | frame 透传使 wasm 直调增约 18%(fib30 167→197ms,stash 对照实测)——换 #59 三引擎栈帧逐字的代价;bench 信息性 | 信息 | 已登记(v0.65 W1;架构师复核项) |
+| N-65.3 | unwrap_or/is_some/is_none 实为 **shape-eligible + emit 具名回落**(strict exit 2),非既往登记的"不 eligible"——口径修正入 GUIDE/capabilities(v0.65 W1 实测) | 信息 | 已登记(口径修正) |
+| N-65.4 | M4002 wasm 消息为泛化文案(整数运算溢出/移位越界)vs tree 操作数逐字明细——HEAD 预存分歧,v0.65 复测确认(span/exit 已逐字,仅消息文本) | 信息 | 已登记(GUIDE/capabilities 已载;操作数穿越导入边界留后续) |
 | N-63.1 | 嵌套位置污点诊断回落通用码:`Result[Untrusted[str],str]`→`Result[str,str]` 块尾、match/if 分支混型、spawn_all Vec 元素、用户变体载荷报 M3002(而非 M3049);`json.stringify` 的 M3033 hint 对污点值误导——全部**正确拒绝**,仅诊断质量非旁路 | 信息 | 已登记(审查 m3;后续可把判定改 `typeContainsUntrusted(actual) && !typeContainsUntrusted(expected)`) |
 | N-61.2 | compiler `tryWasm` 的 Untrusted 解包为**原地修改** checker `entry.sig`(运行时擦除下语义自洽;doc/LSP 读 AST 不受影响;AOT 产物存载体签名正确)——卫生债:未来"compile 之后再读 sig 渲染"的功能会踩坑 | 信息 | 已登记(审查 n1;建议将来改 clone 喂 wasm.js,v1 不修) |
 | N-60.1 | #53 钳制等待后的 `checkTimeQuota`（M4012）先于 `worker.terminate()` 抛出（syncSpawnAll/syncJoin/join_detailed/exitSyncScope 四处）——CLI 侧 `process.exit` 收割全部 worker 无碍；"解释器即库"（REPL/嵌入）场景会泄漏运行中 worker 至任务自然结束。修复前该位置无检查，非回归 | 信息 | 已登记（v0.60 批次 1 审查；后续可把 terminate 挪到检查前/finally） |

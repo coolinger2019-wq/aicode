@@ -47,6 +47,10 @@ export class VMInterp extends Interp {
     this.resolvedPool = this.compiled.pool.map(resolveConst);
     this.valueStack = [];
     this.frames = [];
+    // v0.65 §4.5.2 #59:wasm→wasm 直调的调用点帧栈(frame_push/frame_pop 维护)——
+    // 直调不经 callCompiled,帧不进 callStack;panic 穿透时帧留在本栈,由外层
+    // callCompiled catch 合并进 e.stack(与 tree/VM 三帧逐字),catch 边界清空。
+    this.wasmCallFrames = [];
     // WASM 分层(v0.11):纯整数函数编译为 wasm i64;失败静默回落 JS VM
     this.wasmExports = null;
     this.wasmEligible = null;
@@ -63,8 +67,11 @@ export class VMInterp extends Interp {
         const strTable = this.wasmStrTable;
         const floatStrOf = (x) => (Number.isNaN(x) ? 'NaN' : x === Infinity ? 'Infinity' : x === -Infinity ? '-Infinity' : (Number.isInteger(x) && Math.abs(x) < 1e21 ? x.toFixed(1) : String(x)));
         // 容器句柄表(v0.18):wasm 内 Vec/Map = i32 句柄;JS 侧持 V 对象
+        // v0.65 slice 3:Result 值同走 objTable(枚举 V 对象,只读共享安全——Result 无变异方法)
         this.wasmObjTable = [];
         const objTable = this.wasmObjTable;
+        // #59:直调帧栈(见构造函数注释)
+        const wasmFrames = this.wasmCallFrames;
         // v0.32:线性内存引用与 bump 堆顶(ming_alloc/grow/copy_vec/参数写入共用)
         // v0.60(#51):wasmParamTopStack 已删——参数堆顶改由 callCompiled 内
         // paramTopSaved 局部保存/恢复(finally 口径,panic 路径同样复位)。
@@ -257,6 +264,76 @@ export class VMInterp extends Interp {
             panic_m4006: (spanIdx) => {
               throw new Panic('M4006', '对 None 调用 unwrap()', spans[spanIdx] ?? null);
             },
+            // v0.65 §4.5.2 slice 3:守护收口五形态宿主导入(消息与 interp 逐字同源;
+            // 签名与 wasm.js 导入段尾部追加序逐项对齐,索引 TI+6..TI+16)。
+            // expect(字面量 msg)失败(interp.js:3246 口径:`expect 失败: ${args[0].v}`);
+            // strIdx = strConsts 偏移(wasmStrTable 预填区直读,同 str_const 机制)。
+            panic_expect: (spanIdx, strIdx) => {
+              throw new Panic('M4006', `expect 失败: ${strTable[Number(strIdx)] ?? ''}`, spans[Number(spanIdx)] ?? null);
+            },
+            // Map get 消费链缺键判定(map_get 语义拆分:先 has 后 get;键句柄经 keyStr 同 map_set 口径)
+            map_has: (h, kh) => {
+              const m = objTable[Number(h)]?.m ?? new Map();
+              return m.has(keyStr(kh)) ? 1 : 0;
+            },
+            // Vec[str] 下标读(interp.js:1009 读 flavor:消息带 "(用 .get(i) 返回 Option)" 后缀
+            // + span;界内返回 str 句柄——同 vec_get_str + span 补齐)
+            vecstr_get: (h, i, spanIdx) => {
+              const a = objTable[Number(h)]?.a ?? [];
+              const idx = Number(i);
+              if (!Number.isInteger(idx) || idx < 0 || idx >= a.length) {
+                throw new Panic('M4003', `索引越界:长度 ${a.length},访问 ${idx}(用 .get(i) 返回 Option)`, spans[Number(spanIdx)] ?? null);
+              }
+              const el = a[idx];
+              if (el.t !== 'str') throw new Panic('M4001', '内部错误:vec 元素类型', null);
+              strTable.push(el.v);
+              return strTable.length - 1;
+            },
+            // Ok/Err 构造(interp.js:1222 口径 V.enumv('builtin-res', tag, [载荷]);
+            // 构造不计费,与 interp 无 chargeAllocBytes 一致)。isU64:u64 载荷位型还原
+            // (wasm i64 有符号出栈 → asUintN 后 display 与 tree/VM 逐字)。
+            res_new_i64: (isErr, isU64, v) => {
+              const pv = Number(isU64) ? V.int(BigInt.asUintN(64, v), 64, false) : V.int(v, 64, true);
+              objTable.push(V.enumv('builtin-res', Number(isErr) ? 'Err' : 'Ok', [pv]));
+              return objTable.length - 1;
+            },
+            res_new_f64: (isErr, v) => {
+              objTable.push(V.enumv('builtin-res', Number(isErr) ? 'Err' : 'Ok', [V.float(v, 64)]));
+              return objTable.length - 1;
+            },
+            res_new_str: (isErr, sh) => {
+              objTable.push(V.enumv('builtin-res', Number(isErr) ? 'Err' : 'Ok', [V.str(strTable[Number(sh)] ?? '')]));
+              return objTable.length - 1;
+            },
+            // Result unwrap/expect(interp.js:3258 口径):Ok → 载荷直通;Err → panic_m4006,
+            // unwrap 消息 = `对 Err(<displayStr>) 调用 unwrap()`,expect 消息 = `expect 失败: <载荷.v>`
+            // (interp 对 expect 用原始 .v 模板插值,非 displayStr——逐字对齐)。
+            res_unwrap_i64: (h, spanIdx, isExpect) => {
+              const v = objTable[Number(h)];
+              if (!v || v.def !== 'builtin-res') throw new Panic('M4001', '内部错误:Result 句柄', null);
+              if (v.tag === 'Ok') return BigInt(v.vals[0].v);
+              throw new Panic('M4006', Number(isExpect) ? `expect 失败: ${v.vals[0].v}` : `对 Err(${displayStr(v.vals[0])}) 调用 unwrap()`, spans[Number(spanIdx)] ?? null);
+            },
+            res_unwrap_f64: (h, spanIdx, isExpect) => {
+              const v = objTable[Number(h)];
+              if (!v || v.def !== 'builtin-res') throw new Panic('M4001', '内部错误:Result 句柄', null);
+              if (v.tag === 'Ok') return Number(v.vals[0].v);
+              throw new Panic('M4006', Number(isExpect) ? `expect 失败: ${v.vals[0].v}` : `对 Err(${displayStr(v.vals[0])}) 调用 unwrap()`, spans[Number(spanIdx)] ?? null);
+            },
+            res_unwrap_str: (h, spanIdx, isExpect) => {
+              const v = objTable[Number(h)];
+              if (!v || v.def !== 'builtin-res') throw new Panic('M4001', '内部错误:Result 句柄', null);
+              if (v.tag === 'Ok') { strTable.push(v.vals[0].v); return strTable.length - 1; }
+              throw new Panic('M4006', Number(isExpect) ? `expect 失败: ${v.vals[0].v}` : `对 Err(${displayStr(v.vals[0])}) 调用 unwrap()`, spans[Number(spanIdx)] ?? null);
+            },
+            // #59:wasm→wasm 直调调用点帧透传——帧名/调用点 span 与 interp callUser
+            // (interp.js:593 callStack.push({name, span: callSpan}))同口径;panic 穿透时
+            // 帧留在栈上,由 callCompiled catch 合并进 e.stack,catch 边界清空。
+            frame_push: (fnIdx, spanIdx) => {
+              const fn = this.compiled.functions[Number(fnIdx)];
+              wasmFrames.push({ name: fn?.name ?? ('m' + fnIdx), span: spans[Number(spanIdx)] ?? null });
+            },
+            frame_pop: () => { wasmFrames.pop(); },
           },
         };
         // v0.32 修复:math 导入此前从未提供(v0.12 起 wasm 实例化必败的根源之一);导入名带 math_ 前缀
@@ -463,13 +540,15 @@ export class VMInterp extends Interp {
           // !e.stack.length 防重:嵌套更深帧已填链时外层不覆盖(同既有口径)。
           // 逐字对照验证:wasm 与 --no-wasm 的 panic stderr(含栈)完全一致后保留;
           // 不一致则回退(纪律见 §67 测试注释)。
-          // v0.63 已知残留(wasm→wasm 直调):wasm 代码内部对 eligible 函数的直调不经
-          // callCompiled(见 compileCallNum resolveWasmCallIdx),内层帧不进 callStack——
-          // 嵌套调用(main→f→g,g 内 panic)的 panic 栈缺 g 帧(仅 main→f)。
-          // 修复需调用点 span 透传,超本片范围;§67 v67.20 按现状断言,登记 plan/GUIDE。
+          // v0.65 §4.5.2 #59(修复 v0.63 已知残留):wasm→wasm 直调(main→f→g)的深层帧
+          // 经调用点 frame_push 存 wasmCallFrames(不经 callCompiled,callStack 只有字节码
+          // 层帧)——panic 穿透时按调用序追加(callStack 最老在前 + 直调帧最深在尾),
+          // 与 tree/VM 三帧逐字。无论 panic/trap 都清空(帧栈随本次调用终结,防止
+          // 上层捕获后续帧;wasm 只直调 eligible 纯函数,帧栈不会跨越本边界存续)。
           if (e instanceof Panic && !e.stack.length) {
-            e.stack = this.callStack.slice();
+            e.stack = this.callStack.concat(this.wasmCallFrames);
           }
+          this.wasmCallFrames.length = 0;
           this.depth--;
           this.callStack.pop();
           if (e instanceof Panic) throw e;

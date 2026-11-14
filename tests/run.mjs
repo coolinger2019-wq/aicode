@@ -3464,8 +3464,10 @@ fn main() with io, fs {
     'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }',
     'fn main() with io { print(str(fib(10))); }',
   ].join('\n'));
+  // v0.65 校准:expect(编译期字面量 msg)已解锁 → 夹具换仍守护的变量 msg expect(§69 同源具名);
+  // 非 strict 输出仍为 1(expect 界内取值),strict 回落机制测试意图不变。
   const fbProg = mingFile('v53-wasm-fallback.ming', [
-    'fn g(v: Vec[i64]) -> i64 { return v.get(0).expect("need"); }',
+    'fn g(v: Vec[i64]) -> i64 { let msg = "need"; return v.get(0).expect(msg); }',
     'fn main() with io { print(str(g([1, 2]))); }',
   ].join('\n'));
   const noneProg = mingFile('v53-wasm-none.ming', 'fn main() with io { print("e"); }');
@@ -3488,10 +3490,10 @@ fn main() with io, fs {
   // 2) fallback:strict exit 2 并点名函数与原因(文本 stderr 与 --json 两路)
   const fbStrict = runMing(['run', fbProg, '--strict-wasm']);
   const fbJson = JSON.parse(runMing(['run', fbProg, '--strict-wasm', '--json']).stdout);
-  // v0.63 校准:回落原因随夹具翻转(f64 复合赋值已解锁 → Option 消费链 expect 仍具名守护)
+  // v0.65 校准:回落原因随夹具翻转(expect 字面量 msg 已解锁 → 变量 msg expect 具名守护)
   check('v53.2:strict fallback exit 2 + 点名函数与原因',
-    fbStrict.code === 2 && fbStrict.stdout === '' && (fbStrict.stderr ?? '').includes('wasm 编译回落(g)') && (fbStrict.stderr ?? '').includes('Option 消费链 expect')
-    && fbJson.exit_code === 2 && fbJson.wasm_status === 'fallback' && (fbJson.error ?? '').includes('Option 消费链 expect'),
+    fbStrict.code === 2 && fbStrict.stdout === '' && (fbStrict.stderr ?? '').includes('wasm 编译回落(g)') && (fbStrict.stderr ?? '').includes('expect msg 非编译期字面量(待解锁)')
+    && fbJson.exit_code === 2 && fbJson.wasm_status === 'fallback' && (fbJson.error ?? '').includes('expect msg 非编译期字面量(待解锁)'),
     'code=' + fbStrict.code + ' stderr=' + (fbStrict.stderr ?? '').slice(0, 160) + ' json=' + JSON.stringify(fbJson));
 
   // 3) 非 strict 静默回落行为逐字不变(exit 0 + 正确结果 + stderr 干净);--json 仅 additive 多 wasm_status
@@ -3533,7 +3535,7 @@ fn main() with io, fs {
   const stNone = mkStatus(noneProg);
   check('v53.7:wasmLayerStatus 纯函数三态(ok/fallback 点名/none)',
     stOk.status === 'ok' && stOk.eligible >= 1 && stOk.reason === null
-    && stFb.status === 'fallback' && (stFb.reason ?? '').includes('编译回落(g)') && (stFb.reason ?? '').includes('Option 消费链 expect') && stFb.eligible === 1
+    && stFb.status === 'fallback' && (stFb.reason ?? '').includes('编译回落(g)') && (stFb.reason ?? '').includes('expect msg 非编译期字面量(待解锁)') && stFb.eligible === 1
     && stNone.status === 'none' && stNone.eligible === 0,
     'ok=' + JSON.stringify(stOk) + ' fb=' + JSON.stringify(stFb) + ' none=' + JSON.stringify(stNone));
 
@@ -3771,15 +3773,15 @@ fn main() with io, fs {
   // ---------- F. v0.53.0 独立审查修复回归(2026-11-12)----------
   // B2:check --strict-wasm 的 fallback 与正常路径共用同一 out 构造——ok:false、
   // diagnostics(含 warning)与 --proof-report 的 proofs 都不能丢。
-  // v0.63 校准:原夹具 g 体 `y += 1.0`(f64 复合赋值)已解锁 → strict 直接 ok;换成仍守护的
-  // Option expect(§67 同源),函数名 g 与 fallback 触发口径保持;pick/eqf 原样保留
+  // v0.65 校准:expect(编译期字面量 msg)已解锁 → 换仍守护的变量 msg expect(与 fbProg 同源),
+  // 函数名 g 与 fallback 触发口径保持;pick/eqf 原样保留
   // (proof 报告 pick: 义务 1 + W3102 浮点等值断言均不受翻转影响)。
   const pfProg = mingFile('v53-proof-fb.ming', [
     'fn pick(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
     '    return buf[i];',
     '}',
     'fn eqf(x: f64) -> bool { return x == 1.0; }',
-    'fn g(v: Vec[i64]) -> i64 { return v.get(0).expect("need"); }',
+    'fn g(v: Vec[i64]) -> i64 { let msg = "need"; return v.get(0).expect(msg); }',
     'fn main() with io { print(str(pick([10, 20, 30], 1))); print(str(g([1, 2]))); }',
   ].join('\n'));
   const pfR = runMing(['check', pfProg, '--proof-report', '--json', '--strict-wasm']);
@@ -8383,11 +8385,11 @@ fn main() with io, fs {
       `build=${a.b.status} run=${a.r.status} out=${JSON.stringify(a.r.stdout)} err=${JSON.stringify((a.r.stderr ?? '').slice(0, 160))}`);
   }
 
-  // ---- v63.19(引导守护,v0.63 翻转校准):原四守护形态中 VecLit/下标读/mut 写已解锁
-  // (strict exit 0,[wasm] fn OK 且无 REJECT);Option 消费链仍守护。改写为两段口径(单 check
-  // 保持总数不变):(a) 已解锁三形态 strict ok + fn OK + 非 strict 三引擎逐字;(b) 剩余守护
-  // 三形态(Map unwrap / Vec[str] 下标读 / 下标复合赋值,与 §67 v67.19-25 同源具名文本)
-  // strict exit 2 原因具名 + 非 strict 三引擎逐字。"剩余守护"清单随解锁收窄。
+  // ---- v63.19(引导守护,v0.65 翻转校准):v0.63 已解锁 VecLit/下标读/mut 写;v0.65 slice 3
+  // 再解锁 Map unwrap / Vec[str] 下标读 / 下标复合赋值(全部 strict exit 0 + fn OK 无 REJECT)。
+  // 改写为两段口径(单 check 保持总数不变):(a) 已解锁六形态 strict ok + fn OK + 非 strict
+  // 三引擎逐字;(b) 剩余守护三形态(变量 msg expect / unwrap_or / Vec[str] 元素写,与 §69
+  // 同源具名文本)strict exit 2 原因具名 + 非 strict 三引擎逐字。"剩余守护"清单随解锁收窄。
   {
     const unlockedCases = [
       ['veclit', [
@@ -8402,20 +8404,32 @@ fn main() with io, fs {
         'fn vw(mut v: Vec[i64]) -> i64 { v[0] = 5; return v[1]; }',
         'fn main() with io { print(str(vw([1, 2]))); }',
       ].join('\n'), '2\n', 'vw'],
-    ];
-    const guardedCases = [
       ['mapunwrap', [
         'fn og(m: Map[str, i64]) -> i64 { return m.get("a").unwrap(); }',
         'fn main() with io { print(str(og({"a": 3}))); }',
-      ].join('\n'), '3\n', 'og', 'Option 消费链 unwrap'],
+      ].join('\n'), '3\n', 'og'],
       ['vecstr', [
         'fn vs(s: Vec[str]) -> str { return s[0]; }',
         'fn main() with io { print(vs(["a", "b"])); }',
-      ].join('\n'), 'a\n', 'vs', 'Vec 下标读 vstr'],
+      ].join('\n'), 'a\n', 'vs'],
       ['idxcompound', [
         'fn ic(mut v: Vec[i64]) -> i64 { v[0] += 5; return v[0]; }',
         'fn main() with io { print(str(ic([1, 2]))); }',
-      ].join('\n'), '6\n', 'ic', '下标复合赋值 +='],
+      ].join('\n'), '6\n', 'ic'],
+    ];
+    const guardedCases = [
+      ['msgvar', [
+        'fn gv(v: Vec[i64]) -> i64 { let msg = "need"; return v.get(0).expect(msg); }',
+        'fn main() with io { print(str(gv([1, 2]))); }',
+      ].join('\n'), '1\n', 'gv', 'expect msg 非编译期字面量(待解锁)'],
+      ['unwrapor', [
+        'fn uo(v: Vec[i64]) -> i64 { return v.get(10).unwrap_or(7); }',
+        'fn main() with io { print(str(uo([1, 2]))); }',
+      ].join('\n'), '7\n', 'uo', 'Option 消费链 unwrap_or'],
+      ['vecstrwrite', [
+        'fn vsw(mut s: Vec[str]) -> i64 { s[0] = "z"; return 1; }',
+        'fn main() with io { print(str(vsw(["a", "b"]))); }',
+      ].join('\n'), '1\n', 'vsw', 'Vec[str] 元素写(句柄容器,登记不做)'],
     ];
     let allOk = true;
     const detail = [];
@@ -8438,7 +8452,7 @@ fn main() with io, fs {
       if (!ok) allOk = false;
       detail.push(`${name}:${runs.map(r => r.code).join(',')}:strict=${st.code}`);
     }
-    check('v63.19:守护翻转——已解锁(VecLit/下标读/mut 写)strict ok 且 [wasm] fn OK 无 REJECT;剩余守护(Map unwrap/Vec[str] 下标/下标复合赋值)strict exit 2 原因具名;非 strict 三引擎输出逐字一致',
+    check('v63.19:守护翻转——已解锁(VecLit/下标读/mut 写/Map unwrap/Vec[str] 下标读/下标复合赋值)strict ok 且 [wasm] fn OK 无 REJECT;剩余守护(变量 msg expect/unwrap_or/Vec[str] 元素写)strict exit 2 原因具名;非 strict 三引擎输出逐字一致',
       allOk, detail.join(' | '));
   }
 
@@ -11105,7 +11119,7 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // 守护:Map unwrap(strict 下具名回落,非 strict 经 VM 正确执行)
+    // v0.65 已解锁:Map unwrap(map_has 导入判定在先,缺键 → M4006;命中路径 strict ok)
     guardMapUnwrap: [
       'fn f() -> i64 {',
       '    let m: Map[str, i64] = {"a": 1};',
@@ -11113,7 +11127,7 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // 守护:Err unwrap(Err 构造先行拒绝——具名"调用 Err",守护未静默)
+    // v0.65 已解锁:Err unwrap(Err(str) 构造 + 消费链;Err 分支 → M4006 `对 Err(bad) 调用 unwrap()`)
     guardErrUnwrap: [
       'fn f() -> i64 {',
       '    let r: Result[i64, str] = Err("bad");',
@@ -11121,7 +11135,7 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // 守护:expect(自定义 msg)(具名 Option 消费链 expect)
+    // v0.65 已解锁:expect(编译期字面量 msg;越界 → M4006 `expect 失败: need`)
     guardExpect: [
       'fn f() -> i64 {',
       '    let v: Vec[i64] = [1, 2, 3];',
@@ -11129,8 +11143,8 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // M2 v67.20:嵌套 panic(main→f→g,g 内越界)——wasm→wasm 直调不经 callCompiled,
-    // 按现状断言 wasm 栈缺内层 g 帧(已知残留,登记 GUIDE §19/修订记录)。
+    // v67.20 #59(v0.65 修复):嵌套 panic(main→f→g,g 内越界)——wasm→wasm 直调调用点
+    // frame_push 透传,三帧(main→f→g)与 tree/VM 完整 stderr 逐字。
     nestedPanic: [
       'fn g() -> i64 {',
       '    let v: Vec[i64] = [1, 2, 3];',
@@ -11141,7 +11155,7 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // v67.21 守护:unwrap_or(无 panic 面,具名回落)
+    // v67.21 守护:unwrap_or(无 panic 面;shape-eligible + emit 具名回落,非"不 eligible")
     guardUnwrapOr: [
       'fn f() -> i64 {',
       '    let v: Vec[i64] = [1, 2, 3];',
@@ -11149,7 +11163,8 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // v67.22 守护:is_some——bool 局部 + 数值返回形态具名回落;bool 返回形态本就不 eligible
+    // v67.22 守护:is_some——bool 局部 + 数值返回形态具名回落(shape-eligible + emit 具名);
+    // bool 返回形态函数本就不 eligible(strict exit 0,无 wasm 尝试)
     guardIsSome: [
       'fn f() -> i64 {',
       '    let v: Vec[i64] = [1, 2, 3];',
@@ -11181,7 +11196,7 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // v67.24 守护:Vec[str] 下标读(句柄容器,具名回落)
+    // v0.65 已解锁:Vec[str] 下标读(句柄容器经 vecstr_get;界内返回 str 句柄,strict ok)
     guardVecStrRead: [
       'fn f() -> str {',
       '    let s: Vec[str] = ["a", "b"];',
@@ -11189,7 +11204,7 @@ fn main() with io, fs {
       '}',
       'fn main() with io { print(f()); }',
     ].join('\n'),
-    // v67.25 守护:下标复合赋值(具名回落)
+    // v0.65 已解锁:下标复合赋值(interp assignTo 双重求值口径;strict ok)
     guardIdxCompound: [
       'fn f() -> i64 {',
       '    let mut v: Vec[i64] = [1, 2, 3];',
@@ -11455,55 +11470,69 @@ fn main() with io, fs {
       `w=${JSON.stringify(runs[0].stderr.slice(-260))} n=${JSON.stringify(runs[1].stderr.slice(-260))}`);
   }
 
-  // v67.17 具名守护 1:Map unwrap——strict exit 2,stderr 含具名 Option 消费链 unwrap(守护未静默)
+  // v67.17(v0.65 翻转):Map unwrap 已解锁(map_has 导入判定在先)——strict exit 0 +
+  // [wasm] fn f OK 无 REJECT;非 strict 三引擎正确输出 1。缺键分支 panic 对齐见 §69 v69.6。
   {
     const p = m67('k67_17_mapunwrap.ming', SRC67.guardMapUnwrap);
     const s = strict67b(p);
     const ns = runAll67(p);
-    check('v67.17:Map unwrap strict exit 2 + REJECT Option 消费链 unwrap;非 strict 三引擎正确输出 1',
-      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 unwrap') && same67(ns, '1\n'),
-      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ns=${fmtRuns67(ns)}`);
+    check('v67.17:Map unwrap 已解锁——strict exit 0 + [wasm] fn f OK 无 REJECT;非 strict 三引擎正确输出 1',
+      s.code === 0 && s.stdout === '1\n' && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落')
+        && same67(ns, '1\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('wasm]')) ?? '')} ns=${fmtRuns67(ns)}`);
   }
 
-  // v67.18 具名守护 2:Err unwrap——strict exit 2 + 具名拒绝。
-  // 注:计划文案为 "REJECT: Option 消费链...",实测 Err("bad") 构造表达式先行拒绝
-  // (具名 "调用 Err",BEFORE unwrap 链)——同为具名回落、守护未静默,文案差异登记。
+  // v67.18(v0.65 翻转):Err unwrap 已解锁(Err 构造经 objTable 句柄 + res_unwrap_*)——
+  // strict 下 fn 编译 OK,Err("bad") 分支运行时 M4006 `对 Err(bad) 调用 unwrap()`,
+  // 三引擎 panic 完整 stderr 逐字(exit 101)。m3(v0.65 审查):strict 侧 panic 断言由
+  // 全文 includes 统一为 firstLine 口径(与 §69 panicAlign69 同源)——debug 环境的 strict
+  // stderr 带 [wasm] 前缀行,另跑无 debug 的 strict 对齐首行(fn OK/无 REJECT 仍看 debug 腿)。
   {
     const p = m67('k67_18_errunwrap.ming', SRC67.guardErrUnwrap);
     const s = strict67b(p);
-    check('v67.18:Err unwrap strict exit 2 + 具名 REJECT(调用 Err)',
-      s.code === 2 && s.stderr.includes('REJECT') && s.stderr.includes('回落'),
-      `code=${s.code} stderr=${JSON.stringify(s.stderr.split('\n').filter(l => l.includes('REJECT') || l.includes('strict-wasm')).join(' | ').slice(0, 240))}`);
+    const sPlain = runMing(['run', p, '--strict-wasm']);
+    const ns = runAll67(p);
+    check('v67.18:Err unwrap 已解锁——strict fn OK + 运行时 M4006 对 Err(bad) 调用 unwrap();三引擎 panic 逐字 exit 101',
+      s.code === 101 && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT')
+        && sPlain.code === 101 && firstLine67(sPlain).includes('error M4006')
+        && firstLine67(sPlain).includes('对 Err(bad) 调用 unwrap()')
+        && firstLine67(sPlain) === firstLine67(ns[0]) && sPlain.stderr === ns[0].stderr
+        && ns.every(r => r.code === 101) && firstLine67(ns[0]) === firstLine67(ns[1]) && firstLine67(ns[0]) === firstLine67(ns[2])
+        && ns[0].stderr === ns[1].stderr && ns[0].stderr === ns[2].stderr,
+      `strict=${s.code}:${JSON.stringify(firstLine67(s))} plain=${sPlain.code}:${JSON.stringify(firstLine67(sPlain))} ns=${fmtRuns67(ns)}`);
   }
 
-  // v67.19 具名守护 3:expect(自定义 msg)——strict exit 2 + 具名 Option 消费链 expect
+  // v67.19(v0.65 翻转):expect(编译期字面量 msg)已解锁(msg 经 strConsts 穿越导入边界)
+  // ——strict exit 0 + [wasm] fn f OK;非 strict 三引擎输出 1。越界 panic 对齐见 §69 v69.8。
   {
     const p = m67('k67_19_expect.ming', SRC67.guardExpect);
     const s = strict67b(p);
-    check('v67.19:expect strict exit 2 + REJECT Option 消费链 expect',
-      s.code === 2 && s.stderr.includes('REJECT: Option 消费链 expect'),
-      `code=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')}`);
+    const ns = runAll67(p);
+    check('v67.19:expect(字面量 msg)已解锁——strict exit 0 + [wasm] fn f OK;非 strict 三引擎输出 1',
+      s.code === 0 && s.stdout === '1\n' && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落')
+        && same67(ns, '1\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('wasm]')) ?? '')} ns=${fmtRuns67(ns)}`);
   }
 
-  // v67.20 审查 M2:嵌套 panic(main→f→g,g 内越界)——wasm→wasm 直调不经 callCompiled,
-  // 深层帧不进 callStack → wasm panic 栈缺 `at g` 帧。修复需调用点 span 透传,超本片范围
-  // (已知残留,登记 GUIDE §19/修订记录)。本用例按**现状**断言:首行/位置/exit 与 tree 逐字,
-  // 栈帧数 = 当前真实行为(wasm 仅 main→f 两帧;tree/VM 三帧齐全)。残留修复落地时翻转本断言。
+  // v67.20(v0.65 翻转,#59 修复):嵌套 panic(main→f→g,g 内越界)——wasm→wasm 直调调用点
+  // frame_push/frame_pop 透传(帧名/调用点 span 与 interp callUser 同口径),panic 穿透时
+  // 帧按调用序合并进 e.stack → 三帧(`at g`/`at f`/`at main`)完整 stderr 三引擎逐字。
+  // v0.63 已知残留(wasm 栈缺内层 g 帧)就此收口。
   {
     const p = m67('k67_20_npanic.ming', SRC67.nestedPanic);
     const runs = runAll67(p);
     const msg = '索引越界:长度 3,访问 10(用 .get(i) 返回 Option)';
-    check('v67.20:嵌套 panic 首行/exit 三引擎逐字 + wasm 栈缺内层 g 帧(已知残留,按现状断言)',
+    check('v67.20:嵌套 panic 三帧完整 stderr 三引擎逐字(含 at g/at f/at main)+ exit 101',
       runs.every(r => r.code === 101)
         && firstLine67(runs[0]) === firstLine67(runs[1]) && firstLine67(runs[0]) === firstLine67(runs[2])
         && firstLine67(runs[0]).includes(msg)
-        && runs[0].stderr.includes('at f (') && runs[0].stderr.includes('at main (')
-        && !runs[0].stderr.includes('at g (')
-        && runs[2].stderr.includes('at g (') && runs[2].stderr.includes('at f (') && runs[2].stderr.includes('at main ('),
+        && runs[0].stderr === runs[1].stderr && runs[0].stderr === runs[2].stderr
+        && runs[0].stderr.includes('at g (') && runs[0].stderr.includes('at f (') && runs[0].stderr.includes('at main ('),
       fmtRuns67(runs) + ` wasmStack=${JSON.stringify(runs[0].stderr.slice(-200))}`);
   }
 
-  // v67.21 具名守护 4:unwrap_or——strict exit 2 + 具名 Option 消费链 unwrap_or;非 strict 三引擎界外取默认
+  // v67.21 具名守护 4:unwrap_or——strict exit 2 + 具名 Option 消费链 unwrap_or(函数 shape-eligible
+  // + emit 期具名回落,非"不 eligible";v0.65 口径修正);非 strict 三引擎界外取默认
   {
     const p = m67('k67_21_unwrapor.ming', SRC67.guardUnwrapOr);
     const s = strict67b(p);
@@ -11513,8 +11542,9 @@ fn main() with io, fs {
       `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ns=${fmtRuns67(ns)}`);
   }
 
-  // v67.22 具名守护 5:is_some——bool 局部+数值返回形态具名回落(strict exit 2);
-  // bool 返回形态函数本就不 eligible(strict exit 0,无 wasm 尝试)——GUIDE §19 措辞双形态锁定
+  // v67.22 具名守护 5:is_some——bool 局部+数值返回形态具名回落(strict exit 2;shape-eligible +
+  // emit 期具名,非"不 eligible");bool 返回形态函数本就不 eligible(strict exit 0,无 wasm 尝试)
+  // ——GUIDE §19 措辞双形态锁定
   {
     const p = m67('k67_22_issome.ming', SRC67.guardIsSome);
     const s = strict67b(p);
@@ -11542,24 +11572,28 @@ fn main() with io, fs {
       `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ret=${sb.code} ns=${fmtRuns67(ns)} nsb=${fmtRuns67(nsb)}`);
   }
 
-  // v67.24 具名守护 7:Vec[str] 下标读(句柄容器)——strict exit 2 + 具名 'Vec 下标读 vstr';非 strict 三引擎 'a'
+  // v67.24(v0.65 翻转):Vec[str] 下标读已解锁(vecstr_get 宿主导入,界内返回 str 句柄)
+  // ——strict exit 0 + [wasm] fn f OK;非 strict 三引擎 'a'。越界 panic 对齐见 §69 v69.11。
   {
     const p = m67('k67_24_vecstr.ming', SRC67.guardVecStrRead);
     const s = strict67b(p);
     const ns = runAll67(p);
-    check('v67.24:Vec[str] 下标读 strict exit 2 + REJECT Vec 下标读 vstr;非 strict 三引擎输出 a',
-      s.code === 2 && s.stderr.includes('REJECT') && s.stderr.includes('Vec 下标读 vstr') && same67(ns, 'a\n'),
-      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT') || l.includes('回落')) ?? '')} ns=${fmtRuns67(ns)}`);
+    check('v67.24:Vec[str] 下标读已解锁——strict exit 0 + [wasm] fn f OK;非 strict 三引擎输出 a',
+      s.code === 0 && s.stdout === 'a\n' && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落')
+        && same67(ns, 'a\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('wasm]')) ?? '')} ns=${fmtRuns67(ns)}`);
   }
 
-  // v67.25 具名守护 8:下标复合赋值 v[i] += x——strict exit 2 + 具名 '下标复合赋值 +=';非 strict 三引擎 6
+  // v67.25(v0.65 翻转):下标复合赋值 v[i] += x 已解锁(interp assignTo 双重求值口径,wasm 对齐)
+  // ——strict exit 0 + [wasm] fn f OK;非 strict 三引擎输出 6。
   {
     const p = m67('k67_25_compound.ming', SRC67.guardIdxCompound);
     const s = strict67b(p);
     const ns = runAll67(p);
-    check('v67.25:下标复合赋值 strict exit 2 + REJECT 下标复合赋值 +=;非 strict 三引擎输出 6',
-      s.code === 2 && s.stderr.includes('REJECT: 下标复合赋值 +=') && same67(ns, '6\n'),
-      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT')) ?? '')} ns=${fmtRuns67(ns)}`);
+    check('v67.25:下标复合赋值已解锁——strict exit 0 + [wasm] fn f OK;非 strict 三引擎输出 6',
+      s.code === 0 && s.stdout === '6\n' && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落')
+        && same67(ns, '6\n'),
+      `strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('wasm]')) ?? '')} ns=${fmtRuns67(ns)}`);
   }
 
   // v67.26 审查 B1 回归锁定:嵌套下标读三复现——修复前 wasm 静默错值(121/0/2 vs tree 321/90/8),
@@ -12207,6 +12241,636 @@ fn main() with io, fs {
       same68(runs, '7\n'), fmtRuns68(runs));
   }
   // §68-END
+}
+
+// ===================== 69. v0.65:wasm 守护收口 slice 3(plan §4.5.2;守护具名清单清零)=====================
+// 文件所有权:§69 = 本区全部用例。五形态:expect(msg)/Map unwrap(map_has 导入)/Err unwrap(载荷 display)/
+// Vec[str] 下标读(句柄)/下标复合赋值 v[i] += x——正例三引擎逐字 + panic 消息-span-退出码逐字 + strict 存活 + #59 嵌套栈帧。
+{
+  const dir69 = path.join(TMP, 'v69');
+  fs.mkdirSync(dir69, { recursive: true });
+  const m69 = (name, src) => { const f = path.join(dir69, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags69 = ['', '--no-wasm', '--tree'];
+  const runAll69 = (p, extra = []) => flags69.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const same69 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns69 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const strict69c = (p, extra = []) => runMing(['run', p, '--strict-wasm', ...extra], { env: { MING_WASM_DEBUG: '1' } });
+
+  // ---- §69-START(slice 3 用例:五形态正例/panic 对齐/strict 存活/#59 嵌套栈帧)----
+
+  // v69.1 形态 1 正例:expect(编译期字面量 msg)命中路径——三引擎逐字 + strict 存活
+  // (msg 经 strConsts 表索引穿越导入边界;宿主 panic_expect 与 interp.js:3246 同源)
+  {
+    const p = m69('k69_01_expect_hit.ming', [
+      'fn g(v: Vec[i64]) -> i64 { return v.get(0).expect("need"); }',
+      'fn main() with io { print(str(g([1, 2]))); }',
+    ].join('\n'));
+    const runs = runAll69(p);
+    const s = strict69c(p);
+    check('v69.1:expect(字面量 msg)命中——三引擎输出 1 + strict exit 0 + [wasm] fn g OK 无 REJECT',
+      same69(runs, '1\n') && s.code === 0 && s.stdout === '1\n'
+        && s.stderr.includes('[wasm] fn g OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落'),
+      `runs=${fmtRuns69(runs)} strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('wasm]') || l.includes('回落')) ?? '')}`);
+  }
+
+  // v69.2 形态 2 正例:Map unwrap 命中(map_has 导入判定在先;Map expect 命中同批锁定)
+  {
+    const p = m69('k69_02_mapunwrap_hit.ming', [
+      'fn f() -> i64 {',
+      '    let m: Map[str, i64] = {"a": 1};',
+      '    return m.get("a").unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p2 = m69('k69_02b_mapexpect_hit.ming', [
+      'fn f() -> i64 {',
+      '    let m: Map[str, i64] = {"a": 1};',
+      '    return m.get("a").expect("cfg");',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const runs = runAll69(p);
+    const s = strict69c(p);
+    const runs2 = runAll69(p2);
+    const s2 = strict69c(p2);
+    check('v69.2:Map unwrap/expect 命中——三引擎输出 1 + strict exit 0 + [wasm] fn f OK 无 REJECT',
+      same69(runs, '1\n') && same69(runs2, '1\n') && s.code === 0 && s2.code === 0
+        && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT')
+        && s2.stderr.includes('[wasm] fn f OK') && !s2.stderr.includes('REJECT'),
+      `runs=${fmtRuns69(runs)} strict=${s.code} runs2=${fmtRuns69(runs2)} strict2=${s2.code}`);
+  }
+
+  // v69.3 形态 3 正例:Ok/Err 构造 + Result unwrap Ok 分支(Ok i64 载荷直通 / Ok str 载荷
+  // 经 strTable 句柄)——三引擎逐字 + strict 存活。Err 分支 panic(display 载荷)在 v69.7
+  // 完整对齐,数值载荷 i64/u64/f64 display 在 v69.9。
+  {
+    const p = m69('k69_03_resok.ming', [
+      'fn oki() -> i64 {',
+      '    let r: Result[i64, str] = Ok(7);',
+      '    return r.unwrap();',
+      '}',
+      'fn oks() -> str {',
+      '    let r: Result[str, str] = Ok("hello");',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io {',
+      '    print(str(oki()));',
+      '    print(oks());',
+      '}',
+    ].join('\n'));
+    const runs = runAll69(p);
+    const s = strict69c(p);
+    check('v69.3:Ok 构造 + unwrap 两载荷型——三引擎输出 7/hello + strict exit 0 + [wasm] fn OK 无 REJECT',
+      same69(runs, '7\nhello\n') && s.code === 0 && s.stdout === '7\nhello\n'
+        && s.stderr.includes('[wasm] fn oki OK') && s.stderr.includes('[wasm] fn oks OK') && !s.stderr.includes('REJECT'),
+      `runs=${fmtRuns69(runs)} strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT') || l.includes('回落')) ?? '')}`);
+  }
+
+  // v69.4 形态 4 正例:Vec[str] 下标读(句柄容器经 vecstr_get,界内返回 str 句柄)
+  {
+    const p = m69('k69_04_vecstr_read.ming', [
+      'fn f() -> str {',
+      '    let s: Vec[str] = ["a", "b"];',
+      '    return s[0];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const runs = runAll69(p);
+    const s = strict69c(p);
+    check('v69.4:Vec[str] 下标读——三引擎输出 a + strict exit 0 + [wasm] fn f OK 无 REJECT',
+      same69(runs, 'a\n') && s.code === 0 && s.stdout === 'a\n'
+        && s.stderr.includes('[wasm] fn f OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落'),
+      `runs=${fmtRuns69(runs)} strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('wasm]') || l.includes('回落')) ?? '')}`);
+  }
+
+  // v69.5 形态 5 正例:下标复合赋值全操作矩阵——i64 七种(+= -= *= /= %= &= |=)+
+  // 标量顺带解锁(&= |= ^= %=)+ f64 四种(+= -= *= /=;interp float 无 %,wasm 无 frem)
+  {
+    const p = m69('k69_05_ops.ming', [
+      'fn f() -> i64 {',
+      '    let mut v: Vec[i64] = [10, 10, 10, 10, 10, 10, 10];',
+      '    v[0] += 5;',
+      '    v[1] -= 3;',
+      '    v[2] *= 2;',
+      '    v[3] /= 4;',
+      '    v[4] %= 3;',
+      '    v[5] &= 6;',
+      '    v[6] |= 9;',
+      '    return v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6];',
+      '}',
+      'fn g() -> i64 {',
+      '    let mut x: i64 = 12;',
+      '    x &= 10;',
+      '    x |= 5;',
+      '    x ^= 3;',
+      '    x %= 7;',
+      '    return x;',
+      '}',
+      'fn h() -> f64 {',
+      '    let mut w: Vec[f64] = [1.0, 2.0, 4.0, 10.0];',
+      '    w[0] += 0.5;',
+      '    w[1] -= 0.25;',
+      '    w[2] *= 2.0;',
+      '    w[3] /= 4.0;',
+      '    return w[0] + w[1] + w[2] + w[3];',
+      '}',
+      'fn main() with io {',
+      '    print(str(f()));',
+      '    print(str(g()));',
+      '    print(str(h()));',
+      '}',
+    ].join('\n'));
+    const runs = runAll69(p);
+    const s = strict69c(p);
+    check('v69.5:下标复合赋值全操作矩阵——三引擎 58/0/13.75 + strict exit 0 + 三 fn OK 无 REJECT',
+      same69(runs, '58\n0\n13.75\n') && s.code === 0 && s.stdout === '58\n0\n13.75\n'
+        && s.stderr.includes('[wasm] fn f OK') && s.stderr.includes('[wasm] fn g OK') && s.stderr.includes('[wasm] fn h OK')
+        && !s.stderr.includes('REJECT'),
+      `runs=${fmtRuns69(runs)} strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT') || l.includes('回落')) ?? '')}`);
+  }
+
+  // panic 完整对齐公因子:三引擎(默认/no-wasm/tree)+ strict 四路 stderr 全文逐字 + exit 101
+  // (strict 路**不带 MING_WASM_DEBUG**:debug 前缀行会破坏全文逐字可比性)
+  const panicAlign69 = (p) => {
+    const runs = runAll69(p);
+    const s = runMing(['run', p, '--strict-wasm']);
+    const same4 = runs[0].stderr === runs[1].stderr && runs[0].stderr === runs[2].stderr && runs[0].stderr === s.stderr;
+    return { runs, s, same4 };
+  };
+  const firstLine69 = (r) => (r.stderr ?? '').split('\n')[0];
+
+  // v69.6 panic 对齐 1:Map 缺键 unwrap——map_has 先判定,缺键 → M4006 `对 None 调用 unwrap()`
+  // (消息/span/调用栈/exit 与 tree/VM 逐字,strict 同)
+  {
+    const p = m69('k69_06_mapmiss.ming', [
+      'fn f() -> i64 {',
+      '    let m: Map[str, i64] = {"a": 1};',
+      '    return m.get("b").unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const { runs, s, same4 } = panicAlign69(p);
+    check('v69.6:Map 缺键 unwrap M4006——四路 stderr 全文逐字 + 首行 `对 None 调用 unwrap()` + exit 101',
+      runs.every(r => r.code === 101) && s.code === 101 && same4
+        && firstLine69(runs[0]).includes('error M4006') && firstLine69(runs[0]).includes('对 None 调用 unwrap()')
+        && runs[0].stderr.includes('at f (') && runs[0].stderr.includes('at main ('),
+      fmtRuns69(runs) + ` strict=${s.code} same4=${same4}`);
+  }
+
+  // v69.7 panic 对齐 2:Err(str) unwrap——res_unwrap_str 宿主 `对 Err(bad) 调用 unwrap()`
+  // (display 载荷与 interp.js:3258 同源;四路 stderr 全文逐字)
+  {
+    const p = m69('k69_07_errunwrap.ming', [
+      'fn f() -> i64 {',
+      '    let r: Result[i64, str] = Err("bad");',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const { runs, s, same4 } = panicAlign69(p);
+    check('v69.7:Err(str) unwrap M4006——四路 stderr 全文逐字 + 首行 `对 Err(bad) 调用 unwrap()` + exit 101',
+      runs.every(r => r.code === 101) && s.code === 101 && same4
+        && firstLine69(runs[0]).includes('error M4006') && firstLine69(runs[0]).includes('对 Err(bad) 调用 unwrap()'),
+      fmtRuns69(runs) + ` strict=${s.code} same4=${same4}`);
+  }
+
+  // v69.8 panic 对齐 3:expect(字面量 msg)失败——Vec 越界与 Map 缺键两路,消息
+  // `expect 失败: <msg>`(span = expect 调用点;四路 stderr 全文逐字)
+  {
+    const p = m69('k69_08_vecexpect.ming', [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(10).expect("need");',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p2 = m69('k69_08b_mapexpect.ming', [
+      'fn f() -> i64 {',
+      '    let m: Map[str, i64] = {"a": 1};',
+      '    return m.get("b").expect("cfg key");',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const a = panicAlign69(p);
+    const b = panicAlign69(p2);
+    check('v69.8:expect 失败 M4006(Vec 越界 + Map 缺键)——四路 stderr 全文逐字 + `expect 失败: need`/`expect 失败: cfg key` + exit 101',
+      a.runs.every(r => r.code === 101) && a.s.code === 101 && a.same4
+        && firstLine69(a.runs[0]).includes('expect 失败: need')
+        && b.runs.every(r => r.code === 101) && b.s.code === 101 && b.same4
+        && firstLine69(b.runs[0]).includes('expect 失败: cfg key'),
+      `a=${fmtRuns69(a.runs)} strictA=${a.s.code} same4a=${a.same4} b=${fmtRuns69(b.runs)} strictB=${b.s.code} same4b=${b.same4}`);
+  }
+
+  // v69.9 Err 数值载荷 display:i64 直出 / u64 位型保真(isU64 → BigInt.asUintN,经
+  // eligible 形参穿越调用边界)/ f64 display(2.0 保一位小数)——三引擎首行逐字 + exit 101
+  {
+    const pi = m69('k69_09a_erri64.ming', [
+      'fn f() -> i64 {',
+      '    let r: Result[i64, i64] = Err(7);',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const pu = m69('k69_09b_erru64.ming', [
+      'fn eu(bad: u64) -> u64 {',
+      '    let r: Result[u64, u64] = Err(bad);',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(eu(18446744073709551615)); }',
+    ].join('\n'));
+    const pf = m69('k69_09c_errf64.ming', [
+      'fn f() -> f64 {',
+      '    let r: Result[f64, f64] = Err(2.0);',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const a = panicAlign69(pi);
+    const b = panicAlign69(pu);
+    const c = panicAlign69(pf);
+    const dbgU = strict69c(pu);
+    check('v69.9:Err 数值载荷 display 三型(i64=7 / u64 位型保真 18446744073709551615 / f64=2.0)——三引擎首行逐字 + exit 101 + u64 fn wasm OK',
+      a.runs.every(r => r.code === 101) && firstLine69(a.runs[0]).includes('对 Err(7) 调用 unwrap()')
+        && firstLine69(a.runs[0]) === firstLine69(a.runs[1]) && firstLine69(a.runs[0]) === firstLine69(a.runs[2])
+        && b.runs.every(r => r.code === 101) && firstLine69(b.runs[0]).includes('对 Err(18446744073709551615) 调用 unwrap()')
+        && firstLine69(b.runs[0]) === firstLine69(b.runs[1]) && firstLine69(b.runs[0]) === firstLine69(b.runs[2])
+        && dbgU.code === 101 && dbgU.stderr.includes('[wasm] fn eu OK')
+        && c.runs.every(r => r.code === 101) && firstLine69(c.runs[0]).includes('对 Err(2.0) 调用 unwrap()')
+        && firstLine69(c.runs[0]) === firstLine69(c.runs[1]) && firstLine69(c.runs[0]) === firstLine69(c.runs[2]),
+      `i=${fmtRuns69(a.runs)} u=${fmtRuns69(b.runs)} dbgU=${dbgU.code} f=${fmtRuns69(c.runs)}`);
+  }
+
+  // v69.10 下标复合赋值边界:(a) 越界 v[10] += 5——读 flavor 界检查先触发(interp evalExpr
+  // target 口径),消息带 `(用 .get(i) 返回 Option)` 后缀、span = target.span;四路 stderr 逐字。
+  // (b) 双重求值副作用锁定:interp assignTo 的 rhs 先、读/写两段 base/index 各求值一次
+  // (共两次)——io 计数程序三引擎逐字 `i\ni\n25`(main 带 io 恒走 VM,本用例锁定的是
+  // interp/assignTo 语义本身;eligible wasm 路径的双重求值由 v69.10c 的 --max-steps
+  // 步数差独立观测——下标读写不计费、eligible fn 不可用 io,步数是唯一可观测面)。
+  {
+    const p = m69('k69_10a_compound_oob.ming', [
+      'fn f() -> i64 {',
+      '    let mut v: Vec[i64] = [1, 2, 3];',
+      '    v[10] += 5;',
+      '    return v[0];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p2 = m69('k69_10b_doubleeval.ming', [
+      'fn idx() -> i64 with io {',
+      '    print("i");',
+      '    return 1;',
+      '}',
+      'fn main() with io {',
+      '    let mut v: Vec[i64] = [10, 20, 30];',
+      '    v[idx()] += 5;',
+      '    print(str(v[1]));',
+      '}',
+    ].join('\n'));
+    const a = panicAlign69(p);
+    const runs2 = runAll69(p2);
+    check('v69.10:下标复合赋值越界 M4003 读 flavor(span=target)+ 双重求值副作用锁定(索引函数被调两次,三引擎逐字 i/i/25)',
+      a.runs.every(r => r.code === 101) && a.s.code === 101 && a.same4
+        && firstLine69(a.runs[0]).includes('索引越界:长度 3,访问 10(用 .get(i) 返回 Option)')
+        && same69(runs2, 'i\ni\n25\n'),
+      `a=${fmtRuns69(a.runs)} strictA=${a.s.code} same4=${a.same4} b=${fmtRuns69(runs2)}`);
+  }
+
+  // v69.10c(m2 v0.65 审查)双重求值的 eligible wasm 路径可观测对照(--max-steps 步数差):
+  // eligible fn 内 `v[idx()] += 5` 按契约 idx 求值两次,每次函数入口 tick 50 步(wasm.js
+  // 入口注入 ming_tick)——提升为 `let i = idx()`(一次)后最小通过步数恰差一个 tick
+  // (实测 wasm 腿 159 vs 109)。阈值 130 下:两次 → M4001、一次 → exit 0 输出 25。
+  // tree/VM 的逐步计步间隔仅 1 步(脆弱)且恰好两次已由 v69.10b 的 io 程序锁定,
+  // 故此处只断 wasm 腿(间隔 50 步,阈值容差 ±20 步的主函数步数漂移)。
+  {
+    const pA = m69('k69_10c_stepcall.ming', [
+      'fn idx() -> i64 { return 1; }',
+      'fn f() -> i64 {',
+      '    let mut v: Vec[i64] = [10, 20, 30];',
+      '    v[idx()] += 5;',
+      '    return v[1];',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const pB = m69('k69_10c_stephoist.ming', [
+      'fn idx() -> i64 { return 1; }',
+      'fn f() -> i64 {',
+      '    let mut v: Vec[i64] = [10, 20, 30];',
+      '    let i = idx();',
+      '    v[i] += 5;',
+      '    return v[1];',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const runsA = runAll69(pA);
+    const runsB = runAll69(pB);
+    const limA = runMing(['run', pA, '--max-steps', '130']);
+    const limB = runMing(['run', pB, '--max-steps', '130']);
+    check('v69.10c:双重求值 wasm 步数对照——v[idx()] += 5(--max-steps 130 → M4001)vs 提升一次求值(→ exit 0);无限制三引擎逐字 25',
+      same69(runsA, '25\n') && same69(runsB, '25\n')
+        && limA.code === 101 && firstLine69(limA).includes('M4001') && firstLine69(limA).includes('执行步数超过上限 130')
+        && limB.code === 0 && limB.stdout === '25\n',
+      `A=${fmtRuns69(runsA)} B=${fmtRuns69(runsB)} limA=${limA.code}:${JSON.stringify(firstLine69(limA))} limB=${limB.code}:${JSON.stringify(limB.stdout)}`);
+  }
+
+  // v69.11 Vec[str] 下标读边界:(a) 越界 → M4003 读 flavor(宿主 vecstr_get,消息带
+  // `(用 .get(i) 返回 Option)` 后缀 + span)四路逐字;(b) 元素写 → 具名守护
+  // `Vec[str] 元素写(句柄容器,登记不做)`(strict exit 2;非 strict 三引擎正常执行)
+  {
+    const p = m69('k69_11a_vecstr_oob.ming', [
+      'fn f() -> str {',
+      '    let s: Vec[str] = ["a", "b"];',
+      '    return s[5];',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p2 = m69('k69_11b_vecstr_write.ming', [
+      'fn f() -> i64 {',
+      '    let mut s: Vec[str] = ["a", "b"];',
+      '    s[0] = "z";',
+      '    return 1;',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const a = panicAlign69(p);
+    const runs2 = runAll69(p2);
+    const s2 = strict69c(p2);
+    check('v69.11:Vec[str] 越界读 M4003 后缀逐字(四路)+ 元素写具名守护 strict exit 2 + 非 strict 三引擎 1',
+      a.runs.every(r => r.code === 101) && a.s.code === 101 && a.same4
+        && firstLine69(a.runs[0]).includes('索引越界:长度 2,访问 5(用 .get(i) 返回 Option)')
+        && same69(runs2, '1\n') && s2.code === 2 && s2.stdout === ''
+        && (s2.stderr ?? '').includes('wasm 编译回落(f)') && (s2.stderr ?? '').includes('Vec[str] 元素写(句柄容器,登记不做)'),
+      `a=${fmtRuns69(a.runs)} strictA=${a.s.code} same4=${a.same4} b=${fmtRuns69(runs2)} strictB=${s2.code}:${JSON.stringify((s2.stderr ?? '').split('\n')[0])}`);
+  }
+
+  // v69.12 #59 嵌套栈帧:(a) main→f→g(g 内越界)三引擎完整 stderr 全文逐字(含 `at g`
+  // 帧——v0.63 已知残留就此收口);(b) fib(25) 递归(直调 frame_push/pop 配对)输出逐字。
+  // 直调开销 +18% 为信息性(帧进出两次导入调用),不做脆弱的时间断言。
+  {
+    const p = m69('k69_12a_nested.ming', [
+      'fn g() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v[10];',
+      '}',
+      'fn f() -> i64 {',
+      '    return g();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p2 = m69('k69_12b_fib.ming', [
+      'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }',
+      'fn main() with io { print(str(fib(25))); }',
+    ].join('\n'));
+    const a = panicAlign69(p);
+    const runs2 = runAll69(p2);
+    const s2 = strict69c(p2);
+    check('v69.12:#59 嵌套 panic 三帧 stderr 三引擎逐字(at g/at f/at main)+ fib(25)=75025 递归正常 + strict fn OK',
+      a.runs.every(r => r.code === 101) && a.s.code === 101 && a.same4
+        && a.runs[0].stderr.includes('at g (') && a.runs[0].stderr.includes('at f (') && a.runs[0].stderr.includes('at main (')
+        && same69(runs2, '75025\n') && s2.code === 0 && s2.stdout === '75025\n' && s2.stderr.includes('[wasm] fn fib OK'),
+      `a=${fmtRuns69(a.runs)} strictA=${a.s.code} same4=${a.same4} b=${fmtRuns69(runs2)} strictB=${s2.code}`);
+  }
+
+  // v69.13 组合函数:五形态共存单函数(strict exit 0 + [wasm] fn combo OK;非 strict 三引擎逐字)
+  {
+    const p = m69('k69_13_combo.ming', [
+      'fn combo(v: Vec[i64], s: Vec[str], m: Map[str, i64]) -> i64 {',
+      '    let mut w: Vec[i64] = [1, 2, 3];',
+      '    w[0] += v.get(1).expect("need");',
+      '    let r: Result[i64, str] = Ok(2);',
+      '    let e: i64 = r.unwrap();',
+      '    let mv: i64 = m.get("a").unwrap();',
+      '    let t = s[0];',
+      '    let mut total = w[0] + e + mv;',
+      '    if t == "ab" { total += 1; }',
+      '    return total;',
+      '}',
+      'fn main() with io { print(str(combo([10, 20, 30], ["ab", "cd"], {"a": 5}))); }',
+    ].join('\n'));
+    const runs = runAll69(p);
+    const s = strict69c(p);
+    check('v69.13:五形态组合单函数——三引擎输出 29 + strict exit 0 + [wasm] fn combo OK 无 REJECT',
+      same69(runs, '29\n') && s.code === 0 && s.stdout === '29\n'
+        && s.stderr.includes('[wasm] fn combo OK') && !s.stderr.includes('REJECT') && !s.stderr.includes('回落'),
+      `runs=${fmtRuns69(runs)} strict=${s.code}:${JSON.stringify(s.stderr.split('\n').find(l => l.includes('REJECT') || l.includes('回落')) ?? '')}`);
+  }
+
+  // v69.14 守护具名余项(仍具名,strict exit 2):变量 msg expect / Result 非标量载荷
+  // (容器与 bool)/ Map 下标复合赋值(通用"赋值目标"文本);非 strict 三引擎语义不变
+  // (变量 msg 正常取值 / Err([1,2]) panic / Map 复合赋值求值)
+  {
+    const p1 = m69('k69_14a_msgvar.ming', [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let msg = "need";',
+      '    return v.get(0).expect(msg);',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const p2 = m69('k69_14b_resnonscalar.ming', [
+      'fn f() -> i64 {',
+      '    let r: Result[i64, Vec[i64]] = Err([1, 2]);',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p3 = m69('k69_14c_mapcompound.ming', [
+      'fn f() -> i64 {',
+      '    let mut m: Map[str, i64] = {"a": 1};',
+      '    m["a"] += 1;',
+      '    return m["a"];',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const s1 = strict69c(p1);
+    const runs1 = runAll69(p1);
+    const s2 = strict69c(p2);
+    const runs2 = runAll69(p2);
+    const s3 = strict69c(p3);
+    const runs3 = runAll69(p3);
+    check('v69.14:守护具名余项——变量 msg expect / Result 非标量载荷 / Map 下标复合赋值 均 strict exit 2 具名;非 strict 语义不变',
+      s1.code === 2 && (s1.stderr ?? '').includes('expect msg 非编译期字面量(待解锁)') && same69(runs1, '1\n')
+        && s2.code === 2 && (s2.stderr ?? '').includes('Result 载荷非标量(容器/结构体/bool 待解锁)')
+        && runs2.every(r => r.code === 101) && firstLine69(runs2[0]).includes('对 Err([1, 2]) 调用 unwrap()')
+          && firstLine69(runs2[0]) === firstLine69(runs2[1]) && firstLine69(runs2[0]) === firstLine69(runs2[2])
+        && s3.code === 2 && (s3.stderr ?? '').includes('wasm 编译回落(f)') && (s3.stderr ?? '').includes('赋值目标')
+        && same69(runs3, '2\n'),
+      `s1=${s1.code}:${JSON.stringify((s1.stderr ?? '').split('\n')[0])} runs1=${fmtRuns69(runs1)} s2=${s2.code}:${JSON.stringify((s2.stderr ?? '').split('\n')[0])} s3=${s3.code}:${JSON.stringify((s3.stderr ?? '').split('\n')[0])} runs3=${fmtRuns69(runs3)}`);
+  }
+
+  // v69.15 unwrap_or/is_some/is_none 口径锁定:函数 shape-eligible + emit 期具名回落
+  // (strict exit 2,v0.65 修正既往"不 eligible"表述——REJECT 文本可见);bool 返回形态
+  // 函数才是不 eligible(strict exit 0);非 strict 三引擎语义逐字
+  {
+    const p1 = m69('k69_15a_unwrapor.ming', [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    return v.get(10).unwrap_or(7);',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p2 = m69('k69_15b_issome.ming', [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let b = v.get(0).is_some();',
+      '    return if b { 10 } else { 20 };',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const p3 = m69('k69_15c_isnone.ming', [
+      'fn f() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let b = v.get(0).is_none();',
+      '    return if b { 10 } else { 20 };',
+      '}',
+      'fn main() with io { print(f()); }',
+    ].join('\n'));
+    const s1 = strict69c(p1);
+    const runs1 = runAll69(p1);
+    const s2 = strict69c(p2);
+    const runs2 = runAll69(p2);
+    const s3 = strict69c(p3);
+    const runs3 = runAll69(p3);
+    check('v69.15:unwrap_or/is_some/is_none——shape-eligible + emit 具名回落(strict exit 2 + REJECT 文本);非 strict 三引擎 7/10/20',
+      s1.code === 2 && (s1.stderr ?? '').includes('REJECT: Option 消费链 unwrap_or') && same69(runs1, '7\n')
+        && s2.code === 2 && (s2.stderr ?? '').includes('REJECT: Option 消费链 is_some') && same69(runs2, '10\n')
+        && s3.code === 2 && (s3.stderr ?? '').includes('REJECT: Option 消费链 is_none') && same69(runs3, '20\n'),
+      `s1=${s1.code}:${JSON.stringify((s1.stderr ?? '').split('\n').find(l => l.includes('REJECT')) ?? '')} s2=${s2.code} s3=${s3.code} runs=${fmtRuns69(runs1)}|${fmtRuns69(runs2)}|${fmtRuns69(runs3)}`);
+  }
+
+  // v69.16 计费回归(interp.js:2009 M4011 口径,单位 = Vec/Map 元素 + str 字符):
+  // (a) Res 句柄构造不计费(Ok/Err → objTable,tree/VM/wasm 三侧同口径)——1000 次构造
+  // --max-alloc 0 三引擎 exit 0;(b) Vec[str] 读不计费(vecstr_get → strTable 句柄)——
+  // 100 次读 --max-alloc 2(初始 VecLit 恰好 3 单位中的 2)三引擎 exit 0;
+  // (c) 对照:循环内 VecLit 构造照常计费 → M4011(证明配额通道本身活着)
+  {
+    const pRes = m69('k69_16a_resloop.ming', [
+      'fn resloop(n: i64) -> i64 {',
+      '    let mut acc = 0;',
+      '    let mut i = 0;',
+      '    while i < n {',
+      '        let r: Result[i64, str] = Ok(i);',
+      '        acc += r.unwrap();',
+      '        i += 1;',
+      '    }',
+      '    return acc;',
+      '}',
+      'fn main() with io { print(str(resloop(1000))); }',
+    ].join('\n'));
+    const pSread = m69('k69_16b_sread.ming', [
+      'fn sread(n: i64) -> i64 {',
+      '    let s: Vec[str] = ["a", "b"];',
+      '    let mut acc = 0;',
+      '    let mut i = 0;',
+      '    while i < n {',
+      '        if s[0] == "a" { acc += 1; }',
+      '        i += 1;',
+      '    }',
+      '    return acc;',
+      '}',
+      'fn main() with io { print(str(sread(100))); }',
+    ].join('\n'));
+    const pCharge = m69('k69_16c_charge.ming', [
+      'fn chargey(n: i64) -> i64 {',
+      '    let mut acc = 0;',
+      '    let mut i = 0;',
+      '    while i < n {',
+      '        let pad = [1, 2];',
+      '        acc += pad.len();',
+      '        i += 1;',
+      '    }',
+      '    return acc;',
+      '}',
+      'fn main() with io { print(str(chargey(100))); }',
+    ].join('\n'));
+    const runsRes = runAll69(pRes, ['--max-alloc', '0']);
+    const runsSread = runAll69(pSread, ['--max-alloc', '2']);
+    const rCharge = runMing(['run', pCharge, '--max-alloc', '0']);
+    check('v69.16:计费回归——Res 句柄构造与 Vec[str] 读不计费(max-alloc 0/2 三引擎逐字)+ 循环 VecLit 构造照常 M4011',
+      same69(runsRes, '499500\n') && same69(runsSread, '100\n')
+        && rCharge.code === 101 && (rCharge.stderr ?? '').includes('M4011') && (rCharge.stderr ?? '').includes('内存配额超限'),
+      `res=${fmtRuns69(runsRes)} sread=${fmtRuns69(runsSread)} charge=${rCharge.code}:${JSON.stringify(firstLine69(rCharge))}`);
+  }
+
+  // v69.17(v0.65 审查 M1)无标注 Result let:resCtorSlotTy 方法体引用了签名上不存在的
+  // ctx → `let r = Ok(7)`(无标注)在 emit 期 ReferenceError("ctx is not defined",
+  // 非具名回落,违背"守护具名清零后余项全部 strict 具名")。修复(签名 + 调用点传 ctx)后:
+  // (a) 无标注 Ok(7) + unwrap 真实经 wasm(strict exit 0 + [wasm] fn f OK;三引擎输出 7);
+  // (b) 标注 ok 侧非标量(Result[Vec[i64], str])落具名"Result 载荷非标量"守护
+  //     (resolveResAnnTy 对非标量 ok 型返回 null——标注存在而槽型解析不出 = 载荷守护,
+  //     与 compileResCtor 同口径;strict exit 2;非 strict 三引擎语义不变)。
+  {
+    const p1 = m69('k69_17a_resunann.ming', [
+      'fn f() -> i64 {',
+      '    let r = Ok(7);',
+      '    return r.unwrap();',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const p2 = m69('k69_17b_resannvec.ming', [
+      'fn g() -> i64 {',
+      '    let _r: Result[Vec[i64], str] = Ok([1, 2]);',
+      '    return 0;',
+      '}',
+      'fn main() with io { print(str(g())); }',
+    ].join('\n'));
+    const s1 = strict69c(p1);
+    const runs1 = runAll69(p1);
+    const s2 = strict69c(p2);
+    const runs2 = runAll69(p2);
+    check('v69.17:无标注 Result let 经 wasm(三引擎 7 + strict exit 0 + [wasm] fn f OK)+ 标注非标量载荷具名回落(strict exit 2;非 strict 三引擎 0)',
+      same69(runs1, '7\n') && s1.code === 0 && (s1.stderr ?? '').includes('[wasm] fn f OK') && !(s1.stderr ?? '').includes('REJECT') && !(s1.stderr ?? '').includes('ctx is not defined')
+        && same69(runs2, '0\n') && s2.code === 2 && (s2.stderr ?? '').includes('Result 载荷非标量(容器/结构体/bool 待解锁)') && !(s2.stderr ?? '').includes('ctx is not defined'),
+      `s1=${s1.code}:${JSON.stringify((s1.stderr ?? '').split('\n').find(l => l.includes('wasm]')) ?? '')} runs1=${fmtRuns69(runs1)} s2=${s2.code} runs2=${fmtRuns69(runs2)}`);
+  }
+
+  // v69.18(v0.65 审查 M2)Result.expect 求值序:interp 方法调用先接收者后实参——此前
+  // wasm 先编 msg 再编接收者,`Err(<溢出>).expect(mk())` 双溢出对照中 tree panic span 在
+  // Err 载荷(第 6 行)、wasm 在 mk 内(第 2 行)。修复(接收者句柄先编入专属 tempSlot →
+  // msg 求值后 drop → 再取回句柄)后四路 span 逐字:(a) 接收者先溢出 → span 第 6 行;
+  // (b) 反向对照:接收者 Ok(7) 无害、msg 的 mk() 溢出 → 四路 span 在 mk 内(第 2 行)。
+  // M4002 消息文本 wasm 层为通用口径(capabilities WASM 行"遗留登记"预存分歧),
+  // 故比对 span 前缀(file:line:col: error M4002[integer-overflow]:)而非全文。
+  {
+    const spanOf = (r) => {
+      const l = (r.stderr ?? '').split('\n')[0];
+      const i = l.indexOf(': error M4002');
+      return i >= 0 ? l.slice(0, i) : '(no-span:' + l.slice(0, 80) + ')';
+    };
+    const pR = m69('k69_18a_recvovf.ming', [
+      'fn mk() -> str {',
+      '    let _x = 9223372036854775807 + 1;',
+      '    return "s";',
+      '}',
+      'fn f() -> i64 {',
+      '    return Err(9223372036854775807 + 1).expect(mk());',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const pM = m69('k69_18b_msgovf.ming', [
+      'fn mk() -> str {',
+      '    let _x = 9223372036854775807 + 1;',
+      '    return "s";',
+      '}',
+      'fn f() -> i64 {',
+      '    return Ok(7).expect(mk());',
+      '}',
+      'fn main() with io { print(str(f())); }',
+    ].join('\n'));
+    const runsR = runAll69(pR);
+    const sR = runMing(['run', pR, '--strict-wasm']);
+    const runsM = runAll69(pM);
+    const sM = runMing(['run', pM, '--strict-wasm']);
+    check('v69.18:expect 求值序 recv→args——Err 载荷溢出时四路 span 同在 Err 载荷(第 6 行,mk 未执行);Ok 接收者时四路 span 同在 mk(第 2 行);exit 101',
+      runsR.every(r => r.code === 101) && sR.code === 101
+        && spanOf(runsR[0]) === spanOf(runsR[1]) && spanOf(runsR[0]) === spanOf(runsR[2]) && spanOf(runsR[0]) === spanOf(sR)
+        && spanOf(runsR[0]).endsWith('k69_18a_recvovf.ming:6:36')
+        && runsM.every(r => r.code === 101) && sM.code === 101
+        && spanOf(runsM[0]) === spanOf(runsM[1]) && spanOf(runsM[0]) === spanOf(runsM[2]) && spanOf(runsM[0]) === spanOf(sM)
+        && spanOf(runsM[0]).endsWith('k69_18b_msgovf.ming:2:34'),
+      `R=${fmtRuns69(runsR)} sR=${sR.code}:${JSON.stringify(spanOf(sR))} M=${fmtRuns69(runsM)} sM=${sM.code}:${JSON.stringify(spanOf(sM))}`);
+  }
+
+  // §69-END
 }
 
 

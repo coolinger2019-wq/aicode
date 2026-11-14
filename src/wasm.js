@@ -121,9 +121,19 @@ const TOTAL_IMPORTS = 3 + MATH_IMPORTS.length + STR_IMPORTS.length + VECMAP_IMPO
 // 消息不带后缀)/panic_m4006(None unwrap)声明在 ming_copy_vec 之后(TOTAL_IMPORTS+2/+3/+4);
 // v0.63 G2:ming_alloc_elem(数值 VecLit:n 元素计费 + 16+8n 字节 bump)声明在 panic 之后
 // (TOTAL_IMPORTS+5);导入共 TI+6 个(索引 0..TI+5),函数索引基址随之 +6。
-// 新增导入一律追加在尾部,既有索引(0..TOTAL_IMPORTS+1)不变——v0.59 ming_alloc 错位教训
-// (allocImportIdx 注释)。
-const DEFINED_BASE = TOTAL_IMPORTS + 6;
+// v0.65 §4.5.2 slice 3(守护具名清单收口):再追加 11 个(TI+6..TI+16),DEFINED_BASE = TI+17:
+//   panic_expect(spanIdx,strIdx)                    TI+6  expect(字面量 msg)失败(msg 经 strConsts 表索引)
+//   map_has(h,kh)->i32                              TI+7  Map get 消费链缺键判定(map_get 语义拆分:先 has 后 get)
+//   vecstr_get(h,i,spanIdx)->i32                    TI+8  Vec[str] 下标读(宿主界检查,读 flavor 消息+span)
+//   res_new_i64(isErr,isU64,v)->i32                 TI+9  Ok/Err 构造(数值载荷;isU64 保真 u64 display)
+//   res_new_f64(isErr,v)->i32                       TI+10
+//   res_new_str(isErr,sh)->i32                      TI+11
+//   res_unwrap_i64(h,spanIdx,isExpect)->i64         TI+12 Result unwrap/expect(Err → panic_m4006,消息 interp.js:3258)
+//   res_unwrap_f64(同型)->f64                       TI+13
+//   res_unwrap_str(同型)->i32                       TI+14
+//   frame_push(fnIdx,spanIdx) / frame_pop()         TI+15/16  #59 wasm→wasm 直调调用点帧透传
+// 新增导入一律追加在尾部,既有索引不变——v0.59 ming_alloc 错位/v0.63 G1 off-by-one 教训。
+const DEFINED_BASE = TOTAL_IMPORTS + 17;
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
@@ -254,6 +264,13 @@ export class WasmCompiler {
         const vt = this.typeToNumTy(t.vt);
         if (!vt || vt === 'u64') return null;
         return 'm' + vt;
+      }
+      // v0.65 §4.5.2 任务 3:Result 槽型标记 'r'+Ok 载荷型(句柄表示,值随运行时 V 对象携带
+      // 自身类型;槽型仅作 i32 位型与消费链推导来源)。Err 侧类型不进槽型(display 宿主通用)。
+      case 'res': {
+        const ok = this.typeToNumTy(t.ok);
+        if (!ok) return null;
+        return 'r' + ok;
       }
       default: return null;
     }
@@ -555,6 +572,26 @@ export class WasmCompiler {
         const rt = results.map(x => x === 'i32' ? I32 : I64);
         return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, rt))];
       }),
+      // v0.65 §4.5.2 slice 3:11 个新导入,尾部追加(索引 TI+6..TI+16,见 DEFINED_BASE 注释)。
+      // 宿主实现见 vm.js 同名条目;签名与 vm.js 实参顺序逐项对齐(v0.63 教训:导入表顺序、
+      // 算式与宿主实现三处必须逐项核对)。
+      ...[
+        ['panic_expect', ['i32', 'i32'], []],              // TI+6  expect 失败(spanIdx, msg 常量 strIdx)
+        ['map_has', ['i32', 'i32'], ['i32']],              // TI+7  (h, key 句柄) -> 0/1
+        ['vecstr_get', ['i32', 'i64', 'i32'], ['i32']],    // TI+8  (h, idx, spanIdx) -> str 句柄
+        ['res_new_i64', ['i32', 'i32', 'i64'], ['i32']],   // TI+9  (isErr, isU64, v) -> res 句柄
+        ['res_new_f64', ['i32', 'f64'], ['i32']],          // TI+10 (isErr, v) -> res 句柄
+        ['res_new_str', ['i32', 'i32'], ['i32']],          // TI+11 (isErr, str 句柄) -> res 句柄
+        ['res_unwrap_i64', ['i32', 'i32', 'i32'], ['i64']],// TI+12 (h, spanIdx, isExpect)
+        ['res_unwrap_f64', ['i32', 'i32', 'i32'], ['f64']],// TI+13
+        ['res_unwrap_str', ['i32', 'i32', 'i32'], ['i32']],// TI+14
+        ['frame_push', ['i32', 'i32'], []],                // TI+15 #59:(mingFnIdx, 调用点 spanIdx)
+        ['frame_pop', [], []],                             // TI+16 #59:调用点正常返回配对弹出
+      ].map(([n, params, results]) => {
+        const pt = params.map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
+        const rt = results.map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
+        return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, rt))];
+      }),
     ];
     // (N_IMPORTS 曾被引用但从未定义——整模块 ReferenceError 的元凶之一;参数已废弃)
 
@@ -645,7 +682,7 @@ export class WasmCompiler {
 
     // scratch 追加到槽类型表尾部,再按连续同型分组(表内是 'i64'/'f64' 字符串 → 转操作码)
     while (slotTypes.length < scratchBase) slotTypes.push('i64');
-    const opcodeOf = (t) => (t === 'f64' ? F64 : (t === 'str' || t === 'i32' || t === 'vi64ptr' || t === 'vf64ptr' || t.startsWith('v') || t.startsWith('m') ? I32 : I64));
+    const opcodeOf = (t) => (t === 'f64' ? F64 : (t === 'str' || t === 'i32' || t === 'vi64ptr' || t === 'vf64ptr' || t.startsWith('v') || t.startsWith('m') || t.startsWith('r') ? I32 : I64));
     // v0.59(#40/#42 根因):wasm 形参由函数签名占用局部索引 0..nParams-1,**不进入 locals 声明**。
     // 此前从槽 0 起声明(slotTypes.slice(0, scratchBase))把形参槽重复计入,声明的第 j 个局部
     // 实际索引是 nParams+j,而函数体按槽号直接 local.get/local.set → 所有槽位类型错位一位
@@ -683,7 +720,8 @@ export class WasmCompiler {
   // 整模块校验失败 → 任何值型 if 的 eligible 函数全部静默回落。
   valTypeOf(ty) {
     if (ty === 'f64') return F64;
-    if (typeof ty === 'string' && (ty === 'str' || ty.startsWith('v') || ty.startsWith('m') || ty.endsWith('ptr'))) return I32;
+    // 'r*' = Result 句柄槽(v0.65 slice 3;值型 if 中不可达,防御性归类 i32)
+    if (typeof ty === 'string' && (ty === 'str' || ty.startsWith('v') || ty.startsWith('m') || ty.startsWith('r') || ty.endsWith('ptr'))) return I32;
     return I64;
   }
   emitPanic(ctx, code, span) {
@@ -879,8 +917,8 @@ export class WasmCompiler {
   compileZero(ctx, ty) {
     if (ty === 'f64') { ctx.bytes.push(0x44); const buf = Buffer.alloc(8); buf.writeDoubleLE(0); for (const x of buf) ctx.bytes.push(x); }
     // v0.59(#43):str 返回值是 i32 句柄(函数签名 wasmTypeOf(str)=I32);此前按 i64 压 0
-    // 会使函数尾栈类型与签名不符 → 整模块校验失败。句柄/容器位型同样补 i32 零。
-    else if (typeof ty === 'string' && (ty === 'str' || ty.startsWith('v') || ty.startsWith('m'))) this.pushI32(ctx, 0);
+    // 会使函数尾栈类型与签名不符 → 整模块校验失败。句柄/容器/Result 位型同样补 i32 零。
+    else if (typeof ty === 'string' && (ty === 'str' || ty.startsWith('v') || ty.startsWith('m') || ty.startsWith('r'))) this.pushI32(ctx, 0);
     else this.pushI64(ctx, 0n);
   }
 
@@ -888,10 +926,29 @@ export class WasmCompiler {
     switch (s.nt) {
       case 'Let': {
         if (!s.init || s.pat.nt !== 'PIdent') throw new Unsupported('let 形式');
+        // v0.65 §4.5.2 任务 3:Ok/Err 构造的 Result 局部 —— 槽型取标注(Result[T,E] → 'r'+T;
+        // 无标注取构造载荷型,Err 的 ok 型由 checker 按消费点绑定,槽型仅作位型/推导标记)。
+        // 构造载荷限标量(i64/u64/f64/str),容器/结构体载荷登记守护(compileResCtor 具名)。
+        if (s.init.nt === 'Call' && s.init.callee?.nt === 'Ident'
+          && ['Ok', 'Err'].includes(s.init.callee.name) && s.init.args.length === 1) {
+          const annTy = s.type ? this.resolveResAnnTy(s.type) : null;
+          // M1(v0.65 审查):标注 ok 侧非标量(Vec/结构体/bool)时 resolveResAnnTy 为 null——
+          // 此前落到 resCtorSlotTy(签名缺 ctx)→ ReferenceError 非具名回落。具名守护:
+          // 标注存在而解析不出标量槽型 = 载荷非标量(与 compileResCtor 守护同口径);
+          // 无标注且构造载荷推不出标量才落"槽型不可推导"。
+          if (s.type && !annTy) throw new Unsupported('Result 载荷非标量(容器/结构体/bool 待解锁)');
+          const rty = annTy ?? this.resCtorSlotTy(s.init, ctx);
+          if (!rty) throw new Unsupported('Result let 槽型不可推导');
+          this.compileResCtor(s.init, ctx);
+          const rslot = this.declareLocal(ctx, s.pat.name);
+          ctx.slotTypes[rslot] = rty;
+          this.localSet(ctx, rslot);
+          return;
+        }
         // v0.63 §4.4.6b slice 2:s.type 是语法型节点(nt=TName),typeToNumTy(按 t.k)对其
         // 恒 null——空 VecLit 推导同为 null → `let v: Vec[i64] = []` 此前落 'i64' 回落。
         // 仅在 init 推导为 null 时经 resolveVecAnnTy 补位,非空字面量的既有口径不变。
-        let ty = this.inferNumType(s.init, ctx) ?? this.resolveVecAnnTy(s.type) ?? (s.type ? this.typeToNumTy(s.type) : null) ?? 'i64';
+        let ty = this.inferNumType(s.init, ctx) ?? this.resolveVecAnnTy(s.type) ?? this.resolveResAnnTy(s.type) ?? (s.type ? this.typeToNumTy(s.type) : null) ?? 'i64';
         if (s.type) {
           const want = this.typeToNumTy(s.type);
           if (want) {
@@ -922,11 +979,70 @@ export class WasmCompiler {
         // v0.63 §4.4.6b slice 2:此前宿主无 panic_m4003 导入(越界会错报 M4002)→ 整体回落。
         // 现按 interp.js:856 发射:求值序 value → base → index → 界检查 → store,
         // 越界调 panic_m4003w(消息无 "(用 .get(i) 返回 Option)" 后缀,span = target.span)。
-        // 下标复合赋值(v[i] += x)维持守护(具名)。
         if (s.target.nt === 'Index' && s.target.base.nt === 'Ident') {
           const bt2 = this.inferNumType(s.target.base, ctx);
           if (this.isNumVecTy(bt2)) {
-            if (s.op !== '=') throw new Unsupported('下标复合赋值 ' + s.op + '(待实现)');
+            if (s.op !== '=') {
+              // v0.65 §4.5.2 任务 5:下标复合赋值(v[i] += x 等)解锁。interp assignTo 口径
+              // (interp.js:831/835):rhs 先求值 → **读**(target 按表达式求值:base+index
+              // 各一次 + 读 flavor 界检查 + 元素读)→ binopValues(cur op val,检查型,
+              // span = target.span)→ **写**(base+index **再次求值** + 写 flavor 界检查 +
+              // store)。base/index 的双重求值是 interp 语义(副作用执行两次),逐字对齐。
+              const elemTy = this.numVecElemTy(bt2);
+              if (elemTy === 'f64' && !['+=', '-=', '*=', '/='].includes(s.op)) {
+                throw new Unsupported('f64 下标复合赋值 ' + s.op); // interp float 无 %(M3008);wasm 无 frem
+              }
+              const vtmp = this.tempSlot(ctx, elemTy); // rhs 暂存(index 再求值会复用 scratch0/1/2)
+              // 1. value 先求值(interp execStmt:const val = this.evalExpr(s.value))
+              this.compileNum(s.value, ctx, elemTy);
+              this.localSet(ctx, vtmp);
+              // 2. 读:base ptr 专属槽(v0.63 审查 B1:嵌套下标读会写共享 iscratch)+ 读界检查 + 元素读
+              const rslot = this.tempSlot(ctx, 'i32');
+              this.compileNum(s.target.base, ctx, bt2);
+              this.localSet(ctx, rslot);
+              this.compileNum(s.target.index, ctx, 'i64');
+              this.localSet(ctx, ctx.scratch1);
+              this.emitIndexBoundsPanic(ctx, this.panicReadIdx(), s.target.span, true, rslot);
+              this.emitElemLoad(ctx, elemTy, rslot);
+              const ctmp = this.tempSlot(ctx, elemTy); // cur 暂存
+              this.localSet(ctx, ctmp);
+              // 3. cur op val:i64 检查型(M4002/M4004,span = target.span);f64 IEEE 直译
+              const rslt = this.tempSlot(ctx, elemTy);
+              if (elemTy === 'f64') {
+                this.localGet(ctx, ctmp); this.localSet(ctx, ctx.fscratch0);
+                this.localGet(ctx, vtmp); this.localSet(ctx, ctx.fscratch1);
+                this.localGet(ctx, ctx.fscratch0);
+                this.localGet(ctx, ctx.fscratch1);
+                ctx.bytes.push({ '+=': 0xa0, '-=': 0xa1, '*=': 0xa2, '/=': 0xa3 }[s.op]);
+                this.localSet(ctx, rslt);
+              } else {
+                this.localGet(ctx, ctmp); this.localSet(ctx, ctx.scratch0);
+                this.localGet(ctx, vtmp); this.localSet(ctx, ctx.scratch1);
+                this.emitCheckedOp(ctx, s.op.slice(0, -1), s.target.span);
+                this.localGet(ctx, ctx.scratch2);
+                this.localSet(ctx, rslt); // index 再求值会复用 scratch2 → 结果先移专属槽
+              }
+              // 4. 写:base/index 再次求值(interp 双重求值语义)+ 写界检查 + store
+              const wslot = this.tempSlot(ctx, 'i32');
+              this.compileNum(s.target.base, ctx, bt2);
+              this.localSet(ctx, wslot);
+              this.compileNum(s.target.index, ctx, 'i64');
+              this.localSet(ctx, ctx.scratch1);
+              this.emitIndexBoundsPanic(ctx, this.panicWriteIdx(), s.target.span, true, wslot);
+              const b = ctx.bytes;
+              this.localGet(ctx, wslot);
+              this.pushI32(ctx, 16);
+              b.push(0x6a);                            // i32.add:ptr+16
+              this.localGet(ctx, ctx.scratch1);
+              b.push(0xa7);                            // i32.wrap_i64
+              this.pushI32(ctx, 8);
+              b.push(0x6c);                            // i32.mul:8*idx
+              b.push(0x6a);                            // i32.add:addr
+              this.localGet(ctx, rslt);
+              b.push(elemTy === 'f64' ? 0x39 : 0x37);  // f64.store / i64.store
+              sleb(b, elemTy === 'f64' ? 3 : 0); sleb(b, 0);
+              return;
+            }
             const elemTy = this.numVecElemTy(bt2);
             const vtmp = this.tempSlot(ctx, elemTy); // 值暂存(index 求值会复用 scratch0/1/2)
             // v0.63 审查 B1:base ptr 存专属 tempSlot——index 子表达式可以是下标读
@@ -955,6 +1071,9 @@ export class WasmCompiler {
             sleb(b, elemTy === 'f64' ? 3 : 0); sleb(b, 0);
             return;
           }
+          // v0.65:s.name Vec[str] 元素写维持登记不做(v0.63 口径,句柄容器)——具名,
+          // 不再落通用"赋值目标"文本。
+          if (bt2 === 'vstr') throw new Unsupported('Vec[str] 元素写(句柄容器,登记不做)');
         }
         if (s.target.nt !== 'Ident') throw new Unsupported('赋值目标');
         const dst = this.slotOf(ctx, s.target.name);
@@ -989,7 +1108,10 @@ export class WasmCompiler {
           return;
         }
         if (dstTy !== 'i64') throw new Unsupported('f64 复合赋值 ' + s.op);
-        if (s.op === '+=' || s.op === '-=' || s.op === '*=' || s.op === '/=' || s.op === '%=' || s.op === '<<=' || s.op === '>>=') {
+        // v0.65 §4.5.2 顺带对齐:&=/|=/^= 与下标复合赋值同批解锁(interp binopValues 支持
+        // & | ^;词法无 <<= >>=,既有两分支为死代码保留不动)。
+        if (s.op === '+=' || s.op === '-=' || s.op === '*=' || s.op === '/=' || s.op === '%='
+          || s.op === '&=' || s.op === '|=' || s.op === '^=' || s.op === '<<=' || s.op === '>>=') {
           // b 先求值存 scratch1(表达式可能含调用,只求值一次);a=旧 dst 存 scratch0
           this.compileI64(s.value, ctx);
           this.localSet(ctx, ctx.scratch1);
@@ -1428,7 +1550,23 @@ export class WasmCompiler {
           this.emitElemLoad(ctx, this.numVecElemTy(bt), ptrSlot);
           return;
         }
-        if (!bt.startsWith('m')) throw new Unsupported('Vec 下标读 ' + bt + '(Vec[str] 句柄待解锁)');
+        // v0.65 §4.5.2 任务 4:Vec[str] 下标读解锁 —— 句柄容器(vstr 槽 = objTable 句柄 i32):
+        // 界检查/读 flavor 消息/span 全在宿主 vecstr_get(interp.js:1009 口径,与数值读的
+        // panic_m4003 消息逐字同源),界内返回 str 句柄(strTable 新条目)。base 句柄存专属
+        // tempSlot(B1 同款:index 子表达式可以是嵌套下标读)。
+        if (bt === 'vstr') {
+          const hSlot = this.tempSlot(ctx, 'i32');
+          this.compileNum(e.base, ctx, bt);          // 句柄 → hSlot
+          this.localSet(ctx, hSlot);
+          this.compileNum(e.index, ctx, 'i64');      // idx → scratch1
+          this.localSet(ctx, ctx.scratch1);
+          this.localGet(ctx, hSlot);
+          this.localGet(ctx, ctx.scratch1);
+          this.pushI32(ctx, this.spanId(e.span));
+          ctx.bytes.push(0x10); uleb(ctx.bytes, this.vecstrGetIdx());
+          return;
+        }
+        if (!bt.startsWith('m')) throw new Unsupported('Vec 下标读 ' + bt + '(非句柄/数值容器)');
         const elemTy = bt.slice(1);
         const b = ctx.bytes;
         // map[key]:缺键由 JS 导入 panic(M4007,宿主抛 Panic,码与消息同 tree/VM)
@@ -1511,6 +1649,29 @@ export class WasmCompiler {
       case 'Call': {
         const mn1 = this.mathNameOf(e.callee, ctx);
         if (mn1) return MATH_IDX.has(mn1) ? 'f64' : null;
+        // v0.65 §4.5.2 slice 3:消费链/Result 构造的类型推导(let 无标注位需要):
+        //   X.get(i).unwrap()/expect(msg) → 元素型;m.get(k).unwrap()/expect(msg) → 值型;
+        //   r.unwrap()/expect(msg) → res 槽载荷型('ri64'.slice(1) = 'i64');
+        //   Ok(x)/Err(x) 构造 → 'r'+载荷型。
+        const cn0 = e.callee;
+        if (cn0?.nt === 'Field' && ['unwrap', 'expect'].includes(cn0.name)) {
+          const base0 = cn0.base;
+          if (base0?.nt === 'Call' && base0.callee?.nt === 'Field' && base0.callee.name === 'get'
+            && base0.callee.base?.nt === 'Ident' && base0.args.length === 1) {
+            const rt0 = this.inferNumType(base0.callee.base, ctx);
+            if (this.isNumVecTy(rt0)) return this.numVecElemTy(rt0);
+            if (rt0 && rt0.startsWith('m')) return rt0.slice(1);
+          }
+          if (base0 && (base0.nt === 'Ident'
+            || (base0.nt === 'Call' && base0.callee?.nt === 'Ident' && ['Ok', 'Err'].includes(base0.callee.name)))) {
+            const rt0 = this.inferNumType(base0, ctx);
+            if (rt0 && ['ri64', 'ru64', 'rf64', 'rstr'].includes(rt0)) return rt0.slice(1);
+          }
+        }
+        if (cn0?.nt === 'Ident' && ['Ok', 'Err'].includes(cn0.name) && e.args.length === 1) {
+          const pt0 = this.inferNumType(e.args[0], ctx);
+          if (pt0 && ['i64', 'u64', 'f64', 'str'].includes(pt0)) return 'r' + pt0;
+        }
         if (e.callee.nt !== 'Ident') return null;
         const mod = this.modulesByFile.get(ctx.modFile);
         const entry = mod?.items.get(e.callee.name);
@@ -1701,26 +1862,59 @@ export class WasmCompiler {
     }
   }
 
-  // Option 消费链编译(v0.22):X.get(k).unwrap() / .unwrap_or(d) / .is_some() / .is_none()
-  // 语义直译(零 Option 表示):unwrap ≡ 越界/缺键 panic;unwrap_or ≡ 界外取默认;is_some ≡ 界内判定。
+  // Option/Result 消费链编译(v0.22;v0.63 slice 2 数值 Vec unwrap;v0.65 §4.5.2 slice 3 收口):
+  //   X.get(i).unwrap()/expect(字面量 msg)      —— 越界 → panic_m4006 / panic_expect
+  //   m.get(k).unwrap()/expect(字面量 msg)      —— map_has 判定在先,缺键 → panic_m4006 / panic_expect
+  //   r.unwrap()/expect(msg)                     —— Result 句柄:Ok 载荷直通,Err → panic_m4006
+  //                                                 (unwrap 消息 = `对 Err(<display>) 调用 unwrap()`,
+  //                                                 expect 消息 = `expect 失败: <载荷.v>`,interp.js:3258 口径——
+  //                                                 msg 实参求值后丢弃,副作用保留)
+  // 语义直译(零 Option 表示):unwrap ≡ 越界/缺键 panic。
   // 裸 Option 值(存储/match 解构/跨任务)不支持 → Unsupported 回落 JS VM(语义不变)。
+  // 仍登记守护(具名):unwrap_or / is_some / is_none(bool 局部/let 绑定表示缺失)、
+  // expect 的非字面量 msg、非局部接收者、Vec[str].get 消费链。
   tryCompileGetConsumed(e, ctx, ty) {
     const callee = e?.callee;
     if (callee?.nt === 'Field' && ['unwrap', 'unwrap_or', 'is_some', 'is_none', 'expect'].includes(callee.name)) {
       const getCall = callee.base;
-      // v0.63 §4.4.6b slice 2:解锁数值 Vec 的 X.get(i).unwrap()(None 分支 → panic_m4006,
-      // 消息/位置与 interp.js:3246 逐字:'对 None 调用 unwrap()',span = unwrap 调用点)。
-      // 限定接收者为局部/形参槽(数值 Vec ptr 表示);`?` 运算符的 None 分支不可达
-      // (Option 返回函数不 eligible,isEligibleShape numOk 不含 opt),无需处理。
-      // 其余维持守护,具名回落:
-      //   - expect(带自定义 msg):消息是 `expect 失败: <msg>`,需把 msg 串穿越导入边界
-      //     传给宿主(最小方案不新增 str 传参导入)。
-      //   - unwrap_or / is_some / is_none:无 panic 面,随本片验证面收窄一并保持守护。
-      //   - Map 侧(m.get(k).unwrap()):缺键须报 M4006,而 map_get_* 导入对缺键抛 M4007,
-      //     需要 map_has 导入判定在先——vm.js 本片只授权 panic 导入,具名登记待补。
-      //   - Err(Result).unwrap():消息含载荷 display(`对 Err(...) 调用 unwrap()`),同待补。
+      const isExpect = callee.name === 'expect';
+      const unwrapArityOk = isExpect ? e.args.length === 1 : e.args.length === 0;
+      // expect 的 msg 须为编译期字面量(经 strConsts 表索引穿越导入边界;变量/插值 msg 登记守护)
+      const expectMsgLit = () => {
+        const m = isExpect ? e.args[0] : null;
+        if (!m || m.nt !== 'StrLit' || m.parts.length !== 1 || !('lit' in m.parts[0])) {
+          throw new Unsupported('expect msg 非编译期字面量(待解锁)');
+        }
+        return m.parts[0].lit;
+      };
+      // ---- Result 消费链(v0.65 slice 3):接收者 = res 槽(Ident)或 Ok/Err 构造 ----
+      // unwrap/expect 的宿主导入按**上下文型**选(i64/u64→res_unwrap_i64,f64→_f64,str→_str):
+      // checker 把 ok 载荷型绑定到消费点上下文,运行时 V 对象携带自身类型,槽型仅是标记。
+      if ((callee.name === 'unwrap' || isExpect) && unwrapArityOk) {
+        const rty = getCall ? this.inferNumType(getCall, ctx) : null;
+        if (rty && ['ri64', 'ru64', 'rf64', 'rstr'].includes(rty)) {
+          // M2(v0.65 审查):求值序必须 recv → args(interp 方法调用先接收者后实参)。
+          // 此前 msg(e.args[0])先编入共享栈再 drop、接收者后编——`Err(<溢出>).expect(mk())`
+          // 双溢出对照中 tree panic span 在 Err 载荷、wasm 在 mk 内(span 差分)。接收者句柄
+          // 存专属 tempSlot(msg 求值会复用 scratch/共享栈),再编 msg 并 drop,最后取回句柄。
+          const hslot = this.tempSlot(ctx, 'i32');       // res 句柄专属槽(i32)
+          this.compileNum(getCall, ctx, rty);            // 接收者先求值 → 句柄 → hslot
+          this.localSet(ctx, hslot);
+          if (isExpect) {
+            // Result.expect 消息 = Err 载荷 display(interp 忽略 msg,但先求值 args[0]——副作用保留)
+            this.compileNum(e.args[0], ctx, 'str');
+            ctx.bytes.push(0x1a); // drop(msg 值不进消息)
+          }
+          this.localGet(ctx, hslot);                     // res 句柄 → 栈
+          this.pushI32(ctx, this.spanId(e.span));
+          this.pushI32(ctx, isExpect ? 1 : 0);
+          ctx.bytes.push(0x10); uleb(ctx.bytes, this.resUnwrapIdx(ty));
+          return { ty };
+        }
+      }
+      // ---- 数值 Vec / Map 的 get 消费链(v0.63 数值 Vec unwrap;v0.65 expect/Map 解锁)----
       if (getCall?.nt === 'Call' && getCall.callee?.nt === 'Field' && getCall.callee.name === 'get'
-        && callee.name === 'unwrap' && e.args.length === 0
+        && (callee.name === 'unwrap' || isExpect) && unwrapArityOk
         && getCall.callee.base.nt === 'Ident' && getCall.args.length === 1) {
         const recvTy = this.inferNumType(getCall.callee.base, ctx);
         if (this.isNumVecTy(recvTy)) {
@@ -1732,16 +1926,60 @@ export class WasmCompiler {
           this.localSet(ctx, uslot);
           this.compileNum(getCall.args[0], ctx, 'i64');      // idx → scratch1
           this.localSet(ctx, ctx.scratch1);
-          this.emitIndexBoundsPanic(ctx, this.panicNoneIdx(), e.span, false, uslot); // M4006 只带 spanIdx
+          if (isExpect) {
+            // v0.65 §4.5.2 任务 1:expect(字面量 msg)——越界 → panic_expect(spanIdx, strIdx),
+            // 消息 `expect 失败: <msg>`(interp.js:3246);msg 经 strConsts 偏移直读宿主预填区。
+            const lit = expectMsgLit();
+            this.emitIndexBoundsPanic(ctx, this.expectPanicIdx(), e.span, false, uslot, () => {
+              this.pushI32(ctx, this.spanId(e.span));
+              this.pushI32(ctx, this.strConstOffset(lit));
+            });
+          } else {
+            this.emitIndexBoundsPanic(ctx, this.panicNoneIdx(), e.span, false, uslot); // M4006 只带 spanIdx
+          }
           this.emitElemLoad(ctx, this.numVecElemTy(recvTy), uslot);
           return { ty: this.numVecElemTy(recvTy) };
         }
+        // v0.65 §4.5.2 任务 2:Map get 消费链 —— map_has 判定在先(map_get 语义拆分),
+        // 缺键 → panic_m4006(`对 None 调用 unwrap()`)/ panic_expect,消息与 span 同
+        // tree/VM(interp 经 Option 包装,实测 m.get(缺键).unwrap() 报 M4006 对 None)。
+        if (recvTy && recvTy.startsWith('m')) {
+          const elemTy = recvTy.slice(1);
+          const lit = isExpect ? expectMsgLit() : null;
+          const mslot = this.tempSlot(ctx, 'i32');   // recv 句柄专属槽(B1 同款)
+          this.compileNum(getCall.callee.base, ctx, recvTy);
+          this.localSet(ctx, mslot);
+          this.compileNum(getCall.args[0], ctx, 'str'); // key 句柄 → iscratch2(嵌套读在 localSet 前完成)
+          this.localSet(ctx, ctx.iscratch2);
+          this.localGet(ctx, mslot);
+          this.localGet(ctx, ctx.iscratch2);
+          ctx.bytes.push(0x10); uleb(ctx.bytes, this.mapHasIdx());
+          ctx.bytes.push(0x45);                       // i32.eqz:缺键
+          ctx.bytes.push(0x04); ctx.bytes.push(0x40);
+          this.pushI32(ctx, this.spanId(e.span));
+          if (isExpect) this.pushI32(ctx, this.strConstOffset(lit));
+          ctx.bytes.push(0x10); uleb(ctx.bytes, isExpect ? this.expectPanicIdx() : this.panicNoneIdx());
+          ctx.bytes.push(0x0b);
+          // 键存在 → map_get_ty(缺键 panic 分支不可达,span 实参仍传齐)
+          this.localGet(ctx, mslot);
+          this.localGet(ctx, ctx.iscratch2);
+          this.pushI32(ctx, this.spanId(e.span));
+          ctx.bytes.push(0x10); uleb(ctx.bytes, this.extraImportIdx('map_get_' + elemTy));
+          return { ty: elemTy };
+        }
       }
-      throw new Unsupported('Option 消费链 ' + callee.name + '(expect/unwrap_or/is_*/Map/Err 侧待解锁)');
+      throw new Unsupported('Option 消费链 ' + callee.name + '(unwrap_or/is_*/非局部接收者/Vec[str].get 侧待解锁)');
     }
     return null;
   }
     compileCallNum(e, ctx, ty) {
+    // v0.65 §4.5.2 任务 3:Ok/Err 构造器 → res_new_*(句柄)。载荷限标量(i64/u64/f64/str,
+    // 与 compileNum 可编译面一致);容器/结构体载荷登记守护(display 复杂度超界)。
+    // Some/None 不构造(零 Option 表示,落下方具名回落)。
+    if (e.callee?.nt === 'Ident' && ['Ok', 'Err'].includes(e.callee.name) && e.args.length === 1) {
+      this.compileResCtor(e, ctx);
+      return;
+    }
     // Option 消费链优先
     const consumed = this.tryCompileGetConsumed(e, ctx, ty);
     if (consumed) return;
@@ -1756,8 +1994,9 @@ export class WasmCompiler {
       return;
     }
     if (callee.nt !== 'Ident') throw new Unsupported('非直接调用');
-    const widx = this.resolveWasmCallIdx(ctx, callee.name);
-    if (widx === null) throw new Unsupported('调用 ' + callee.name);
+    const mingIdx = this.resolveEligibleMingIdx(ctx, callee.name);
+    if (mingIdx === null) throw new Unsupported('调用 ' + callee.name);
+    const widx = DEFINED_BASE + (this.wasmOrder ? this.wasmOrder.indexOf(mingIdx) : -1);
     const mod = this.modulesByFile.get(ctx.modFile);
     const entry = mod?.items.get(callee.name);
     const calleeSig = entry?.sig;
@@ -1777,9 +2016,54 @@ export class WasmCompiler {
       }
       this.compileNum(a, ctx, argTy);
     });
+    // v0.65 §4.5.2 #59:wasm→wasm 直调的调用点帧透传——frame_push(fnIdx, callSpan) →
+    // call → frame_pop(每调用点配对,正常返回即弹出;panic 穿透时帧留在宿主
+    // wasmFrameStack,callCompiled catch 合并进 e.stack,与 tree/VM 三帧逐字)。
+    // 实参求值在前(与 interp 一致),帧名/调用点 span 与 interp callUser 同口径。
+    this.pushI32(ctx, mingIdx);
+    this.pushI32(ctx, this.spanId(e.span));
+    ctx.bytes.push(0x10); uleb(ctx.bytes, this.framePushIdx());
     ctx.bytes.push(0x10);
     uleb(ctx.bytes, widx);
+    ctx.bytes.push(0x10); uleb(ctx.bytes, this.framePopIdx());
     void ty;
+  }
+
+  // v0.65 §4.5.2 任务 3:Ok/Err 构造编译(载荷限标量)。isU64 保真 u64 载荷的
+  // Err display 位型(wasm i64 有符号出栈,宿主 asUintN 还原)。
+  compileResCtor(e, ctx) {
+    const isErr = e.callee.name === 'Err' ? 1 : 0;
+    const arg = e.args[0];
+    const pty = this.inferNumType(arg, ctx);
+    if (pty === 'str') {
+      this.pushI32(ctx, isErr);
+      this.compileNum(arg, ctx, 'str');
+      ctx.bytes.push(0x10); uleb(ctx.bytes, this.resNewIdx('str'));
+      return;
+    }
+    if (pty === 'f64') {
+      this.pushI32(ctx, isErr);
+      this.compileNum(arg, ctx, 'f64');
+      ctx.bytes.push(0x10); uleb(ctx.bytes, this.resNewIdx('f64'));
+      return;
+    }
+    if (pty === 'i64' || pty === 'u64') {
+      this.pushI32(ctx, isErr);
+      this.pushI32(ctx, pty === 'u64' ? 1 : 0);
+      this.compileNum(arg, ctx, pty);
+      ctx.bytes.push(0x10); uleb(ctx.bytes, this.resNewIdx('i64'));
+      return;
+    }
+    throw new Unsupported('Result 载荷非标量(容器/结构体/bool 待解锁)');
+  }
+
+  // Ok/Err 构造的槽型标记(无标注 let 位推导):'r'+载荷型
+  // M1(v0.65 审查):签名必须带 ctx——此前方法体引用 ctx 但形参缺失/不在闭包作用域,
+  // 无标注 `let r = Ok(7)` 直接 ReferenceError: ctx is not defined(非具名回落)。
+  resCtorSlotTy(e, ctx) {
+    const pty = this.inferNumType(e.args[0], ctx);
+    if (pty && ['i64', 'u64', 'f64', 'str'].includes(pty)) return 'r' + pty;
+    return null;
   }
 
   allocImportIdx() {
@@ -1811,6 +2095,41 @@ export class WasmCompiler {
     return TOTAL_IMPORTS + 5; // ming_alloc_elem(数值 VecLit:元素计费 + ptr 块分配)
   }
 
+  // v0.65 §4.5.2 slice 3:新导入索引(TI+6..TI+16,与 emitModule 尾部追加序逐项对齐)
+  expectPanicIdx() {
+    return TOTAL_IMPORTS + 6; // panic_expect(spanIdx, strIdx)
+  }
+
+  mapHasIdx() {
+    return TOTAL_IMPORTS + 7; // map_has(h, kh) -> i32
+  }
+
+  vecstrGetIdx() {
+    return TOTAL_IMPORTS + 8; // vecstr_get(h, i, spanIdx) -> str 句柄
+  }
+
+  resNewIdx(pty) {
+    if (pty === 'f64') return TOTAL_IMPORTS + 10; // res_new_f64(isErr, v)
+    if (pty === 'str') return TOTAL_IMPORTS + 11; // res_new_str(isErr, sh)
+    return TOTAL_IMPORTS + 9; // res_new_i64(isErr, isU64, v) —— i64/u64 载荷共用
+  }
+
+  // Result unwrap/expect 导入按**上下文型**选(ty = 消费点期望型;checker 把 ok 载荷型
+  // 绑定到上下文):i64/u64 位型共用 _i64,f64/_f64,str/_str。h/spanIdx/isExpect 同型。
+  resUnwrapIdx(ty) {
+    if (ty === 'f64') return TOTAL_IMPORTS + 13; // res_unwrap_f64
+    if (ty === 'str') return TOTAL_IMPORTS + 14; // res_unwrap_str
+    return TOTAL_IMPORTS + 12; // res_unwrap_i64(i64/u64)
+  }
+
+  framePushIdx() {
+    return TOTAL_IMPORTS + 15; // frame_push(fnIdx, spanIdx) —— #59
+  }
+
+  framePopIdx() {
+    return TOTAL_IMPORTS + 16; // frame_pop() —— #59
+  }
+
   // v0.63 §4.4.6b slice 2:数值 Vec 槽型判定(线性内存 ptr 表示,[len@0][cap@8][elems@16])。
   // vi64/vf64 = VecLit 局部;*ptr/*ptrm = 数值 Vec 形参(非 mut/mut)。
   isNumVecTy(t) {
@@ -1831,12 +2150,25 @@ export class WasmCompiler {
     return null;
   }
 
+  // v0.65 §4.5.2 任务 3:Result 标注语法型(Result[T, E] TName 形态)→ 槽型标记 'r'+T。
+  // T = 标量(i64/u64/f64/str);容器/结构体载荷不构造(compileResCtor 具名守护),标注
+  // 位返回 null 落下方具名回落。E(Err 侧类型)不进槽型——display 由宿主按运行时值通用处理。
+  resolveResAnnTy(t) {
+    if (!t || t.nt !== 'TName' || t.name !== 'Result' || !t.args || t.args.length !== 2) return null;
+    const ok = t.args[0];
+    if (ok?.nt !== 'TName' || (ok.args && ok.args.length !== 0)) return null;
+    if (['i64', 'u64', 'f64', 'str'].includes(ok.name)) return 'r' + ok.name;
+    return null;
+  }
+
   // 下标界检查(0 <= idx < len)→ 越界调 panicIdx 指定的导入。前置:ptr 在 ptrSlot,
   // idx(i64)在 scratch1;span = Ming 侧 panic 位置(读=e.span,写=s.target.span)。
   // withIdxLen=false 用于 panic_m4006(签名只有 spanIdx——None unwrap 消息不含 idx/len)。
   // v0.63 审查 B1:ptrSlot 由调用方传入(专属 tempSlot)——共享 iscratch 会被嵌套
   // 下标读/Map 读子表达式覆盖(外层 base ptr 跨表达式复用冲突,静默错值),废除该用法。
-  emitIndexBoundsPanic(ctx, panicIdx, span, withIdxLen = true, ptrSlot) {
+  // v0.65 §4.5.2:emitArgs 回调用于 panic_expect(签名 (spanIdx, strIdx)——msg 经
+  // strConsts 表索引穿越;回调内不得编译子表达式,只压常量/既有槽值)。
+  emitIndexBoundsPanic(ctx, panicIdx, span, withIdxLen = true, ptrSlot, emitArgs = null) {
     const b = ctx.bytes;
     this.localGet(ctx, ctx.scratch1);
     this.pushI64(ctx, 0n);
@@ -1847,11 +2179,15 @@ export class WasmCompiler {
     b.push(0x5a);                            // i64.ge_s:idx >= len
     b.push(0x72);                            // i32.or
     b.push(0x04); b.push(0x40);
-    this.pushI32(ctx, this.spanId(span));    // spanIdx
-    if (withIdxLen) {
-      this.localGet(ctx, ctx.scratch1);      // idx(i64)
-      this.localGet(ctx, ptrSlot);
-      b.push(0x29); sleb(b, 3); sleb(b, 0);  // len(i64)
+    if (emitArgs) {
+      emitArgs();
+    } else {
+      this.pushI32(ctx, this.spanId(span));    // spanIdx
+      if (withIdxLen) {
+        this.localGet(ctx, ctx.scratch1);      // idx(i64)
+        this.localGet(ctx, ptrSlot);
+        b.push(0x29); sleb(b, 3); sleb(b, 0);  // len(i64)
+      }
     }
     b.push(0x10); uleb(b, panicIdx);
     b.push(0x0b);
@@ -2053,13 +2389,21 @@ export class WasmCompiler {
   }
 
 
-  resolveWasmCallIdx(ctx, name) {
+  // v0.65 §4.5.2 #59:直调需要 ming 层函数下标(frame_push 实参)+ wasm 函数索引两个值,
+  // 拆出 resolveEligibleMingIdx 供 compileCallNum 双取(既有 resolveWasmCallIdx 口径不变)。
+  resolveEligibleMingIdx(ctx, name) {
     const mod = this.modulesByFile.get(ctx.modFile);
     if (!mod) return null;
     const entry = mod.items.get(name);
     if (entry?.kind !== 'fn') return null;
     const mingIdx = this.compiled.entryFnIdx?.get(entry);
     if (mingIdx === undefined || !this.eligible.has(mingIdx)) return null;
+    return mingIdx;
+  }
+
+  resolveWasmCallIdx(ctx, name) {
+    const mingIdx = this.resolveEligibleMingIdx(ctx, name);
+    if (mingIdx === null) return null;
     return DEFINED_BASE + (this.wasmOrder ? this.wasmOrder.indexOf(mingIdx) : -1);
   }
 }
