@@ -12873,6 +12873,375 @@ fn main() with io, fs {
   // §69-END
 }
 
+// ===================== 70. v0.67:诊断协议校准三切口 + REPL 顺带(plan §4.6.7/§4.7.2;#62/#60/#64)=====================
+// 文件所有权:§70 = 本区全部用例。切口 1 毒化收敛(let 初始化器 + match 臂绑定双路径) /
+// 切口 2 M3012 语境化抑制 / 切口 3 M3015 nearest(三主发射点 + 通用) / REPL let 回显 + 横幅单一事实来源。
+{
+  const dir70 = path.join(TMP, 'v70');
+  fs.mkdirSync(dir70, { recursive: true });
+  const m70 = (name, src) => { const f = path.join(dir70, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags70 = ['', '--no-wasm', '--tree'];
+  const runAll70 = (p, extra = []) => flags70.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const fmtRuns70 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+
+  // ---- §70-START(三切口正负例/REPL let 回显/横幅逐字/快照语料固化复测)----
+  // v0.67(plan §4.6.7 任务 5 + §4.7.2 注意点 4):AI 修正回路快照(docs/ai-loop-snapshot.md §1)
+  // 语料套件化——e13/e19/e16/e04/e06 形态内联重建(快照原始 24 形态语料在会话 tmpdir 不入仓)。
+  // 纪律:全部先实测后断言;注释里的 BEFORE 数为基线 HEAD 147ff1e(v0.66.0,切口前)对**本套件
+  // 重建语料**的实测,与快照原文逐形计数略有出入(重建形态有增删,如 e13 用 str(r) 形态比快照
+  // debug 形态多一条 M3002 级联),倍率方向一致;官方汇总由架构师按本套件重算回填 plan §4.6.7。
+  const chk70 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态(如 ReferenceError)→ j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const codes70 = (res) => (res.j ? res.j.diagnostics.map((d) => d.code + (d.fix ? '(fix:' + d.fix.replacement + ')' : '')).join(',') : '(no-json:exit ' + res.code + ')');
+  const noFix70 = (res) => !!res.j && res.j.diagnostics.every((d) => d.fix === undefined);
+  const hintOf70 = (res, code) => { const d = res.j && res.j.diagnostics.find((x) => x.code === code); return d ? (d.hint ?? '') : null; };
+
+  // 语料(内联固化;快照 e13/e19/e16/e21/e04/e06 形态重建 + 切口验证辅助形态)。
+  const e13 = m70('e13_let_poison.ming', [
+    'fn main() with io {',
+    '    let r = foobar(3);',
+    '    print(str(r));',
+    '}',
+  ].join('\n'));
+  const e19 = m70('e19_let_poison_interp.ming', [
+    'fn main() with io {',
+    '    let r = foobar(3);',
+    '    print("v=\\{r}");',
+    '}',
+  ].join('\n'));
+  const e16 = m70('e16_serve_sync.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Json) -> Json with sync {',
+    '    return std.json.parse("{}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27001, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const e21 = m70('e21_serve_ok.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Json) -> Json {',
+    '    return std.json.parse("{}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27001, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const e04 = m70('e04_untrusted_method.ming', [
+    'use std.io;',
+    'fn main() with io {',
+    '    let u = io.read_line();',
+    '    let n = u.trim();',
+    '    print(n);',
+    '}',
+  ].join('\n'));
+  const e06 = m70('e06_method_typo.ming', [
+    'fn main() with io {',
+    '    let s = "hello";',
+    '    let n = s.lenth();',
+    '    print(str(n));',
+    '}',
+  ].join('\n'));
+  // e14 重建(f04 探针载体):4 根因并发 + 失绑 z(nearest 命中单字母名,快照记 z→x)。
+  const e14 = m70('e14_multi_root.ming', [
+    'fn main() with io {',
+    '    let a: i64 = "s";',
+    '    let w = 1i32 + 1i64;',
+    '    let c = 1;',
+    '    c = 2;',
+    '    let x = "s";',
+    '    let z = nosuchfn(3);',
+    '    print(str(z));',
+    '}',
+  ].join('\n'));
+  // 辅助形态:match 臂毒化(切口 1 路径 b 直击,不经 serve 门)/插值内未解析名(切口 2 信号 a)/
+  // 真类型错对照(切口 2 不误伤)/let 缺初始化(路径 a 第二分支 + 基线崩溃修复)/元组毒化。
+  const mp70 = m70('v70_match_poison.ming', [
+    'fn main() with io {',
+    '    match nosuchfn(3) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const iname70 = m70('v70_interp_name.ming', [
+    'fn main() with io {',
+    '    print("v=\\{nosuch}");',
+    '}',
+  ].join('\n'));
+  const ctl70 = m70('v70_interp_true_type.ming', [
+    'struct P { x: i64 }',
+    'fn main() with io {',
+    '    let p = P { x: 1 };',
+    '    print("v=\\{p}");',
+    '}',
+  ].join('\n'));
+  const lni70 = m70('v70_let_noinit.ming', [
+    'fn main() with io {',
+    '    let x;',
+    '    print(str(x));',
+    '}',
+  ].join('\n'));
+  const llp70 = m70('v70_let_noinit_loop.ming', [
+    'fn main() with io {',
+    '    let mut i = 0;',
+    '    while i < 3 {',
+    '        let x;',
+    '        i += 1;',
+    '    }',
+    '}',
+  ].join('\n'));
+  const tp70f = m70('v70_tuple_poison.ming', [
+    'fn main() with io {',
+    '    let (a, b) = nosuchfn();',
+    '    print(str(a));',
+    '}',
+  ].join('\n'));
+  // 切口 3 语料:三主发射点 + 用户类型(有 impl/无 impl 对照)。
+  const vsetx70 = m70('v70_vec_setx.ming', [
+    'fn main() with io {',
+    '    let v = [1, 2, 3];',
+    '    v.setx(0, 9);',
+    '}',
+  ].join('\n'));
+  const msetx70 = m70('v70_map_setx.ming', [
+    'fn main() with io {',
+    '    let m: Map[str, i64] = {};',
+    '    m.setx("a", 1);',
+    '}',
+  ].join('\n'));
+  const strimal70 = m70('v70_str_trimal.ming', [
+    'fn main() with io {',
+    '    let s = " hello ";',
+    '    let t = s.trim_al();',
+    '    print(t);',
+    '}',
+  ].join('\n'));
+  const utype70 = m70('v70_utype_near.ming', [
+    'trait Tick {',
+    '    fn inc(self) -> i64;',
+    '}',
+    'struct Counter { n: i64 }',
+    'impl Tick for Counter {',
+    '    fn inc(self) -> i64 { return self.n + 1; }',
+    '}',
+    'fn main() with io {',
+    '    let c = Counter { n: 1 };',
+    '    print(str(c.inc2()));',
+    '}',
+  ].join('\n'));
+  const utypeNi70 = m70('v70_utype_noimpl.ming', [
+    'struct Counter { n: i64 }',
+    'fn main() with io {',
+    '    let c = Counter { n: 1 };',
+    '    print(str(c.inc2()));',
+    '}',
+  ].join('\n'));
+
+  // check --json 实测(一次采集,多断言复用;采集顺序即语料定义顺序)。
+  const r13 = chk70(e13);
+  const r19 = chk70(e19);
+  const r16 = chk70(e16);
+  const r21 = chk70(e21);
+  const r04 = chk70(e04);
+  const r06 = chk70(e06);
+  const r14 = chk70(e14);
+  const rmp = chk70(mp70);
+  const rin = chk70(iname70);
+  const rctl = chk70(ctl70);
+  const rlni = chk70(lni70);
+  const rllp = chk70(llp70);
+  const rtp = chk70(tp70f);
+  const rvx = chk70(vsetx70);
+  const rmx = chk70(msetx70);
+  const rtr = chk70(strimal70);
+  const rut = chk70(utype70);
+  const rutNi = chk70(utypeNi70);
+
+  // v70.12 快照复测数字登记(供架构师回填 plan §4.6.7 验收行;汇总不在断言里写死,由 plan 收口):
+  // - 误导模式:7 种(快照 §2d)→ 实测剩 1 种(目标 ≤2 ✓)。模式 1(r→str)/2(e→Ok)/3(z→单字母)/
+  //   4(n→u)/5(n→s)五条假 fix 全部消失(v70.8,处方无应用面);模式 6(M3012 debug hint)语境化
+  //   (v70.5,根因为名/毒化时中性,真类型错保留);模式 7(解析层毒化短名 nearest 命中内置 Ok,e22
+  //   顶层 let/e23 语法毒化两形态)nearest-Ok hint 半句已消(v0.67 收口:nearest 候选排除内置
+  //   构造器,cannotFindValue 过滤 Ok/Err/Some/None,v70.9 断言锁定)——M3001 本体仍随 parser
+  //   级联毒化残留,抑制是 #63(v0.70 候选),不在 checker 三切口面(plan §4.6.7"明确不做"),
+  //   checker 层按程序实例计 9 处 → 2 处。
+  // - fix 错误:4(f01/f02/f04/f05 应用后更糟 + f03 静默改语义)→ 实测 0(目标 ≤1 ✓)——五条旧处方
+  //   在新输出中均不存在(v70.8 断言 fix 字段缺失),无应用面即无误用面。
+  // - 级联放大比(checker 层,#62 族五形态汇总,含 warning 口径):BEFORE 19/5 = 3.8 → AFTER 7/5 = 1.4
+  //   (目标 ≤1.5 ✓)。逐形态 BEFORE→AFTER(本套件重建语料实测):e13 4→1、e19 4→2、e16 3→2、
+  //   e04 4→1、e06 4→1;辅助形态:match 臂 3→2、e14(4 根因)10→7、元组毒化 5→2、let 缺初始化
+  //   崩溃→2(M3003+W3101)。e14 的 3 条 W3101 为重建语料未用名噪声(快照原语料 1 条),汇总未计入。
+  // - 快照 go/no-go 三判据复核:误导(7→1 ✓)/fix 错误(4→0 ✓)/级联(3.8→1.4 ✓)——三判据全达标的
+  //   "修后确认",GO 裁决维持。
+
+  // v70.1 切口 1 主形态(快照 e13 重建):根因唯一优先——M3001(foobar)存在,M3003"无法推断"
+  // 不再先行(基线排序:M3003, M3001, M3001(fix:str), M3002),r→str 假 fix 消失(f01 探针载体),
+  // str(r) 的 M3002 级联消失(毒化 never 收敛,使用点不再级联)。
+  check('v70.1:切口 1 let 毒化收敛(e13)——根因 M3001 唯一,M3003 不先行,r→str 假 fix 消失,M3002 级联消失',
+    !!r13.j && r13.j.diagnostics.length === 1
+      && r13.j.diagnostics[0].code === 'M3001' && r13.j.diagnostics[0].message.includes('foobar')
+      && r13.j.diagnostics[0].fix === undefined
+      && !r13.j.diagnostics.some((d) => d.code === 'M3003')
+      && !r13.j.diagnostics.some((d) => d.code === 'M3002')
+      && r13.code === 1,
+    `exit=${r13.code} diags=${codes70(r13)}`);
+
+  // v70.2 切口 1 match 臂路径(快照 e16 机制直击 + serve 门全形态):被匹配值失型(根因已报)时
+  // Err(e) 臂绑定毒化 never——e→Ok 假 fix 消失(f02 探针载体,应用后曾新增 M3005);serve 门形态
+  // M3002 为真实根因(白名单违规)原样保留且不再伴随 M3001;合规对照 e21 干净(级联由违规诱导,机制证实)。
+  check('v70.2:切口 1 match 臂毒化——match_poison 假 fix(e→Ok)消失且仅 M3001 根因+M3012;e16 serve 门 M3002 根因保留无 M3001 假 fix;e21 合规对照 ok:true',
+    !!rmp.j && rmp.j.diagnostics.length === 2
+      && rmp.j.diagnostics.some((d) => d.code === 'M3001' && d.fix === undefined && d.message.includes('nosuchfn'))
+      && rmp.j.diagnostics.some((d) => d.code === 'M3012') && noFix70(rmp)
+      && !!r16.j && r16.j.diagnostics.length === 2
+      && r16.j.diagnostics.some((d) => d.code === 'M3002' && d.message.includes('with sync'))
+      && !r16.j.diagnostics.some((d) => d.code === 'M3001') && noFix70(r16)
+      && !!r21.j && r21.j.ok === true && r21.code === 0,
+    `mp=${codes70(rmp)} e16=${codes70(r16)} e21=${codes70(r21)}`);
+
+  // v70.3 切口 1 白名单外方法级联(快照 e04):M3050 根因唯一保留;n→u 假 fix 消失(f05 探针载体,
+  // 应用后曾把用户引向 debug(u) 污点禁面);M3003/M3001/M3002 级联全消失。
+  check('v70.3:切口 1 白名单外级联(e04)——M3050 根因唯一,n→u 假 fix 消失,无 M3003/M3001 级联',
+    !!r04.j && r04.j.diagnostics.length === 1
+      && r04.j.diagnostics[0].code === 'M3050' && r04.j.diagnostics[0].fix === undefined,
+    `exit=${r04.code} diags=${codes70(r04)}`);
+
+  // v70.4 毒化只影响 check 诊断面:三引擎 run(exit/stdout/stderr)逐字一致——check 失败在引擎
+  // 分派前拦截(exit 1),运行时语义零变化(基线同为此输出;毒化不引入任何运行面差异)。
+  const same3_70 = (runs) => runs.length === 3 && runs.every((r) => r.code === runs[0].code && r.stdout === runs[0].stdout && r.stderr === runs[0].stderr);
+  const runs13 = runAll70(e13);
+  const runsMp = runAll70(mp70);
+  const runs19 = runAll70(e19);
+  check('v70.4:毒化程序三引擎 run 逐字一致(e13/match_poison/e19;exit 1 + 空 stdout + stderr 逐字同)',
+    same3_70(runs13) && runs13[0].code === 1 && runs13[0].stdout === '' && runs13[0].stderr.includes('M3001')
+      && same3_70(runsMp) && runsMp[0].code === 1
+      && same3_70(runs19) && runs19[0].code === 1,
+    `e13=${fmtRuns70(runs13)} | mp=${fmtRuns70(runsMp)} | e19=${fmtRuns70(runs19)}`);
+
+  // v70.5 切口 2 M3012 语境化:插值含未解析名(v70 信号 a)/毒化绑定读(信号 b)时 hint 中性
+  // (不含 debug 建议——根因未修时 debug(同名) 仍错,快照 e19/e16 双复现);对照:名字已解析的
+  // 真类型错(struct P 插值)保留 debug 建议(不误伤)。
+  check('v70.5:切口 2 M3012 hint 语境化——未解析名/毒化读 → 中性 hint(指向根因,无 debug 建议);真类型错 → debug 建议保留',
+    hintOf70(r19, 'M3012') !== null && hintOf70(r19, 'M3012').includes('根因') && !hintOf70(r19, 'M3012').includes('debug')
+      && hintOf70(rmp, 'M3012') !== null && !hintOf70(rmp, 'M3012').includes('debug')
+      && hintOf70(rin, 'M3012') !== null && !hintOf70(rin, 'M3012').includes('debug')
+      && hintOf70(rctl, 'M3012') !== null && hintOf70(rctl, 'M3012').includes('debug'),
+    `e19=${JSON.stringify(hintOf70(r19, 'M3012'))} mp=${JSON.stringify(hintOf70(rmp, 'M3012'))} name=${JSON.stringify(hintOf70(rin, 'M3012'))} ctl=${JSON.stringify(hintOf70(rctl, 'M3012'))}`);
+
+  // v70.6 切口 3 主发射点三断言(如实口径):Vec setx → "get"(vec 表无 set,≤2 编辑距离近名如实给
+  // get 而非编造 set);Map setx → "set"(表内有);str trim_al 无近名 → 维持全表(不发低质建议)。
+  check('v70.6:切口 3 主发射点——Vec setx→最接近 "get"/Map setx→最接近 "set"/str trim_al 无近名维持全表',
+    !!rvx.j && rvx.j.diagnostics.length === 1 && rvx.j.diagnostics[0].code === 'M3015'
+      && rvx.j.diagnostics[0].message.includes(';最接近的方法是 "get"')
+      && !!rmx.j && rmx.j.diagnostics.length === 1 && rmx.j.diagnostics[0].code === 'M3015'
+      && rmx.j.diagnostics[0].message.includes(';最接近的方法是 "set"')
+      && !!rtr.j && rtr.j.diagnostics.length === 1 && rtr.j.diagnostics[0].code === 'M3015'
+      && rtr.j.diagnostics[0].message.includes('(有:') && !rtr.j.diagnostics[0].message.includes('最接近的方法是'),
+    `vec=${codes70(rvx)} map=${codes70(rmx)} str=${rtr.j ? rtr.j.diagnostics[0].message.slice(-40) : codes70(rtr)}`);
+
+  // v70.7 切口 3 通用接收者(用户类型):trait impl 方法集内 nearest(inc2→inc);无 impl 类型无方法表,
+  // 维持无建议现状(impls=null 路径,不编造)。
+  check('v70.7:切口 3 用户类型——impl 方法集内 inc2→最接近 "inc";无 impl 类型无表不加建议',
+    !!rut.j && rut.j.diagnostics.length >= 1 && rut.j.diagnostics.some((d) => d.code === 'M3015' && d.message.includes(';最接近的方法是 "inc"'))
+      && !!rutNi.j && rutNi.j.diagnostics.some((d) => d.code === 'M3015' && !d.message.includes('最接近的方法是')),
+    `utype=${codes70(rut)} noimpl=${codes70(rutNi)}`);
+
+  // v70.8 处方应用后果探针回归(f01–f05,快照 §0 判据 6):五条旧误导处方在新诊断输出中已不存在
+  // (毒化收敛后 M3001-nearest 处方不再发射)——断言五形态全部诊断零 fix 字段,即"应用后更糟"
+  // 无应用面:f01(e13 r→str)/f02(e16 e→Ok)/f03(e06 n→s)/f04(e14 z→单字母)/f05(e04 n→u)。
+  // 注意:M3029/M2002 的合法 fix 不在本口径(其位置准,快照实测"好")。
+  check('v70.8:f01–f05 探针回归——五形态(e13/e16/e06/e14/e04)新输出零 fix 字段,旧误导处方无应用面',
+    noFix70(r13) && noFix70(r16) && noFix70(r06) && noFix70(r14) && noFix70(r04),
+    `e13=${codes70(r13)} e16=${codes70(r16)} e06=${codes70(r06)} e14=${codes70(r14)} e04=${codes70(r04)}`);
+
+  // v70.9 REPL #60(方案 a,plan §4.6.4/§4.7.2 定案):let 行执行成功后回显"仅当前输入生效"
+  // (曾静默成功,下一行引用报 M3001+Ok hint 令人困惑——快照第五轮 #60);let 不跨输入语义不变:
+  // 后续输入引用仍报 M3001(预期,方案 a 下 let 不入 decls,顶层项模型冲突见 §4.7.2)。
+  // v0.67 收口(快照三切口之一,plan §4.6.7 验收行补齐):nearest 候选排除内置构造器
+  // (checker.js cannotFindValue 过滤 Ok/Err/Some/None)——"最接近的名字是 Ok"不再随 M3001
+  // 发射,断言收紧为 !includes(此前偏离登记"hint 半句未落地"随本修复消解)。
+  const rLet70 = runMing(['repl'], { stdin: 'let x = 1 + 2;\n:quit\n' });
+  const rLetUse70 = runMing(['repl'], { stdin: 'let x = 1;\nx + 1;\n:quit\n' });
+  const useAll70 = rLetUse70.stdout + rLetUse70.stderr;
+  check('v70.9:REPL #60 let 回显(仅当前输入生效 + 绑定名)且 let 不跨输入语义不变(后续引用 M3001 仍在且无 Ok nearest hint)',
+    rLet70.code === 0 && rLet70.stdout.includes('仅当前输入生效') && rLet70.stdout.includes('绑定 x')
+      && rLetUse70.code === 0 && useAll70.includes('M3001') && !useAll70.includes('最接近的名字是 Ok')
+      && rLet70.stderr === '' && !rLetUse70.stdout.includes('= '),
+    `let=${JSON.stringify(rLet70.stdout)} use=${JSON.stringify(useAll70.slice(0, 300))}`);
+
+  // v70.10 REPL #64:横幅版本单一事实来源(package.json)——与 `ming version` 一致(基线硬编码
+  // 曾漂移 v0.8.0→v0.63.0 两版,#64 机制性修复);fn 声明跨输入持久回归(double(21)=42)。
+  const ver70 = runMing(['version']);
+  const mv70 = ver70.stdout.match(/v(\d+\.\d+\.\d+)/);
+  const rBan70 = runMing(['repl'], { stdin: ':quit\n' });
+  const mb70 = rBan70.stdout.match(/Ming v(\d+\.\d+\.\d+) REPL/);
+  const rFn70 = runMing(['repl'], { stdin: 'fn double(n: i64) -> i64 { return n * 2; }\ndouble(21)\n:quit\n' });
+  check('v70.10:REPL #64 横幅版本 = ming version(package.json 单一事实来源)+ fn 跨输入持久(double(21)=42)',
+    !!mv70 && !!mb70 && mv70[1] === mb70[1] && rBan70.code === 0
+      && rFn70.code === 0 && rFn70.stdout.includes('= 42'),
+    `version=${JSON.stringify(ver70.stdout.slice(0, 40))} banner=${JSON.stringify(rBan70.stdout.split('\n')[0])} fn=${JSON.stringify(rFn70.stdout.slice(-40))}`);
+
+  // v70.11 快照语料固化复测(plan §4.7.2 注意点 4):#62 族五形态级联收敛逐形态断言
+  // (BEFORE→AFTER 见 v70.12 登记;此处锁定 AFTER 形态,回归即红)。
+  const cnt70 = (res) => (res.j ? res.j.diagnostics.length : -1);
+  check('v70.11:快照语料固化复测——e13=1/e19=2/e16=2/e04=1/e06=1(级联收敛 AFTER 锁定)',
+    cnt70(r13) === 1 && cnt70(r19) === 2 && cnt70(r16) === 2 && cnt70(r04) === 1 && cnt70(r06) === 1,
+    `e13=${cnt70(r13)}:${codes70(r13)} e19=${cnt70(r19)}:${codes70(r19)} e16=${cnt70(r16)}:${codes70(r16)} e04=${cnt70(r04)}:${codes70(r04)} e06=${cnt70(r06)}:${codes70(r06)}`);
+
+  // v70.13 切口 1 随带修复:let 缺初始化不崩溃——基线双崩溃(walkLinearBody null.nt 先炸,patternBrief 未导入的 ReferenceError 在其后暴露),顺序经审查 NOTE-1 修正
+  // ReferenceError;线性分析 lin(null) 同批加守卫)——M3003 根因发出,绑定毒化收敛(使用点无级联),
+  // 循环体内同口径。
+  check('v70.13:切口 1 随带——let 缺初始化不崩溃(基线 ReferenceError),M3003 根因 + 使用点毒化收敛;循环体内同口径',
+    !!rlni.j && rlni.j.diagnostics.length === 1 && rlni.j.diagnostics[0].code === 'M3003'
+      && !!rllp.j && rllp.j.diagnostics.some((d) => d.code === 'M3003')
+      && !rllp.j.diagnostics.some((d) => d.code === 'M3001') && !rllp.j.diagnostics.some((d) => d.code === 'M3002'),
+    `noinit=${codes70(rlni)} loop=${codes70(rllp)}`);
+
+  // v70.14 切口 1 元组毒化:let (a, b) = nosuchfn() 元组解构按 never 静默下推(基线 5 条:
+  // M3003×2 + M3001(fix:Ok 单字母假 fix)+ M3002"元组模式要求元组类型"级联 → 2 条:根因 M3001
+  // + b 未用 W3101),无假 fix。
+  check('v70.14:切口 1 元组毒化——let (a,b) = 失型初始化按 never 下推,无 M3002 元组级联/无 M3003/无假 fix',
+    !!rtp.j && rtp.j.diagnostics.some((d) => d.code === 'M3001' && d.fix === undefined && d.message.includes('nosuchfn'))
+      && !rtp.j.diagnostics.some((d) => d.code === 'M3003')
+      && !rtp.j.diagnostics.some((d) => d.code === 'M3002')
+      && noFix70(rtp),
+    `tuple=${codes70(rtp)}`);
+  // ---- v70.15(MINOR-3):parser 级联文件形态 e23 直测——顶层 let + 使用点 nearest-Ok 半句消除(回归锁) ----
+  {
+    const e23 = m70('e23-form.ming', [
+      'let x = 1;',
+      '',
+      'fn main() with io {',
+      '    print(str(x + 1));',
+      '}',
+      '',
+    ].join('\n'));
+    const ck = runMing(['check', e23, '--json']);
+    const j68 = (() => { try { return JSON.parse(ck.stdout); } catch { return null; } })();
+    const m3001 = j68 && j68.diagnostics ? j68.diagnostics.filter(d => d.code === 'M3001') : [];
+    const okHint = m3001.some(d => (d.hint || '').includes('最接近的名字是 "Ok"') || (d.fix && JSON.stringify(d.fix).includes('"Ok"')));
+    const fixOk = m3001.some(d => d.fix && JSON.stringify(d.fix).includes('"Ok"'));
+    check('v70.15:e23 文件形态——顶层 let 级联 M3001 无 nearest-Ok hint/无 Ok fix(切口收口直测)',
+      m3001.length > 0 && !okHint && !fixOk,
+      'm3001=' + m3001.length + ' okHint=' + okHint + ' fixOk=' + fixOk + ' stderr0=' + JSON.stringify((ck.stderr ?? '').split('\n')[0]));
+  }
+
+  // §70-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

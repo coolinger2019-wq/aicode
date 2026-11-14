@@ -1,14 +1,24 @@
 // repl.js — Ming 交互式会话(v0.8)。
-// 模型:声明(use/fn/struct/…)持久追加到会话源;表达式包进临时函数求值并打印 repr。
+// 模型:声明(use/fn/struct/…)持久追加到会话源;表达式包进临时函数求值并打印 repr;
+// let 行同包临时函数但不持久(绑定仅当前输入生效,成功后回显提示——v0.67 #60)。
 // 每次输入全量重编译(会话源很小,毫秒级);失败的输入自动回滚,不污染会话。
 
 import * as readline from 'node:readline';
+import * as nodeFs from 'node:fs';
+import * as nodePath from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Checker } from './checker.js';
 import { VMInterp } from './vm.js';
 import { Panic, debugStr } from './interp.js';
 import { formatDiag, cacheSourceLines } from './diag.js';
 
 const ALL_EFFECTS = 'io, time, fs, net';
+
+// v0.67(#64):横幅版本单一事实来源 = package.json(读 src/ 上一级;曾硬编码漂移 v0.8.0→v0.63.0 两版)。
+// 不 import bin/ming.js——动态导入会造 src→bin 环,故直接读清单文件。
+const REPL_VERSION = JSON.parse(
+  nodeFs.readFileSync(nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')
+).version;
 
 function bracketBalance(text) {
   let depth = 0;
@@ -36,8 +46,8 @@ export function startRepl() {
   let counter = 0;
   let pending = '';
 
-  // 横幅版本与 bin/ming.js 的 VERSION 手工同步(曾漂移 v0.8.0→v0.63.0;动态导入会造 src→bin 环,故硬编码)
-  process.stdout.write('Ming v0.63.0 REPL — 输入表达式或声明;:help 帮助,:quit 退出\n');
+  // 横幅版本经 REPL_VERSION 从 package.json 读取(单一事实来源;曾硬编码漂移两版)
+  process.stdout.write(`Ming v${REPL_VERSION} REPL — 输入表达式或声明;:help 帮助,:quit 退出\n`);
   rl.prompt();
 
   rl.on('line', (line) => {
@@ -102,6 +112,13 @@ export function startRepl() {
       const v = interp.callUser(result.entry, entry, null, [], null);
       decls = src;
       if (v && v.t !== 'unit') process.stdout.write('= ' + (v.t === 'str' ? debugRepr(v.v) : debugValue(v)) + '\n');
+      // v0.67(#60,plan §4.6.7 方案 a):let 被包进临时函数执行,不入持久声明集(isDecl 白名单无 let)——
+      // 绑定仅当前输入生效。曾静默成功,下一行引用报 M3001(hint 建议到 "Ok")令人困惑;成功后回显口径提示。
+      if (/^let\b/.test(input0)) {
+        const m = input0.replace(/^let\s+/, '').match(/^(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
+        const who = m ? `绑定 ${m[1]} ` : 'let 绑定';
+        process.stdout.write(`${who}仅当前输入生效(REPL let 不跨输入;用 fn/const 定义持久项)\n`);
+      }
     } catch (e) {
       if (e instanceof Panic) process.stderr.write(`panic ${e.code}: ${e.message}\n`);
       else process.stderr.write('内部错误: ' + (e?.message ?? e) + '\n');

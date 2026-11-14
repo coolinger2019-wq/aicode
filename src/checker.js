@@ -14,7 +14,7 @@
 //   {k:'var',id}       — 推断变量,由 binds 解析
 
 import { err, warn, MingError, CODE_HINTS } from './diag.js';
-import { parse } from './parser.js';
+import { parse, patternBrief } from './parser.js';
 import { linFromInt, linAdd, linMulConst, linIsConst, linEvalAt, proveImplication, solveDiffConstraints, computeSummaries } from './prover.js';
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -250,6 +250,12 @@ export const PRELUDE_VARIANTS = {
   Ok: { enumName: 'Result', variant: 'Ok' },
   Err: { enumName: 'Result', variant: 'Err' },
 };
+
+// v0.67(快照三切口收口,plan §4.6.7):M3001 nearest 候选排除的内置构造器名集——
+// Ok/Err/Some/None 是 prelude 全局名(allVisibleNames 注入)而非用户可声明的近名,
+// 单字母/短失绑名的编辑距离最近者常是它们,任何上下文给"最接近的名字是 Ok"都是误导
+// (快照 §2 模式 7/e22 y→Ok;`x + 1` → hint 命中 Ok)。仅值名发射点过滤,见 cannotFindValue。
+const PRELUDE_VARIANT_NAMES = new Set(Object.keys(PRELUDE_VARIANTS));
 
 // ===================== stdlib 模块签名 =====================
 
@@ -567,6 +573,11 @@ export class Checker {
     // trait 方法 net.serve(7) 解析为方法调用,不进本集合 → 不再误报 M3002。
     this.serveCallNodes = new Set();
     this.serveCallSites = [];
+    // v0.67(plan §4.6.7 切口 2):M3012 语境化探针——栈式作用域,非 null 时表示"正在
+    // 检查某个插值表达式":其中出现的未解析名(cannotFindValue)或毒化绑定读取
+    // (切口 1 的 never 毒化标记)被置位,供 M3012 发射点抑制 debug 建议。合法 never
+    // 绑定(loop 派生)不带毒化标记,不置位(其 debug 建议仍然有效)。
+    this.nameProbe = null;
   }
 
   // ---------- 加载 ----------
@@ -1738,9 +1749,13 @@ export class Checker {
     let declared = null;
     if (s.type) declared = this.resolveTypeAst(s.type, ctx.mod);
     let initT = null;
+    // v0.67(plan §4.6.7 切口 1·路径 a):毒化收敛判据——初始化器检查窗口内已有根因
+    // 诊断入账(诊断计数守卫,保证毒化只在"根因已报"时生效,不吞任何诊断)。
+    const initDiagMark = this.diags.length;
     if (s.init) {
       initT = this.checkExpr(s.init, ctx, declared ?? undefined, true);
     }
+    const initFailed = s.init && initT === null && this.diags.length > initDiagMark;
     const binds = new Map();
     if (s.init && declared) {
       if (!this.untrustedMismatchDiag(initT, declared, s.span, 'let 标注类型不匹配')
@@ -1751,13 +1766,22 @@ export class Checker {
     if (!s.init && !declared) {
       this.diags.push(err('M3003', `let "${patternBrief(s.pat)}" 缺少初始化与类型标注(至少给一个)`, s.span,
         'Ming 没有未初始化的变量:写 let x: T = ...; 或 let x = ...;'));
+      // v0.67(切口 1·路径 a):缺初始化的绑定同样毒化 never 收敛(根因 M3003 已报,
+      // 使用点不再级联 M3001-nearest 假 fix)。
+      this.checkPattern(s.pat, T_NEVER, ctx, s.span, false, s.mutable, true);
       return;
     }
-    const patT = declared ?? initT;
-    this.checkPattern(s.pat, patT, ctx, s.span, false, s.mutable);
+    // v0.67(plan §4.6.7 切口 1·路径 a,#62 主修法):初始化器检查失败(根因诊断已在
+    // 该子树入账,如未声明名 M3001 / 白名单外方法 M3050)时,绑定不再整体丢弃而是
+    // 毒化为 never(底类型)收敛——M3048 泛型本地函数毒化签名先例(:1714-1718/:2280)。
+    // 此前整体丢弃 → M3003"无法推断"先于根因排序(快照 e13/e19)+ 使用点
+    // M3001-nearest 假 fix(r→str,f01 应用后更糟);毒化后真实根因唯一优先。
+    const poison = initFailed && !declared;
+    const patT = declared ?? initT ?? (poison ? T_NEVER : null);
+    this.checkPattern(s.pat, patT, ctx, s.span, false, s.mutable, poison);
   }
 
-  checkPattern(pat, t, ctx, span, refutableOk, forceMut = false) {
+  checkPattern(pat, t, ctx, span, refutableOk, forceMut = false, poison = false) {
     // 把模式绑定写入 ctx.scope / ctx.bindings
     t = t ?? null;
     switch (pat.nt) {
@@ -1775,12 +1799,24 @@ export class Checker {
             this.diags.push(err('M3009', `"${pat.name}" 在本块已声明为本地函数,不能再用同名变量绑定`, pat.span,
               '同一块内一个名字只能有一种声明;换个变量名,或删除同名本地函数。'));
           }
-          ctx.scope.bind(pat.name, t, forceMut || !!ctx.mutAll, pat.span, false);
+          const bound = ctx.scope.bind(pat.name, t, forceMut || !!ctx.mutAll, pat.span, false);
+          // v0.67(切口 1):毒化绑定标记(切口 2 的 M3012 语境化探针据此识别毒化读取;
+          // 合法 never 绑定如 loop 派生不带此标记)。重复绑定(M3016 已报)不覆盖旧记录。
+          if (poison && !bound.dup) {
+            const rec = ctx.scope.lookupLocal(pat.name);
+            if (rec) rec.poisoned = true;
+          }
         }
         if (ctx.bindings) ctx.bindings.set(pat.name, t);
         return;
       }
       case 'PTuple': {
+        // v0.67(切口 1):毒化 never 的元组解构按底类型静默下推(子绑定同毒化),
+        // 不发"元组模式要求元组类型"级联——合法 never(poison=false)行为不变。
+        if (poison && t && t.k === 'never') {
+          pat.pats.forEach((p) => this.checkPattern(p, T_NEVER, ctx, p.span, refutableOk, forceMut, true));
+          return;
+        }
         const r = resolveT(t, new Map());
         if (t && r.k !== 'tuple') {
           this.diags.push(err('M3002', `元组模式要求元组类型,实际是 ${typeStr(t)}`, span));
@@ -1790,7 +1826,7 @@ export class Checker {
           this.diags.push(err('M3002', `元组模式有 ${pat.pats.length} 个元素,类型有 ${r.ts.length} 个`, span));
           return;
         }
-        pat.pats.forEach((p, i) => this.checkPattern(p, r ? r.ts[i] : null, ctx, p.span, refutableOk, forceMut));
+        pat.pats.forEach((p, i) => this.checkPattern(p, r ? r.ts[i] : null, ctx, p.span, refutableOk, forceMut, poison));
         return;
       }
       case 'PLit': {
@@ -1908,8 +1944,16 @@ export class Checker {
   }
 
   cannotFindValue(name, span, ctx) {
+    // v0.67(切口 2):探针窗口内的未解析名置位(M3012 语境化判定信号 a)
+    if (this.nameProbe) this.nameProbe.name = true;
     const avail = [...ctx.scope.allVisibleNames()];
-    const near = nearest(name, avail);
+    // v0.67(快照三切口收口,plan §4.6.7):nearest 候选排除内置构造器 Ok/Err/Some/None——
+    // prelude 全局名不是用户可声明的近名,短名失绑误命中即误导(无近名 → 无 nearest 句)。
+    // 范围:仅本发射点(M3001 值名);模块项路径 cannotFindName 候选本就无内置名;
+    // 切口 3 的 M3015 方法表 nearest 不动(§4.7.2 范围界定)。同名候选一并排除——
+    // 向失绑名建议构造器 Ok 本身即误导(f02 型),病态命名的建议是接受的对价(审查 MINOR-1);
+    // 真实近名如 printt→print 保留,用户自绑定 Okv→Okw 亦然(候选按名过滤,非按来源)。
+    const near = nearest(name, avail.filter((n) => !PRELUDE_VARIANT_NAMES.has(n)));
     const d = err('M3001', `找不到值 "${name}"`, span,
       near ? `未定义;最接近的名字是 "${near}"` : (ctx.rootScopeOnly ? '本地函数内只能访问:参数、模块级函数/类型与内置项;不能捕获外层局部变量(v0.1)' : null));
     // v0.44:结构化修复处方——替换为最接近的可见名字
@@ -1950,7 +1994,14 @@ export class Checker {
       case 'StrLit': {
         for (const p of e.parts) {
           if (p.expr) {
+            // v0.67(plan §4.6.7 切口 2):语境化探针——栈式保存/恢复,仅覆盖该插值
+            // 表达式的检查窗口(嵌套插值各捕获各的)。信号:未解析名(cannotFindValue)
+            // 与毒化绑定读取(切口 1 毒化标记)。
+            const prevProbe = this.nameProbe;
+            this.nameProbe = { name: false, poison: false };
             const t = this.checkExpr(p.expr, ctx);
+            const probe = this.nameProbe;
+            this.nameProbe = prevProbe;
             const r = resolveT(t, new Map());
             if (r?.k === 'untrusted') {
               // v0.61(ADR-002 §3.2 补丁 b):插值是洗白通道,对 Untrusted 静态拒绝
@@ -1959,8 +2010,13 @@ export class Checker {
                 `插值 \\{...} 不接受 ${typeStr(r)}:插值是洗白通道,污点值禁止转成净 str`,
                 p.expr.span, CODE_HINTS.M3050));
             } else if (!isPrimitiveDisplay(r, binds)) {
+              // v0.67(切口 2):根因是名字未解析/绑定毒化时,通用 debug 建议误导
+              // (根因未修时 debug(同名) 仍错,快照 e19/e16;:1957 污点分支先例同款
+              // 抑制模式)——改发中性 hint。真类型错(名字已解析)保留现 hint。
+              const rootName = probe.name || probe.poison;
               this.diags.push(err('M3012', `插值 \\{...} 只支持 int/float/bool/str,实际是 ${typeStr(r)}`, p.expr.span,
-                '其他类型用 debug(x) 生成调试字符串,或为该类型实现 ToStr trait(fn to_str(self) -> str,见 GUIDE 泛型 impl 节)。'));
+                rootName ? '请先修正该值的名称/类型错误(根因见同表达式的更早诊断)。'
+                         : '其他类型用 debug(x) 生成调试字符串,或为该类型实现 ToStr trait(fn to_str(self) -> str,见 GUIDE 泛型 impl 节)。'));
             }
           }
         }
@@ -2085,7 +2141,12 @@ export class Checker {
     const name = e.name;
     // 局部变量 / 本地函数(按词法最近层交错解析,v0.59-B3)
     const found = ctx.scope.lookupValue(name);
-    if (found?.kind === 'var') { found.v.used = true; return found.v.type; }
+    if (found?.kind === 'var') {
+      found.v.used = true;
+      // v0.67(切口 2):毒化绑定读取置位探针(合法 never 无标记,不置位)
+      if (this.nameProbe && found.v.poisoned) this.nameProbe.poison = true;
+      return found.v.type;
+    }
     if (found?.kind === 'fn') {
       const localFn = found.sig;
       if (localFn.tparams?.length) {
@@ -2665,7 +2726,9 @@ export class Checker {
         }
         if (st.nt === 'Let' && st.pat?.nt === 'PIdent') {
           descend(st.init);
-          const f = lin(st.init);
+          // v0.67(切口 1 路径 a 随带):`let x;`(缺初始化)此前在 lin(null) 崩溃
+          // (TypeError 而非诊断,基线即现);缺初始化本就非直线体 → 按放弃口径处理。
+          const f = st.init ? lin(st.init) : null;
           if (!f) { out.aborted = true; return; }
           noteAssign(st.pat.name); // 同块重绑定形参(防御;正常会先报重复声明)
           varForms.set(st.pat.name, f);
@@ -4308,7 +4371,8 @@ export class Checker {
         this.checkPtrArgs(args, argTs, ctx, `方法 ".${name}"`); // v0.54
         return sig.ret;
       }
-      this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"`, fieldCallee.span,
+      // v0.67(切口 3):用户类型在已 impl 的方法集内给 nearest 建议(无 impl → 无表,维持现状)
+      this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"${methodNearSuffix(name, impls ? [...impls.keys()] : null)}`, fieldCallee.span,
         '用户类型的方法必须通过 trait impl 定义:trait T { fn m(self, ...) -> ...; } impl T for ' + r.name + ' { fn m(self, ...) -> ... { ... } }'));
       return null;
     }
@@ -4336,7 +4400,10 @@ export class Checker {
       this.diags.push(err('M3018', `泛型参数 ${r.name} 上没有方法 ".${name}"(为类型参数添加 bound,例如 [${r.name}: Eq];traits:Eq / ToStr)`, fieldCallee.span));
       return null;
     }
-    this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"`, fieldCallee.span));
+    // v0.67(切口 3):通用接收者兜底——可达接收者(bool/tuple/range/json/never 等)在专用分发处
+    // 已被拦截,兜底可达集无 METHOD_NAMES 对应键(审查 NOTE-2 口径修正),
+    // nearest 结构性接线但当前恒为空表 → 消息不变(未来加表自动获得建议)。
+    this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"${methodNearSuffix(name, METHOD_NAMES[r.k])}`, fieldCallee.span));
     return null;
   }
 
@@ -4573,7 +4640,8 @@ export class Checker {
         return mkOpt(T);
       }
       default:
-        this.diags.push(err('M3015', `Vec[${typeStr(T)}] 没有方法 ".${name}"(有:${METHOD_NAMES.vec.join(', ')})`, span));
+        // v0.67(切口 3):全表之外给 nearest 建议(如 setx → set)
+        this.diags.push(err('M3015', `Vec[${typeStr(T)}] 没有方法 ".${name}"(有:${METHOD_NAMES.vec.join(', ')})${methodNearSuffix(name, METHOD_NAMES.vec)}`, span));
         return null;
     }
   }
@@ -4625,7 +4693,8 @@ export class Checker {
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
         return mkMap(K, V);
       default:
-        this.diags.push(err('M3015', `Map[${typeStr(K)}, ${typeStr(V)}] 没有方法 ".${name}"(有:${METHOD_NAMES.map.join(', ')})`, span));
+        // v0.67(切口 3):全表之外给 nearest 建议
+        this.diags.push(err('M3015', `Map[${typeStr(K)}, ${typeStr(V)}] 没有方法 ".${name}"(有:${METHOD_NAMES.map.join(', ')})${methodNearSuffix(name, METHOD_NAMES.map)}`, span));
         return null;
     }
   }
@@ -4673,7 +4742,8 @@ export class Checker {
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
         return mkVec(INT_TYPES.u8);
       default:
-        this.diags.push(err('M3015', `str 没有方法 ".${name}"(有:${METHOD_NAMES.str.join(', ')})`, span));
+        // v0.67(切口 3):全表之外给 nearest 建议
+        this.diags.push(err('M3015', `str 没有方法 ".${name}"(有:${METHOD_NAMES.str.join(', ')})${methodNearSuffix(name, METHOD_NAMES.str)}`, span));
         return null;
     }
   }
@@ -4936,7 +5006,15 @@ export class Checker {
   }
 
   checkMatch(e, ctx, expected) {
+    // v0.67(plan §4.6.7 切口 1·路径 b,#62 主修法):被匹配值检查失败(类型缺失,且
+    // 根因诊断已在 scrutinee 子树入账——诊断计数守卫,不吞任何诊断)时,臂绑定毒化
+    // never 收敛,不再整体丢弃。快照 e16:serve 白名单违规 M3002 → Err(e) 臂失绑 →
+    // 使用点 e→Ok 假 fix(f02 应用后新增 M3005);毒化后真实根因唯一优先,臂内绑定
+    // 按 never 静默收敛。毒化经 armPoison 旗标传递(不走 T_NEVER 恒等),合法 never
+    // 被匹配值(loop 派生)路径行为不变。
+    const scrDiagMark = this.diags.length;
     const st = this.checkExpr(e.scrutinee, ctx);
+    const armPoison = st === null && this.diags.length > scrDiagMark;
     const binds = new Map();
     let resultT = null;
     const covered = { all: false, variants: new Set(), lits: new Set() };
@@ -4947,7 +5025,7 @@ export class Checker {
       const armBinds = new Map();
       const scope = new Scope(ctx.scope, ctx.mod);
       const ctx2 = { ...ctx, scope };
-      const cover = this.checkMatchPattern(arm.pat, st, scrutR, ctx2, armBinds);
+      const cover = this.checkMatchPattern(arm.pat, st, scrutR, ctx2, armBinds, armPoison);
       // 带守卫的分支不算覆盖(守卫可能不成立)
       if (!arm.guard) {
         if (cover === 'all') covered.all = true;
@@ -5001,11 +5079,21 @@ export class Checker {
   }
 
   // 返回:'all' | 'variant' | {key} | null(不覆盖)
-  checkMatchPattern(pat, scrutT, scrutR, ctx, binds) {
+  // v0.67(切口 1):poisonArms——被匹配值失型(根因已报)时臂绑定按 never 毒化收敛,
+  // 旗标经子模式递归传递;合法 never 被匹配值不携带该旗标,路径不变。
+  checkMatchPattern(pat, scrutT, scrutR, ctx, binds, poisonArms = false) {
     switch (pat.nt) {
       case 'PWild': return 'all';
       case 'PIdent': {
-        if (scrutT) ctx.scope.bind(pat.name, scrutT, false, pat.span, false);
+        if (!scrutT && poisonArms) scrutT = T_NEVER;
+        if (scrutT) {
+          const bound = ctx.scope.bind(pat.name, scrutT, false, pat.span, false);
+          // v0.67(切口 1):毒化臂绑定标记(切口 2 的 M3012 语境化探针据此识别)
+          if (poisonArms && !bound.dup) {
+            const rec = ctx.scope.lookupLocal(pat.name);
+            if (rec) rec.poisoned = true;
+          }
+        }
         return 'all';
       }
       case 'PLit': {
@@ -5037,7 +5125,16 @@ export class Checker {
       case 'PEnum': {
         // prelude 裸变体(enumName=null)与内置 Option/Result / 用户枚举
         const enumName = pat.enumName;
-        if (!scrutR) return null;
+        if (!scrutR) {
+          // v0.67(切口 1·路径 b):被匹配值失型时变体臂的载荷绑定毒化 never 收敛,
+          // 不再整体丢弃(快照 e16:Err(e) 失绑 → e→Ok 假 fix);载荷真实类型未知,
+          // 子模式按 never 递归毒化。毒化旗标传递,scrutT 保持 null(不污染类型事实)。
+          if (poisonArms) {
+            pat.args.forEach((ap) => this.checkMatchPattern(ap, null, null, ctx, binds, true));
+            return 'variant';
+          }
+          return null;
+        }
         // 内置 Option
         if (scrutR.k === 'opt' && (enumName === null || enumName === 'Option')) {
           if (pat.variant === 'Some') {
@@ -5098,6 +5195,11 @@ export class Checker {
       }
       case 'PTuple': {
         if (!scrutR || scrutR.k !== 'tuple') {
+          // v0.67(切口 1·路径 b):被匹配值失型且毒化生效时,子模式按 never 收敛绑定
+          if (!scrutR && poisonArms) {
+            pat.pats.forEach((p) => this.checkMatchPattern(p, null, null, ctx, binds, true));
+            return 'variant';
+          }
           if (scrutR) this.diags.push(err('M3002', `元组模式不能匹配 ${typeStr(scrutR)}`, pat.span));
           return null;
         }
@@ -5105,7 +5207,7 @@ export class Checker {
           this.diags.push(err('M3002', `元组模式有 ${pat.pats.length} 个元素,类型有 ${scrutR.ts.length} 个`, pat.span));
           return null;
         }
-        const cov = pat.pats.map((p, i) => this.checkMatchPattern(p, scrutR.ts[i], resolveT(scrutR.ts[i], new Map()), ctx, binds));
+        const cov = pat.pats.map((p, i) => this.checkMatchPattern(p, scrutR.ts[i], resolveT(scrutR.ts[i], new Map()), ctx, binds, poisonArms));
         return cov.every(x => x === 'all') ? 'all' : 'variant';
       }
       default:
@@ -5599,6 +5701,15 @@ function nearest(name, candidates) {
     if (d < bestD) { bestD = d; best = c; }
   }
   return best;
+}
+
+// v0.67(plan §4.6.7 切口 3):M3015 的 nearest 后缀——方法表内存在编辑距离 ≤2 的近名
+// 时追加"最接近的方法是"(措辞/阈值与 M3001 的 nearest 口径同源:同款 nearest(),
+// bestD 起点 3 即 ≤2;快照 e06/走查 setx:全表列齐但不说"最接近的是 set")。
+// 无近名返回空串,维持全表现状;opt/res/ptr 等小方法集后置不动(§4.7.2 范围界定)。
+function methodNearSuffix(name, table) {
+  const near = table && table.length ? nearest(name, table) : null;
+  return near ? `;最接近的方法是 "${near}"` : '';
 }
 
 function levenshtein(a, b) {
