@@ -687,7 +687,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 4. **#57 安全回归批（P2，承诺漂移兑现）**：本轮全部攻击向量入 `tests/run.mjs`——M4013 FFI 门禁专项（首破 0 次记录）、#55 NUL 返回路径黄金（`byte_len=2`）、#56 四损坏形态、S9 拒绝、S12 扩集向量、S11 兜底语义、S13 慢连接行为、污点正负例（§65 已有部分，查漏补缺）。
 5. **文档收口（S10/S11/S15/S16）**：GUIDE serve 节加"**handler 收到的载荷全部不可信**，路径/命令必须过 sanitize_*"警告（S10）；serve 节补"非法 status/headers 值按缺省兜底（200/{}/\"\"）"句（S11）；GUIDE FFI 节 strlen 截断语义（S15）；`worker_start_failed` 标签拆分随本版触碰 accept 代码顺手做（S16）。
 6. **#58 顺带（P3，若断言面可控）**：mut Vec 元素写越界 panic 位置 VM 与 tree 差 1 列——compiler SETINDEX span 调整；先 grep 全部既有 panic 位置断言，逐条校准不静默；**断言面超出预期则顺延并在报告注明**。
-7. **文档漂移修正**：README「核心特性(v0.59)」头部版本、路线图四条目"(当前)"收敛为单条；capabilities.md「诊断协议 71 码」按 diag.js 现状改判；§5.1 #55/#56/#57/#58 状态行更新。
+7. **文档漂移清扫（第四轮复核范围扩大）**：原四处（README「核心特性(v0.59)」头部版本、路线图四条目"(当前)"收敛为单条、capabilities.md 诊断码计数按 diag.js 现状改判、§5.1 状态行更新）之外追加——(a) M3012 hint 文本"实现 to_str(计划 v0.2)"改为 ToStr trait impl 现行口径（诊断消息属发布面，改文案不改码号）；(b) REPL 横幅"Ming v0.8.0"（src/repl.js）与实际版本对齐；(c) docs/diagnostics.md 与 diag.js CODES（实测 **77** 码）计数核对（含 M3047 废弃标注一致性）。
 
 **验收（实测口径）**：`node tests/run.mjs` 995 + §68 ≥10 全绿；损坏 artifact 四形态 → 稳定诊断统一（非 raw TypeError）；handler 内 serve → check 编译期拒绝；DEL/C1/RTL 进 sanitize_cli_path → Err；`M4013` 在 tests/run.mjs ≥1 专项断言；fuzz 双种子 0 分歧；无新语言面、零新增 M 码。
 **风险/回退**：S9 是新静态拒绝面——正反例双向锁定（跨模块 serve handler/同模块正例）；#58 动 panic 位置断言面——可控性优先，超预期即顺延；S12 扩集可能影响既有工具的怪路径回退——12 工具冒烟 + 迁移清单复核。
@@ -718,6 +718,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 4. **覆盖率/bench 基线刷新**：`tests/coverage.mjs --json` 全表 + `bench --write-baseline`，标注时点（v0.61–v0.63 新增约 400 行 src 未入快照）。
 5. **capabilities 全表复核**：诊断码计数类漂移清零（"71 码"已由 v0.64 修正，本版全面复核）；GUIDE 交叉引用补强（1760+ 行，§4.3.8 遗留）。
 6. **Untrusted[Json] 载荷 ADR 落盘**（若任务 3 反馈支持）：serve 载荷（HTTP body）是网络内容源但完全在污点面之外（S10 实测 body→write_file 路径 check 直通）——ADR 裁决载体语义（Json 载荷的 sink 位与净化器语义），实现（taint v1.1）等 go 裁决，不在本版。
+7. **AI 修正回路快照（第四轮增补；仅测量与登记，src 零语义改动）**：以固定错误语料（≥15 形态）统计 `check --json` 的 fix 处方覆盖率与正确率、级联诊断数（根因 1 → 报告 N 的放大比）、误导 hint 命中数（实测先行证据：#62 级联 4 诊断 + M3001 误导处方 `r`→`str`）；为 v0.67 候选主题"诊断协议校准"提供 go/no-go 证据。不改任何诊断发射行为。
 
 **验收**：三个报告文件均有新时点快照；moltbook.md ≥1 条新记录；serve 服务有可复现的观察记录与裁决结论；基线文件更新且标注时点；`node tests/run.mjs` 计数不变且全绿；src 零语义改动。
 **明确不做**：serve v1.1 实现（等 go 裁决）、Untrusted[Json] 实现（等 ADR + 裁决）、任何新语言面。
@@ -751,7 +752,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 |------|---------------------|----------|
 | v0.64 | #55 裁决落盘（文档 + 前置义务 + NUL 黄金回归）；#56 校验 + 四损坏形态统一；#57 安全回归批落地（M4013 专项首破）；S9 编译期拒绝；S12 扩集；#58 顺带（可控性优先）；文档漂移四处修正 | §68 ≥10；回归 ≥1005 全绿；损坏 artifact → 稳定诊断统一；`M4013` 专项断言 ≥1；fuzz 双种子 0 分歧；无新语言面、零新增 M 码 |
 | v0.65 | slice 3 五形态解锁 + #59 栈帧补齐；守护具名清单清零（仅剩注释登记不可达 `?`） | §69 ≥12；回归 ≥1017 全绿；strict 自造语料残留 = 0；panic 消息-span-退出码三引擎逐字；fuzz 双种子 0 分歧 |
-| v0.66 | usage audit 重跑 + moltbook ≥1 条 + serve 真实服务观察 + 基线刷新四项全落地；Untrusted[Json] ADR 或 go/no-go 记录；eval ADR 落盘（规划期任务随 v0.64 完成） | 三报告新时点快照；src 零语义改动；回归计数不变全绿；产出 serve v1.1 与 taint v1.1 的裁决记录 |
+| v0.66 | usage audit 重跑 + moltbook ≥1 条 + serve 真实服务观察 + 基线刷新四项全落地 + AI 修正回路快照；Untrusted[Json] ADR 或 go/no-go 记录；**eval ADR 落盘（规划期任务，规划落盘时完成，不占版本主题——第四轮修正措辞）** | 三报告新时点快照；src 零语义改动；回归计数不变全绿；产出 serve v1.1 与 taint v1.1 的裁决记录 |
 
 ### 4.5.7 安全评估第二轮登记（S9–S16；security-engineer，全部实测）
 
@@ -770,6 +771,33 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 
 **serve 安全面实测基线（供后续复核）**：CRLF/DEL 头注入 → 500 internal_error 服务存活；280 并发 → 恰 272 受理 8×503（≤102ms）；504 精确 30.03s 且 `/fast` 91ms（名额同步释放）；4000 字符 path 全量入 handler、20001 字符 → node:http 16KB 头上限 400 bad_request；50 挂起连接不占 worker。
 
+### 4.5.8 第四轮复核（2026-11-14；software-architect，基线 ed4f483）
+
+> **裁决：§4.5.1–4.5.7 整体维持**（主题排序 v0.64→v0.65→v0.66 不变；无任务移除；无范围错配）。
+> 复核方法：逐任务裁决 + 使命层端到端实测（17 错误程序 × `check --json`、运行时 panic、test/fmt/doc/init/REPL/LSP 冒烟；程序在 os.tmpdir，未入仓）。关键复核证据：`M4013` 在 tests/run.mjs 实测 **0 次**（#57 漂移证实）；README 四条"(当前)"与「核心特性(v0.59)」头证实；`src/diag.js CODES` 实测 **77 码**（capabilities"71 码"漂移证实）；checker.js 实测 5,555 行；**AI 修正回路主干健康**——17 错误程序 100% 捕获、码/位置/消息全准、panic 形态（码+源摘录+可行动后缀+Ming 栈）三引擎一致；多错误一次报告（单例 5 条）减少往返；warning-only 正确 `ok:true` exit 0；LSP/REPL/test/fmt/doc/init 冒烟正常；GUIDE quickstart/§20 AI 建议/§21 错误码迁移表对 onboarding 路径是通的。
+
+**修正（2 处，已落 §4.5 既有条目）**
+
+1. §4.5.1 任务 7 范围扩大为"文档漂移清扫"：追加 M3012 hint 文本（"计划 v0.2"措辞 → ToStr trait 现行口径）、REPL 横幅 v0.8.0、diagnostics.md 与 diag.js 77 码计数核对。
+2. §4.5.6 v0.66 度量行措辞修正：eval ADR 为"规划期任务，规划落盘时完成，不占版本主题"（消除与 §4.5.4 的自相矛盾）。
+
+**增补（1 项，已落 §4.5.3 任务 7）**
+
+3. v0.66 新增任务 7——AI 修正回路快照（仅测量与登记）：fix 处方覆盖率/正确率、级联诊断放大比、误导 hint 命中数；为 v0.67 候选主题"诊断协议校准"提供 go/no-go 证据。
+
+**新登记缺陷（§5.1 已同步；全部本轮实测）**
+
+| # | 缺陷 | 严重度 | 处置方向 |
+|---|------|--------|---------|
+| #60 | REPL let 绑定陷阱：`let x = 1;` 静默成功（被包进临时 fn，不入 decls，src/repl.js:74–80），下一行"找不到值 x"且 hint"最接近的名字是 Ok"；GUIDE §19"声明持久化"对 AI 预期错配；横幅 v0.8.0 | P3（AI 协作） | 修：let 行回显"绑定仅当前输入生效"或 let 纳入 decls；随 v0.64 文档清扫顺带或 Backlog |
+| #61 | test 断言失败栈位置 `undefined:undefined:undefined`（M4008 消息与左右值正确，位置未接线） | P3（诚实失败） | 修：接线 test 块位置；小 diff |
+| #62 | fix 处方"自信但错误"：未声明函数初始化（`let r = foobar(3)`）级联 4 诊断，M3003"无法推断 r 的类型"先于真实根因 M3001，且 M3001 处方建议 `r`→`str` 替换（应用后更糟）；级联 M3002 hint"用 debug(x)"在根因是拼错名时误导（三形态实测）。M3048 已有"毒化 never 签名收敛"先例未应用到此形态 | P2（AI 修正回路） | v0.66 任务 7 测量 + v0.67 候选主题"诊断协议校准"裁决；先登记不修 |
+| N-64 | examples 零覆盖 v0.61/v0.62 能力面（Untrusted/std.unstr、std.net.serve 各 0 示例；18 文件 grep 证实）——AI 靠 examples 学惯用法，两个新能力面"文档化但不可见" | P3 | Backlog：各补 1 个 ≤30 行示例（模板 fs_demo/unsafe_demo） |
+
+**使命层总评**：AI 修正回路（check --json → 诊断码 → fix）是 Ming 当前最强的协作面，主干无需大动；剩余缺口集中在三处小修（REPL let/失败位置/漂移清扫）与一个待测量决策（诊断协议校准是否成为 v0.67 主题）。分发与文档 onboarding 路径完整（release zip/REPL/LSP/doc --json/fmt 幂等），无新增版本级主题。
+
+**第五轮建议（一句话）**：不做新一轮架构评审，而是做一次**端到端 AI 任务走查**——让真实 agent 从 release zip 在干净目录完成"init → 写程序 → check 修正循环 → test → run"，用走查数据（而非规划直觉）裁决 v0.67 主题在"诊断协议校准（#62）"与"AI onboarding 打磨（#60/N-64/examples）"之间的取舍。
+
 ---
 
 ## 5. Backlog
@@ -777,7 +805,7 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 现行 Backlog 见 **§4.2.8(2026-11-11 重排)**;旧表已并入该表,避免双份漂移。
 
 
-## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估,已逐项复核)
+## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
 
 > 来源:两个 code-reviewer 子智能体 + 主会话复现 + 2026-11-13 三方评估/安全审计。**状态:v0.50.1–v0.59.0 的已修复项逐行标注;#47/#51–#54 已于 v0.60.0 收口(资源门禁一致性:参数搬运计费/外部输入计费/--max-ms 钳制/test 旗标传播/tree 契约重入);#55–#57(P2)Backlog/随 v0.61。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
 
@@ -901,6 +929,14 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | 58 | **mut Vec 元素写越界的 panic 位置三引擎差 1 列**:wasm/tree 用 `target.span`(`[` 列,interp.js:856),字节码 VM 用 Assign 语句/base span——`w[10]=x` 越界时 VM 位置列号小 1。HEAD 预存(非 v0.63 引入);v0.63 wasm 按 interp 源码口径对齐 tree | P3 | **登记未修**(v0.63 审查预存发现 A;修复需 compiler SETINDEX span 调整,涉及既有 panic 位置断言面) |
 | 59 | **wasm→wasm 直调 panic 栈缺内层帧**:main→f→g(g 内越界)wasm stderr 缺 `at g` 帧(2 帧 vs tree/VM 3 帧)——wasm 直调不经 callCompiled,深层 Ming 帧不入 callStack;首行/位置/exit 101 已对齐;v0.63 已把单层栈补齐(严格改善),嵌套残留登记 | P3 | **登记未修**(v0.63 审查 M2;修复需每个 wasm 调用点下发调用点 span 透传 callStack;§67 v67.20 按现状断言) |
 
+### 新登记(2026-11-14,第四轮复核——AI 协作面实测;#60–#62 先登记不修)
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 60 | **REPL let 绑定陷阱**:`let x = 1;` 静默成功(被包进临时函数 `__repl_N` 体,不入持久声明集——src/repl.js:74–80),下一行引用报 M3001"找不到值 x"且 hint"最接近的名字是 Ok"(误导);失败回滚使 let 行看似成功;GUIDE §19"声明持久化"宣称与 AI 预期(let 也持久)错配;REPL 横幅停留 v0.8.0 | P3 | **登记**(第四轮 #60;修=let 行回显"绑定仅当前输入生效"或 let 纳入 decls;随 v0.64 文档清扫顺带或 Backlog) |
+| 61 | **test 断言失败栈位置 undefined**:`ming test` 失败输出 `at test <名> (undefined:undefined:undefined)`——M4008 消息与左右值正确,位置未接线(runTests 以 callSpan=null 调 callUser 的既有格式化) | P3 | **登记**(第四轮 #61;修=接线 test 块位置,小 diff;与 N-60.4 同源现象) |
+| 62 | **fix 处方"自信但错误"+级联误导**:`let r = foobar(3);`(未声明函数)级联 4 诊断——M3003"无法推断 r 的类型"先于真实根因 M3001"找不到 foobar",且 M3001 的 fix 处方建议把 `r` 替换成 `str`(自信、可机器应用、应用后更糟);级联 M3002 hint"其他类型用 debug(x)"在根因是拼错名/未声明名时系统性带偏(三形态实测)。根因:初始化器含未声明名时绑定整体丢弃而非毒化收敛——M3048 已有"毒化 never 签名收敛"先例未应用到此形态。**诊断质量面:fix 结构化处方仅 4 族发射(M2002/M2001/M3029/M3001),77 码覆盖率 ~5%(样本 ~19%)——非结构化 hint(M3015 列方法/M3049 点净化器)质量好 | P2 | **登记不修**(第四轮 #62):v0.66 任务 7 测量 fix 覆盖/正确率/级联比 + v0.67 候选主题"诊断协议校准"裁决;先例技术(毒化收敛)是首选修法 |
+
 ### 备注登记(2026-11-13,v0.57 收口;信息性,非缺陷)
 
 | # | 备注 | 级别 | 状态 |
@@ -908,7 +944,9 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | N-62.1 | serve 运维事实：`--max-ms` 对 serve 程序照常生效,CLI 缺省 600000ms——**长驻服务必须显式调大**(如 `--max-ms 86400000`),否则 10 分钟后被 M4012 熔断;GUIDE std.net 节已登记 | 信息 | 已登记(v0.62 收口) |
 | N-62.2 | 嵌套 serve 边缘行为:handler 白名单含 net,handler 内调 serve 编译期不拒——嵌套 serve 会绑第二服务、外层请求 30s 后 504,嵌套服务继续存活;v1 不 policing,如实登记 | 信息 | 已登记(v0.62 S2 报告;放开/禁止待后续裁决) |
 | N-62.3 | §66 v66.15(worker 启动失败)skip:`new Worker` 抛错难确定性构造;行为正确性由源码审查覆盖(五条释放路径 done/error/exit/timeout/启动失败均有 release 且 done 防双释放——审查确认) | 信息 | 已登记(v0.62 审查 n2) |
-| N-61.1 | 嵌套位置污点诊断回落通用码:`Result[Untrusted[str],str]`→`Result[str,str]` 块尾、match/if 分支混型、spawn_all Vec 元素、用户变体载荷报 M3002(而非 M3049);`json.stringify` 的 M3033 hint 对污点值误导——全部**正确拒绝**,仅诊断质量非旁路 | 信息 | 已登记(审查 m3;后续可把判定改 `typeContainsUntrusted(actual) && !typeContainsUntrusted(expected)`) |
+| N-64 | examples 零覆盖 v0.61/v0.62 能力面:Untrusted/std.unstr 与 std.net.serve 各 0 示例(18 文件 grep 证实)——AI 靠 examples 学惯用法,两个新能力面"文档化但不可见" | 信息 | Backlog:各补 1 个 ≤30 行示例(模板 fs_demo/unsafe_demo);第四轮复核登记 |
+| N-64b | 使命层端到端实测结论(AI 修正回路):17 错误程序 100% 被 `check --json` 捕获(码/位置/消息全准)、多错误一次报告 5 条、warning-only ok:true、panic 形态三引擎一致、LSP/REPL/test/fmt/doc/init 冒烟正常——AI 修正回路主干健康,是当前最强协作面 | 信息 | 第四轮复核登记(plan §4.5.8);v0.67 主题裁决证据基线 |
+| N-63.1 | 嵌套位置污点诊断回落通用码:`Result[Untrusted[str],str]`→`Result[str,str]` 块尾、match/if 分支混型、spawn_all Vec 元素、用户变体载荷报 M3002(而非 M3049);`json.stringify` 的 M3033 hint 对污点值误导——全部**正确拒绝**,仅诊断质量非旁路 | 信息 | 已登记(审查 m3;后续可把判定改 `typeContainsUntrusted(actual) && !typeContainsUntrusted(expected)`) |
 | N-61.2 | compiler `tryWasm` 的 Untrusted 解包为**原地修改** checker `entry.sig`(运行时擦除下语义自洽;doc/LSP 读 AST 不受影响;AOT 产物存载体签名正确)——卫生债:未来"compile 之后再读 sig 渲染"的功能会踩坑 | 信息 | 已登记(审查 n1;建议将来改 clone 喂 wasm.js,v1 不修) |
 | N-60.1 | #53 钳制等待后的 `checkTimeQuota`（M4012）先于 `worker.terminate()` 抛出（syncSpawnAll/syncJoin/join_detailed/exitSyncScope 四处）——CLI 侧 `process.exit` 收割全部 worker 无碍；"解释器即库"（REPL/嵌入）场景会泄漏运行中 worker 至任务自然结束。修复前该位置无检查，非回归 | 信息 | 已登记（v0.60 批次 1 审查；后续可把 terminate 挪到检查前/finally） |
 | N-60.2 | `read_file` stat 预记账的平台差异：Windows 目录 size 0 不多计（EISDIR Err 与 v0.59 逐字一致）；Linux 目录 size 4096 会多计 4096 后仍回 Err（注释已声明"偏保守"口径） | 信息 | 已登记（v0.60 批次 1 审查） |
