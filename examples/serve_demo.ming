@@ -1,0 +1,36 @@
+// std.net.serve echo 服务示范(v0.62 服务端 v1;v0.68 Untrusted[Json] 载荷;#65 退出码惯用法)
+// 运行:node bin/ming.js run examples/serve_demo.ming --max-ms 86400000(长驻须显式调大 --max-ms)
+// 请求:curl http://127.0.0.1:8080/hello → 200 "echo: /hello"
+use std.net;
+
+use std.json;
+
+use std.unstr;
+
+// 响应构造:Json 经 stringify→parse 往返注入安全(GUIDE §19 serve 示例同款形态)
+fn respond(status: i64, body: str) -> Json {
+    let resp: Map[str, Json] = { "status": std.json.parse(std.json.stringify(status)).unwrap(), "headers": std.json.parse("{}").unwrap(), "body": std.json.parse(std.json.stringify(body)).unwrap() };
+    return std.json.parse(std.json.stringify(resp)).unwrap();
+}
+
+// handler 形参 Untrusted[Json] 整树标污:get → Option[Untrusted[Json]],as_str → Option[Untrusted[str]];
+// 污 str 回显前必须过 sanitize_cli_path 净化(未经净化透传/拼接 → M3049 编译错误)
+fn handler(req: Untrusted[Json]) -> Json {
+    let path = match req.get("path") { Some(v) => match v.as_str() { Some(u) => match std.unstr.sanitize_cli_path(u) { Ok(s) => s, Err(_) => "" }, None => "" }, None => "" };
+    return respond(200, "echo: " + path);
+}
+
+// #65 运维惯用法:serve 绑定失败返回 Err,是否致命由调用方决定;main 返回 i64 时
+// 该值即进程退出码(实测 return 3 → exit 3)——"服务没起来"退出码非零(exit 1)
+fn main() -> i64 with net, io {
+    match std.net.serve(8080, handler) {
+        Ok(_) => {
+            print("listening on 8080");
+            return 0;
+        },
+        Err(e) => {
+            eprint("serve 失败: \{e}");
+            return 1;
+        },
+    }
+}

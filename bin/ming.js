@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.68.0';
+export const VERSION = '0.69.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -34,7 +34,7 @@ try {
 // run/check/test/tools/build/cc 共用;doc/fmt 只需其中子集,但编译缓存命中后全图
 // 加载仅数 ms,不再细拆。绑定全部走这些 let,调用面在 main() 之后必然已加载完成。
 let Checker, Interp, Panic, VMInterp, parse, attachDocsImpl;
-let Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY;
+let Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY, diagJson;
 let compile, CompileError, serializeArtifact, deserializeArtifact, makeCheckLike;
 let Unsupported, wasmLayerStatus;
 let _core = null;
@@ -55,7 +55,7 @@ async function loadCore() {
   VMInterp = mVm.VMInterp;
   parse = mParser.parse;
   attachDocsImpl = mParser.attachDocs;
-  ({ Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY } = mDiag);
+  ({ Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY, diagJson } = mDiag);
   ({ compile, CompileError } = mCompiler);
   ({ serializeArtifact, deserializeArtifact, makeCheckLike } = mArtifact);
   ({ Unsupported, wasmLayerStatus } = mWasm);
@@ -153,9 +153,8 @@ function printDiags(diags, json) {
   }
 }
 
-function diagJson(diags) {
-  return diags.map(d => d.toJson());
-}
+// diagJson 自 v0.69 起由 src/diag.js 导出(单一事实来源,与 eval Err 载荷共用同一映射);
+// 此处经 loadCore 解构绑定,全部调用点行为逐字不变。
 
 function sortDiags(diags) {
   return diags.slice().sort((a, b) =>
@@ -1068,12 +1067,13 @@ function toolCacheProbe(file, flags) {
   // 有任何诊断(含警告)即不缓存:原路径每次调用都会经 loadAndCheck 打印诊断,
   // 缓存路径无诊断可印 —— 为保逐字一致,只缓存零诊断工具。
   if (diags.length) return null;
-  // 与 cmdBuild 相同的 AOT 资格判定:sync 子任务 worker 需源码编译;unsafe 仅 C 原生。
+  // 与 cmdBuild 相同的 AOT 资格判定:sync 子任务 worker 需源码编译;unsafe 仅 C 原生;
+  // eval 需运行时编译(工具程序不用 eval,conservative 同步排除,v0.69 ADR-005)。
   const hasEff = (eff) => checkResult.modules.some(m => [...m.items.values()].some(e => {
     const s = e.sig?.effects ?? e.effects;
     return s instanceof Set && s.has(eff);
   }));
-  if (hasEff('sync') || hasEff('unsafe')) return null;
+  if (hasEff('sync') || hasEff('unsafe') || hasEff('eval')) return null;
   // 单模块假设:工具均为单文件(无本地 use)。产物 span 只保留 basename,
   // 多模块会有同名歧义 → 多模块工具一律回退原路径。
   if (checkResult.modules.length !== 1) return null;
@@ -1255,6 +1255,14 @@ async function cmdBuild(flags) {
         return eff instanceof Set && eff.has('net');
       }));
       if (usesNet) throw new Error('程序使用 net(serve 的 accept/worker 运行面由源码编译)');
+      // v0.69(ADR-005):with eval 是运行时编译执行(内层走解释器管线)——AOT 字节码产物
+      // 不能兑现动态编译,显式回退源码模式并说明原因(design §6.10 unsafe 先例同款)。
+      // eval 程序的部署形态 = 源码 + Node,诚实声明。
+      const usesEval = checkResult.modules.some(m => [...m.items.values()].some(e => {
+        const eff = e.sig?.effects ?? e.effects;
+        return eff instanceof Set && eff.has('eval');
+      }));
+      if (usesEval) throw new Error('程序使用 with eval 动态执行(运行时编译,部署形态 = 源码 + Node)');
       const compiled = compile(checkResult);
       const artifact = serializeArtifact(compiled, { baseDir: projectRoot });
       artifact.builtBy = VERSION;

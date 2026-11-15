@@ -1,6 +1,6 @@
 # ADR-005:eval——显式能力 `with eval`(运行时编译执行;热重载另裁)
 
-> **状态**:评审中(提案;plan §4.5.4 eval 行"规划期任务"兑现——第四轮 §4.5.8 修正条目 2 遗留、第五轮 §4.6.5 复核确认未落盘,本 ADR 于 v0.67 规划期落盘)· **日期**:2026-11-14 · **版本基线**:v0.66.0(HEAD d2b2a2e,1035 项回归全绿)
+> **状态**:**裁决 go(2026-11-15,§7 清单 12/12 全部采纳默认立场——沿 ADR-004 模式:架构师裁决先行落盘,维护者事后复核;实现 = v0.69,测试 §72)**(原"评审中"提案于 2026-11-14 落盘;plan §4.5.4 eval 行"规划期任务"兑现——第四轮 §4.5.8 修正条目 2 遗留、第五轮 §4.6.5 复核确认未落盘)· **日期**:2026-11-14(裁决 2026-11-15)· **版本基线**:v0.66.0(HEAD d2b2a2e,1035 项回归全绿;裁决基线 v0.68.0 HEAD fb1d1e0,1066 项回归全绿)
 > **立场声明**:本 ADR 只交付设计裁决,**不写任何语言实现代码**。文中全部源码引用为仓库现状实测(2026-11-14,grep/逐行核对,环境 Node v24 / win32-x64);无一处来自想象。不承诺实现时间——实现走 go/no-go 条件承诺(沿 ADR-004 模式:立场先行落盘 + 维护者复核)。
 > **结论先行**:**做——按四个裁决收窄**:**① eval 是显式能力**(新效果名 `eval` 入 KNOWN_EFFECTS,签名门禁 M3029 逐层传播——design §6.4 早期判断"解释器/VM 即 JS 库,成本远低于多数语言"经管线复用面核实成立);**② 运行时编译 = 复用既有管线**(词法→解析→Checker→VMInterp,REPL 同款路径,全部 M 检查在内层独立编译单元执行,零降级);**③ 代码来源必须是净 str**(`eval` 实参登记为污点 sink 位,M3049 自动覆盖;v1 **无授权净化器**——"净化的代码"无机械定义,污点值无类型出口进入 eval;"外部输入永不动态执行"由类型系统机械保证,eval 不是逃逸舱口而是门禁面);**④ 热重载不进 v1**(eval = 单次字符串编译执行,无状态无常驻;热重载 = 常驻模块替换,语义面完全不同,另 ADR)。
 > **关联**:docs/design.md §6.4(eval 早判)/ §2.13(效果 = capability 标签)/ §2.4(错误是值)/ §6.9(ffi.load 失败 = Err 先例)/ §6.10(unsafe 永不进 AOT 先例)· docs/adr-002-taint.md(污点 sink/净化器授权位纪律)· docs/adr-003-mask.md("签名看不见的效果不可接受"——eval 立场同源)· docs/adr-004-taint-json.md(风格与条件承诺模式)· docs/plan.md §4.5.4(eval 行四问)/ §4.6.5 / §4.7 · docs/capabilities.md "eval/热重载"行(❌,北星支柱 4)· src/repl.js(管线复用先例)/ src/checker.js / src/interp.js。
@@ -142,3 +142,35 @@ plan §4.5.4 eval 处置行(2026-11-14 第三轮):"北星支柱 4 四轮零触�
 否决归档,不再复议(复议需新 ADR):污点值经"代码净化器"进入 eval(v1 无机械定义);eval 的动态值返回形态(违反"无隐式 anything");serve handler 内 eval(v1);热重载与 eval 同 ADR(语义面不同)。
 
 **一句话**:Ming 的 eval 与其它语言的 eval 方向相反——其它语言把 eval 当逃逸舱口(跳出静态检查),Ming 把 eval 做成第 12 个门禁面(效果签名 M3029 可见、污点 sink M3049 拦截、serve 白名单拒绝、AOT 拒载、配额继承、panic Err 化):动态执行的全部事实都写在签名与类型里,唯一放进来的是"程序自己写给自己执行的代码"。
+
+---
+
+## 9. 裁决记录(2026-11-15,12/12 go——架构师裁决,维护者事后复核)
+
+§7 清单 12 项**全部采纳默认立场**,逐项勾选如下(实现期义务见第 12 项,测试 §72 锁定):
+
+| # | 决策点 | 裁决 | 裁决依据(2026-11-15 实测/源码核实) |
+|---|--------|------|-----------------------------------|
+| 1 | eval 是否做 | ✅ **做** | 北星支柱 4 唯一空白;管线复用面(repl.js:83–110)运行至今;src 约 60–90 行 |
+| 2 | 签名与调用形态 | ✅ **裸 builtin `eval(src: str) -> Result[str, str]`,效果 `eval`** | BUILTIN_FNS(checker.js:236)print 同款注册位;`{params:[T_STR], ret: mkRes(T_STR,T_STR), effect:'eval'}` |
+| 3 | Err 载荷形态 | ✅ **恒为 `--json` 协议同构 JSON**:`JSON.stringify({ok:false, diagnostics: diags.map(d => d.toJson())})` | Diagnostic.toJson(diag.js:121)字段核实(code/name/severity/message/file/line/col/endLine/endCol/hint?/fix?/notes?);diagJson(bin/ming.js:156)即同构映射——实现期从 diag.js 导出统一,消除双份漂移 |
+| 4 | main 正常返回非零退出码 | ✅ **Ok**(exit 码语义属进程边界) | 内层是子解释器无进程边界;Ok 载荷 = 捕获 stdout |
+| 5 | 内层引擎与旗标 | ✅ **恒 tree 参考实现(`new Interp`,sync 子解释器先例 interp.js:562 同款),无引擎旗标**——**2026-11-15 裁决微调**:原默认立场"恒 VM(VMInterp)"在实现期发现 interp.js→vm.js 为 ESM 循环导入(vm.js:9 已 import interp.js),且 tree 无字节码编译面(内层失败模式只剩 panic/熔断两类,Err 化干净完整,VMInterp 的 CompileError 中间态会让"编译失败"出现两层含义);sync 子解释器先例正是"效果 builtin 内子执行"同构。"恒 VM"的实质承诺(内层无 wasm/cc 加速、无引擎旗标、per-call 无缓存、动态性非性能)全部保留;代价 = 内层性能为 tree 级(低于 VM 字节码,per-call 编译成本反而更低)——如实登记 | sync 先例(interp.js:562);REPL 是会话场景(持久 decls),eval 是单次子执行,与 sync 形态同构 |
+| 6 | 污点交互 | ✅ **eval 实参 = M3049 sink 位;无授权净化器** | sink 发射点沿 print/str 显示位先例(checker.js:3942);判定机制 untrustedMismatchDiag(checker.js:832) |
+| 7 | 配额继承 | ✅ **沿 sync 先例全量继承 maxSteps/maxAlloc/maxMs(interp.js:562),按调用重置** | 放大窗口 GUIDE 登记(§5 ⑤) |
+| 8 | serve handler 内 eval | ✅ **拒绝**(不进 SERVE_HANDLER_EFFECTS,M3002) | checker.js:260 白名单 8 效果不含 eval,自动拒绝零改动 |
+| 9 | 热重载 | ✅ **不进 v1、不预留** | §2.4 裁决维持 |
+| 10 | 效果名与新码 | ✅ **`eval` 入 KNOWN_EFFECTS(checker.js:206);零新增 M 码** | M3029 传播/M3030 列表/契约纯性/wasm 资格闸(wasm.js:451–456 effectOk)全部自动;内层缺 main = checker M3023[missing-main] 进 Err 载荷(实测:缺 main 程序 check 报 M3023,exit 101——内层编译失败形态,零新码自然覆盖) |
+| 11 | build/cc 路径 | ✅ **build 遇 `with eval` 显式回退源码模式;cc 发射期显式拒绝;wasm 资格自动拒绝** | build 回退沿 usesUnsafe 先例(bin/ming.js:1242–1248 同款 throw 具名消息);tools AOT 缓存 probe 同步排除(bin/ming.js:1076 hasEff 集 +eval);cc/wasm 零改动——**核验结果:wasm strict 报告形态为 `wasm_status:'none'`**("with eval 函数经 effectOk 资格闸在资格分析阶段排除 → eligible=0 → 'none' → strict exit 0",v53.4 先例零 eligible → exit 0;'none' 即"永不进 wasm"的可观测诚实三态,不产生具名回落消息;§72.13 锁定) |
+| 12 | 自动覆盖核验 | ✅ **实现期义务全部核验**——契约内 eval → M3029;eval 实参污点 → M3049;handler 内 eval → M3002;`with eval` 函数 strict 报告形态 = 'none'(见清单 11);build 回退具名提示;嵌套 eval;内层 panic 不穿透;内层配额熔断 Err 化(+实现期追加:内层 maxSteps 为 Infinity 时沿 spawn/sync 先例 500M 有界兜底,防宿主悬挂) | 全部进 tests/run.mjs §72(**17 条**,2026-11-15 实测) |
+
+**#65(serve 绑定失败 Err 后 exit 0)同日独立裁决——与 eval 同属"运行时诚实面",v0.69 顺带处置**:**行为变更否决,采文档化方案**。理由:(a) 实测 main 返回 i64 → 进程退出码 = 该值(`fn main() -> i64 { return 3; }` → exit 3)——"失败非零"的表达通道**已经存在**且显式;(b) design §2.4"错误是值":serve 绑定失败已 Err 化(实测端口非法 → `Err serve: 端口非法…`),是否致命由调用方决定;main 返回 unit 时吞掉 Err 是程序自己的选择,语言无法机械判定"Err 被吞"(match 消费后无残留可观测);(c) 行为变更违反"一版一主题"(v0.69 主题 = eval,§4.4.2 原则 8)。**处置**:GUIDE std.net 节登记运维惯用法(serve Err → main 返回 i64 退出码,`return 1;` 示范)+ examples 补 serve_demo.ming(顺带兑现 N-64 serve 示例缺口);plan §5.1 #65 状态改"已裁决(v0.69)"。
+
+### 9.1 独立审查与修复(2026-11-15,code-reviewer 独立审查:2 MAJOR 修复后通过,0 BLOCKER)
+
+- **MAJOR-1(已修复)**:eval 链式自递归逃逸 Err 化边界——每层内层是新 Interp 实例(interp.js depth 守卫只守单引擎调用栈),JS 栈耗尽抛 RangeError 穿透边界 → CLI 兜底 M4005 exit 101,外层 Err 分支永不执行(违背 §2.2"内层程序的失败是外层的值,不是外层的崩溃")。**修复 = 双防线**:① evalDepth 经 Interp 构造选项跨层累积,**>64 层 → Panic M4005("eval 嵌套过深")走既有 Err 化通道**——深度确定性化,与机器栈大小无关(实现期实测:无守卫时 RangeError 在 ~400 层才发生,输出依赖环境栈大小不可复现,守卫同时修复确定性缺陷);② JS RangeError 兜底仅在最外层 eval 边界(depth=1)转 Err M4005(消息与 CLI 兜底逐字同款;栈回卷后有余量构造载荷)。§72.18 锁定(恰 64 个 DONE + M4005 载荷 + 三引擎逐字)。
+- **MAJOR-2(已修复)**:"外部输入永不动态执行由类型系统机械保证"表述过宽——M3049 只拦**标污窄源**(env/stdin/extern),fs/net/proc 内容源 v1 不标污(v0.61 既有泄漏窗口),`fs.read_file` 内容可零诊断直入 eval(审查实测 check ok:true 0 诊断)。**修复**:GUIDE §18/capabilities/design.md 措辞收窄为"**标污外部输入(env/stdin/extern)永不动态执行**;fs/net/proc 内容源 v1 不标污 = 既有泄漏窗口(v0.61 登记),其内容可直入 eval——如需拦截按族扩展纪律另裁(登记不预支)"。§2.1 原表述以本节为准(裁决记录修正,不改写历史正文)。
+- **MINOR-1(登记)**:内层 std.sync.spawn 不可用——sync worker 以入口文件路径重建编译单元,内层入口是虚拟名 `'<eval>'`(无磁盘文件)→ spawn 后 join 恒 Err(ENOENT);失败优雅(Err 值,不崩),GUIDE §18 登记诚实口径;远期 worker 改传源码不传路径(登记不预支)。
+- **MINOR-2(补测)**:§72.18–20 新增(M4005 嵌套守卫/内层 M3022 Err 化/M4011·M4012 熔断同通道 + Ok 载荷含 eprint 口径锁定)。
+- **NOTE(已核销)**:Ok 载荷含内层 eprint(capture 混收,sync 先例同款)——GUIDE 措辞已校准;`cacheSourceLines('<eval>')` 为只写一致性数据(REPL 同款;diag.js has() 守卫首层优先不覆盖,JSON 诊断路径不读摘录,无错乱可达);build usesEval 扫描不含 test 块内层效果(实际无害——test 块不进字节码产物且该形态本就因缺签名回退源码模式)。
+- **审查确认面(零发现)**:sink 无绕过(eval 不可作值 → M3001;闭包/fn 值调用效果检查命中;深污点 M3049;模块级 `fn eval` 遮蔽时用户 fn 赢);Err 化 10 形态三引擎逐字一致;三段式拒绝(build/cc/wasm)逐字;零新增 M 码;wasm.js/vm.js/cbackend.js/artifact.js 零改动。

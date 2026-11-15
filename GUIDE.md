@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.68.0** · **v0.67 诊断协议校准(三切口:毒化收敛双路径/M3012 语境化/M3015 nearest;REPL let 回显+横幅单一事实来源;快照复测误导 7→1/fix 错误 4→0/级联 3.8→1.4)** + **v0.66 观测与反馈(纯校准版:覆盖率/bench 基线刷新——双项 WARN 复测注记落盘;AI 修正回路快照——诊断协议校准 GO;真实 serve 服务观察——serve v1.1 no-go 推迟;Untrusted[Json] 载荷 ADR-004 落盘;零语义改动)** + **v0.64 信任边界与诚实失败收口(AOT artifact 结构校验——四损坏形态统一稳定诊断;嵌套 serve 编译期拒绝(两遍式,checker 真实解析为单一事实来源);sanitize_cli_path 闸门扩展(DEL/C1/双向控制符);M4013/M5001 登记;零新增 M 码)** + **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + **v0.63 wasm 守护收口 slice 2(下标读/元素写/Option unwrap/VecLit/f64 复合赋值真实经 wasm;strict 新形态 fallback=0)** + **v0.65 wasm 守护收口 slice 3(expect/Map·Err unwrap/Vec[str] 读/下标复合赋值;#59 嵌套栈帧;守护具名清零)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.68 Untrusted[Json](serve 载荷整树标污;投影表;stringify 拒绝;净化器族不扩;零新增 M 码)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.69.0** · **v0.69 eval 运行时编译执行(显式能力 `with eval`,第 12 个效果门禁面;独立编译单元检查零降级/失败 Err 化 `--json` 同构载荷/污点 sink 无净化器/内层恒 tree/配额按调用重置;#65 serve 退出码惯用法文档化;零新增 M 码)** + **v0.67 诊断协议校准(三切口:毒化收敛双路径/M3012 语境化/M3015 nearest;REPL let 回显+横幅单一事实来源;快照复测误导 7→1/fix 错误 4→0/级联 3.8→1.4)** + **v0.66 观测与反馈(纯校准版:覆盖率/bench 基线刷新——双项 WARN 复测注记落盘;AI 修正回路快照——诊断协议校准 GO;真实 serve 服务观察——serve v1.1 no-go 推迟;Untrusted[Json] 载荷 ADR-004 落盘;零语义改动)** + **v0.64 信任边界与诚实失败收口(AOT artifact 结构校验——四损坏形态统一稳定诊断;嵌套 serve 编译期拒绝(两遍式,checker 真实解析为单一事实来源);sanitize_cli_path 闸门扩展(DEL/C1/双向控制符);M4013/M5001 登记;零新增 M 码)** + **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + **v0.63 wasm 守护收口 slice 2(下标读/元素写/Option unwrap/VecLit/f64 复合赋值真实经 wasm;strict 新形态 fallback=0)** + **v0.65 wasm 守护收口 slice 3(expect/Map·Err unwrap/Vec[str] 读/下标复合赋值;#59 嵌套栈帧;守护具名清零)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.68 Untrusted[Json](serve 载荷整树标污;投影表;stringify 拒绝;净化器族不扩;零新增 M 码)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -520,7 +520,7 @@ fn stamped() with io, time {         // 多个效果用逗号分隔
 }
 ```
 
-- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)、`rand`(v0.25)、`crypto`(v0.34)、`ffi`(v0.42,extern fn)、`unsafe`(v0.54,受限指针块;仅 C 原生后端执行)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
+- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)、`rand`(v0.25)、`crypto`(v0.34)、`ffi`(v0.42,extern fn)、`unsafe`(v0.54,受限指针块;仅 C 原生后端执行)、`eval`(v0.69,运行时编译执行——独立编译单元,失败 Err 化,见 §18 eval 节)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
 - **传播**:调用带效果的函数,调用方必须声明同样(或更多)的效果,否则 M3029;效果清单就是审计清单。
 - `main` 与 `test` 块是入口,声明自己需要的效果(main)或拥有全部效果(test)。
 - 闭包在**创建处**继承所在函数的效果(已知限制:存入数据结构的闭包在 v0.2 不追踪调用点效果)。
@@ -778,6 +778,7 @@ fn main(args: Vec[str]) with io, net {
 - **背压参数(裁决固化)**:并发 worker 上限 **16**、FIFO 等待队列 **256**(排队缓冲上界 2GB 记账口径;每请求复用 spawn 的 32MB SAB)、请求/响应体上限 **8MB**、handler 超时 **30s** 固定(terminate 硬杀)。
 - **错误响应体统一 `Json{code, message}`**(`Content-Type: application/json`):请求体超限 → **413 `body_too_large`**;队列满 → **503 `queue_full`**(到达即拒);handler panic → **500 `handler_panic`**(M 码进 message);超时 → **504 `timeout`**(message 含 M4010);worker 启动失败 → **500 `worker_start_failed`**(名额同步释放);响应体超限 → **500 `response_too_large`** 并关连接;响应头含非法字符(CR/LF 等) → **500 `internal_error`**(拒绝优于截断,服务不死)。
 - **运维事实**:`--max-ms` 对 serve 程序照常生效——**CLI 缺省 600000ms,长驻服务必须显式调大**(如 `--max-ms 86400000`);`ming build` 对 net 程序一律回退源码模式(accept/worker 运行面由源码编译,http_get 纯客户端程序也回退——conservative);`ming cc` 发射期拒绝(C1);wasm 资格永不进入(net 效果)。
+- **退出码惯用法(v0.69,#65 裁决,ADR-005 §9;行为变更否决、采文档化方案——理由见 docs/adr-005-eval.md §9)**:serve 绑定失败/端口非法返回 **Err**,**是否致命由调用方决定**(design §2.4"错误是值");main 返回 `i64` 时该值即进程退出码(实测 `return 3` → exit 3)——**运维部署应让"服务没起来"退出码非零**:`match std.net.serve(...) { Err(e) => { eprint(...); return 1; } Ok(_) => ... }`(完整形态见本节末示例与 `examples/serve_demo.ming`)。main 返回 unit 时吞掉 Err 是程序自己的选择,语言不机械判定"Err 被吞"。
 - **示例**(Json 构造走 Map[str, Json] + `json.stringify→parse` 往返,注入安全;handler 形参 `Untrusted[Json]` 取值经投影 + 净化的标准形态):
 
 ```ming
@@ -809,16 +810,14 @@ fn handler(req: Untrusted[Json]) -> Json with io {
     return respond(200, "path=" + path);
 }
 
-fn main() with net {
+fn main() -> i64 with net, io {
     match std.net.serve(8080, handler) {
-        Ok(_) => print("unreachable"),
-        Err(e) => eprint("serve 失败: \{e}"),
+        Ok(_) => { print("listening on 8080"); return 0; }
+        Err(e) => { eprint("serve 失败: \{e}"); return 1; }
     }
 }
 ```
-(长驻运行需显式调大 `--max-ms`;请求:`curl http://127.0.0.1:8080/x` → `path=/x`)
-
-### std.sync(能力:sync,v0.14)
+(长驻运行需显式调大 `--max-ms`;请求:`curl http://127.0.0.1:8080/x` → `path=/x`;main 即上方 #65 退出码惯用法形态,`examples/serve_demo.ming` 为完整可运行示范)
 
 ### std.sync(能力:sync,v0.14)
 
@@ -1051,6 +1050,46 @@ fn main() with io {
 - tree/VM 在调用处以 M4016 诚实拒绝;wasm 不编译 unsafe 函数,回落 VM 同码;只有 `ming cc` 执行真实内存语义(Ptr → `unsigned char*`)。
 - Ptr 方法:`load()` / `store(u8)` / `offset(i64)` / `is_null()`;块外只允许 let/赋值/return 传递与 `is_null()`。完整门禁与禁止面见 §14.1。
 
+### eval(裸 builtin;能力:eval,v0.69)
+
+**运行时编译执行(ADR-005 12/12 裁决 go,2026-11-15;零新增 M 码)**:把一段 Ming 源码字符串作为**独立编译单元**编译并执行。eval 是**第 12 个效果门禁面**——Ming 的 eval 与其它语言的 eval 方向相反:其它语言把 eval 当逃逸舱口(跳出静态检查),Ming 把 eval 做成门禁面(效果签名可见、污点 sink 拦截、serve 白名单拒绝、AOT 拒载、配额继承、panic Err 化)——动态执行的全部事实都写在签名与类型里,唯一放进来的是"程序自己写给自己执行的代码"。
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `eval` | `(src: str) -> Result[str, str]` · 效果 `eval` | 编译并执行 src(独立编译单元);Ok = 内层 main 捕获的 stdout;Err = 诊断 JSON 字符串(见下)。**调用方必须声明 `with eval`**(M3029 逐层传播;与 print 同调用形态,无 use 前缀) |
+
+**四裁决语义(ADR-005 §2)**:
+
+- **① 显式能力(`with eval`)**:新效果名 `eval`,M3029 逐层传播——效果清单即审计清单。`eval` 效果的语义 = "本函数执行动态编译的代码,其内部效果不可枚举"(与 `proc` 同款的能力粒度声明)。**不是隐瞒**:字符串里写着什么,审计者 grep 字面量就能看到;动态拼接使字符串内容不可静态审计——这个固有代价由 `with eval` 这行签名如实标出(有动态执行这件事本身可见,内容不可见)。
+- **② 独立编译单元,检查零降级,失败一律 Err 化**:内层复用既有编译管线,全部 M 检查(词法 M1xxx / 语法 M2xxx / 类型·效果·契约·污点·穷尽性 M3xxx)在内层原档执行、**零降级**,诊断 `file='<eval>'`;外层不做任何对内层的静态分析——这正是"独立编译单元"的含义。内层缺 `main` → Err 含 **M3023**[missing-main]。**Err 载荷恒为 `--json` 协议同构 JSON 字符串**:编译失败 = N 条诊断;运行时失败(内层 panic M4003/M4015/… 与配额熔断 M4001/M4012/M4011)= 单条合成诊断,**内层诊断码不降级**;内层 panic/熔断**不穿透 eval 边界**(Err 化,外层存活——与 spawn"panic → join Err"同款隔离)。调用方 `json.parse` 后按现有 `--json` 消费习惯处理。
+- **③ 污点 sink,无净化器**:eval 实参是污点 sink 位,`Untrusted[str]` 实参 → **M3049**(编译错误);**v1 无授权净化器**——"净化的代码"无机械定义(字符级闸拦不住语义;任何字符级白名单都会让"审核通过 = 可执行任意代码"成为错觉),污点值无类型出口进入 eval。**"标污外部输入(env/stdin/extern)永不动态执行"由类型系统机械保证**——这是 Ming 的 eval 与其它语言的决定性差异。**诚实边界**:fs/net/proc 内容源 v1 不标污(v0.61 已登记的泄漏窗口),其内容可零诊断直入 eval——如需拦截按族扩展纪律另裁(登记不预支)。合法来源 = 字面量 + 程序内合成的净 str(模板拼接、插件文本经程序自身逻辑生成);若未来出现执行用户提供脚本的真实用例,专属净化器按族扩展纪律另裁(登记不预支)。
+- **④ 内层恒 tree 参考实现(2026-11-15 裁决微调)**:sync 子解释器先例同款(效果 builtin 内子执行同构),无引擎旗标——原"恒 VM"立场在实现期废弃(interp.js→vm.js 为 ESM 循环导入;tree 无字节码编译面,内层失败模式只剩 panic/熔断两类,Err 化干净完整);"恒 VM"的实质承诺全部保留:**内层永不 wasm/cc 加速、无引擎旗标、per-call 无缓存、动态性非性能**——代价 = 内层性能为 tree 级(低于 VM 字节码,per-call 编译成本反而更低),动态性换性能,明示取舍。
+
+Err 载荷形态(字段与 `check --json` 协议同构):
+
+```json
+{ "ok": false, "diagnostics": [ { "code": "M3023", "name": "missing-main", "severity": "error", "message": "…", "file": "<eval>", "line": 1, "col": 1, "endLine": 1, "endCol": 1 } ] }
+```
+
+```ming
+fn demo() with eval, io {
+    match eval("fn main() with io { print(40 + 2); }") {
+        Ok(out) => print("输出: \{out}"),     // 42——Ok = 内层 main 捕获的 stdout
+        Err(e)  => print("失败: \{e}"),       // {"ok":false,"diagnostics":[...]}
+    }
+}
+```
+
+- **Ok 载荷 = 内层 main 捕获的 stdout(含内层 eprint——capture 混收,与 sync 子解释器 output 口径同款);无值交换**:内层与外层不共享值域(struct/Vec/Map 不可传递)——复杂数据交换经 `json.stringify` / `json.parse` 桥(边界明确,拷贝两次)。引入动态值类型违反"无隐式 anything"(design §1),不做——这是 Ok 载荷定为 str 的根本原因,不是实现偷懒。内层 main 正常返回(含非零退出码)→ Ok(退出码语义属进程边界,不进 v1 的 Err 判定)。
+- **⚠️ 配额窗口(如实登记):内层全量继承 `--max-steps` / `--max-alloc` / `--max-ms`,按调用重置**——每次 eval 各自获得全量配额:`--max-ms 100` + 循环内 eval 1000 次,总墙钟可达 100s。**循环内 eval 的总预算按调用次数放大**(沿 sync 子解释器先例,ADR-005 §5⑤);"共享墙钟基线/剩余预算传递"列实现期裁决项,收紧另裁不预支。
+- **per-call 编译,无缓存**:每次 eval 走全管线(词法→解析→全检查→执行),单次毫秒级;**高频循环调用不适用**——v1 无产物缓存(内容寻址缓存是 build 期机制;缓存列远期候选不预支)。
+- **引擎与部署(范围裁决,如实登记)**:`with eval` 函数永不进 wasm/C 资格(strict 具名回落,资格面零改动自动拒绝);`ming build` 遇 `with eval` 显式回退源码模式并说明原因——**部署形态 = 源码 + Node**;`ming cc` 发射期显式拒绝(C1 形态);内层不做 wasm/cc 运行时编译(成本/复杂度裁决;"热循环动态生成纯函数"的真实用例出现前不预支内层二次入口)。
+- **嵌套 eval 允许,64 层确定性守卫**:内层也是独立编译单元——内层程序同样可声明 `with eval` 再嵌套调用。链式自递归不受引擎递归深度守卫保护(每层内层是新解释器实例)——**嵌套深度 >64 层 → Err 化 M4005**(消息"eval 嵌套过深";深度与机器栈大小无关,保证可复现;JS 栈耗尽兜底同样 Err 化,外层存活)。
+- **内层不支持 std.sync.spawn(如实登记)**:sync worker 以入口文件路径重建编译单元,内层入口是虚拟名 `'<eval>'`(无磁盘文件)→ spawn 后 `join` 恒 Err(ENOENT);内层的结构化并发请直接顺序执行或由外层承载。远期 worker 改传源码不传路径(登记不预支)。
+- **两处白名单拒绝**:serve handler 内调 eval → **M3002**(eval 不进 handler 效果白名单 8——常驻网络面默认拒绝动态执行;serve 的请求载荷 + eval = 网络输入驱动编译,明确不开这个口,放开需独立威胁评估另裁);契约内调 eval → **M3029**(契约表达式在空效果集下检查,零新机制——契约里不可能藏动态执行)。
+- **fuzz 合同不含 eval**:差分模糊器不生成 `with eval` 程序——eval 语义由专项测试(§72)锁定,不享受四引擎差分合同的自动覆盖(与资格面"具名回落"同款诚实口径)。
+- **安全事实(ADR-005 §5,如实登记)**:eval 与外层共享同一 Node 进程,无 worker 隔离、**无沙箱**——`with eval` 承诺的是**可见性**(谁在动态执行,签名一行字)与**来源纪律**(污点无出口),不承诺"动态代码无害"。确定性不破:同一 eval 字符串 → 同一编译产物 → 同一行为(eval 不引入时间/随机/哈希序行为;"程序做什么依赖运行时字符串"这一事实由 `with eval` 签名如实表达)。
+
 ### 数字类型方法
 
 - 整数/浮点共有:`abs() to_f32() to_f64() to_i8() ... to_u64()`(安全转换返回 `Option`)
@@ -1210,6 +1249,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.69.0(2026-11-15)
+
+- **eval——运行时编译执行(显式能力 `with eval`,第 12 个效果门禁面;ADR-005 12/12 裁决 go,2026-11-15;零新增 M 码)**:
+  - **签名**:裸 builtin `eval(src: str) -> Result[str, str]`,效果 `eval`(与 print 同调用形态,无 use 前缀);调用方必须声明 `with eval`(M3029 逐层传播),M3030 效果列表/契约纯性/wasm 资格闸自动覆盖。
+  - **四裁决**(ADR-005 §2):① 显式能力——动态执行的事实写在签名里,不是逃逸舱口;② 独立编译单元——全部 M 检查在内层原档执行零降级(诊断 `file='<eval>'`),编译失败 N 条诊断 / 运行时失败单条合成诊断,**Err 载荷恒为 `--json` 协议同构 JSON 字符串**(内层诊断码不降级;内层 panic/熔断不穿透边界,外层存活),内层缺 main → Err 含 M3023;③ 污点 sink——`Untrusted[str]` 实参 → M3049,**v1 无授权净化器**,"标污外部输入(env/stdin/extern)永不动态执行";fs/net/proc 内容源 v1 不标污 = 既有泄漏窗口(v0.61 登记);④ 热重载不进 v1、不预留语法面、不写占位,真实需求出现时另 ADR。
+  - **内层恒 tree 裁决微调(2026-11-15)**:原"恒 VM(VMInterp)"立场在实现期废弃,改恒 **tree 参考实现**(sync 子解释器先例同款——效果 builtin 内子执行同构;理由:interp.js→vm.js ESM 循环导入 + tree 失败模式只剩 panic/熔断两类,Err 化干净完整);"恒 VM"的实质承诺保留——内层永不 wasm/cc 加速、无引擎旗标、per-call 无缓存、动态性非性能,内层性能 = tree 级。
+  - **配额与部署(诚实登记)**:内层全量继承 `--max-steps`/`--max-alloc`/`--max-ms`,**按调用重置——循环内 eval 的总预算按调用次数放大**(§18 eval 节 ⚠️ 窗口登记);per-call 编译无缓存(高频循环不适用);`ming build` 遇 `with eval` 显式回退源码模式(部署形态 = 源码 + Node);`ming cc` 发射期显式拒绝;嵌套 eval 允许。
+  - **白名单拒绝**:serve handler 内 eval → M3002(handler 效果白名单 8 不含 eval——常驻网络面默认拒绝动态执行);契约内 eval → M3029。
+  - **fuzz 合同不含 eval**:差分模糊器不生成 `with eval` 程序,eval 语义由专项测试锁定(与资格面具名回落同款诚实口径)。
+  - **#65 文档化处置(同日独立裁决,ADR-005 §9;行为变更否决、采文档化方案)**:serve 绑定失败返回 Err,**是否致命由调用方决定**;main 返回 i64 时该值即进程退出码(实测 `return 3` → exit 3)——§19 std.net 节登记运维惯用法(`Err(e) => { eprint(...); return 1; }`,"服务没起来"退出码非零),serve 示例 main 同步为惯用法形态;**examples/serve_demo.ming 新增**(echo 服务示范:投影 + 净化 + respond 形态 + #65 惯用法,顺带兑现 N-64 serve 示例缺口);理由(退出码通道已存在/语言无法机械判定 Err 被吞/一版一主题)见 docs/adr-005-eval.md §9。
+  - **文档**:GUIDE §14 效果清单 +eval、§18 新增 eval 小节(签名/四裁决/Err 载荷形态/Ok 无值交换/配额窗口/per-call 无缓存/引擎与部署/嵌套/白名单拒绝/fuzz 口径/安全事实)、§19 std.net 节退出码惯用法、头部版本串;docs/design.md §6.4 状态行、docs/capabilities.md eval 行 ❌→🟡(热重载仍 ❌ 不排期)。
+  - **独立审查(2026-11-15)**:2 MAJOR 修复后通过,0 BLOCKER——**MAJOR-1 eval 链式自递归逃逸 Err 化边界**(每层内层是新 Interp 实例,JS 栈耗尽 RangeError 穿透 → CLI 兜底 exit 101,违背"内层失败是外层的值")→ 双防线修复:evalDepth 经 Interp 构造选项跨层累积,**>64 层 → Err 化 M4005("eval 嵌套过深";深度确定性化,与机器栈大小无关——无守卫时 RangeError 在 ~400 层才发生,输出依赖环境不可复现)** + RangeError 兜底仅最外层 eval 边界转 Err;**MAJOR-2 "外部输入永不动态执行"表述过宽**(M3049 只拦标污窄源,fs/net/proc 内容源 v1 不标污 = v0.61 既有泄漏窗口,read_file 内容可零诊断直入 eval——实测)→ 四处文档收窄为"标污外部输入(env/stdin/extern)永不动态执行";MINOR-1 内层 std.sync.spawn 不可用登记(worker 需真实入口文件,'<eval>' 无磁盘文件 → join 恒 Err);MINOR-2 补测 §72.18–20;NOTE Ok 载荷含内层 eprint(capture 混收,sync 同款)措辞校准。审查确认面零发现:sink 无绕过(eval 不可作值 M3001/闭包与 fn 值调用命中/深污点 M3049/模块级 fn eval 遮蔽用户 fn 赢)、Err 化 10 形态三引擎逐字、零新增 M 码、wasm.js/vm.js/cbackend.js/artifact.js 零改动。理由全文见 docs/adr-005-eval.md §9.1。
+  - 测试:§72 共 **20 项**(eval 专项——正例/编译失败 Err 化/内层 panic 不穿透/M3029 传播/契约内 M3029/M3049 sink/handler 内 M3002/build·cc·wasm 三段式拒绝(v72.13 strict 三态 'none' 口径:eligible=0 → wasm_status none,v53.4 先例)/配额继承/嵌套 eval/**v72.18 嵌套 64 层守卫/v72.19 M3022 Err 化/v72.20 熔断 M4011·M4012 同通道+eprint 口径**);全量 **1091 项 0 失败**;fuzz 双种子(44044/20261)0 分歧;proof_fuzz 60 例 0 误报。
 
 ### v0.68.0(2026-11-15)
 

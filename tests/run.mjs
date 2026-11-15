@@ -13863,6 +13863,420 @@ fn main() with io, fs {
 }
 
 
+// ===================== 72. v0.69:eval(显式能力 with eval;ADR-005 12/12 go)=====================
+// 文件所有权:§72 = 本区全部用例(ADR-005 §7 清单 12 项 + §9 实现期义务核验)。
+// 正例(字面量/合成串/嵌套/内层非零退出码)/ Err 化载荷(编译失败 N 条 std.json.parse 断言/类型错/
+// 内层 panic M4003/契约 M4015/缺 main M3023/熔断 M4001——panic 不穿透,外层存活)/
+// 门禁面(M3029 无声明与逐层传播/契约内 M3029/M3049 污点 sink/serve handler 内 M3002)/
+// 引擎面(strict-wasm 具名回落/build 回退源码模式/cc 发射期拒绝)。
+// 纪律:内层恒 tree 参考实现(ADR-005 §9 裁决 5)→ 外层三引擎(default/--no-wasm/--tree)输出逐字一致;
+// Err 载荷在 Ming 程序内经 std.json.parse 断言(不依赖 JSON 键序与多余字段);全部先实测后断言。
+// 架构师裁决(2026-11-15):v72.13 按 'none' 口径锁定——with eval 函数经 wasm.js 资格闸
+// (effectOk 仅 ffi/unsafe)在资格分析阶段即被排除 → eligible=0 → wasm_status 'none' →
+// strict exit 0(v53.4 先例:零 eligible → exit 0)。'none' 即"with eval 永不进 wasm"的
+// 可观测诚实三态;ADR-005 wasm.js 零改动承诺下不产生具名回落消息(核验结果记入 ADR §9)。
+{
+  const dir72 = path.join(TMP, 'v72');
+  fs.mkdirSync(dir72, { recursive: true });
+  const m72 = (name, src) => { const f = path.join(dir72, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags72 = ['', '--no-wasm', '--tree'];
+  const runAll72 = (p, extra = []) => flags72.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const same3_72 = (runs) => runs.length === 3 && runs.every((r) => r.code === runs[0].code && r.stdout === runs[0].stdout && r.stderr === runs[0].stderr);
+  const fmtRuns72 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const chk72 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const codes72 = (res) => (res.j ? res.j.diagnostics.map((d) => d.code).join(',') : '(no-json:exit ' + res.code + ')');
+  // Ming 源内构造嵌套引号的 eval 串:JSON.stringify 的 \" 转义与 Ming 串字面量对这些 ASCII 语料同形
+  const q72 = (s) => JSON.stringify(s);
+
+  // ---- v72.1 正例:字面量 eval(内层 print 捕获进 Ok 载荷,含换行)----
+  const p72_1 = m72('v72_1_literal.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn main() with io { print("hi"); }') + ') {',
+    '        Ok(s) => print("OK:" + s),',
+    '        Err(e) => print("ERR:" + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_1 = runAll72(p72_1);
+  check('v72.1:字面量 eval 正例——内层 print("hi") 捕获进 Ok 载荷(含换行,s="hi\\n"),print("OK:"+s) 输出 "OK:hi\\n\\n";三引擎逐字一致(内层恒 tree,外层三引擎合同延伸)',
+    same3_72(runs72_1) && runs72_1[0].code === 0 && runs72_1[0].stdout === 'OK:hi\n\n',
+    `runs=${fmtRuns72(runs72_1)}`);
+
+  // ---- v72.2 正例:程序内合成净 str(引号拼接模板)——合法来源集 = 字面量 + 程序内合成(ADR-005 §2.1)----
+  const p72_2 = m72('v72_2_synth.ming', [
+    'fn main() with io, eval {',
+    '    let src = "fn main() with io { print(" + ' + q72('"') + ' + ' + q72('x') + ' + ' + q72('"') + ' + "); }";',
+    '    match eval(src) {',
+    '        Ok(s) => print("OK:" + s),',
+    '        Err(e) => print("ERR:" + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_2 = runAll72(p72_2);
+  check('v72.2:合成串 eval 正例——外层拼接生成内层代码(print("x")),Ok 载荷 "x\\n"(含换行)→ 输出 "OK:x\\n\\n";三引擎逐字一致',
+    same3_72(runs72_2) && runs72_2[0].code === 0 && runs72_2[0].stdout === 'OK:x\n\n',
+    `runs=${fmtRuns72(runs72_2)}`);
+
+  // ---- v72.3 编译失败 Err 化:内层语法错 → Err 载荷 --json 协议同构 JSON,Ming 程序内 std.json.parse 断言 ----
+  const p72_3 = m72('v72_3_compile_err.ming', [
+    'use std.json;',
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn {') + ') {',
+    '        Ok(s) => print("UNEXPECTED_OK:" + s),',
+    '        Err(e) => {',
+    '            let j = std.json.parse(e).unwrap();',
+    '            let ok = j.get("ok").unwrap().as_bool().unwrap();',
+    '            let arr = j.get("diagnostics").unwrap().as_arr().unwrap();',
+    '            let c0 = arr.get(0).unwrap().get("code").unwrap().as_str().unwrap();',
+    '            print("ok=" + str(ok) + " n_ge1=" + str(arr.len() >= 1) + " m2=" + str(c0.starts_with("M2")));',
+    '        },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const r72_3 = runMing(['run', p72_3]);
+  check('v72.3:编译失败 Err 化——内层 "fn {" → Err 载荷 std.json.parse 成功(ok=false、diagnostics ≥1 条、首条 code M2xxx);内层 M 检查零降级',
+    r72_3.code === 0 && r72_3.stdout === 'ok=false n_ge1=true m2=true\n',
+    `code=${r72_3.code} stdout=${JSON.stringify(r72_3.stdout)} stderr=${JSON.stringify((r72_3.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v72.4 内层类型错误 → Err 含 M3xxx 码(类型检查在内层编译单元原档执行)----
+  const p72_4 = m72('v72_4_type_err.ming', [
+    'use std.json;',
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn main() { let x: i64 = "s"; }') + ') {',
+    '        Ok(s) => print("UNEXPECTED_OK:" + s),',
+    '        Err(e) => {',
+    '            let j = std.json.parse(e).unwrap();',
+    '            let arr = j.get("diagnostics").unwrap().as_arr().unwrap();',
+    '            let mut m3 = false;',
+    '            for d in arr {',
+    '                if d.get("code").unwrap().as_str().unwrap().starts_with("M3") { m3 = true; }',
+    '            }',
+    '            print("m3=" + str(m3) + " n_ge1=" + str(arr.len() >= 1));',
+    '        },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const r72_4 = runMing(['run', p72_4]);
+  check('v72.4:内层类型错误 Err 化——let x: i64 = "s" → Err 载荷 diagnostics 含 M3xxx 码,无 Ok 逃逸',
+    r72_4.code === 0 && r72_4.stdout === 'm3=true n_ge1=true\n',
+    `code=${r72_4.code} stdout=${JSON.stringify(r72_4.stdout)} stderr=${JSON.stringify((r72_4.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v72.5 内层 panic M4003 Err 化不穿透:单诊断 code=M4003、file='<eval>';外层存活 exit 0 ----
+  const p72_5 = m72('v72_5_panic.ming', [
+    'use std.json;',
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn main() with io { let v = [1]; print(str(v[5])); }') + ') {',
+    '        Ok(s) => print("UNEXPECTED_OK:" + s),',
+    '        Err(e) => {',
+    '            let j = std.json.parse(e).unwrap();',
+    '            let arr = j.get("diagnostics").unwrap().as_arr().unwrap();',
+    '            let d0 = arr.get(0).unwrap();',
+    '            let c0 = d0.get("code").unwrap().as_str().unwrap();',
+    '            let f0 = d0.get("file").unwrap().as_str().unwrap();',
+    '            print("n=" + str(arr.len()) + " code=" + c0 + " file=" + f0);',
+    '        },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_5 = runAll72(p72_5);
+  check('v72.5:内层 panic Err 化不穿透——v[5] 越界 → Err 单诊断 code=M4003、file=<eval>;Err 分支 print 后外层正常 exit 0;三引擎逐字一致',
+    same3_72(runs72_5) && runs72_5[0].code === 0 && runs72_5[0].stdout === 'n=1 code=M4003 file=<eval>\n',
+    `runs=${fmtRuns72(runs72_5)}`);
+
+  // ---- v72.6 内层契约违约 M4015 → Err(运行时失败同通道,外层存活)----
+  // 实参经 Vec 元素(f(v[0]))绕开 M3041 调用点字面量静态契约校验,违约落到运行时 M4015。
+  const p72_6 = m72('v72_6_contract.ming', [
+    'use std.json;',
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn f(x: i64) -> i64 requires x > 0 { return x; } fn main() with io { let v = [-1]; print(str(f(v[0]))); }') + ') {',
+    '        Ok(s) => print("UNEXPECTED_OK:" + s),',
+    '        Err(e) => {',
+    '            let j = std.json.parse(e).unwrap();',
+    '            let arr = j.get("diagnostics").unwrap().as_arr().unwrap();',
+    '            let c0 = arr.get(0).unwrap().get("code").unwrap().as_str().unwrap();',
+    '            print("n=" + str(arr.len()) + " code=" + c0);',
+    '        },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const r72_6 = runMing(['run', p72_6]);
+  check('v72.6:内层契约违约 Err 化——f(v[0]) 运行时违反 requires x > 0 → Err 单诊断 code=M4015;外层存活 exit 0(panic 不穿透)',
+    r72_6.code === 0 && r72_6.stdout === 'n=1 code=M4015\n',
+    `code=${r72_6.code} stdout=${JSON.stringify(r72_6.stdout)} stderr=${JSON.stringify((r72_6.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v72.7 内层缺 main → Err 含 M3023(零新码自然覆盖;ADR-005 §9 裁决 10 实测口径)----
+  const p72_7 = m72('v72_7_nomain.ming', [
+    'use std.json;',
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn helper() { }') + ') {',
+    '        Ok(s) => print("UNEXPECTED_OK:" + s),',
+    '        Err(e) => {',
+    '            let j = std.json.parse(e).unwrap();',
+    '            let arr = j.get("diagnostics").unwrap().as_arr().unwrap();',
+    '            let mut found = false;',
+    '            for d in arr {',
+    '                if d.get("code").unwrap().as_str().unwrap() == "M3023" { found = true; }',
+    '            }',
+    '            print("m3023=" + str(found));',
+    '        },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const r72_7 = runMing(['run', p72_7]);
+  check('v72.7:内层缺 main Err 化——"fn helper() { }" → Err 载荷 diagnostics 含 M3023;外层存活 exit 0',
+    r72_7.code === 0 && r72_7.stdout === 'm3023=true\n',
+    `code=${r72_7.code} stdout=${JSON.stringify(r72_7.stdout)} stderr=${JSON.stringify((r72_7.stderr ?? '').split('\n')[0])}`);
+
+  // ---- v72.8 内层熔断 M4001 Err 化:--max-steps 500 全量继承(按调用重置,sync 先例);外层存活 ----
+  const p72_8 = m72('v72_8_quota.ming', [
+    'fn main() with io, eval {',
+    '    let mut i = 0;',
+    '    while i < 2 {',
+    '        match eval(' + q72('fn main() { while true { } }') + ') {',
+    '            Ok(s) => print("UNEXPECTED_OK:" + s),',
+    '            Err(e) => { print("c" + str(i) + "_m4001=" + str(e.contains("M4001"))); },',
+    '        }',
+    '        i = i + 1;',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_8 = runAll72(p72_8, ['--max-steps', '500']);
+  check('v72.8:内层熔断 Err 化——--max-steps 500(内层按调用重置全量继承)循环两次 eval 死循环内层 → 两次 Err 均含 M4001;外层存活 exit 0;三引擎逐字一致',
+    same3_72(runs72_8) && runs72_8[0].code === 0 && runs72_8[0].stdout === 'c0_m4001=true\nc1_m4001=true\n',
+    `runs=${fmtRuns72(runs72_8)}`);
+
+  // ---- v72.9 M3029 效果门禁:未声明调 eval + helper with eval / main 未声明的逐层传播 ----
+  const p72_9a = m72('v72_9a_m3029.ming', 'fn main() { eval(' + q72('fn main() { }') + '); }');
+  const p72_9b = m72('v72_9b_m3029_prop.ming', [
+    'fn go() -> Result[str, str] with eval {',
+    '    return eval(' + q72('fn main() { }') + ');',
+    '}',
+    'fn main() with io {',
+    '    print("x");',
+    '    let _ = go();',
+    '}',
+  ].join('\n'));
+  const r72_9a = chk72(p72_9a);
+  const r72_9b = chk72(p72_9b);
+  check('v72.9:M3029 效果门禁——main 未声明 eval 直接调 eval(check exit 1 + M3029 消息点名 eval);helper with eval 而 main 未声明 → M3029 逐层传播',
+    r72_9a.code === 1 && !!r72_9a.j && r72_9a.j.diagnostics.some((d) => d.code === 'M3029' && d.message.includes('eval'))
+      && r72_9b.code === 1 && !!r72_9b.j && r72_9b.j.diagnostics.some((d) => d.code === 'M3029' && d.message.includes('eval')),
+    `a=${r72_9a.code}/${codes72(r72_9a)} b=${r72_9b.code}/${codes72(r72_9b)}`);
+
+  // ---- v72.10 契约内 eval → M3029(契约表达式空效果集检查,零新机制自动覆盖)----
+  const p72_10 = m72('v72_10_contract_eff.ming', [
+    'fn f(x: i64) -> i64',
+    '    requires eval(' + q72('fn main() { }') + ').is_ok() {',
+    '    return x;',
+    '}',
+    'fn main() with io {',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r72_10 = chk72(p72_10);
+  check('v72.10:契约内 eval → M3029——requires 表达式里调 eval(声明处即检查,函数未被调用也发射),消息点名效果 eval',
+    r72_10.code === 1 && !!r72_10.j && r72_10.j.diagnostics.some((d) => d.code === 'M3029' && d.message.includes('eval')),
+    `code=${r72_10.code}/${codes72(r72_10)}`);
+
+  // ---- v72.11 M3049 污点 sink:env.get 的 Untrusted[str] 实参进 eval 被拦(v1 无净化器出口)----
+  const p72_11 = m72('v72_11_sink.ming', [
+    'use std.env;',
+    'fn main() with env, eval {',
+    '    let u = std.env.get("MING_V72_SINK").unwrap();',
+    '    eval(u);',
+    '}',
+  ].join('\n'));
+  const r72_11 = chk72(p72_11);
+  check('v72.11:M3049 污点 sink——env.get().unwrap() 的 Untrusted[str] 进 eval 实参位 → check exit 1 + M3049(外部输入永不动态执行,类型级保证)',
+    r72_11.code === 1 && !!r72_11.j && r72_11.j.diagnostics.some((d) => d.code === 'M3049' && d.message.includes('Untrusted[str]')),
+    `code=${r72_11.code}/${codes72(r72_11)}`);
+
+  // ---- v72.12 serve handler 内 eval → M3002(eval 不进 SERVE_HANDLER_EFFECTS 8 白名单)----
+  const p72_12 = m72('v72_12_serve.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Untrusted[Json]) -> Json with eval {',
+    '    eval(' + q72('fn main() { }') + ');',
+    '    return std.json.parse("{}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27212, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const r72_12 = chk72(p72_12);
+  check('v72.12:serve handler 内 eval → M3002——handler 声明 with eval 不在 SERVE_HANDLER_EFFECTS 白名单(check exit 1,消息点名 eval)',
+    r72_12.code === 1 && !!r72_12.j && r72_12.j.diagnostics.some((d) => d.code === 'M3002' && d.message.includes('eval')),
+    `code=${r72_12.code}/${codes72(r72_12)}`);
+
+  // ---- v72.13 wasm strict 三态核验('none' 口径,架构师裁决 2026-11-15):with eval 函数经
+  // wasm.js 资格闸(effectOk 仅 ffi/unsafe)在资格分析阶段排除 → eligible=0 → 'none' →
+  // strict exit 0(v53.4 先例:零 eligible → exit 0)——"永不进 wasm"的可观测诚实形态 ----
+  const p72_13 = m72('v72_13_strict.ming', [
+    'fn go() -> i64 with eval {',
+    '    eval(' + q72('fn main() { }') + ');',
+    '    return 1;',
+    '}',
+    'fn main() with io, eval {',
+    '    print(str(go()));',
+    '}',
+  ].join('\n'));
+  const runs72_13 = runAll72(p72_13);
+  const strict72_13 = runMing(['run', p72_13, '--strict-wasm', '--json']);
+  let j72_13 = null;
+  try { j72_13 = JSON.parse(strict72_13.stdout); } catch { /* 崩溃形态 → 断言点名 */ }
+  check('v72.13:wasm strict 三态 "none" 口径——with eval 程序非 strict 三引擎输出 "1\\n" 逐字;--strict-wasm --json → exit 0 且 wasm_status=none(eligible=0,v53.4 先例;不误报 ok/fallback)',
+    same3_72(runs72_13) && runs72_13[0].code === 0 && runs72_13[0].stdout === '1\n'
+      && strict72_13.code === 0 && j72_13 !== null && j72_13.wasm_status === 'none',
+    `runs=${fmtRuns72(runs72_13)} strict=${strict72_13.code}/${JSON.stringify((strict72_13.stdout ?? '').slice(-60))}`);
+
+  // ---- v72.14 ming build 遇 with eval:显式回退源码模式 + 具名原因;dist launcher 行为与源码模式一致 ----
+  const bp72 = path.join(TMP, 'v72build');
+  fs.mkdirSync(bp72, { recursive: true });
+  fs.writeFileSync(path.join(bp72, 'ming.toml'), '[project]\nname = "v72eval"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.copyFileSync(p72_1, path.join(bp72, 'app.ming'));
+  const srcRun72 = runMing(['run', path.join(bp72, 'app.ming')]);
+  const bld72 = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: bp72, timeout: 120000 });
+  const launcher72 = spawnSync(process.execPath, [path.join(bp72, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: bp72, timeout: 60000 });
+  check('v72.14:ming build 遇 with eval 显式回退源码模式——AOT 不可用 + 具名原因(eval)+ 已回退源码模式;无 app.bytecode.json;dist launcher 与源码模式输出一致("OK:hi\\n\\n")',
+    bld72.status === 0 && (bld72.stderr ?? '').includes('AOT 不可用') && (bld72.stderr ?? '').includes('已回退源码模式')
+      && (bld72.stderr ?? '').includes('eval')
+      && fs.existsSync(path.join(bp72, 'dist', 'app.ming')) && !fs.existsSync(path.join(bp72, 'dist', 'app.bytecode.json'))
+      && srcRun72.code === 0 && srcRun72.stdout === 'OK:hi\n\n'
+      && launcher72.status === 0 && launcher72.stdout === 'OK:hi\n\n',
+    `build=${bld72.status} stderr=${JSON.stringify((bld72.stderr ?? '').slice(0, 200))} src=${srcRun72.code}:${JSON.stringify(srcRun72.stdout)} launcher=${launcher72.status}:${JSON.stringify(launcher72.stdout)}/${JSON.stringify((launcher72.stderr ?? '').slice(0, 120))}`);
+
+  // ---- v72.15 cc 发射期拒绝:with eval main 体发射 → Unsupported("调用 eval")→ "C1 不支持该程序形态" ----
+  // (--emit-c 形态不需 gcc,拒绝发生在发射期;参照 v71.15/v66.12 口径。
+  //  语料用裸 eval 调用语句 + 尾随 print:match 语句位/块尾表达式是 C1 既有拒绝形态,会先于 eval 触发,
+  //  断言追加 "eval" 点名具名原因,避免误把无关 C1 拒绝当 eval 拒绝。)
+  const p72_15 = m72('v72_15_cc.ming', [
+    'fn main() with io, eval {',
+    '    eval(' + q72('fn main() { }') + ');',
+    '    print("done");',
+    '}',
+  ].join('\n'));
+  const cc72 = runMing(['cc', p72_15, '--emit-c']);
+  check('v72.15:cc 发射期拒绝 with eval——exit 1 + "C1 不支持该程序形态:调用 eval"(--emit-c 不依赖本机 gcc)',
+    cc72.code === 1 && ((cc72.stderr ?? '') + (cc72.stdout ?? '')).includes('C1 不支持该程序形态')
+      && ((cc72.stderr ?? '') + (cc72.stdout ?? '')).includes('eval'),
+    `code=${cc72.code} out=${JSON.stringify((((cc72.stderr ?? '') + (cc72.stdout ?? '')).split('\n')[0] ?? '').slice(0, 160))}`);
+
+  // ---- v72.16 嵌套 eval → Ok(内层程序里再 eval;内层恒 tree 与嵌套深度无关)----
+  const innerMost72 = 'fn main() with io { print("deep"); }';
+  const inner72src = 'fn main() with io, eval { match eval(' + q72(innerMost72) + ') { Ok(s) => print("IN:" + s), Err(e) => print("E:" + e), } }';
+  const p72_16 = m72('v72_16_nested.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72(inner72src) + ') {',
+    '        Ok(s) => print("OUT:" + s),',
+    '        Err(e) => print("E:" + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_16 = runAll72(p72_16);
+  check('v72.16:嵌套 eval 正例——内层程序再 eval 最内层,捕获链逐层含换行,输出 "OUT:IN:deep\\n\\n\\n";三引擎一致',
+    same3_72(runs72_16) && runs72_16[0].code === 0 && runs72_16[0].stdout === 'OUT:IN:deep\n\n\n',
+    `runs=${fmtRuns72(runs72_16)}`);
+
+  // ---- v72.17 内层 main 返回非零(= 3)→ Ok:载荷仅 stdout,退出码语义属进程边界不进 Err(ADR-005 裁决 4)----
+  const p72_17 = m72('v72_17_exitcode.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn main() -> i64 with io { print("v"); return 3; }') + ') {',
+    '        Ok(s) => print("OK:" + s),',
+    '        Err(e) => print("ERR:" + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_17 = runAll72(p72_17);
+  check('v72.17:内层非零退出码 → Ok——main 返回 3 不进 Err,Ok 载荷仅捕获 stdout("v\\n")→ 输出 "OK:v\\n\\n";三引擎逐字一致',
+    same3_72(runs72_17) && runs72_17[0].code === 0 && runs72_17[0].stdout === 'OK:v\n\n',
+    `runs=${fmtRuns72(runs72_17)}`);
+
+  // ---- v72.18(v0.69 审查 MAJOR-1 锁定):eval 链式自递归 → 64 层确定性守卫 Panic M4005
+  // → Err 化不穿透(外层存活 exit 0);深度与机器栈大小无关(64 DONE = 守卫深度)----
+  const selfRec72 = path.join(dir72, 'v72_selfrec.ming').replace(/\\/g, '/');
+  fs.writeFileSync(selfRec72, [
+    'use std.fs;',
+    'fn main() with io, eval, fs {',
+    '    let src = std.fs.read_file("' + selfRec72 + '").unwrap();',
+    '    match eval(src) {',
+    '        Ok(s) => print("NESTED-OK:" + s),',
+    '        Err(e) => { print("NESTED-ERR:" + e); },',
+    '    }',
+    '    print("DONE");',
+    '}',
+  ].join('\n'), 'utf8');
+  const runs72_18 = runAll72(selfRec72);
+  const dones72_18 = (runs72_18[0].stdout.match(/DONE/g) ?? []).length;
+  check('v72.18:eval 链式自递归 → 64 层守卫 Err 化——63 层 NESTED-OK 后第 64 层 eval 调用 Panic M4005(消息含 "嵌套过深")由上层 evalInner 转 Err;恰 64 个 DONE;exit 0(外层存活);三引擎逐字一致',
+    same3_72(runs72_18) && runs72_18[0].code === 0 && dones72_18 === 64
+      && runs72_18[0].stdout.includes('NESTED-ERR:{"ok":false,"diagnostics":[{"code":"M4005","name":"stack-overflow"')
+      && runs72_18[0].stdout.includes('嵌套过深'),
+    `runs=${fmtRuns72(runs72_18).slice(0, 300)} dones=${dones72_18}`);
+
+  // ---- v72.19(v0.69 审查 MINOR-2 锁定):内层模块装载失败(M3022)→ Err 化——
+  // use 未知 std 模块在 Checker.run() 内产 error 级诊断/use 目标不可读抛 MingError,
+  // 两条路径观测面一致:Err 载荷 diagnostics 含 M3022 ----
+  const p72_19 = m72('v72_19_m3022.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72('use std.nope;\nfn main() { }') + ') {',
+    '        Ok(s) => print("OK:" + s),',
+    '        Err(e) => print("ERR:" + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const runs72_19 = runAll72(p72_19);
+  check('v72.19:内层 M3022(未知 std 模块)→ Err 化——载荷 diagnostics 含 code=M3022,外层存活;三引擎逐字一致',
+    same3_72(runs72_19) && runs72_19[0].code === 0 && runs72_19[0].stdout.includes('"code":"M3022"')
+      && runs72_19[0].stdout.startsWith('ERR:'),
+    `runs=${fmtRuns72(runs72_19)}`);
+
+  // ---- v72.20(v0.69 审查 MINOR-2/NOTE-1 锁定):内层熔断 M4011/M4012 与 panic 同通道;
+  // Ok 载荷 = 捕获 stdout + eprint(capture 混收,与 sync 先例同款口径)----
+  const p72_20a = m72('v72_20_alloc.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn main() with io { let mut v: Vec[i64] = []; for i in 0..1000 { v.push(i); } print(str(v.len())); }') + ') {',
+    '        Ok(s) => print("OK:" + s),',
+    '        Err(e) => { print("ERR:" + e); },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const alloc72_20 = runMing(['run', p72_20a, '--max-alloc', '500']);
+  const p72_20b = m72('v72_20_ms.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72('use std.time;\nfn main() with time { time.sleep(5000); }') + ') {',
+    '        Ok(s) => print("OK:" + s),',
+    '        Err(e) => { print("ERR:" + e); },',
+    '    }',
+    '}',
+  ].join('\n'));
+  const ms72_20 = runMing(['run', p72_20b, '--max-ms', '300']);
+  const p72_20c = m72('v72_20_eprint.ming', [
+    'fn main() with io, eval {',
+    '    match eval(' + q72('fn main() with io { eprint("E1"); print("P1"); }') + ') {',
+    '        Ok(s) => print("OK[" + s + "]"),',
+    '        Err(e) => print("ERR:" + e),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const ep72_20 = runMing(['run', p72_20c]);
+  check('v72.20:内层熔断 M4011(--max-alloc 5)与 M4012(--max-ms 300 + sleep)均 Err 化同通道,外层存活 exit 0;Ok 载荷含内层 eprint("OK[E1\\nP1\\n]")',
+    alloc72_20.code === 0 && alloc72_20.stdout.includes('"code":"M4011"')
+      && ms72_20.code === 0 && ms72_20.stdout.includes('"code":"M4012"')
+      && ep72_20.code === 0 && ep72_20.stdout === 'OK[E1\nP1\n]\n',
+    `alloc=${alloc72_20.code}/${JSON.stringify(alloc72_20.stdout.slice(0, 80))} ms=${ms72_20.code}/${JSON.stringify(ms72_20.stdout.slice(0, 80))} ep=${ep72_20.code}/${JSON.stringify(ep72_20.stdout)}`);
+
+  // ---- §72-END
+}
+
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

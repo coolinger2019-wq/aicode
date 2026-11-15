@@ -16,9 +16,9 @@
 | 构建 | `ming build` 真 AOT 字节码产物（无明文源）；`--with-source`；spawn/trait 自动回退；**v0.49 内容寻址缓存 + 接口哈希报告 + `--clean-cache`**；**v0.53 构建键 = 项目相对路径 + 内容 + Node 主版本，`--json` 带 build_key/dist_hash/cache_hit/source_count/interface_hashes（同 OS + 同 Node 主版本可复现 dist_hash）** |
 | CI | **v0.53 GitHub Actions**：push/PR + nightly；`test` 九组合（ubuntu/macos/windows × Node 18/20/22）跑 run/fuzz/proof_fuzz；`c-backend` ubuntu/macos；nightly 三种子 120 程序 + proof_fuzz 300；官方 action、零 npm 依赖（`.github/workflows/ci.yml`） |
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
-| 质量护栏 | 回归全绿（v0.63.0 起 **995 项**；§67 为 v0.63 wasm 守护收口 slice 2 **28 项**，§66 为 v0.62 服务端 v1 **22 项**，§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表**（tests/coverage.mjs；**94.0% 行 / 88.7% 函数**，vm.js 65.9%；信息性不设门槛） |
+| 质量护栏 | 回归全绿（v0.69.0 起 **1091 项**；§72 为 v0.69 eval **20 项**，§71 为 v0.68 Untrusted[Json] **18 项**，§70 为 v0.67 诊断协议校准 **14 项**，§69 为 v0.65 wasm slice 3 **19 项**，§68 为 v0.64 信任边界 **21 项**；§67 为 v0.63 wasm 守护收口 slice 2 **28 项**，§66 为 v0.62 服务端 v1 **22 项**，§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表**（tests/coverage.mjs；**94.0% 行 / 88.7% 函数**，vm.js 65.9%；信息性不设门槛） |
 | 能力矩阵 | 55 行口径 ≈84%（docs/capabilities.md；v0.61 新增"数据流安全(污点标注)"行(✅,窄源 v1)、v0.62"TCP/UDP/服务端"行 ❌→🟡(serve v1):42✅ 8🟡 5❌，(42+8×0.5)/55=83.6%≈84%；"运行时资源熔断"经 2026-11-13 评估改判 🟡 后于 v0.60 修复恢复 ✅） |
-| 下一步 | **v0.69 候选**：eval 实现（ADR-005 12 项清单全勾后，src ~60–90 行 additive）+ #65 顺带（serve Err exit 行为变更裁决）→ v0.70 候选 = 诊断校准二期（#63 parser 级联 11x）；Backlog：v1.2 内容源扩面（json.parse 接缝）、stringify_untrusted（真实用例驱动）、Slice/流式（待 unsafe 使用数据） |
+| 下一步 | **v0.70 候选**：诊断校准二期（#63 parser 级联 11x——recover(false) 深度感知恢复设计已预研）；Backlog：v1.2 内容源扩面（json.parse 接缝）、stringify_untrusted（真实用例驱动）、Slice/流式（待 unsafe 使用数据）。**v0.69 已交付（2026-11-15）**：eval（ADR-005 §9 12/12 go，含两项实现期微调——内层恒 tree/strict 'none' 三态核验）+ #65 文档化处置 |
 
 ## 1. 已完成的规划项（v0.39–v0.44）
 
@@ -819,7 +819,8 @@ mingkit / json_query / log_analyzer / edit 的 read_file 内容处理 + diaghot 
 | 3 | test 块误置函数体内 | **1 根因 → 11 条 M2001 级联 + unused 误报 + 1 条错误 fix（建议加冒号）** | **parser 层级联 11x**（快照 checker 层 1.75）；首条有指向性但噪音淹没 |
 | 4 | 定稿 | check 0 / test 通过 / run 暴露**真实运行时 bug**（换行未分词） | **静态全绿 + 行为错误**实证；多行 test 用例早写即可抓（TDD 惯用法价值） |
 | 4.5 | tools patch 修 bug | M1002（诊断准确） | **patch 双层转义坑实测触发**（mingkit 只认 
- 	 \； 未定义致 
+ 	 \；
+ 未定义致 
  提前解码写断行源码） |
 | 5 | 三引擎验证 | run 正确；**tree/vm/no-wasm 输出 diff 逐字一致** | 途中实证**静默降级双反模式**：`--tree` 误置 `--` 后被当程序参数 + `unwrap_or("")` 吞 read_file 失败 → 空输出 exit 0 静默 |
 | 收尾 | fmt/build/AOT/REPL | fmt 一次到定点；build 11ms | AOT 对含 test 块文件**回退源码模式**（具名提示，非静默）；entry 摩擦（不改 toml 产物静默跑旧骨架）；REPL **#60 逐字复现 + 横幅 v0.63.0 漂移复发（v0.65/66 落后两版）** |
@@ -904,7 +905,7 @@ x + 1;
 | 版本 | 主题 | 条件/规模 |
 |------|------|-----------|
 | v0.68 | **✅ Untrusted[Json] 交付**（14/14 裁决 go 后实现；约 130 行 + 迁移 31 处 + §71 18 项；顺带修复 pre-existing as_obj 键缺陷；AI onboarding 包未触发——条件全齐） | ADR-004 四条件 2026-11-15 全核销 |
-| v0.69 | **eval 实现**（若 ADR-005 §7 12 项裁决全勾；零新码/零资格面改动）+ #65 顺带候选（诚实失败小批，行为变更实现期评估） | src 约 60–90 行；additive |
+| v0.69 | **✅ 已交付（2026-11-15）**：eval 实现（ADR-005 §9 12/12 go——裸 builtin/内层恒 tree 裁决微调/Err 化 --json 同构/M3049 sink/配额按调用重置 500M 兜底/build 回退/cc 拒绝/wasm strict 'none' 核验；src 约 90 行；§72 共 20 项）+ #65 文档化处置（行为变更否决；GUIDE 惯用法 + examples/serve_demo.ming 兑现 N-64）。**独立审查**：2 MAJOR 修复后通过（MAJOR-1 自递归逃逸 → evalDepth 64 层确定性守卫 + RangeError 最外层兜底；MAJOR-2 泄漏窗口表述收窄），0 BLOCKER——ADR §9.1 | 1091 项全绿；fuzz 双种子 0 分歧 |
 | v0.70 候选 | **诊断校准二期**（#63 parser 级联抑制） | 级联 11x 实测；需 parser 错误恢复设计，工程量最大，排后 |
 | 随时 | bench WARN 维护者复测（§4.6.3 裁决：闲置时段 2 次复测后再定刷新）；热重载不排期（ADR-005 §2.4：需求实证后另 ADR） | — |
 
@@ -1064,7 +1065,7 @@ x + 1;
 |---|------|--------|------|
 | 63 | **parser 级联雪崩**:test 块误置函数体内 → 1 根因 11 条 M2001 级联 + unused 误报 + 1 条错误 fix(建议加冒号);parser 层级联比 11x(checker 层 1.75 对照)——第五轮走查实测 | P3 | **登记**(v0.68 诊断校准二期候选:parser 错误恢复/级联抑制;首条 M2001 有指向性) |
 | 64 | **REPL 横幅版本漂移机制性复发**:src/repl.js:39-40 硬编码手工同步(注释自认"曾漂移"),v0.64 修 v0.8.0→v0.63.0 后 v0.65/66 又落后两版(第五轮 REPL 冒烟横幅仍 v0.63.0) | P3 | **v0.67 顺带修**:横幅改从单一事实来源读(manifest/package.json,不引 src→bin 环) |
-| 65 | **serve 绑定失败 Err 后 exit 0**:serve-observation §4-4 实测——服务没起来但退出码成功(运维陷阱);main/serve Err → exit 非 0 属行为变更 | P3 | **登记**(v0.68 候选:行为变更需独立裁决;或 GUIDE 文档化) |
+| 65 | **serve 绑定失败 Err 后 exit 0**:serve-observation §4-4 实测——服务没起来但退出码成功(运维陷阱);main/serve Err → exit 非 0 属行为变更 | P3 | **已裁决(v0.69)**:行为变更否决,采文档化方案——main 返回 i64 已是退出码通道(实测 `return 3` → exit 3),"错误是值"下语言不替程序决定 Err 致命性,unit main 吞 Err 不可机械判定;处置 = GUIDE std.net 运维惯用法 + examples serve_demo.ming(顺带兑现 N-64);理由全文见 ADR-005 §9 |
 
 ### 新登记(2026-11-15,v0.68 实现期;#66 已修)
 

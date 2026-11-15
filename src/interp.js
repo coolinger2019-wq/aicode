@@ -5,8 +5,8 @@
 //   * 无 null;索引/键缺失 → panic,或用 get() 拿 Option
 //   * panic 携带 Ming 调用栈(Ming 层文件:行:列)
 
-import { err } from './diag.js';
-import { PRIM_TYPES, INT_TYPES, typeStr, resolveT, unify, mkOpt, mkRes, T_UNIT, T_STR, T_BOOL } from './checker.js';
+import { err, diagJson, cacheSourceLines, Diagnostic, MingError } from './diag.js';
+import { Checker, PRIM_TYPES, INT_TYPES, typeStr, resolveT, unify, mkOpt, mkRes, T_UNIT, T_STR, T_BOOL } from './checker.js';
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 import * as nodeCrypto from 'node:crypto';
@@ -489,6 +489,10 @@ export class Interp {
     this.stdinPos = 0;
     this.stdinLoaded = false;
     this.maxSteps = opts.maxSteps ?? Infinity;
+    // v0.69(审查 MAJOR-1):eval 嵌套深度跨层累积——内层 Interp 构造时从 host 传入
+    // (每层 eval 是新 Interp 实例,实例字段无法跨层累积;不传则 0)。守卫使 M4005 触发
+    // 深度确定性化(64 层,与机器栈大小无关;RangeError 兜底见 BUILTIN_IMPLS.eval)。
+    this.evalDepth = opts.evalDepth ?? 0;
     this.steps = 0;
     this.depth = 0;
     this.callStack = []; // {name, span}
@@ -3430,6 +3434,18 @@ function asF64(v) {
 
 // ===================== 内置函数实现(参数向量形式,树遍历与 VM 两引擎共用)=====================
 
+// v0.69(ADR-005):eval 的 Err 载荷组装——恒为 --json 协议同构 JSON(diagJson 同源映射)。
+// 诊断按 (line,col) 排序(全部位于 '<eval>' 单一虚拟文件内,无需 file 维)。
+function evalSortDiags(diags) {
+  return diags.slice().sort((a, b) =>
+    (a.span?.line ?? 0) - (b.span?.line ?? 0) || (a.span?.col ?? 0) - (b.span?.col ?? 0));
+}
+function evalErrV(diags) {
+  return V.enumv('builtin-res', 'Err', [V.str(JSON.stringify({ ok: false, diagnostics: diagJson(diags) }))]);
+}
+
+const EVAL_FILE = '<eval>';
+
 export const BUILTIN_IMPLS = {
   print(host, args) {
     host.write(displayStr(args[0]) + '\n');
@@ -3470,7 +3486,79 @@ export const BUILTIN_IMPLS = {
     const actual = args.length > 1 ? debugStr(args[1]) : 'false';
     throw new Panic('M4015', `${msg} (实际: ${actual})`, span);
   },
+  // v0.69(ADR-005):eval——运行时编译执行(独立编译单元,显式能力 with eval)。
+  // 内层恒 tree 参考实现(new Interp,sync 子解释器先例 interp.js 同款;不用 VMInterp——
+  // interp.js→vm.js 是 ESM 循环导入,且 tree 无字节码编译面,内层失败模式只剩编译诊断/
+  // panic/熔断三类,Err 化干净完整;ADR-005 清单 5 裁决微调)。全部 M 检查在内层原档执行
+  // 零降级;编译失败/panic/配额熔断一律 Err 化(--json 协议同构),panic 不穿透边界——
+  // 内层程序的失败是外层的值,不是外层的崩溃。仅 Panic 与 MingError(内层模块装载失败,
+  // 如 use 目标不可读 → M3022)Err 化;其余异常不吞(继续抛——不掩盖 bug)。
+  eval(host, args) {
+    // 嵌套深度守卫(v0.69 审查 MAJOR-1):每层 new Interp 的 depth 归零(interp.js:589 只守
+    // 单引擎调用栈),eval 链式自递归不经过它 → JS 栈耗尽抛 RangeError 穿透 Err 化边界
+    // (bin 兜底转 M4005 exit 101,外层 Err 分支永不执行)。host 上计嵌套深度,超限走既有
+    // Panic → Err 化通道;finally 保证 Err/panic 路径同样减计。
+    host.evalDepth = (host.evalDepth ?? 0) + 1;
+    if (host.evalDepth > 64) {
+      // 直接抛(尚在 try 之外);panic 穿透各层 finally 逐层减计,由第 64 层 evalInner 的
+      // catch 转 Err 值——外层程序收到 Err("eval 嵌套过深")而非进程崩溃。
+      throw new Panic('M4005', 'eval 嵌套过深(>64 层);提示:eval 内层是独立编译单元,链式自递归不受引擎递归深度守卫保护', null);
+    }
+    try {
+      return evalInner(host, args);
+    } catch (e) {
+      // JS 栈耗尽(RangeError)发生在远低于 64 层的某层(每层 eval 的 parser/checker/interp
+      // 递归消耗远大于引擎递归守卫的一层)——沿途各层 re-throw,仅最外层 eval 边界(depth=1)
+      // 转 Err:此时栈已回卷,有充足余量构造 Err 载荷(消息与 CLI M4005 兜底逐字同款)。
+      if (e instanceof RangeError && host.evalDepth === 1) {
+        const d = new Diagnostic('M4005', 'error', '调用栈过深(递归或嵌套过深);提示:改写为循环', { file: EVAL_FILE, line: 0, col: 0 });
+        return V.enumv('builtin-res', 'Err', [V.str(JSON.stringify({ ok: false, diagnostics: [d.toJson()] }))]);
+      }
+      throw e;
+    } finally {
+      host.evalDepth--;
+    }
+  },
 };
+
+function evalInner(host, args) {
+  const src = args[0].v;
+    let result;
+    try {
+      const checker = new Checker(EVAL_FILE, () => src);
+      result = checker.run();
+    } catch (e) {
+      // 内层模块装载失败属内层编译单元的失败(ADR-005 §2.2"编译失败一律 Err 化")
+      if (e instanceof MingError) return evalErrV(evalSortDiags(e.diags));
+      throw e;
+    }
+    // 内层有 error 级诊断 → Err 化全量诊断(按 (line,col) 排序;警告不阻断,随载荷携带)
+    if (result.diags.some(d => d.severity === 'error')) {
+      return evalErrV(evalSortDiags(result.diags));
+    }
+    // 诊断源码摘录(REPL 同款):内层诊断 file='<eval>',span 指向字符串内坐标
+    cacheSourceLines(EVAL_FILE, src);
+    // 配额沿 sync 子解释器先例全量继承(maxSteps/maxAlloc/maxMs,按调用重置;放大窗口
+    // ADR-005 §5 ⑤ 如实登记)。maxSteps 为 Infinity 时沿 spawn/sync 先例(interp.js:2112
+    // 同款)收敛到 500M 有界兜底——外层未开配额时内层死循环不悬挂宿主。
+    // capture:true 拦截内层 print/eprint 进 Ok 载荷。
+    // 注意:两引擎都经 impl(host, args, span) 脱离对象调用,host 才是解释器实例,不能用 this。
+    const inner = new Interp(result, { out: host.out, errOut: host.errOut, capture: true, stdin: host.stdin, noWasm: host.noWasm, maxSteps: host.maxSteps === Infinity ? 500_000_000 : host.maxSteps, maxAlloc: host.maxAlloc, maxMs: host.maxMs, evalDepth: host.evalDepth });
+    try {
+      // 复用 run 入口路径;缺 main 抛 Panic('M3023') → 下方 catch 转 Err。
+      // Ok 载荷 = 捕获 stdout;退出码语义属进程边界,不进 v1 Err 判定(ADR-005 清单 4)。
+      inner.runMain([]);
+    } catch (e) {
+      if (e instanceof Panic) {
+        // 运行时失败单条合成诊断(panic M4001/M4003/... 与熔断 M4001/M4011/M4012 同通道);
+        // Err 路径丢弃内层已捕获输出(flushCaptured 不调用,随 inner 一起被回收)
+        const d = new Diagnostic(e.code, 'error', e.message, e.span ?? { file: EVAL_FILE, line: 0, col: 0 });
+        return V.enumv('builtin-res', 'Err', [V.str(JSON.stringify({ ok: false, diagnostics: [d.toJson()] }))]);
+      }
+      throw e;
+    }
+    return V.enumv('builtin-res', 'Ok', [V.str(inner.flushCaptured())]);
+}
 
 // 闭包创建时对环境链做深拷贝快照(值语义:捕获后与外部脱钩)
 // ---------- 任务边界 wire 序列化(v0.14)----------

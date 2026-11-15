@@ -180,3 +180,9 @@ export function err(code, message, span, hint, notes) {
 export function warn(code, message, span, hint, notes) {
   return new Diagnostic(code, SEVERITY.WARNING, message, span, hint ?? CODE_HINTS[code] ?? null, notes ?? []);
 }
+
+// 诊断数组 → --json 协议载荷的单一事实来源(v0.69,ADR-005 清单 3):CLI --json 与
+// eval Err 载荷共用同一映射,消除"bin/ming.js 本地同构函数"的双份漂移面。
+export function diagJson(diags) {
+  return diags.map(d => d.toJson());
+}

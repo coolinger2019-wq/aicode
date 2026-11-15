@@ -1106,7 +1106,9 @@ class BytecodeCompiler {
     }
     // 内置函数(v0.58 起先于 use 导入分支:与 checker/tree 的"裸名调用内置优先"对齐——
     // `use std.str;` 后裸 `str(42)` 曾被编译成 stdmod 值,VM M4001 而 tree 正常)
-    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic', 'contract_fail'].includes(name)) {
+    // v0.69(ADR-005):eval 加入裸 builtin 名单(VM 常量 __builtin:eval;执行器
+    // BUILTIN_IMPLS 两引擎共享,实现只在 src/interp.js 一处)
+    if (['print', 'eprint', 'print_raw', 'str', 'debug', 'assert', 'assert_eq', 'panic', 'contract_fail', 'eval'].includes(name)) {
       this.emit(st, OP.CONST, this.poolAdd({ __tag: 'str', v: '__builtin:' + name }), 0, span);
       return;
     }

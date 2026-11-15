@@ -204,7 +204,10 @@ export function isPrimitiveDisplay(t, binds) {
 // ===================== 效果系统 =====================
 // v0.2 已开放:io(stdout/stderr/stdin)、time(时钟)。
 // 副作用必须显式声明并逐层传播;声明为纯函数的代码在编译期即可证明无副作用。
-export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi', 'unsafe']); // v0.54:unsafe
+// v0.69(ADR-005):eval——运行时编译执行("本函数执行动态编译的代码,其内部效果不可枚举",
+// 能力粒度同 proc)。M3029 传播/M3030 列表/契约纯性/wasm 资格闸(effectOk 不含 eval →
+// with eval 永不 eligible)/serve handler 白名单(不进 SERVE_HANDLER_EFFECTS → M3002)全部自动覆盖。
+export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi', 'unsafe', 'eval']); // v0.54:unsafe;v0.69:eval
 
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
@@ -242,6 +245,12 @@ export const BUILTIN_FNS = {
   assert: { params: [T_BOOL, T_STR], min: 1, max: 2, ret: T_UNIT },
   assert_eq: { params: ['eq', 'eq'], ret: T_UNIT },
   panic: { params: [T_STR], ret: T_NEVER },
+  // v0.69(ADR-005):eval——运行时编译执行,显式能力(调用方必须声明 with eval,M3029
+  // 逐层传播;契约内/serve handler 白名单外自动拒绝)。Err 载荷恒为 --json 协议同构
+  // JSON(编译失败 N 条诊断/运行时失败单条合成诊断)。第 0 实参是污点 sink:params:[T_STR]
+  // 走 checkBuiltinCall 通用类型位分支,untrustedMismatchDiag 自动发 M3049(污点值无
+  // 类型出口进入 eval;v1 无授权净化器)。
+  eval: { params: [T_STR], ret: mkRes(T_STR, T_STR), effect: 'eval' },
 };
 
 // prelude 变体别名:裸名 → 内置枚举变体
