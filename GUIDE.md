@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.73.0** · **v0.73 技术债与观测收口(解析深嵌套守卫——裸栈 RangeError → 稳定 M2001"表达式嵌套过深(>120 层)",四挂点 try/finally 进出配对,阈值二分实测校准;coverage 基线复测刷新 94.8% 行/89.7% 函数;GUIDE 交叉引用 15 行 29 引用全效;零新增 M 码)** + **v0.72 诊断质量补刀(if 分支混型 M3049 对称化——checkIf 仿 match 双向接入;M3049 remedy 复合载体精确化——直传位逐字不变,复合位中性措辞去"整体改声明"误导;零新增 M 码)** + **v0.71 诊断残留收口(salvage 精化:深度 0 `id(` 停机启发式,被吞区域疑似调用行救回——probe_anchor 真实 M3001 复活/valBrace 块入口快照所有权:伪诊断→真实诊断/嵌套污点 M3049 化五形态:统一净化 hint/#61 ming test 失败栈位置接线:undefined → file:line:col 三引擎逐字 + 预存 tree/VM 帧名分歧修复;N-68 fmt --write 回执;零新增 M 码)** + **v0.70 诊断校准二期(#63 parser 级联抑制:语句层 recover 改深度感知 panic-mode 恢复——`{}` 深度跟踪吞掉失败语句的 `{...}` 区域、`;` 仅深度 0 停机、`}` 深度 0 交还块循环、语句停机表移除 `test`、parseBlock/parseProgram 强进路径修复;锚定语料 4 条 → 1 条、级联比 11x → 1x;诚实边界——失败语句后到下一语句边界的合法语句一并吞掉,顶层 recover 不变;零新增 M 码)** + **v0.69 eval 运行时编译执行(显式能力 `with eval`,第 12 个效果门禁面;独立编译单元检查零降级/失败 Err 化 `--json` 同构载荷/污点 sink 无净化器/内层恒 tree/配额按调用重置;#65 serve 退出码惯用法文档化;零新增 M 码)** + **v0.67 诊断协议校准(三切口:毒化收敛双路径/M3012 语境化/M3015 nearest;REPL let 回显+横幅单一事实来源;快照复测误导 7→1/fix 错误 4→0/级联 3.8→1.4)** + **v0.66 观测与反馈(纯校准版:覆盖率/bench 基线刷新——双项 WARN 复测注记落盘;AI 修正回路快照——诊断协议校准 GO;真实 serve 服务观察——serve v1.1 no-go 推迟;Untrusted[Json] 载荷 ADR-004 落盘;零语义改动)** + **v0.64 信任边界与诚实失败收口(AOT artifact 结构校验——四损坏形态统一稳定诊断;嵌套 serve 编译期拒绝(两遍式,checker 真实解析为单一事实来源);sanitize_cli_path 闸门扩展(DEL/C1/双向控制符);M4013/M5001 登记;零新增 M 码)** + **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + **v0.63 wasm 守护收口 slice 2(下标读/元素写/Option unwrap/VecLit/f64 复合赋值真实经 wasm;strict 新形态 fallback=0)** + **v0.65 wasm 守护收口 slice 3(expect/Map·Err unwrap/Vec[str] 读/下标复合赋值;#59 嵌套栈帧;守护具名清零)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.68 Untrusted[Json](serve 载荷整树标污;投影表;stringify 拒绝;净化器族不扩;零新增 M 码)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.74.0** · **v0.74 内联汇编(显式能力 `with asm`,北星支柱 2 兑现,ADR-006 12/12 go:第 13 效果 asm 门禁/类型化 i64 操作数 GCC 约束模型/仅 ming cc 真实执行+M4017[asm-cc-only] 具名回落(号段复用登记)/C6 旗标/build 具名回退/注入卫生=模板与约束字面量强制;可执行内存与 ROP 明确不做)** + **v0.73 技术债与观测收口(解析深嵌套守卫——裸栈 RangeError → 稳定 M2001"表达式嵌套过深(>120 层)",四挂点 try/finally 进出配对,阈值二分实测校准;coverage 基线复测刷新 94.8% 行/89.7% 函数;GUIDE 交叉引用 15 行 29 引用全效;零新增 M 码)** + **v0.72 诊断质量补刀(if 分支混型 M3049 对称化——checkIf 仿 match 双向接入;M3049 remedy 复合载体精确化——直传位逐字不变,复合位中性措辞去"整体改声明"误导;零新增 M 码)** + **v0.71 诊断残留收口(salvage 精化:深度 0 `id(` 停机启发式,被吞区域疑似调用行救回——probe_anchor 真实 M3001 复活/valBrace 块入口快照所有权:伪诊断→真实诊断/嵌套污点 M3049 化五形态:统一净化 hint/#61 ming test 失败栈位置接线:undefined → file:line:col 三引擎逐字 + 预存 tree/VM 帧名分歧修复;N-68 fmt --write 回执;零新增 M 码)** + **v0.70 诊断校准二期(#63 parser 级联抑制:语句层 recover 改深度感知 panic-mode 恢复——`{}` 深度跟踪吞掉失败语句的 `{...}` 区域、`;` 仅深度 0 停机、`}` 深度 0 交还块循环、语句停机表移除 `test`、parseBlock/parseProgram 强进路径修复;锚定语料 4 条 → 1 条、级联比 11x → 1x;诚实边界——失败语句后到下一语句边界的合法语句一并吞掉,顶层 recover 不变;零新增 M 码)** + **v0.69 eval 运行时编译执行(显式能力 `with eval`,第 12 个效果门禁面;独立编译单元检查零降级/失败 Err 化 `--json` 同构载荷/污点 sink 无净化器/内层恒 tree/配额按调用重置;#65 serve 退出码惯用法文档化;零新增 M 码)** + **v0.67 诊断协议校准(三切口:毒化收敛双路径/M3012 语境化/M3015 nearest;REPL let 回显+横幅单一事实来源;快照复测误导 7→1/fix 错误 4→0/级联 3.8→1.4)** + **v0.66 观测与反馈(纯校准版:覆盖率/bench 基线刷新——双项 WARN 复测注记落盘;AI 修正回路快照——诊断协议校准 GO;真实 serve 服务观察——serve v1.1 no-go 推迟;Untrusted[Json] 载荷 ADR-004 落盘;零语义改动)** + **v0.64 信任边界与诚实失败收口(AOT artifact 结构校验——四损坏形态统一稳定诊断;嵌套 serve 编译期拒绝(两遍式,checker 真实解析为单一事实来源);sanitize_cli_path 闸门扩展(DEL/C1/双向控制符);M4013/M5001 登记;零新增 M 码)** + **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + **v0.63 wasm 守护收口 slice 2(下标读/元素写/Option unwrap/VecLit/f64 复合赋值真实经 wasm;strict 新形态 fallback=0)** + **v0.65 wasm 守护收口 slice 3(expect/Map·Err unwrap/Vec[str] 读/下标复合赋值;#59 嵌套栈帧;守护具名清零)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.68 Untrusted[Json](serve 载荷整树标污;投影表;stringify 拒绝;净化器族不扩;零新增 M 码)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -508,7 +508,7 @@ impl[A: ToStr, B: ToStr] ToStr for Pair[A, B] {
 
 ## 14. 效果系统:副作用显式化
 
-> 参见:§6 函数与闭包(`with` 效果声明在签名中的位置与逐层传播,"效果声明(v0.2)"小节)、§13 trait 与 impl(impl 方法的效果遵循同一系统)、§18 标准库参考(各能力节括注所属效果——io/fs/net/sync/env/rand/crypto 等;serve 在 std.net 节、eval 在 eval 节)、§19 工具链(ming repl)。
+> 参见:§6 函数与闭包(`with` 效果声明在签名中的位置与逐层传播,"效果声明(v0.2)"小节)、§13 trait 与 impl(impl 方法的效果遵循同一系统)、§18 标准库参考(各能力节括注所属效果——io/fs/net/sync/env/rand/crypto 等;serve 在 std.net 节、eval 在 eval 节、asm 在 §18 asm 节)、§19 工具链(ming repl)。
 
 **原则:一个函数有没有副作用,看签名就知道,而且编译器强制。**
 
@@ -526,7 +526,7 @@ fn stamped() with io, time {         // 多个效果用逗号分隔
 }
 ```
 
-- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)、`rand`(v0.25)、`crypto`(v0.34)、`ffi`(v0.42,extern fn)、`unsafe`(v0.54,受限指针块;仅 C 原生后端执行)、`eval`(v0.69,运行时编译执行——独立编译单元,失败 Err 化,见 §18 eval 节)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
+- 当前效果集:`io`、`time`、`fs`(v0.6)、`net`(v0.7)、`sync`(v0.14)、`proc` / `env`(v0.24,外部进程与环境变量)、`rand`(v0.25)、`crypto`(v0.34)、`ffi`(v0.42,extern fn)、`unsafe`(v0.54,受限指针块;仅 C 原生后端执行)、`eval`(v0.69,运行时编译执行——独立编译单元,失败 Err 化,见 §18 eval 节)、`asm`(v0.74,内联汇编——模板字面量 + i64 操作数经 gcc 约束进出;仅 C 原生后端执行,见 §18 asm 节)。能力全景见 docs/capabilities.md(诚实覆盖率矩阵)。
 - **传播**:调用带效果的函数,调用方必须声明同样(或更多)的效果,否则 M3029;效果清单就是审计清单。
 - `main` 与 `test` 块是入口,声明自己需要的效果(main)或拥有全部效果(test)。
 - 闭包在**创建处**继承所在函数的效果(已知限制:存入数据结构的闭包在 v0.2 不追踪调用点效果)。
@@ -1080,6 +1080,80 @@ fn main() with io {
 - tree/VM 在调用处以 M4016 诚实拒绝;wasm 不编译 unsafe 函数,回落 VM 同码;只有 `ming cc` 执行真实内存语义(Ptr → `unsigned char*`)。
 - Ptr 方法:`load()` / `store(u8)` / `offset(i64)` / `is_null()`;块外只允许 let/赋值/return 传递与 `is_null()`。完整门禁与禁止面见 §14.1。
 
+### asm(块语句;能力:asm,v0.74;仅 C 原生后端)
+
+> 参见:§14 效果系统(第 13 个效果门禁面 `asm`;效果清单与传播)、§14.1 受控不安全(同"仅 C 原生后端 + 具名回落"家族)、docs/adr-006-inline-asm.md(设计合同)、docs/diagnostics.md(M4017[asm-cc-only])。
+
+**内联汇编/直接 syscall(ADR-006 12/12 裁决 go,2026-11-15)**:在函数体内嵌入 GCC 扩展 asm 模板,操作数按 i64 经 gcc 约束机制进出——syscall 桩/cpuid/rdtsc/bswap 等"编译器无内建场景"的寄存器级进出口。asm 是**第 13 个效果门禁面**——与 eval 同方向,不是逃逸舱口而是显式能力:效果签名可见、引擎具名回落、build 回退、注入面在解析层闭合。
+
+**语法(ADR-006 §1,parser/checker/测试共同依据)**——asm 块仅语句位(块后不需要分号),所在函数必须声明 `with asm`;`asm` 是上下文关键字(同 sync 先例,不保留词,不破坏既有程序):
+
+```ming
+asm {
+    "rdtsc"                       // 1+ 个纯字符串字面量,逐字拼接为 GCC 扩展 asm 模板
+    out("=a", mut lo)             // 0+;asm 写入该 mut 局部变量(GCC "=..." 约束自动回写)
+    in("r", x)                    // 0+;值经 gcc 约束机制传入(完整 i64 表达式)
+    clobber ("rcx", "r11")        // 可选;被破坏寄存器(每组括号内逗号分隔,多组 (..)(..) 亦合法)
+}
+```
+
+- **注入卫生(解析层强制,ADR-006 §3)**:模板/约束/clobber 必须是**纯字符串字面量**——禁止插值、变量、表达式(`asm { t }` 用 str 变量作模板 → 解析层 M2001 拒绝;运行时拼接在语法层面不存在,**无注入面**)。操作数占位符沿 GCC 约定(%0/%1…,编号 = out 先 in 后的声明序)由用户写在模板里,cbackend 逐字透传,操作数值走 gcc 约束机制由 gcc 替换;污点面:i64 操作数槽位天然拒绝 Untrusted(无隐式转换)。
+- **操作数模型(全 i64)**:out 目标语法上必须写 `mut` 关键字(解析层强制,缺 → M2002),且必须是 **mut i64 局部变量**(不存在 → M3001;const/本地函数/非 mut 绑定 → M3004;非 i64 → M3002;asm 写入视为使用,抑制 W3101);in 操作数是完整 i64 表达式,按声明序求值(非 i64 → M3002,无隐式转换);64 位命名口径(RAX/RSP;EAX 等为 32 位别名,模板内按 gcc 语法书写)。子句顺序**模板 → out → in → clobber** 由 parser 强制(乱序 → M2001)。
+- **asm 块 = 语句、无值**;可出现在 `with asm` 函数体内任何语句位(独立门禁块,与 unsafe 块形态同构)。
+- **volatile 固定**:cc 发射 `__asm__ volatile( <模板拼接> : <outs> : <ins> : <clobbers> );`(副作用块,不提供 non-volatile 形态)。
+- **实测注意(GCC 约束语义)**:输出约束绑定的寄存器不要再写进 clobber——`out("=a", …)` 与 `clobber ("rax")` 同用触发 GCC "asm operand has impossible constraints" 错误(=a/=d 即已声明寄存器关联)。
+
+**示例(实测正例形态;需 gcc 与 x86-64 环境,`ming cc` 运行)**:
+
+```ming
+// rdtsc:读时间戳计数器(out 双绑定 "=a"/"=d")
+fn rdtsc() -> i64 with asm {
+    let mut lo: i64 = 0;
+    let mut hi: i64 = 0;
+    asm {
+        "rdtsc"
+        out("=a", mut lo)      // RAX → lo(低 32 位)
+        out("=d", mut hi)      // RDX → hi(高 32 位)
+    }
+    return lo + hi * 4294967296;
+}
+
+// bswap64:字节序颠倒(多指令模板用 \n\t 转义;in 操作数传值)
+fn bswap64(x: i64) -> i64 with asm {
+    let mut r: i64 = 0;
+    asm { "mov %1, %0\n\tbswap %0" out("=r", mut r) in("r", x) }
+    return r;
+}
+
+fn main() with io, asm {
+    let t1 = rdtsc();
+    let t2 = rdtsc();
+    print(str(t2 > t1));       // true(两次读取单调递增)
+    print(str(bswap64(72623859790382856) == 578437695752307201));  // true
+}
+```
+
+直接 syscall 形态(getpid 桩)只适用于 **Linux x86-64 目标**——Windows PE 无稳定用户态直接 syscall 面(ntdll 系统调用号随 Windows 构建漂移):
+
+```ming
+fn my_getpid() -> i64 with asm {           // 仅 Linux x86-64
+    let mut pid: i64 = 0;
+    asm {
+        "mov $39, %rax\n\tsyscall"         // Linux x86-64 getpid 系统调用号 39
+        out("=a", mut pid)                 // 返回值在 RAX
+        clobber ("rcx", "r11")             // syscall 约定破坏 RCX/R11
+    }
+    return pid;
+}
+```
+
+- **门禁(第 13 效果,门禁机制全部自动覆盖)**:所在函数必须声明 `with asm`(否则 **M3029**,效果逐层传播——调用 `with asm` 函数的调用方同样要求声明);契约表达式调用含 asm 函数 → **M3029**(契约在空效果集下检查,非纯;声明处即检查,函数未被调用也发射);serve handler 效果白名单 8 不含 asm → **M3002**;REPL 环境效果集不含 asm → REPL 中调用含 asm 函数 **M3029**(M4017 在 REPL 不可观测)。
+- **引擎口径(仅 ming cc 真实执行)**:tree/VM 执行到 asm 块 → **M4017[asm-cc-only]** panic("内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义",退出码 101,run / --no-wasm / --tree 三路 stderr 首行逐字一致;M4016 unsafe 先例句式)。**只执行到 asm 块才 panic**——`with asm` 声明本身不触发,未执行 asm 块的路径在 tree/VM 正常运行。含 asm 函数永不 wasm eligible(effectOk 自动排除,零改动;`--strict-wasm --json` 下 wasm_status='none',dormant 形态先例口径,不误报 ok/fallback);C 资格经 **C6 旗标**(asmEffectsAllowed,仅 cc 路径传入——C5 unsafe 先例);静态证明面排除含 asm 函数(本地函数先例口径)。
+- **build 具名回退**:`ming build` 遇 `with asm` 显式回退源码模式并具名原因("程序使用 with asm 内联汇编(仅 C 原生后端,部署形态 = 源码 + Node 或 ming cc)";usesAsm,unsafe/eval 先例同款),tools AOT 缓存 probe 同步排除——**asm 程序部署形态 = 源码 + Node 或 ming cc**。
+- **范围边界(v1 明确不做,ADR-006 §5)**:可执行内存分配与跳转执行(mmap+exec,shellcode 嵌入前提);运行期 gadget 组链(ROP,依赖二进制布局/ASLR——编译期内联 asm 不服务);asm 块内跳转出块/长跳转;多架构模板(本后端单架构 x86-64 gcc);asm 作表达式/有值形态。
+- **fuzz 合同不含 asm**:差分模糊器不生成 `with asm` 程序——asm 语义由专项测试(§77)锁定,差分合同 = "cc 侧逐字透传 vs 其余侧具名拒绝"(unsafe 单后端先例口径,如实登记)。
+- **安全事实(诚实口径)**:asm 是语言最大逃逸舱口——**签名可见性是唯一防线**(效果签名 + 具名回落 + build 回退全部强制),不承诺"汇编代码无害"(与 unsafe 同款)。
+
 ### eval(裸 builtin;能力:eval,v0.69)
 
 > 参见:§14 效果系统(第 12 个效果门禁面 `eval`;效果清单与传播)、§18 std.net 节(serve handler 内调 eval 的白名单拒绝)。
@@ -1282,10 +1356,20 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### v0.74.0(2026-11-16)
+
+- **内联汇编——显式能力 `with asm`(北星支柱 2 兑现;ADR-006 12/12 go,2026-11-15 落盘;维护者需求在案;新码 M4017 一处登记)**:
+  - **语法(ADR §1 grammar)**:`asm { <模板字面量>+ out("=r", mut 变量)* in("r", 表达式)* clobber("寄存器")* }` 仅语句位;全部 i64;out 必须 mut 变量(缺 mut 关键字=解析层 M2002,非 mut 绑定=M3004);模板/约束/clobber 必须字面量(**注入卫生=解析层强制**,值经 gcc 约束机制传递,无拼接注入面)。
+  - **引擎口径**:仅 `ming cc` 真实执行(cbackend 发射 `__asm__ volatile(...)`,C6 旗标 asmEffectsAllowed——C5 同构);tree/VM/wasm → **M4017[asm-cc-only]** panic exit 101 消息逐字(M4016 先例句式;M4017 号段 v0.64 提案否决存档从未发布,复用登记);wasm_status='none' dormant 口径(v72.13 先例);`ming build` 具名回退源码模式;tools AOT probe 排除。
+  - **门禁全自动**:M3029 逐层传播/契约内 M3029/serve handler M3002/静态证明面排除(stmtIsLinear 未知语句机制,零改动);lambda 闭包效果传播;REPL 环境 M3029 点名 [asm]。
+  - **范围边界(明确不做)**:可执行内存分配与跳转/运行期 gadget 组链(ROP)/块外跳转/多架构模板——内联 asm v1 用途 = 手写指令序列 + 寄存器级进出口(syscall 桩形态限 Linux x86-64 目标,Windows PE 无稳定用户态直接 syscall 面)。
+  - **fmt/lsp 配套收口**(审查发现的 P1 数据丢失缺口):fmt.js 补 case 'AsmBlock'(修复前 fmt --write 把 asm 块静默替换为占位注释——代码丢失;修复后三态实测+§77.16 锁定);lsp.js visitBlock 补 AsmBlock 分支(定义跳转下钻 ins 表达式)。
+  - 测试:§77 共 **28 条 check 位点**(cc 正例 rdtsc 单调/bswap 确定性往返/三引擎 M4017 逐字/M3029 传播/契约内/serve M3002/out·in 类型矩阵/模板注入拒绝/wasm none dormant/build 回退/tools 回归/lea 双 in 值正确性/fuzz 回归/REPL M3029/MING_CC 无效口径/**v77.16 fmt 幂等三态**/**v77.17 lsp 定义跳转**——23 条运行时断言+fmt/lsp 位点);全量 **1164 项 0 失败**;fuzz 双种子(44044/777)0 分歧;proof_fuzz 60 例 0 误报。
+
 ### v0.73.0(2026-11-15)
 
 - **技术债与观测收口(§4.9 三任务;无新语言面;零新增 M 码)**:
-  - **解析深嵌套守卫(§5.1 NOTE 收口)**:表达式递归深度计数器(exprDepth)+ 四挂点 try/finally 进出配对(parsePrimary 主闸 + 一元链/else-if 链/裸块三个直接自递归补挂——纯下降途中无表达式叶子,只挂主闸会先裸崩);超限 bail M2001"表达式嵌套过深(>120 层);提示:拆分嵌套结构或引入中间绑定"——**裸 JS 栈崩溃(实测崩点 lambda ~221/括号 ~234/if-expr ~291,语句级 3000 层不崩——NOTE 原表述修正为表达式形态)变为可消费稳定诊断**;阈值 120 = 二分实测校准(合同拟 300 落在崩区内,agent 实测修正架构师参数);合法面 10 倍余量(examples+tools 最大深度 12);开销实测 0.5%;恢复路径计数零残留(finally 配对);域外具名登记:parseType/parsePattern 深嵌套崩点深一个量级本版不挂;compiler.js 不同崩(实测解析器是全管线第一个崩点,下游耐受 ≥230–285)。**§5.1 NOTE"极端嵌套裸栈溢出"就此收口**(表达式域;类型/模式域维持登记)。
+  - **解析深嵌套守卫(§5.1 NOTE 收口)**:表达式递归深度计数器(exprDepth)+ 四挂点 try/finally 进出配对(parsePrimary 主闸 + 一元链/else-if 链/裸块三个直接自递归补挂——纯下降途中无表达式叶子,只挂主闸会先裸崩);超限 bail M2001"表达式嵌套过深(>120 层);提示:拆分嵌套结构或引入中间绑定"——**裸 JS 栈崩溃(实测崩点 lambda ~221/括号 ~234/if-expr ~291,语句级 3000 层不崩——NOTE 原表述修正为表达式形态)变为可消费稳定诊断**;阈值 120 = 二分实测校准(合同拟 300 落在崩区内,agent 实测修正架构师参数);合法面 10 倍余量(examples+tools 最大深度 12);开销实测 0.5%;恢复路径计数零残留(finally 配对);域外具名登记:parseType/parsePattern 深嵌套崩点深一个量级本版不挂;compiler.js 不同崩(实测解析器是全管线第一个崩点,下游耐受 ≥230–285)。**审查补笔(登记)**:残留裸崩面完整清单——链式 AST(成员/下标/二元/调用 ≥~3000)为 checker 侧裸崩(合法表达式,parser 循环构建不崩);lexer 插值嵌套 ~2974。**跨机口径**:守卫阈值 120 按本机(Node v24/win32)实测,其他环境不承诺守卫先于裸崩。**§5.1 NOTE"极端嵌套裸栈溢出"就此收口**(表达式域;类型/模式域维持登记)。
   - **coverage 基线复测刷新(N-57.2 收口)**:`git archive HEAD` 纯净副本插桩复跑——**94.8% 行 / 89.7% 函数**(旧基线 94.0%/88.7%;分母 +228 行/+17 函数全落在 checker/interp/parser/repl/diag——与 v0.66–72 主题交叉印证);parser.js 98.8% 行(v0.70 扩面下反升);repl.js 函数 100%;vm.js 74.2%(72/97,旧口径 65.9% 为 v0.60 时点);docs/coverage-baseline.md 新增 v0.72 快照段+偏差注记+vm.js 短板分析。**vm.js 补测裁决**:可补 3 项已补(map_set_f64/map_set_str wasm 覆盖 + fromArtifact 进程内直调——后者实测发现 tools 缓存命中走 toolArtifactToPrebuilt 不经 fromArtifact,bin/ming.js:970 注释失准已登记;真实调用方 = dist launcher 副本,coverage 不可见);18 个具名不补(资格面语义工作)、3 个死导入登记(vec_get_i64/f64/str,残留清理另行裁决)、2 个防御分支不可达。
   - **GUIDE 交叉引用补全(§4.3.8 收口)**:15 行"> 参见:"共 29 引用,全部核对有效(脚本对照实际标题清单);**顺手修正 3 处历史漂移引用**(L56 §16→§19 工具链/L714 §19→§18 std.net/L1050 §16/§19→§18 std.json·std.net);README 既有引用抽查 6 条全效。
   - **checker 拆分维持 defer**、**ADR-006 内容源扩面不做**(理由见 plan §4.9.2——反猜测性投入)。

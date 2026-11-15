@@ -15398,6 +15398,437 @@ fn main() with io, fs {
   // ---- §76-END
 }
 
+// ===================== 77. v0.74:内联汇编(显式能力 with asm;ADR-006 12/12 go;cc 独占+M4017 具名回落)=====================
+// 文件所有权:§77 = 本区全部用例(ADR-006 §1 grammar/§2 引擎口径/§3 门禁/§4 M4017/§6 fuzz 合同)。
+// 形态参照:§58 unsafe(同"cc 独占+具名回落"家族:hasCC 探测+skip/M4016 句式/黄金+三路一致)与
+// §72 eval(同"显式能力"家族:M3029 门禁/契约内/serve handler/build 回退/wasm 'none' 三态)。
+// 正例(cc 真实执行:rdtsc 单调/bswap 字节序/lea 双 in 值进出)/三引擎具名回落(tree/VM/wasm 回落
+// M4017[asm-cc-only] exit 101 消息逐字)/门禁面(M3029 无声明与逐层传播/契约内 M3029/serve handler
+// 内 M3002/out 非 mut 既有码 M3004/in 非 i64 M3002/模板非字面量解析层拒绝 M2001-M2002)/
+// wasm 'none' 三态(v72.13 口径)/build 具名回退源码模式(usesAsm)/tools 缓存回归/fuzz 0 分歧/
+// REPL 冒烟/MING_CC 无效探测回落。
+// 平台改口(2026-11-15 gcc 实测,win32 + w64devkit):任务原拟 syscall 39(getpid)/getpagesize(30)
+// 为 Linux x86-64 专用 syscall ABI,Windows PE 无稳定用户态直接 syscall 面(ntdll 系统调用号随
+// Windows 构建漂移 + KTHREAD 布局依赖)——v77.2 改为确定性用户态指令 bswap(同"编译器无内建场景"
+// 意图)。rdtsc/lea/mov/bswap 模板全部 gcc 实测编译运行通过;任务草拟的 clobber("rax","rdx") 与
+// "=a"/"=d" 输出绑定同用 → GCC "asm operand has impossible constraints" error,故 v77.1 不带
+// clobber(=a/=d 约束即声明寄存器关联,与任务自注"约束只声明关联"一致)。
+// 纪律:全部先实测后断言;cc 腿沿用 §58 hasCC 探测 + skip 口径。实现由并行 agent 落地于本分节
+// 编写期间(src/parser+checker+cbackend+interp+vm+wasm+diag+bin,git status M 实录)——§77 全部
+// 15 条已按落地实现逐条实测校准(2026-11-15):v77.2/v77.12 out 子句补 mut 关键字(解析层语法
+// 强制)、v77.14 REPL 按实测口径(REPL 环境效果集 [io,time,fs,net] 不含 asm → 调用 M3029,
+// M4017 在 REPL 不可观测)。HEAD 实现前基线(实录):asm 块 → M3030 unknown-effect + M2002。
+{
+  const dir77 = path.join(TMP, 'v77');
+  fs.mkdirSync(dir77, { recursive: true });
+  const m77 = (name, src) => { const f = path.join(dir77, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags77 = ['', '--no-wasm', '--tree'];
+  const runAll77 = (p, extra = []) => flags77.map(f => runMing(f ? ['run', p, ...extra, f] : ['run', p, ...extra]));
+  const first77 = (s) => (s ?? '').split('\n')[0];
+  // 三引擎一致口径:stdout 全等 + stderr 首行相等(panic 多行输出按首行比对,v58.6 同款)
+  const same3_77 = (runs) => runs.length === 3 && runs.every((r) => r.code === runs[0].code && r.stdout === runs[0].stdout && first77(r.stderr) === first77(runs[0].stderr));
+  const fmtRuns77 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify(first77(r.stderr))}`).join(' | ');
+  const chk77 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j, out: (r.stdout ?? '') + (r.stderr ?? '') };
+  };
+  const codes77 = (res) => (res.j ? (res.j.diagnostics || []).map((d) => d.code).join(',') : '(no-json:exit ' + res.code + ')');
+  const TAG77 = 'M4017[asm-cc-only]';
+  const MSG77 = '内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义';
+
+  // cc 探测(§58 detectCC58 同款:MING_CC → PATH → 已知便携位置)
+  const detectCC77 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const hasCC77 = !!detectCC77();
+  const ccRun77 = (file, out) => spawnSync(process.execPath, [MING, 'cc', file, '--out', out], { encoding: 'utf8', timeout: 180000 });
+
+  // 共用语料:rdtsc(=a/=d 声明寄存器关联,无 clobber——GCC 实测 rax/rdx clobber 与输出绑定冲突)
+  const p77_1 = m77('v77_1_rdtsc.ming', [
+    'fn rdtsc() -> i64 with asm {',
+    '    let mut lo: i64 = 0;',
+    '    let mut hi: i64 = 0;',
+    '    asm {',
+    '        "rdtsc"',
+    '        out("=a", mut lo)',
+    '        out("=d", mut hi)',
+    '    }',
+    '    return lo + hi * 4294967296;',
+    '}',
+    'fn main() with io, asm {',
+    '    let t1 = rdtsc();',
+    '    let t2 = rdtsc();',
+    '    print(str(t2 > t1));',
+    '    print(str(t1 > 0));',
+    '}',
+  ].join('\n'));
+
+  // ---- v77.1 正例(cc 真实执行):rdtsc 两次读取单调递增且非零 ----
+  if (hasCC77) {
+    const r771 = ccRun77(p77_1, path.join(dir77, 'c-rdtsc'));
+    check('v77.1:rdtsc cc 真实执行——exit 0 + stdout 逐字 "true\\ntrue\\n"(tsc 两次单调递增且非零;__asm__ volatile 透传,=a/=d 约束回写 mut 变量)',
+      r771.status === 0 && r771.stdout === 'true\ntrue\n' && (r771.stderr ?? '') === '',
+      'status=' + r771.status + ' stdout=' + JSON.stringify(r771.stdout) + ' stderr=' + JSON.stringify((r771.stderr ?? '').slice(0, 200)));
+  } else {
+    check('v77.1:rdtsc cc 真实执行(无编译器,跳过)', true, 'skip: 无 C 编译器');
+  }
+
+  // ---- v77.2 值进出正确性(cc):bswap 确定性字节序往返(替代 Linux-only syscall getpid/getpagesize——
+  // Windows PE 无稳定用户态直接 syscall 面,见节头平台改口;bswap 同为"编译器无内建场景"探针)----
+  const p77_2 = m77('v77_2_bswap.ming', [
+    'fn bswap64(x: i64) -> i64 with asm {',
+    '    let mut r: i64 = 0;',
+    '    asm { "mov %1, %0\\n\\tbswap %0" out("=r", mut r) in("r", x) }',
+    '    return r;',
+    '}',
+    'fn main() with io, asm {',
+    '    print(str(bswap64(72623859790382856) == 578437695752307201));',
+    '    print(str(bswap64(578437695752307201) == 72623859790382856));',
+    '}',
+  ].join('\n'));
+  if (hasCC77) {
+    const r772 = ccRun77(p77_2, path.join(dir77, 'c-bswap'));
+    check('v77.2:bswap cc 真实执行——exit 0 + stdout 逐字 "true\\ntrue\\n"(0x0102030405060708 ↔ 0x0807060504030201 双向字节序颠倒;多指令模板 \\n\\t 转义,Ming 词法 \\n \\t 实测支持)',
+      r772.status === 0 && r772.stdout === 'true\ntrue\n' && (r772.stderr ?? '') === '',
+      'status=' + r772.status + ' stdout=' + JSON.stringify(r772.stdout) + ' stderr=' + JSON.stringify((r772.stderr ?? '').slice(0, 200)));
+  } else {
+    check('v77.2:bswap cc 真实执行(无编译器,跳过)', true, 'skip: 无 C 编译器');
+  }
+
+  // ---- v77.3 三引擎具名回落:同一 rdtsc 程序 run(默认= wasm 回落 VM)/--tree/--no-wasm 全 M4017 ----
+  const runs77_3 = runAll77(p77_1);
+  check('v77.3:三引擎具名回落——run/--no-wasm/--tree 全 exit 101 + stdout 空 + stderr 首行三路逐字一致(含 M4017[asm-cc-only] 标签与合同消息)',
+    runs77_3.every((r) => r.code === 101) && runs77_3.every((r) => r.stdout === '')
+      && same3_77(runs77_3)
+      && first77(runs77_3[0].stderr).includes(TAG77) && first77(runs77_3[0].stderr).includes(MSG77),
+    `runs=${fmtRuns77(runs77_3)}`);
+
+  // ---- v77.4 M3029 效果门禁:main 未声明 asm 直接写 asm 块 / helper with asm 逐层传播 ----
+  const p77_4a = m77('v77_4a_no_effect.ming', [
+    'fn main() with io {',
+    '    asm { "nop" }',
+    '}',
+  ].join('\n'));
+  const p77_4b = m77('v77_4b_prop.ming', [
+    'fn go() -> i64 with asm {',
+    '    asm { "nop" }',
+    '    return 1;',
+    '}',
+    'fn main() with io {',
+    '    print(str(go()));',
+    '}',
+  ].join('\n'));
+  const r77_4a = chk77(p77_4a);
+  const r77_4b = chk77(p77_4b);
+  check('v77.4:M3029 效果门禁——main 未声明 asm 直接写 asm 块(check exit 1 + M3029 消息点名 asm);helper with asm 而 main 未声明 → M3029 逐层传播',
+    r77_4a.code === 1 && !!r77_4a.j && r77_4a.j.diagnostics.some((d) => d.code === 'M3029' && (d.message || '').includes('asm'))
+      && r77_4b.code === 1 && !!r77_4b.j && r77_4b.j.diagnostics.some((d) => d.code === 'M3029' && (d.message || '').includes('asm')),
+    `a=${r77_4a.code}/${codes77(r77_4a)} b=${r77_4b.code}/${codes77(r77_4b)}`);
+
+  // ---- v77.5 契约内 asm → M3029(asm 仅语句位,契约面经调用 asm 效果函数触达;声明处即检查,函数未调用也发射)----
+  const p77_5 = m77('v77_5_contract.ming', [
+    'fn probe() -> i64 with asm {',
+    '    asm { "nop" }',
+    '    return 1;',
+    '}',
+    'fn f(x: i64) -> i64 requires probe() > 0 {',
+    '    return x;',
+    '}',
+    'fn main() with io {',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r77_5 = chk77(p77_5);
+  check('v77.5:契约内 asm → M3029——requires 表达式调用 with asm 函数(契约表达式空效果集,非纯);声明处即检查,消息点名 asm',
+    r77_5.code === 1 && !!r77_5.j && r77_5.j.diagnostics.some((d) => d.code === 'M3029' && (d.message || '').includes('asm')),
+    `code=${r77_5.code}/${codes77(r77_5)}`);
+
+  // ---- v77.6 serve handler 内 asm → M3002(handler 白名单 8 效果不含 asm;§66/v72.12 形态)----
+  const p77_6 = m77('v77_6_serve.ming', [
+    'use std.net;',
+    'use std.json;',
+    'fn handler(req: Untrusted[Json]) -> Json with asm {',
+    '    asm { "nop" }',
+    '    return std.json.parse("{}").unwrap();',
+    '}',
+    'fn main() with net, io {',
+    '    match std.net.serve(27715, handler) {',
+    '        Ok(v) => print("ok"),',
+    '        Err(e) => print("err=\\{e}"),',
+    '    }',
+    '}',
+  ].join('\n'));
+  const r77_6 = chk77(p77_6);
+  check('v77.6:serve handler 内 asm → M3002——handler 声明 with asm 不在 SERVE_HANDLER_EFFECTS 白名单(check exit 1,消息点名 asm)',
+    r77_6.code === 1 && !!r77_6.j && r77_6.j.diagnostics.some((d) => d.code === 'M3002' && (d.message || '').includes('asm')),
+    `code=${r77_6.code}/${codes77(r77_6)}`);
+
+  // ---- v77.7 out 非 mut / in 非 i64(实测校准:mut 关键字是解析层语法强制(ADR §1 grammar
+  // out(<约束>, mut <变量>);无关键字形态 → 解析 M2002,不在本断言面)。M3004 = checker 层
+  // "mut 关键字在但变量本身非 mut"(asm 写入语义 = 对不可变量赋值,ADR §1"M3004 类既有码");
+  // in 非 i64(str 值)→ M3002"asm in 操作数必须是 i64,实际是 str")----
+  const p77_7a = m77('v77_7a_out_imm.ming', [
+    'fn main() with io, asm {',
+    '    let imm: i64 = 0;',
+    '    asm { "nop" out("=r", mut imm) }',
+    '    print(str(imm));',
+    '}',
+  ].join('\n'));
+  const p77_7b = m77('v77_7b_in_str.ming', [
+    'fn main() with io, asm {',
+    '    asm { "nop" in("r", "strval") }',
+    '}',
+  ].join('\n'));
+  const r77_7a = chk77(p77_7a);
+  const r77_7b = chk77(p77_7b);
+  check('v77.7:操作数类型面——out 目标非 mut 变量 → M3004(asm 写入 = 对不可变量赋值);in 操作数 str 值 → M3002(操作数全 i64,无隐式转换)',
+    r77_7a.code === 1 && !!r77_7a.j && r77_7a.j.diagnostics.some((d) => d.code === 'M3004')
+      && r77_7b.code === 1 && !!r77_7b.j && r77_7b.j.diagnostics.some((d) => d.code === 'M3002'),
+    `a=${r77_7a.code}/${codes77(r77_7a)} b=${r77_7b.code}/${codes77(r77_7b)}`);
+
+  // ---- v77.8 模板非字面量 → 解析层拒绝(注入卫生:模板/约束/clobber 字面量强制,ADR §3;M2001 unexpected/M2002 expected 类)----
+  const p77_8 = m77('v77_8_nonliteral.ming', [
+    'fn main() with io, asm {',
+    '    let t = "nop";',
+    '    asm { t }',
+    '}',
+  ].join('\n'));
+  const r77_8 = chk77(p77_8);
+  check('v77.8:模板非字面量解析层拒绝——asm { t }(str 变量作模板)→ check exit 1 + M2001/M2002 类解析诊断(运行时拼接在解析层拒绝,注入面消除)',
+    r77_8.code === 1 && !!r77_8.j && r77_8.j.diagnostics.some((d) => /^M200[12]$/.test(d.code || '')),
+    `code=${r77_8.code}/${codes77(r77_8)}`);
+
+  // ---- v77.9 wasm 资格 "none" 三态(v72.13 口径):含 asm 函数永不 wasm eligible(effectOk 自动排除,零改动)
+  // ——dormant 带 with asm 但 main 不执行 asm 块 → 三引擎 run 正常输出;--strict-wasm --json → exit 0 + wasm_status none ----
+  const p77_9 = m77('v77_9_dormant.ming', [
+    'fn dormant() -> i64 with asm {',
+    '    asm { "nop" }',
+    '    return 1;',
+    '}',
+    'fn main() with io, asm {',
+    '    print("ok");',
+    '}',
+  ].join('\n'));
+  const runs77_9 = runAll77(p77_9);
+  const strict77_9 = runMing(['run', p77_9, '--strict-wasm', '--json']);
+  let j77_9 = null;
+  try { j77_9 = JSON.parse(strict77_9.stdout); } catch { /* 崩溃形态 → 断言点名 */ }
+  check('v77.9:wasm 资格 "none" 口径(v72.13 先例)——dormant/main 含 asm 效果 → eligible=0;三引擎 run 输出 "ok\\n" exit 0(asm 块未执行,无 M4017);--strict-wasm --json → exit 0 且 wasm_status=none(不误报 ok/fallback)',
+    same3_77(runs77_9) && runs77_9[0].code === 0 && runs77_9[0].stdout === 'ok\n'
+      && strict77_9.code === 0 && j77_9 !== null && j77_9.wasm_status === 'none',
+    `runs=${fmtRuns77(runs77_9)} strict=${strict77_9.code}/${JSON.stringify((strict77_9.stdout ?? '').slice(-60))}`);
+
+  // ---- v77.10 ming build 遇 with asm:显式回退源码模式 + 具名原因(usesAsm);dist launcher 与源码模式一致(v72.14/v58.10 形态)----
+  const bp77 = path.join(TMP, 'v77build');
+  fs.mkdirSync(bp77, { recursive: true });
+  fs.writeFileSync(path.join(bp77, 'ming.toml'), '[project]\nname = "v77asm"\nversion = "0.1.0"\nentry = "app.ming"\n');
+  fs.copyFileSync(p77_9, path.join(bp77, 'app.ming'));
+  const srcRun77b = runMing(['run', path.join(bp77, 'app.ming')]);
+  const bld77 = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: bp77, timeout: 120000 });
+  const launcher77 = spawnSync(process.execPath, [path.join(bp77, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: bp77, timeout: 60000 });
+  check('v77.10:ming build 遇 with asm 显式回退源码模式——AOT 不可用 + 具名原因(含 asm)+ 已回退源码模式;无 app.bytecode.json;dist launcher 与源码模式输出一致("ok\\n")',
+    bld77.status === 0 && (bld77.stderr ?? '').includes('AOT 不可用') && (bld77.stderr ?? '').includes('已回退源码模式')
+      && (bld77.stderr ?? '').includes('asm')
+      && fs.existsSync(path.join(bp77, 'dist', 'app.ming')) && !fs.existsSync(path.join(bp77, 'dist', 'app.bytecode.json'))
+      && srcRun77b.code === 0 && srcRun77b.stdout === 'ok\n'
+      && launcher77.status === 0 && launcher77.stdout === 'ok\n',
+    `build=${bld77.status} stderr=${JSON.stringify((bld77.stderr ?? '').slice(0, 200))} src=${srcRun77b.code}:${JSON.stringify(srcRun77b.stdout)} launcher=${launcher77.status}:${JSON.stringify(launcher77.stdout)}/${JSON.stringify((launcher77.stderr ?? '').slice(0, 120))}`);
+
+  // ---- v77.11 tools 缓存回归:asm probe 排除不影响既有工具(冷/热 stdout 一致 + 热跑 [tools-cache] hit;§61 v57.20 形态)----
+  const w77 = path.join(dir77, 'w.txt');
+  fs.writeFileSync(w77, 'alpha beta\nalpha\n', 'utf8');
+  const rCold77t = runMing(['tools', 'wc', w77], { cwd: dir77, env: { MING_TOOLS_DEBUG: '1' } });
+  const rWarm77t = runMing(['tools', 'wc', w77], { cwd: dir77, env: { MING_TOOLS_DEBUG: '1' } });
+  const rPlain77t = runMing(['tools', 'wc', w77], { cwd: dir77, env: { MING_TOOLS_DEBUG: '' } });
+  check('v77.11:tools 缓存回归(asm 排除不伤既有工具)——wc 两跑 stdout 一致且热跑 [tools-cache] hit;无旗标无前缀且输出不变',
+    rCold77t.code === 0 && rWarm77t.code === 0 && rWarm77t.stdout === rCold77t.stdout
+      && (rWarm77t.stderr ?? '').includes('[tools-cache] hit')
+      && rPlain77t.code === 0 && rPlain77t.stdout === rCold77t.stdout && !(rPlain77t.stderr ?? '').includes('[tools-cache]'),
+    `cold=${rCold77t.code}/${JSON.stringify(rCold77t.stdout)} warm=${rWarm77t.code}/${JSON.stringify((rWarm77t.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))}`);
+
+  // ---- v77.12 in 值传入正确性(cc):lea 双 in 操作数(3+4=7 / -10+42=32 / 0+0=0)----
+  const p77_12 = m77('v77_12_add.ming', [
+    'fn add2(a: i64, b: i64) -> i64 with asm {',
+    '    let mut s: i64 = 0;',
+    '    asm { "lea (%1,%2,1), %0" out("=r", mut s) in("r", a) in("r", b) }',
+    '    return s;',
+    '}',
+    'fn main() with io, asm {',
+    '    print(str(add2(3, 4)));',
+    '    print(str(add2(-10, 42)));',
+    '    print(str(add2(0, 0)));',
+    '}',
+  ].join('\n'));
+  if (hasCC77) {
+    const r7712 = ccRun77(p77_12, path.join(dir77, 'c-add'));
+    check('v77.12:in 值传入正确性(cc)——lea (%1,%2,1),%0 双 in 按声明序进约束机制,exit 0 + stdout 逐字 "7\\n32\\n0\\n"(含负数)',
+      r7712.status === 0 && r7712.stdout === '7\n32\n0\n' && (r7712.stderr ?? '') === '',
+      'status=' + r7712.status + ' stdout=' + JSON.stringify(r7712.stdout) + ' stderr=' + JSON.stringify((r7712.stderr ?? '').slice(0, 200)));
+  } else {
+    check('v77.12:in 值传入正确性(cc)(无编译器,跳过)', true, 'skip: 无 C 编译器');
+  }
+
+  // ---- v77.13 fuzz 合同回归:asm 不入模糊器生成器(ADR §6),纯回归 0 分歧(种子固定可复现)----
+  const fuzz77 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '10', '--seed', '44044'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v77.13:fuzz 合同回归(seed 44044 count 10;asm 不入生成器——asm 语义由 §77 专项锁定,差分合同 = cc 逐字透传 vs 其余具名拒绝)',
+    fuzz77.status === 0 && /分歧 0/.test(fuzz77.stdout ?? ''),
+    'code=' + fuzz77.status + ' tail=' + (fuzz77.stdout ?? '').slice(-120));
+
+  // ---- v77.14 REPL 冒烟(实测校准 2026-11-15):with asm 声明存活(无 M3030);顶层调用 asm 函数
+  // → M3029 效果门禁在 REPL 同样生效(REPL 环境效果集 = [io, time, fs, net],不含 asm——asm 块
+  // 在 REPL v1 不可达执行,M4017 不可观测);诊断不杀会话(前后表达式均回显);:quit exit 0
+  // (v70.9/v70.10 管道形态;任务预案"M4017 或 ALL_EFFECTS 口径"实测均否——按实测口径锁定)----
+  const repl77 = runMing(['repl'], {
+    stdin: [
+      'fn poke() -> i64 with asm { asm { "nop" } return 5; }',
+      '1 + 1',
+      'poke()',
+      '2 + 2',
+      ':quit',
+    ].join('\n') + '\n',
+  });
+  const repAll77 = (repl77.stdout ?? '') + (repl77.stderr ?? '');
+  check('v77.14:REPL 冒烟——with asm 声明存活(无 M3030 未知效果);poke() 调用 → M3029 点名 [asm](REPL 环境效果集不含 asm,效果门禁同口径);诊断不杀会话(前后表达式 = 2 / = 4 均回显);:quit exit 0',
+    repl77.code === 0 && !repAll77.includes('M3030') && repAll77.includes('M3029') && repAll77.includes('[asm]')
+      && !repAll77.includes('M3030') && repl77.stdout.includes('= 2') && repl77.stdout.includes('= 4'),
+    `code=${repl77.code} out=${JSON.stringify(repl77.stdout.slice(-200))} err=${JSON.stringify((repl77.stderr ?? '').slice(0, 160))}`);
+
+  // ---- v77.15 MING_CC 无效探测回落口径:无效 MING_CC 不致 cc 假失败(探测按 MING_CC → PATH → 已知位置回落,
+  // bin/ming.js detectCCompiler 顺序),asm 程序 cc 真实执行不受影响;真"无编译器"机器 = detectCCompiler 返回 null
+  // → '未找到 C 编译器' exit 1(bin/ming.js:1442),本机 w64devkit 存在不可诱导 → 沿 §58 C 腿 skip 口径 ----
+  if (hasCC77) {
+    const r7715 = runMing(['cc', p77_12, '--out', path.join(dir77, 'c-badcc')], { env: { MING_CC: 'C:/nonexistent/v77/gcc.exe' } });
+    check('v77.15:MING_CC 无效探测回落——指向不存在路径不致假失败(按序回落到可用编译器),asm 程序 cc 真实执行 exit 0 + stdout 逐字 "7\\n32\\n0\\n"',
+      r7715.code === 0 && r7715.stdout === '7\n32\n0\n',
+      'code=' + r7715.code + ' stdout=' + JSON.stringify(r7715.stdout) + ' stderr=' + JSON.stringify((r7715.stderr ?? '').slice(0, 200)));
+  } else {
+    check('v77.15:MING_CC 无效探测回落(无编译器,跳过)', true, 'skip: 无 C 编译器(真缺席路径 = detectCCompiler null → 未找到 C 编译器 exit 1)');
+  }
+
+  // ---- v77.16 fmt 无损重建(P1 数据丢失缺口收口):HEAD 基线 fmt 对 AsmBlock 落 default 输出
+  // '// ? AsmBlock' 占位,--write 静默删除 asm 块(2026-11-15 实测副本实证)——违反 v0.56(A3)
+  // "不丢语义"合同。修复 = fmt.js stmt() AsmBlock 分支:模板整体拼接后按 \n 拆行(非末行补回
+  // \n → cbackend join('') 拼接值逐字不变,拆行点只由拼接总值决定 → 再 fmt 幂等);out/in/clobber
+  // 每子句一行(clobber 扁平数组 → 逗号规范形,与多组形态同 AST)。四断言:dry-run 无占位且重建
+  // 形态完整 / --write 后 check 0 诊断 + fmt --check 规范 / 幂等(再 fmt 逐字)/ 语义不变
+  // (run 具名回落 panic 码+消息逐字——剥文件名行前缀后比对,行号平移为格式化固有属性;
+  // cc 腿真实执行 stdout 逐字,模板拆行后 C 发射同模板串) ----
+  {
+    const src16 = [
+      'fn addone(x: i64) -> i64 with asm {',
+      '    let mut r: i64 = 0;',
+      '    asm { "mov %0, %1\\n\\tadd $1, %0" out("=r", mut r) in("r", x) clobber("r10", "r11") }',
+      '    return r;',
+      '}',
+      'fn main() with asm, io { print(str(addone(41))); }',
+    ].join('\n');
+    const p16 = m77('v77_16_fmt.ming', src16);
+    const p16b = m77('v77_16_fmt_copy.ming', src16);
+    // (a) dry-run:无占位,完整重建(模板按 \n 拆行 + 三类子句逐行)
+    const f16 = runMing(['fmt', p16]);
+    const out16 = f16.stdout;
+    const rebuilt16 = out16.includes('asm {') && out16.includes('"mov %0, %1\\n"') && out16.includes('"\\tadd $1, %0"')
+      && out16.includes('out("=r", mut r)') && out16.includes('in("r", x)') && out16.includes('clobber("r10", "r11")');
+    check('v77.16a:fmt dry-run 无损重建——无 "// ? AsmBlock" 占位,模板按 \\n 拆行 + out/in/clobber 子句逐行',
+      f16.code === 0 && !out16.includes('// ? AsmBlock') && rebuilt16,
+      'code=' + f16.code + ' out=' + JSON.stringify(out16.slice(0, 260)));
+    // (b) --write 后:check 0 诊断 + fmt --check 规范 + asm 块仍在(未被删)
+    const w16 = runMing(['fmt', p16b, '--write']);
+    const chk16 = chk77(p16b);
+    const canon16 = runMing(['fmt', p16b, '--check']);
+    const formatted16 = fs.readFileSync(p16b, 'utf8');
+    check('v77.16b:fmt --write 后语义保持——check 0 诊断 + fmt --check 规范 + asm 块完整保留',
+      w16.code === 0 && chk16.code === 0 && (chk16.j?.diagnostics ?? []).length === 0 && canon16.code === 0
+        && formatted16.includes('asm {') && formatted16.includes('out("=r", mut r)') && !formatted16.includes('// ?'),
+      'w=' + w16.code + ' chk=' + codes77(chk16) + ' canon=' + canon16.code + ' ' + JSON.stringify((canon16.stdout + canon16.stderr).slice(0, 120)));
+    // (c) 幂等:对已格式化文件再次 --write,落盘内容与首次 --write 逐字一致
+    // (dry-run 对已规范文件 stdout 为空——"已是规范格式"提示不输出规范文本,故以两次 --write 口径)
+    const f16b = runMing(['fmt', p16b, '--write']);
+    const formatted16b = fs.readFileSync(p16b, 'utf8');
+    check('v77.16c:fmt 幂等——对已格式化文件再次 --write,落盘内容逐字一致(拆行点由拼接总值决定)',
+      f16b.code === 0 && formatted16b === formatted16,
+      'code=' + f16b.code + ' delta=' + JSON.stringify(formatted16b.slice(0, 120)));
+    // (d) 语义不变:格式化前后 run(默认引擎)具名回落 panic 码+消息逐字(剥 "…ming:line:col: " 前缀
+    // 后比对——行号平移是格式化固有属性;贪婪匹配到最后 ".ming:" 以越过 Windows 盘符冒号);exit 101 不变
+    const strip16 = (s) => ((s ?? '').split('\n')[0] ?? '').replace(/^.*ming:\d+:\d+:\s*/, '');
+    const rOrig16 = runMing(['run', p16]);
+    const rFmt16 = runMing(['run', p16b]);
+    check('v77.16d:fmt 后语义不变——M4017 具名回落 exit 101,panic 码+消息逐字(剥文件名/行号前缀)',
+      rOrig16.code === 101 && rFmt16.code === 101 && strip16(rOrig16.stderr) === strip16(rFmt16.stderr)
+        && strip16(rFmt16.stderr).includes(TAG77) && strip16(rFmt16.stderr).includes(MSG77),
+      'orig=' + JSON.stringify(first77(rOrig16.stderr)) + ' fmt=' + JSON.stringify(first77(rFmt16.stderr)));
+    // (e) cc 腿(有编译器时):格式化前后真实执行 stdout 逐字(拆行后 join('') 拼接值不变 → C 发射同模板串)
+    if (hasCC77) {
+      const cO16 = ccRun77(p16, path.join(dir77, 'c-fmt-orig'));
+      const cF16 = ccRun77(p16b, path.join(dir77, 'c-fmt-new'));
+      const exeO16 = path.join(dir77, 'c-fmt-orig', 'v77_16_fmt' + (process.platform === 'win32' ? '.exe' : ''));
+      const exeF16 = path.join(dir77, 'c-fmt-new', 'v77_16_fmt_copy' + (process.platform === 'win32' ? '.exe' : ''));
+      const runO16 = spawnSync(exeO16, [], { encoding: 'utf8', timeout: 30000 });
+      const runF16 = spawnSync(exeF16, [], { encoding: 'utf8', timeout: 30000 });
+      check('v77.16e:fmt 后 cc 语义不变——前后真实执行 exit 0 + stdout 逐字 "42\\n"(模板拼接值保真)',
+        cO16.status === 0 && cF16.status === 0 && runO16.status === 0 && runF16.status === 0
+          && runO16.stdout === '42\n' && runF16.stdout === '42\n',
+        'cc=' + cO16.status + '/' + cF16.status + ' run=' + runO16.status + ':' + JSON.stringify(runO16.stdout) + '/' + runF16.status + ':' + JSON.stringify(runF16.stdout));
+    } else {
+      check('v77.16e:fmt 后 cc 语义不变(无编译器,跳过)', true, 'skip: 无 C 编译器');
+    }
+  }
+
+  // ---- v77.17 lsp AsmBlock 查询面(实测口径:参数/外层 let 绑定在函数体遍历前 push,
+  // AsmBlock 无 case 时同样可解析——visitStmt 显式分支为完备性与 lambda-in-asm 形态,
+  // 非行为修复;断言 = 四查询面全数正确且不崩) ----
+  {
+    const src17 = [
+      'fn addone(x: i64) -> i64 with asm {',
+      '    let mut r: i64 = 0;',
+      '    asm {',
+      '        "mov %0, %1\\n\\tadd $1, %0"',
+      '        out("=r", mut r)',
+      '        in("r", x)',
+      '    }',
+      '    return r;',
+      '}',
+      'fn main() with asm, io {',
+      '    print(str(addone(41)));',
+      '}',
+    ].join('\n');
+    const p17 = m77('v77_17_lsp.ming', src17);
+    const uri17 = 'file:///' + p17.replace(/\\/g, '/');
+    const syms17 = documentSymbolsFor(p17, src17);
+    check('v77.17a:documentSymbol 对含 asm 程序返回两符号(签名携带 with asm,不崩不丢)',
+      syms17.length === 2 && syms17[0].name === 'addone' && syms17[0].detail.includes('with asm') && syms17[1].name === 'main',
+      JSON.stringify(syms17.map(s => s.name + ':' + s.detail)));
+    // definition:asm 块内 in 表达式的 x(0 基行 5 字符 16)→ 参数声明 span(0 基行 0 字符 10-11);
+    // out 行的 r(0 基行 4 字符 22)→ let mut r 声明 span(0 基行 1 字符 12-13)——2026-11-15 实测锚点
+    const defX17 = definitionFor(uri17, p17, src17, 5, 16);
+    const defR17 = definitionFor(uri17, p17, src17, 4, 22);
+    check('v77.17b:definition 下钻 asm 块——in 表达式 x → 参数声明,块外 r → let 声明(均不崩)',
+      defX17 && defX17.range && defX17.range.start.line === 0 && defX17.range.start.character === 10
+        && defR17 && defR17.range && defR17.range.start.line === 1 && defR17.range.start.character === 12,
+      'x=' + JSON.stringify(defX17) + ' r=' + JSON.stringify(defR17));
+    const comp17 = completionFor(p17, src17, 5, 16);
+    check('v77.17c:completion 在 asm 块内局部可见——x(param)/r(let)/addone(签名含 with asm)',
+      comp17 && Array.isArray(comp17.items)
+        && comp17.items.some(i => i.label === 'x' && i.detail === 'param')
+        && comp17.items.some(i => i.label === 'r' && i.detail === 'let')
+        && comp17.items.some(i => i.label === 'addone' && (i.detail ?? '').includes('with asm')),
+      JSON.stringify((comp17?.items ?? []).filter(i => ['x', 'r', 'addone'].includes(i.label))));
+  }
+
+  // ---- §77-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

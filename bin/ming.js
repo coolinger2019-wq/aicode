@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.73.0';
+export const VERSION = '0.74.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -1074,12 +1074,13 @@ function toolCacheProbe(file, flags) {
   // 缓存路径无诊断可印 —— 为保逐字一致,只缓存零诊断工具。
   if (diags.length) return null;
   // 与 cmdBuild 相同的 AOT 资格判定:sync 子任务 worker 需源码编译;unsafe 仅 C 原生;
-  // eval 需运行时编译(工具程序不用 eval,conservative 同步排除,v0.69 ADR-005)。
+  // eval 需运行时编译(工具程序不用 eval,conservative 同步排除,v0.69 ADR-005);
+  // asm 仅 C 原生(v0.74 ADR-006,conservative 同步排除)。
   const hasEff = (eff) => checkResult.modules.some(m => [...m.items.values()].some(e => {
     const s = e.sig?.effects ?? e.effects;
     return s instanceof Set && s.has(eff);
   }));
-  if (hasEff('sync') || hasEff('unsafe') || hasEff('eval')) return null;
+  if (hasEff('sync') || hasEff('unsafe') || hasEff('eval') || hasEff('asm')) return null;
   // 单模块假设:工具均为单文件(无本地 use)。产物 span 只保留 basename,
   // 多模块会有同名歧义 → 多模块工具一律回退原路径。
   if (checkResult.modules.length !== 1) return null;
@@ -1269,6 +1270,14 @@ async function cmdBuild(flags) {
         return eff instanceof Set && eff.has('eval');
       }));
       if (usesEval) throw new Error('程序使用 with eval 动态执行(运行时编译,部署形态 = 源码 + Node)');
+      // v0.74(ADR-006):with asm 是 C 原生限定(tree/VM 以 M4017 拒绝)——AOT 字节码产物
+      // 基于 VM,不能兑现机器语义,显式回退源码模式并说明原因(unsafe/eval 先例同款)。
+      // asm 程序的部署形态 = 源码 + Node 或 ming cc,诚实声明。
+      const usesAsm = checkResult.modules.some(m => [...m.items.values()].some(e => {
+        const eff = e.sig?.effects ?? e.effects;
+        return eff instanceof Set && eff.has('asm');
+      }));
+      if (usesAsm) throw new Error('程序使用 with asm 内联汇编(仅 C 原生后端,部署形态 = 源码 + Node 或 ming cc)');
       const compiled = compile(checkResult);
       const artifact = serializeArtifact(compiled, { baseDir: projectRoot });
       artifact.builtBy = VERSION;
@@ -1418,8 +1427,9 @@ async function cmdCC(file, flags, opts, programArgs) {
   try {
     const compiled = compile(result);
     // v0.54/C5:cc 路径显式开启 C 专用 unsafe 资格扩展(效果 ⊆ {ffi, unsafe};wasm 不传)
+    // v0.74/C6(ADR-006):asm 同款——内联汇编仅由 ming cc 真实执行(效果 ⊆ {ffi, unsafe, asm})
     const { emitC } = await lazyCbackend();
-    emitted = emitC(result, compiled, { unsafe: true });
+    emitted = emitC(result, compiled, { unsafe: true, asm: true });
   } catch (e) {
     if (e instanceof Unsupported) {
       return fail('C1 不支持该程序形态:' + e.message, json);

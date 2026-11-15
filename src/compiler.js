@@ -66,6 +66,7 @@ export const OP = {
   BINSET2: 44,     // a=dst 槽,b=打包(s1<<8|s2),c=BIN 码 → 局部 OP 局部 并存
   SYNC_ENTER: 45,  // 进入 scoped 并发块
   SYNC_EXIT: 46,   // 退出 scoped 并发块(自动 join 未完成子任务;子 panic 上抛)
+  ASM: 47,         // v0.74(ADR-006):asm 块——仅 C 后端真实执行;VM 执行到即 M4017 具名回落
 };
 
 // 约定:compileExpr 恰好在栈上留下 1 个值(Ret/Break/Continue 等不产值的语句在 compileStmt 层处理)。
@@ -718,6 +719,13 @@ class BytecodeCompiler {
         // v0.54:unsafe 块只是类型层门禁;VM 执行指针操作时由 callStd / callMethod
         // 以 M4016 诚实拒绝(C 后端阶段 2 兑现真实内存语义)
         this.compileBlock(s.body, st, false);
+        return;
+      }
+      case 'AsmBlock': {
+        // v0.74(ADR-006 §2):asm 块仅由 C 原生后端真实执行——编译为单条 ASM 指令,
+        // VM 执行到即 M4017 具名回落(与 tree 引擎 execStmt 消息逐字一致)。
+        // 含 asm 函数的效果集含 'asm' → wasm effectOk 拒绝 → 永不 wasm eligible,无分叉。
+        this.emit(st, OP.ASM, 0, 0, s.span);
         return;
       }
       case 'Loop': {

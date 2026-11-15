@@ -1015,6 +1015,12 @@ x + 1;
 
 **验收门槛**：`node tests/run.mjs` 全绿（1132 + §76）；fuzz 双种子 0 分歧；proof_fuzz 0 误报；独立审查（重点：操作数约束的注入面——指令模板与操作数的拼接卫生、clobber 完整性）；文档三条 + 版本三处同步。
 
+### 4.9.5 v0.74 收口注记（2026-11-16 实测）
+- **编号消歧**：内联汇编原列 v0.73 候选——0.73 已被技术债收口（§4.9 原三任务）占用，重编号 v0.74（本节任务表同步）。
+- **实现**（9 文件 +251 行 + fmt/lsp 配套）：parser asm 块（模板字面量+/out/in/clobber，expectStrLit 注入卫生强制）/checker 'asm' 第 13 效果+checkAsmBlock（out mut·i64 校验；静态证明面排除零改动——stmtIsLinear 机制）/compiler OP.ASM:47/vm+interp M4017 具名回落（消息逐字）/cbackend `__asm__ volatile` 发射+C6 旗标（asmEffectsAllowed，C5 同构；%N 范围防御）/wasm.js asmEffectsAllowed（审查批准——C6 消费点在 wasm.js，资格单一事实来源）/bin usesAsm 具名回退+tools probe 排除；**fmt.js/lsp.js AsmBlock 配套**（审查实测发现 fmt --write 静默删块 P1——修复+幂等锁定 §77.16；lsp visitBlock 下钻）。
+- **独立验证要点**：cc 正例（rdtsc 单调/bswap 往返/lea 双 in 值）实测；三引擎 M4017 逐字；M3029/契约内/serve M3002 全自动触发；syscall 形态限 Linux x86-64（Windows PE 无稳定直接 syscall 面——用例句已注记）；REPL M3029 点名 [asm]。
+- **ADR §1 grammar 两处实现期精确化**（已按实现口径修正 GUIDE/capabilities；ADR 记法维持历史）：clobber 实现为"每组括号内逗号分隔 1+ 寄存器，多组亦可"；out 缺 mut 关键字=解析层 M2002（非 mut 绑定才是 M3004）。
+
 ### 4.9.4 Backlog 处置表增补
 
 | 项 | 处置 | 理由 |

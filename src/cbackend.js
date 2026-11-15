@@ -1061,6 +1061,11 @@ class CEmit {
         ctx.close('}');
         return;
       }
+      case 'AsmBlock': {
+        // v0.74/C6(ADR-006 §2):内联汇编——GCC 扩展 asm 逐字透传(volatile 固定,副作用块)
+        ctx.line(this.emitAsmBlock(s, ctx));
+        return;
+      }
       case 'If': {
         ctx.open(`if (${this.emitCond(s.cond, ctx)}) {`);
         this.emitBlock(s.then, ctx);
@@ -1182,6 +1187,46 @@ class CEmit {
     }
   }
 
+  // v0.74/C6(ADR-006 §2):发射 __asm__ volatile(<模板拼接> : <outs> : <ins> : <clobbers>);
+  // * 模板/约束/clobber 已由 parser 保证为纯字符串字面量(注入面在解析层闭合),此处逐字
+  //   透传(模板内 %% 与 %N 修饰符等 GCC 语法由用户负责,不做改写);
+  // * 操作数编号 = GCC 约定 %0/%1…:out 子句先(各占一位),然后 in 子句(声明序);
+  // * 空段按 GCC 位置语法保留:无 out 有 in → "tpl : : ins";全空 → "tpl"(无冒号段);
+  // * in 操作数按声明序发射(emitExpr 副作用语句按序落盘)——GCC 对 input 操作数的实际
+  //   求值序无合同,v1 面向无副作用 i64 操作数(如实登记);
+  // * 防御:模板内 %N 引用越界 → Unsupported 发射期拒绝(ming cc 报"C1 不支持该程序形态")。
+  emitAsmBlock(s, ctx) {
+    const tpl = s.templates.join(''); // ADR-006 §1:1+ 模板字面量逐字拼接
+    const outs = [];
+    for (const o of s.outs) {
+      const cname = ctx.nameOf(o.target);
+      if (!cname) throw new Unsupported('asm out 目标非局部: ' + o.target);
+      const ty = ctx.typeOf(o.target);
+      if (ty !== 'i64') throw new Unsupported('asm out 目标类型 ' + ty);
+      outs.push(`"${cstr(o.constraint)}"(${cname})`);
+    }
+    const ins = [];
+    for (const iv of s.ins) {
+      const ty = this.inferTy(iv.value, ctx);
+      if (ty !== 'i64') throw new Unsupported('asm in 操作数类型 ' + (ty ?? '?'));
+      ins.push(`"${cstr(iv.constraint)}"(${this.emitExpr(iv.value, 'i64', ctx)})`);
+    }
+    const clobbers = s.clobbers.map(c => `"${cstr(c)}"`);
+    const nOps = outs.length + ins.length;
+    // %% = GCC 字面百分号输出形(v0.74 审查 MINOR-1:匹配前剔除,避免 %%0 被误判为操作数引用 %0)
+    for (const m of tpl.replace(/%%/g, '').matchAll(/%([a-zA-Z]+)?([0-9]+)/g)) {
+      const n = Number(m[2]);
+      if (n >= nOps) {
+        throw new Unsupported(`asm 模板引用操作数 %${m[2]} 超出操作数个数 ${nOps}(编号 = out 先 in 后,GCC 约定)`);
+      }
+    }
+    const sections = [];
+    if (outs.length || ins.length || clobbers.length) sections.push(outs.join(', '));
+    if (ins.length || clobbers.length) sections.push(ins.join(', '));
+    if (clobbers.length) sections.push(clobbers.join(', '));
+    return `__asm__ volatile("${cstr(tpl)}"${sections.length ? ' : ' + sections.join(' : ') : ''});`;
+  }
+
   emitBlock(block, ctx) {
     ctx.pushScope();
     for (const st of block.stmts) this.emitStmt(st, ctx);
@@ -1298,7 +1343,9 @@ class CEmit {
     // 只要 main 具备 AOT 形态就是合法的 C1 产物;main 形态不符由发射期报 Unsupported
     // v0.43(C3.5):sigExt3 = Result[i64,str] 进入 C 面;ffi = 效果 ⊆ {ffi} 的函数可编译
     // v0.54/C5:unsafe 为 C 专用扩展(效果 ⊆ {ffi, unsafe} + Ptr 签名);wasm 路径不传
-    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true, sigExt3: true, ffi: true, unsafe: !!this.opts.unsafe });
+    // v0.74/C6(ADR-006):asm 为 C 专用扩展(效果 ⊆ {ffi, unsafe, asm} 可编译——内联
+    // 汇编仅由 ming cc 真实执行);wasm 路径不传,with asm 永不 wasm eligible
+    this.eligible = analyzeEligibility(this.check, this.compiled, { numericOnly: true, sigExt: true, sigExt2: true, sigExt3: true, ffi: true, unsafe: !!this.opts.unsafe, asm: !!this.opts.asm });
     const fns = this.compiled.functions;
 
     // main(entry 模块的 main;无参)

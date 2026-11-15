@@ -364,6 +364,10 @@ export class WasmCompiler {
     // v0.54/C5:C 后端专用 unsafe 扩展(效果 ⊆ {ffi, unsafe} + Ptr 签名);
     // wasm 路径不传该旗标 → 严格拒绝(不得改 wasm 资格语义)
     this.unsafeEffectsAllowed = !!opts.unsafe;
+    // v0.74/C6(ADR-006):C 后端专用 asm 扩展(效果 ⊆ {ffi, unsafe, asm} 可编译——
+    // 内联汇编仅由 ming cc 真实执行);wasm 路径不传该旗标 → with asm 永不 wasm eligible
+    // (零守护自动拒绝:asm 函数不进 wasm,其调用方经资格不动点同步回落)
+    this.asmEffectsAllowed = !!opts.asm;
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
@@ -451,8 +455,10 @@ export class WasmCompiler {
     if (sig.effects?.size) {
       // v0.43:C 后端 opts.ffi 允许效果 ⊆ {ffi}(extern 调用;wasm 路径仍严格拒绝)
       // v0.54/C5:opts.unsafe 额外允许 unsafe(ffi/unsafe 各自独立放行,不互相隐含)
+      // v0.74/C6:opts.asm 额外允许 asm(内联汇编仅由 C 后端真实执行;wasm 路径不传 → 拒绝)
       const effectOk = (e) => (e === 'ffi' && this.ffiEffectsAllowed)
-        || (e === 'unsafe' && this.unsafeEffectsAllowed);
+        || (e === 'unsafe' && this.unsafeEffectsAllowed)
+        || (e === 'asm' && this.asmEffectsAllowed);
       if (![...sig.effects].every(effectOk)) return false;
     }
     return true;

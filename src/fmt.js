@@ -290,6 +290,33 @@ class Writer {
         this.indent++; this.blockBody(s.body); this.indent--;
         this.line('}');
         return;
+      case 'AsmBlock': {
+        // v0.74(ADR-006):asm 块无损重建——此前落 default 输出 '// ? AsmBlock' 占位,
+        // --write 会静默删除 asm 块(数据丢失,违反 v0.56 A3"不丢语义"合同)。
+        // 规范形态(parser.js parseAsmBlock 实测语法;逐元素换行):
+        //   asm {
+        //       "模板行"                ← 全部模板值拼接后按 \n 拆行,每行一个字面量;
+        //                                 非末行补回 \n——cbackend join('') 拼接语义逐字不变,
+        //                                 再 fmt 幂等(拆行点只由拼接总值决定,与源分组无关)
+        //       out("=r", mut r)        ← 0+;每子句一行
+        //       in("r", <表达式>)       ← 值经 expr() 递归(最小括号规则)
+        //       clobber("r10", "r11")   ← 扁平数组 → 逗号规范形(与多组形态同 AST 同语义)
+        //   }
+        this.line('asm {', s.span.line);
+        this.indent++;
+        const whole = s.templates.join('');
+        const segs = whole.split('\n');
+        segs.forEach((seg, i) => {
+          const v = i < segs.length - 1 ? seg + '\n' : seg;
+          this.line(strLit({ parts: [{ lit: v }] }));
+        });
+        for (const o of s.outs ?? []) this.line(`out(${strLit({ parts: [{ lit: o.constraint }] })}, mut ${o.target})`);
+        for (const iv of s.ins ?? []) this.line(`in(${strLit({ parts: [{ lit: iv.constraint }] })}, ${expr(iv.value)})`);
+        if ((s.clobbers ?? []).length) this.line(`clobber(${s.clobbers.map(c => strLit({ parts: [{ lit: c }] })).join(', ')})`);
+        this.indent--;
+        this.line('}');
+        return;
+      }
       case 'ExprStmt': {
         // 控制流表达式作为语句:match/块 后接 ";"(保留原样);尾表达式无 ";"
         if (s.expr.nt === 'If') { this.ifStmt(s.expr); return; }

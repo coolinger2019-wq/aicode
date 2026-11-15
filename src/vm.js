@@ -867,6 +867,11 @@ export class VMInterp extends Interp {
           const msg = stack.pop();
           throw new Panic('M4001', msg.v, this.spanOf(frame, ins));
         }
+        case OP.ASM: {
+          // v0.74(ADR-006 §2):asm 块仅由 C 原生后端(ming cc)执行;VM 诚实拒绝——
+          // 消息与 tree 引擎(execStmt AsmBlock)逐字一致,M4016 unsafe 先例句式。exit 101。
+          throw new Panic('M4017', '内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义', this.spanOf(frame, ins));
+        }
         // ---- 融合指令(v0.9):局部槽上的算术直存,免栈操作与中间对象 ----
         case OP.ADDI: {
           // a=槽,c=±1:等价 intBin('+', old, ±1) 全语义(含溢出检查)

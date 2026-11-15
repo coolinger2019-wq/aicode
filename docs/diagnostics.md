@@ -74,7 +74,7 @@
 | M3027 | missing-field | 结构体字面量缺字段(没有默认值) |
 | M3028 | refutable-let-pattern | let 中使用可反驳模式(用 match / while let) |
 | M3029 | undeclared-effect | 调用需要未声明的效果:给签名加 `with io, ...` 并逐层传播 |
-| M3030 | unknown-effect | 未知效果名(当前可用:io / time / fs / net / sync / proc / env / rand / crypto / ffi / unsafe) |
+| M3030 | unknown-effect | 未知效果名(当前可用:io / time / fs / net / sync / proc / env / rand / crypto / ffi / unsafe / eval / asm) |
 | M3031 | const-not-constant | const 只接受常量表达式(字面量/运算/其他常量) |
 | M3032 | trait-impl-mismatch | trait/impl 问题:缺方法、self 可变性不符、类型未实现 bound 的 trait、impl 类型参数未覆盖目标参数 |
 | M3034 | join-handle-escapes | Join 句柄存入集合/struct 字段/元组/enum 载荷,或作为 spawn 参数/返回(线性资源) |
@@ -110,6 +110,7 @@
 | M4014 | ffi-signature-invalid | v0.39 预留(未启用):ffi 签名与目标符号不符 |
 | M4015 | contract-violation | v0.45:契约违反(requires/ensures),退出码 101 |
 | M4016 | native-only-feature | v0.54:tree/VM 执行 `std.mem.alloc/free` 或指针读写(`p.load/store/offset`;经 `std.mem.alloc` 取得的 Ptr 在 alloc 处即拒绝,extern Ptr 在 JS 桩体处拒绝)时 panic;消息"unsafe 指针操作仅在 C 原生后端可用",退出码 101,三路(tree / VM / wasm 回落 VM)首行逐字一致。C 原生后端由 C5(v0.54)兑现:Ptr[mut u8]/Ptr[u8] → `unsigned char*`/`const unsigned char*`;C5 资格旗标 `opts.unsafe` 仅在 `ming cc` 路径放行,wasm 保持严格拒绝 |
+| M4017 | asm-cc-only | v0.74(ADR-006 内联汇编):非 cc 引擎执行 `asm { ... }` 块时 panic——内联汇编仅由 C 原生后端执行;消息"内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义",退出码 101,三路(run / --no-wasm / --tree)首行逐字一致(M4016 unsafe 先例句式);`with asm` 声明本身不触发,未执行 asm 块的路径在 tree/VM 正常运行,含 asm 函数永不 wasm eligible(回落 VM 后执行到块同码)。C 原生后端由 C6 资格旗标(asmEffectsAllowed,仅 `ming cc` 路径放行——C5 unsafe 先例)兑现:发射 `__asm__ volatile(...)`(volatile 固定)。**号段注记**:M4017 曾于 v0.64 作 FFI 架构提案、经安全实测否决存档且从未发布——v0.74 复用登记,号段无已发布码冲突 |
 | M3040 | invariant-field-protected | 带 invariant 的 struct 字段只能在自身 impl 方法内修改(v0.46) |
 | M3041 | contract-violated-at-call | 调用点静态契约违反:整数字面量实参代入 requires 可判定为假;或实参可线性化(当前函数的参数/局部线性形式;被调须全 i64 形参、非泛型、非 extern)时,代入被调 requires 的违反条件在当前 requires 假设下可证(含被调参数小值反例);不可证/不可编码静默(v0.46;线性实参扩展 v0.55) |
 | M3042 | ensures-statically-false | ensures 直线体符号执行可静态证伪(含反例);v0.55 起假设集 = 本函数 requires + 已验证调用后置条件(纯函数 + 全 i64 + 直线体 + 无环调用图;被调 requires 完整且当前路径可证才采用其 ensures,反例须满足假设集;未证明前置条件的调用结果按 unknown 静默)(v0.48 QF_LIA 第一片;v0.55 跨函数扩展) |

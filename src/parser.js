@@ -624,6 +624,12 @@ export class Parser {
       return { nt: 'SyncScopeBlock', body, span: this.spanFrom(t) };
     }
 
+    if (t.kind === 'id' && t.val === 'asm' && this.peek(1).kind === 'op' && this.peek(1).val === '{') {
+      // v0.74(ADR-006):asm { ... } 内联汇编块(仅语句位;上下文关键字,同 sync scope
+      // 先例——不保留 asm 词,避免破坏既有程序)。函数须声明 with asm(checker M3029 门禁)。
+      return this.parseAsmBlock();
+    }
+
     if (t.kind === 'op' && t.val === '{') {
       const b = this.parseBlock();
       const e = { nt: 'BlockExpr', block: b, span: b.span };
@@ -697,6 +703,103 @@ export class Parser {
     this.noStructLit--;
     const body = this.parseBlock();
     return { nt: 'For', pat, iter, body, span: this.spanFrom(start) };
+  }
+
+  // ---- v0.74(ADR-006 §1):内联汇编块 ----
+  //
+  //   asm {
+  //       "模板行"                       // 1+ 个纯字符串字面量,逐字拼接为 GCC 扩展 asm 模板
+  //       out ( "约束" , mut <变量> )*    // 0+;asm 写入该 mut 变量(GCC "=..." 约束)
+  //       in  ( "约束" , <表达式> )*      // 0+;值经 gcc 约束机制传入(完整 i64 表达式)
+  //       clobber ( "寄存器" )+?          // 可选;1+ 组,每组内逗号分隔(单组多寄存器为常用形)
+  //   }
+  //
+  // 注入卫生(ADR-006 §3):模板/约束/clobber 必须是纯字符串字面量(禁止插值/变量/表达式)
+  // ——运行时拼接在语法层面不存在,注入面在解析层闭合。out 目标只存名字,mut/i64 合法性
+  // 由 checker 校验(不存在 → M3001;非 mut → M3004;非 i64 → M3002)。操作数占位符沿
+  // GCC 约定 %0/%1…(编号 = out 先 in 后)写在模板里,cbackend 逐字透传。
+  // asm 块 = 语句、无值;仅语句位(本方法只被 parseStmtOrTail 调用),块后不需要分号。
+  parseAsmBlock() {
+    const start = this.next(); // 消费 asm(上下文关键字;调用方已确认下一个 token 是 "{")
+    this.expectOp('{', 'asm');
+    const templates = [];
+    const outs = [];
+    const ins = [];
+    const clobbers = [];
+    // 模板:1+ 个纯字符串字面量
+    while (this.at('str')) {
+      const tk = this.next();
+      if (tk.val === null) this.bail('M2001', 'asm 模板必须是纯字符串字面量,不允许插值', tk.span,
+        '模板由 ming cc 逐字透传给 GCC;动态内容请用 in 操作数经约束机制传入,不要拼接字符串。');
+      templates.push(tk.val);
+    }
+    if (!templates.length) {
+      this.bail('M2001', `asm 块必须以模板字符串字面量开始(模板/约束/clobber 只能是字符串字面量,不允许变量或表达式),实际是 ${tokDesc(this.cur())}`, this.cur().span,
+        '写法:asm { "指令" out("=r", mut x) }');
+    }
+    // 子句:out* → in* → clobber?(grammar 顺序;每种子句可重复出现)
+    let phase = 0; // 0=out 1=in 2=clobber
+    for (;;) {
+      if (this.atOp('}')) break;
+      if (this.at('eof')) this.bail('M2002', 'asm 块未闭合(缺少 "}")', start.span);
+      const t = this.cur();
+      const clause = (t.kind === 'id' && t.val === 'out') ? 'out'
+        : (t.kind === 'kw' && t.val === 'in') ? 'in'
+        : (t.kind === 'id' && t.val === 'clobber') ? 'clobber' : null;
+      if (!clause) {
+        this.bail('M2001', `asm 块内只允许 模板字符串 / out / in / clobber 子句,实际是 ${tokDesc(t)}`, t.span);
+      }
+      const ord = clause === 'out' ? 0 : clause === 'in' ? 1 : 2;
+      if (ord < phase) {
+        this.bail('M2001', `asm 块子句顺序必须是 模板 → out → in → clobber,这里 "${clause}" 出现在其后的子句类型之后`, t.span);
+      }
+      phase = ord;
+      this.next();
+      this.expectOp('(', `"${clause}" 子句`);
+      if (clause === 'out') {
+        const cTok = this.expectStrLit('asm out 约束');
+        this.expectOp(',', 'out 约束');
+        this.expectKw('mut');
+        const nameTok = this.expectId('asm out 目标变量名');
+        this.expectOp(')');
+        outs.push({ constraint: cTok.val, target: nameTok.val, span: this.spanFrom(t) });
+      } else if (clause === 'in') {
+        const cTok = this.expectStrLit('asm in 约束');
+        this.expectOp(',', 'in 约束');
+        const value = this.parseExpr();
+        this.expectOp(')');
+        ins.push({ constraint: cTok.val, value, span: this.spanFrom(t) });
+      } else {
+        // 首组 "(" 已由上方共用的 expectOp('(') 消费;每组内逗号分隔 1+ 个寄存器字面量,
+        // 关闭后若紧跟 "(" 则继续解析后续组(clobber("a")("b") 亦为合法形态)
+        for (;;) {
+          const cTok = this.expectStrLit('asm clobber 寄存器');
+          clobbers.push(cTok.val);
+          if (this.atOp(',')) { this.next(); continue; }
+          this.expectOp(')');
+          break;
+        }
+        while (this.atOp('(')) {
+          this.next();
+          for (;;) {
+            const cTok = this.expectStrLit('asm clobber 寄存器');
+            clobbers.push(cTok.val);
+            if (this.atOp(',')) { this.next(); continue; }
+            this.expectOp(')');
+            break;
+          }
+        }
+      }
+    }
+    this.expectOp('}');
+    return { nt: 'AsmBlock', templates, outs, ins, clobbers, span: this.spanFrom(start) };
+  }
+
+  // v0.74(ADR-006):asm 模板/约束/clobber 专用——必须是纯字符串字面量(禁止插值)。
+  expectStrLit(what) {
+    if (this.at('str') && this.cur().val !== null) return this.next();
+    if (this.at('str')) this.bail('M2001', `${what}必须是纯字符串字面量,不允许插值`, this.cur().span);
+    this.bail('M2001', `${what}必须是字符串字面量,实际是 ${tokDesc(this.cur())}`, this.cur().span);
   }
 
   // ---- 模式 ----

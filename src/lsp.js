@@ -352,6 +352,11 @@ function collectLocals(program, line0, col0) {
         visitBlock(s.body, patBinds(s.pat).map(b => ({ ...b, kind: 'for', decl: null })));
         break;
       case 'Loop': case 'UnsafeBlock': case 'SyncScopeBlock': visitBlock(s.body); break;
+      case 'AsmBlock':
+        // v0.74(ADR-006):asm 块内 in 表达式下钻(模板/约束是纯字面量、out 目标是纯名字,
+        // 无定义可跳);visitExprFn 自带 span 守卫,下钻零崩溃面。
+        for (const iv of s.ins ?? []) if (iv.value?.span && contains(iv.value.span)) visitExprFn(iv.value);
+        break;
       case 'If':
         if (s.cond?.span && contains(s.cond.span)) visitExprFn(s.cond);
         visitBlock(s.then);

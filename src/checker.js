@@ -207,7 +207,12 @@ export function isPrimitiveDisplay(t, binds) {
 // v0.69(ADR-005):eval——运行时编译执行("本函数执行动态编译的代码,其内部效果不可枚举",
 // 能力粒度同 proc)。M3029 传播/M3030 列表/契约纯性/wasm 资格闸(effectOk 不含 eval →
 // with eval 永不 eligible)/serve handler 白名单(不进 SERVE_HANDLER_EFFECTS → M3002)全部自动覆盖。
-export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi', 'unsafe', 'eval']); // v0.54:unsafe;v0.69:eval
+// v0.74(ADR-006):asm——第 13 效果,内联汇编("本函数执行手写机器指令并读写寄存器",
+// 语言最大逃逸舱口,签名可见性是唯一防线,不承诺汇编代码无害——unsafe 同款诚实口径)。
+// 同款自动覆盖:M3029 传播/M3030 列表/契约纯性(pureCtx effects=空集 → 契约内调用含
+// asm 函数 M3029)/wasm 资格闸(effectOk 不含 asm → with asm 永不 wasm eligible,C 路径
+// 按 C6 旗标放行)/serve handler 白名单(不进 SERVE_HANDLER_EFFECTS → M3002)。
+export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi', 'unsafe', 'eval', 'asm']); // v0.54:unsafe;v0.69:eval;v0.74:asm
 
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
@@ -1609,6 +1614,50 @@ export class Checker {
     this.diags.push(d);
   }
 
+  // v0.74(ADR-006 §1/§3):asm 块操作数校验(仅 out/in;模板/约束/clobber 的字面量性
+  // 已由 parser 强制)。out 目标 = 当前函数局部 mut i64 变量——
+  //   * 未绑定 → M3001(cannotFindValue;与赋值目标同口径);
+  //   * 常量/本地函数 → M3004(不可写入,checkPlace Ident 分支同款消息口径);
+  //   * 非 mut → M3004(asm 写入该变量,非 mut 即静默改语义);
+  //   * 非 i64 → M3002(全部操作数 i64;Untrusted 载体天然拒绝,无隐式转换)。
+  // in 值 = i64 表达式(非 i64 → M3002);in 值按声明序求值(编译器按声明序发射)。
+  checkAsmBlock(s, ctx) {
+    for (const o of s.outs) {
+      const span = o.span ?? s.span;
+      const found = ctx.scope.lookupValue(o.target);
+      if (!found) {
+        const entry = ctx.mod.items.get(o.target);
+        if (entry?.kind === 'const') {
+          this.diags.push(err('M3004', `"${o.target}" 是常量,不可作为 asm out 目标(asm 写入需要 mut 局部变量)`, span));
+          continue;
+        }
+        this.cannotFindValue(o.target, span, ctx);
+        continue;
+      }
+      if (found.kind === 'fn') {
+        this.diags.push(err('M3004', `"${o.target}" 是本地函数,不可作为 asm out 目标`, span));
+        continue;
+      }
+      const v = found.v;
+      if (!v.mut) {
+        this.diags.push(err('M3004', `"${o.target}" 不是 mut,不能作为 asm out 目标(asm 写入该变量)`, span, '声明时写 let mut x = ...'));
+        continue;
+      }
+      v.used = true; // asm 写入视为使用(抑制 W3101;与 checkPlace 口径一致)
+      const r = v.type ? resolveT(v.type, new Map()) : null;
+      if (!r || r.k !== 'int' || r.bits !== 64 || !r.signed) {
+        this.diags.push(err('M3002', `asm out 目标 "${o.target}" 必须是 i64,实际是 ${typeStr(v.type)}`, span));
+      }
+    }
+    for (const iv of s.ins) {
+      const t = this.checkExpr(iv.value, ctx);
+      const r = t ? resolveT(t, new Map()) : null;
+      if (r && !(r.k === 'int' && r.bits === 64 && r.signed)) {
+        this.diags.push(err('M3002', `asm in 操作数必须是 i64,实际是 ${typeStr(t)}`, iv.value.span ?? s.span));
+      }
+    }
+  }
+
   // ---------- 语句 ----------
   checkBlock(block, ctx, expected, valuePos = false) {
     const scope = new Scope(ctx.scope, ctx.mod);
@@ -1754,6 +1803,15 @@ export class Checker {
         // 块本身不改变周围效果集:块内调用仍受 ctx.effects 约束(与普通代码一致)。
         this.checkEffects(ctx, new Set(['unsafe']), s.span, 'unsafe {} 块');
         this.checkBlock(s.body, { ...ctx, inUnsafe: true }, T_UNIT);
+        return;
+      }
+      case 'AsmBlock': {
+        // v0.74(ADR-006):asm 块门禁——第 13 效果 asm(M3029 逐层传播;契约内/serve
+        // handler 白名单自动,见 KNOWN_EFFECTS 注释)。块本身无值、无子语句;
+        // 含 asm 的函数不进静态证明面(walkLinearBody/循环义务 walker 的 stmtIsLinear
+        // 对 AsmBlock 默认非直线 → 自动放弃收集,本地函数先例口径,无需特判)。
+        this.checkEffects(ctx, new Set(['asm']), s.span, 'asm {} 块');
+        this.checkAsmBlock(s, ctx);
         return;
       }
       case 'ExprStmt': {

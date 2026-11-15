@@ -799,6 +799,11 @@ export class Interp {
         this.execBlock(s.body, env, ctx);
         return;
       }
+      case 'AsmBlock': {
+        // v0.74(ADR-006 §2):asm 块仅由 C 原生后端(ming cc)真实执行;tree 引擎诚实
+        // 拒绝——消息与 VM(OP.ASM)逐字一致,M4016 unsafe 先例句式。exit 101。
+        throw new Panic('M4017', '内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义', s.span);
+      }
       case 'SyncScopeBlock': {
         this.enterSyncScope();
         let unwinding = null;
