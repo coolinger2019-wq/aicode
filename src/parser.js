@@ -9,6 +9,19 @@ import { Token, lex } from './lexer.js';
 
 const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=']);
 
+// v0.73(§5.1 NOTE 极端嵌套收口):解析递归深度上限——裸栈 RangeError → 稳定 M2001 诊断。
+// 阈值依据(2026-11-15 本机实测,Node v24/win32-x64;合同原拟 300 基于抽测深度 1200-2000,
+// 实测最小崩点远低于此,300 落在崩区内——maplit@300 实测裸崩,故下调):
+//   经 parsePrimary 的表达式形态裸崩点:lambda ~221 层(最低)/括号 ~234/Vec/struct 字面量 ~237/
+//   调用嵌套 ~246/if-expr ~291/match ~293/Map 字面量 ~296;
+//   不经 parsePrimary 的直接递归形态裸崩点:裸块 ~1137、一元链 ~2050、else-if 链 ~4150
+//   (后三者由同一计数器在各自递归点配对登记,见 parseUnary/parseIf/parseBlock)。
+// 守卫须低于全部崩点并留跨机余量(V8 栈限 ~984KB 机器无关,帧大小随 V8 版本浮动 ±30% 量级):
+// 120 层时守卫触达点栈深约为最低崩点的 55%。合法程序实测(2026-11-15,32 文件:20 examples +
+// 12 自举工具)最大下降深度 12 层(tools/diaghot.ming),fuzz 生成器表达式预算 ≤3 层(解析下降
+// ≤~15)——阈值留 10 倍余量,正常程序绝不触发(§76 v76.2/v76.4 锁定"合法深层表达式不误伤")。
+const PARSE_DEPTH_LIMIT = 120;
+
 export function parse(file, src) {
   const { tokens, comments } = lex(file, src);
   const p = new Parser(tokens, file);
@@ -38,15 +51,26 @@ export function attachDocs(items, comments) {
 }
 
 export class Parser {
-  constructor(tokens, file) {
+  constructor(tokens, file, baseDepth = 0) {
     this.toks = tokens; this.file = file; this.pos = 0;
     this.diags = [];
     this.noStructLit = 0; // 上下文标志深度
     this.contractClause = 0; // v0.56(#33):requires/ensures 子句表达式深度(该处 `{` 优先判为函数体)
+    // v0.73(审查 MAJOR-1):嵌套插值每层 new Parser 新实例——exprDepth 是实例字段,新实例
+    // 从 0 起计,守卫对跨实例递归盲视(实测插值嵌套 212 层裸崩,低于其余形态最低崩点 221)。
+    // 父深度经第三参跨实例传递(插值分支传入 this.exprDepth)。
+    this.exprDepth = baseDepth;
     // v0.70(#63):值构造(struct/map 字面量、match 体)已消费但尚未闭合的 `{` 数。
     // 这些构造失败时会穿越自己的 `}` 向上抛,recover 看不到已消费的开括号——不登记的话,
     // 字面量自己的 `}` 会被当成当前块的收尾 brace 提前闭合函数体(级联雪崩的另一半根因)。
     this.valBrace = 0;
+    // v0.73:解析递归深度计数器(当前活跃的守卫挂点层数)。挂点四处,进出必须配对:
+    // parsePrimary(全部表达式叶子入口,主闸)+ parseUnary(`-`/`!` 自递归)+
+    // parseIf(else-if 链直接递归)+ parseBlock(嵌套块直接递归)——后三处不经 parsePrimary。
+    // 全部 try/finally 包住: bail/异常抛出穿透时计数必然递减,恢复路径零残留
+    // (§76 v76.3 锁定;残留会让后续深嵌套语句误触 M2001)。
+    // 初始化在本构造器上方(exprDepth = baseDepth,默认 0)——此处不得再置 0,
+    // 否则跨实例传递的父深度被覆盖(v0.73 审查 MAJOR-1 修复的合并教训)。
   }
 
   peek(o = 0) { return this.toks[Math.min(this.pos + o, this.toks.length - 1)]; }
@@ -494,6 +518,22 @@ export class Parser {
   // ---- 语句 ----
 
   parseBlock() {
+    // v0.73:嵌套块递归守卫——裸块 `{ { … } }`/深层块结构是 parseBlock 直接递归,不经
+    // parsePrimary(实测裸块裸崩点 ~1137 层)——同一计数器在此配对登记。检查必须在挂点
+    // 本处:纯块下降途中没有任何表达式叶子,等 parsePrimary 过闸就晚了(裸崩先行)。
+    // 函数体/if 体等常规块深度远低于阈值,只付一次计数开销(§76 v76.4 全量回归证明零影响)。
+    this.exprDepth++;
+    try {
+      if (this.exprDepth > PARSE_DEPTH_LIMIT) {
+        this.bail('M2001', `表达式嵌套过深(>${PARSE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+      }
+      return this.parseBlockInner();
+    } finally {
+      this.exprDepth--;
+    }
+  }
+
+  parseBlockInner() {
     const startTok = this.cur();
     if (!this.atOp('{')) {
       const hint = this.atOp('=') ? '条件比较要用 "==";单个 "=" 是赋值' : null;
@@ -882,8 +922,19 @@ export class Parser {
     const t = this.cur();
     if (t.kind === 'op' && (t.val === '-' || t.val === '!')) {
       this.next();
-      const e = this.parseUnary();
-      return { nt: 'Unary', op: t.val, expr: e, span: this.spanFrom(t) };
+      // v0.73:一元链 `!!!!!…`/`-----…` 是 parseUnary 直接自递归,不经 parsePrimary——
+      // 同一计数器在此配对登记(实测一元链裸崩点 ~2050 层)。检查必须在挂点本处:
+      // 链下降途中直到叶子才有表达式叶子,等 parsePrimary 过闸就晚了(裸崩先行)。
+      this.exprDepth++;
+      try {
+        if (this.exprDepth > PARSE_DEPTH_LIMIT) {
+          this.bail('M2001', `表达式嵌套过深(>${PARSE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+        }
+        const e = this.parseUnary();
+        return { nt: 'Unary', op: t.val, expr: e, span: this.spanFrom(t) };
+      } finally {
+        this.exprDepth--;
+      }
     }
     return this.parsePostfix();
   }
@@ -957,6 +1008,21 @@ export class Parser {
   }
 
   parsePrimary() {
+    // v0.73:解析递归深度守卫主闸——全部表达式叶子入口在此过闸,一处 try/finally 进出配对。
+    // 超限 bail(稳定 M2001)替代裸栈 RangeError;异常路径(bail 抛出)由 finally 保证递减,
+    // 恢复路径零残留(§76 v76.3)。一元链/else-if 链/嵌套块不经此处,各自递归点另行配对登记。
+    this.exprDepth++;
+    try {
+      if (this.exprDepth > PARSE_DEPTH_LIMIT) {
+        this.bail('M2001', `表达式嵌套过深(>${PARSE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+      }
+      return this.parsePrimaryInner();
+    } finally {
+      this.exprDepth--;
+    }
+  }
+
+  parsePrimaryInner() {
     const t = this.cur();
 
     // self:方法体内引用接收者(检查器保证只在方法里可用)
@@ -971,7 +1037,7 @@ export class Parser {
       if (t.val !== null) return { nt: 'StrLit', parts: [{ lit: t.val }], span: t.span };
       const parts = t.extra.parts.map(p => 'lit' in p
         ? { lit: p.lit }
-        : { expr: new Parser(p.tokens, this.file).parseInterpExpr() });
+        : { expr: new Parser(p.tokens, this.file, this.exprDepth).parseInterpExpr() });
       return { nt: 'StrLit', parts, span: t.span };
     }
     if (t.kind === 'kw' && t.val === 'true') { this.next(); return { nt: 'BoolLit', v: true, span: t.span }; }
@@ -1088,8 +1154,18 @@ export class Parser {
     let els = null;
     if (this.atKw('else')) {
       this.next();
-      if (this.atKw('if')) els = this.parseIf();
-      else els = this.parseBlock();
+      if (this.atKw('if')) {
+        // v0.73:else-if 链是 parseIf→parseIf 直接递归,不经 parsePrimary——
+        // 同一计数器在此配对登记(实测 else-if 链裸崩点 ~4150 层)。
+        this.exprDepth++;
+        try {
+          els = this.parseIf();
+        } finally {
+          this.exprDepth--;
+        }
+      } else {
+        els = this.parseBlock();
+      }
     }
     return { nt: 'If', cond, then, els, span: this.spanFrom(start) };
   }

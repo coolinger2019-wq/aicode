@@ -33,7 +33,7 @@
 
 | 码 | 名称 | 含义 |
 |-----|------|------|
-| M2001 | unexpected-token | 位置上不允许该 token |
+| M2001 | unexpected-token | 位置上不允许该 token(另复用于解析深嵌套守卫(v0.73):消息"表达式嵌套过深(>120 层)",语义为结构超限而非 token 错位) |
 | M2002 | expected-token | 缺少期望的 token(常见:缺 `;`、缺 `}`、`==` 写成 `=`) |
 | M2003 | invalid-pattern | 模式非法(let 只支持 名字/_/元组;可反驳模式用 match) |
 | M2004 | invalid-lambda-params | 闭包参数必须是标识符 |

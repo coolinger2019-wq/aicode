@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { computeSummaries } from '../src/prover.js';
 import { completionFor, definitionFor, documentSymbolsFor } from '../src/lsp.js';
+import { VMInterp } from '../src/vm.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
@@ -15171,10 +15172,240 @@ fn main() with io, fs {
 }
 
 
+// ===================== 76. v0.73:解析深嵌套守卫(裸栈崩溃 → 稳定诊断)=====================
+// 文件所有权:§76 = 本区全部用例。改动面:src/parser.js 单文件——解析递归深度计数器
+// this.exprDepth(构造器置 0)+ 四挂点 try/finally 进出配对:parsePrimary(全部表达式叶子
+// 入口,主闸)+ parseUnary(`-`/`!` 自递归)+ parseIf(else-if 链直接递归)+ parseBlock
+// (嵌套块直接递归);超限 PARSE_DEPTH_LIMIT=120 → bail M2001"表达式嵌套过深(>120 层);
+// 提示:拆分嵌套结构或引入中间绑定"稳定诊断。零新增 M 码(M2001 既有复用);编译器/求值侧
+// 零改动(实测解析器是全管线第一个崩的点:run/check 在各形态解析崩点正下方均存活——
+// paren@230/ifexpr@285/callnest@245 OK;interp.js 的 depth>250 守卫是 Ming 调用栈递归
+// M4005,与表达式嵌套无关,不在本面)。
+// 阈值依据(2026-11-15 本机实测,Node v24.11.0/win32-x64,详见 src/parser.js 头注):
+// 合同原拟 300 基于抽测深度 1200-2000——实测最小崩点远低于此(lambda ~221/括号 ~234/
+// if-expr ~291/Map 字面量 ~296,300 落在崩区内),故下调 120;合法语料(32 文件 examples+tools)
+// 实测最大下降深度 12 层,fuzz 预算 ≤~15——10 倍余量。合同 v76.2 原拟"800 层括号合法解析"
+// 不可达(无守卫时裸崩点 ~234 层,实测),正例校准为 100 层(有效合法边界 118 层:fn 体块
+// 与叶子 primary 各计 1 层),负例 1500 层 if-expr(2 层/单位计数,守卫于 ~61 单位触发)。
+// 纪律:全部先实测后断言;裸崩判定 = 输出含 "Maximum call stack"/"RangeError"。
+{
+  const dir76 = path.join(TMP, 'v76');
+  fs.mkdirSync(dir76, { recursive: true });
+  const m76 = (name, src) => { const f = path.join(dir76, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const chk76 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 裸栈崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j, out: r.stdout + r.stderr };
+  };
+  const crash76 = (res) => res.out.includes('Maximum call stack') || res.out.includes('RangeError');
+  const deepMsg76 = (res) => (res.j && res.j.diagnostics || []).filter((d) => d.code === 'M2001' && (d.message || '').includes('嵌套过深'));
+  const ifexprSrc76 = (n) => 'fn main() -> i64 { let x = ' + 'if true { 1 } else { '.repeat(n) + '0' + ' }'.repeat(n) + '; return 0; }\n';
+  const parenSrc76 = (n) => 'fn main() -> i64 { let x = ' + '('.repeat(n) + '1' + ')'.repeat(n) + '; return 0; }\n';
+
+  // ---- v76.1:deepexpr 形态(1500 层 if-expr)→ 稳定 M2001,无裸栈崩溃 ----
+  {
+    // 改前(HEAD):裸 RangeError "Maximum call stack size exceeded"(parseMul 栈帧)exit 1;
+    // 改后:恰 1 条 M2001"表达式嵌套过深(>120 层)"(截断 AST 另有 checker M3002 属诚实报告,
+    // 不在本断言面;实测诊断集 = W3101 + M3002 + M2001×1（v0.73 审查 NOTE-3 补正:W3101 未使用警告合法存在）)。
+    const p = m76('v76_1_deepexpr.ming', ifexprSrc76(1500));
+    const res = chk76(p);
+    const deep = deepMsg76(res);
+    check('v76.1:deepexpr 1500 层 if-expr——check exit 1 + 恰 1 条 M2001"嵌套过深(>120 层)"稳定诊断,零裸栈崩溃(Maximum call stack/RangeError 不出现)',
+      res.code === 1 && res.j !== null && deep.length === 1
+        && (deep[0].message || '').includes('>120 层') && (deep[0].message || '').includes('拆分嵌套结构或引入中间绑定')
+        && !crash76(res),
+      `exit=${res.code} json=${res.j !== null} M2001嵌套过深=${deep.length} 裸崩=${crash76(res)} codes=${res.j ? (res.j.diagnostics || []).map((d) => d.code).join(',') : String(res.out).slice(0, 120)}`);
+  }
+
+  // ---- v76.2:deepparen 合法形态(100 层括号)→ 不误伤,check/run 双 exit 0 ----
+  {
+    // 合法深层表达式必须照常解析+编译+运行(100 层 = 合法边界 118 层下方,守卫远离此点;
+    // 改前 HEAD 该深度实测亦 exit 0——本断言同时锁定"守卫不引入回归"与"不误伤")。
+    // 注:语料 `let x = (...); return 0;` 恒有 1 条 W3101 未使用警告(exit 0 合法)——
+    // 断言按"零 M 码诊断"口径(守卫误触只会以 M2001 出现)。
+    const p = m76('v76_2_deepparen_ok.ming', parenSrc76(100));
+    const c = chk76(p);
+    const r = runMing(['run', p]);
+    const mCodes76 = (c.j && c.j.diagnostics || []).filter((d) => /^M/.test(d.code || ''));
+    check('v76.2:deepparen 100 层(合法深表达式)——check exit 0 且 run exit 0 且零 M 码诊断(W3101 未使用警告合法存在;守卫不误伤,有效合法边界 118 层,阈值 120 远离崩区)',
+      c.code === 0 && c.j !== null && mCodes76.length === 0 && r.code === 0 && !crash76(c) && !crash76({ out: r.stdout + r.stderr }),
+      `check_exit=${c.code} run_exit=${r.code} codes=${c.j ? (c.j.diagnostics || []).map((d) => d.code).join(',') : '?'} 裸崩=${crash76(c)}`);
+  }
+
+  // ---- v76.3:嵌套失败恢复语料 → 守卫计数恢复路径零残留,两个深嵌套形态独立判定 ----
+  {
+    // 三函数连排:深100(合法)→ 深115+语法错(少右括号)→ 深115(合法)。断言:恰报语法错
+    // (M2002/M3001,实测 2 条),零 M2001"嵌套过深"——若 bail 穿透后计数残留,后位深115
+    // 形态(深度 117,残差 ≥4 即越限)会误触 M2001;零裸崩。
+    const p = m76('v76_3_recover.ming', [
+      'fn f1() -> i64 { let a = ' + '('.repeat(100) + '1' + ')'.repeat(100) + '; return a; }',
+      'fn broken() -> i64 { let b = ' + '('.repeat(115) + '1 ; return b; }',
+      'fn f2() -> i64 { let c = ' + '('.repeat(115) + '2' + ')'.repeat(115) + '; return c; }',
+    ].join('\n') + '\n');
+    const res = chk76(p);
+    const ds = (res.j && res.j.diagnostics) || [];
+    check('v76.3:深嵌套失败+恢复语料——exit 1 + 恰报语法错(M2002 存在,实测伴 M3001 截断诚实诊断)+ 零 M2001 嵌套过深(计数 finally 递减零残留,后位深 115 形态独立判定不误触)+ 零裸崩',
+      res.code === 1 && res.j !== null && deepMsg76(res).length === 0
+        && ds.some((d) => d.code === 'M2002') && !crash76(res),
+      `exit=${res.code} json=${res.j !== null} codes=${ds.map((d) => d.code).join(',')} 裸崩=${crash76(res)}`);
+  }
+
+  // ---- v76.4:全 examples 回归冒烟 → 守卫不影响合法程序 ----
+  {
+    // 20 个示例全部 check exit 0(改前基线同;与 §1 run 黄金输出互补,本条锁 check 面)。
+    const exDir = path.join(ROOT, 'examples');
+    const exFiles = fs.readdirSync(exDir).filter((f) => f.endsWith('.ming')).sort();
+    const bad = [];
+    for (const f of exFiles) {
+      const r = runMing(['check', path.join(exDir, f)]);
+      if (r.code !== 0 || crash76({ out: r.stdout + r.stderr })) bad.push(`${f}(exit=${r.code})`);
+    }
+    check(`v76.4:全 examples(${exFiles.length} 文件)check 全 exit 0——解析深嵌套守卫对合法程序零影响`,
+      exFiles.length >= 20 && bad.length === 0,
+      `n=${exFiles.length} bad=${bad.join(',') || '无'}`);
+  }
+
+  // ---- v76.5:三个不经 parsePrimary 的直接递归形态 → 同计数器一并收进稳定诊断 ----
+  {
+    // 一元链(parseUnary 自递归,改前裸崩点 ~2050)/裸块(parseBlock 直接递归,~1137)/
+    // else-if 链(parseIf 直接递归,~4150)。三形态改前均裸 RangeError;改后各自触发守卫。
+    // 实测:unary/bareblock 恰 1 条 M2001;elseif 因 panic-mode 逐段恢复重解析为多条 M2001
+    // (实测 4 条,每条指向一段超限下降——多诊断语义同 #63 panic-mode,不钉 exact 数)。
+    const pU = m76('v76_5a_unary.ming', 'fn main() -> i64 { let x = ' + '!'.repeat(300) + 'true; return 0; }\n');
+    const rU = chk76(pU);
+    const pB = m76('v76_5b_bareblock.ming', 'fn main() -> i64 { ' + '{'.repeat(300) + ' return 0; ' + '}'.repeat(300) + ' }\n');
+    const rB = chk76(pB);
+    const pE = m76('v76_5c_elseif.ming', 'fn main() -> i64 { ' + 'if true { return 1; } else '.repeat(300) + '{ return 0; } }\n');
+    const rE = chk76(pE);
+    check('v76.5:一元链/裸块/else-if 链三直接递归形态——各自 exit 1 且 M2001"嵌套过深"≥1(unary/bareblock 实测恰 1),全部零裸栈崩溃',
+      rU.code === 1 && deepMsg76(rU).length === 1 && !crash76(rU)
+        && rB.code === 1 && deepMsg76(rB).length === 1 && !crash76(rB)
+        && rE.code === 1 && deepMsg76(rE).length >= 1 && !crash76(rE),
+      `unary: exit=${rU.code} n=${deepMsg76(rU).length} 裸崩=${crash76(rU)} | bareblock: exit=${rB.code} n=${deepMsg76(rB).length} 裸崩=${crash76(rB)} | elseif: exit=${rE.code} n=${deepMsg76(rE).length} 裸崩=${crash76(rE)}`);
+  }
+
+  // ---- v76.6/v76.7:wasm map_set_f64 / map_set_str 宿主导入覆盖(coverage agent 补测裁决) ----
+  {
+    // 形态:纯函数内 Map[str, f64] / Map[str, str] 字面量 + get().unwrap() 返回——MapLit
+    // 发射按值类型逐条目走 map_set_f64 / map_set_str 导入(src/wasm.js MapLit:'map_set_' + valTy)。
+    // 可观测面(三层合取,缺一即回落/错值):
+    //   ① MING_WASM_DEBUG=1 → stderr "[wasm] fn mf OK" 且无 REJECT(函数体经 wasm 编译,导入被引用);
+    //   ② --strict-wasm exit 0(wasm 分层真实执行,无回落——回落即 exit 2);
+    //   ③ stdout 逐字 "1.5"/"x"——map_set_* 未真实调用则 map 为空,get 返回 None → unwrap
+    //     M4006 panic(exit 101):输出正确即宿主导入真实调用(值往返证明;导入接线缺失在
+    //     实例化期即失败)。count 口径:NODE_V8_COVERAGE 聚合下 vm.js map_set_f64/map_set_str
+    //     行由此二用例首覆盖(改前基线 0——coverage agent 实测;v76.6 count=1 / v76.7 count=1)。
+    const p = m76('v76_6_map_set_f64.ming', [
+      'fn mf() -> f64 {',
+      '    let m: Map[str, f64] = { "a": 1.5 };',
+      '    return m.get("a").unwrap();',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(str(mf()));',
+      '}',
+    ].join('\n'));
+    const d6 = runMing(['run', p, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+    const e6 = d6.stderr ?? '';
+    check('v76.6:wasm map_set_f64 覆盖——strict-wasm exit 0 + [wasm] fn mf OK 无 REJECT/实例化失败 + stdout 逐字 "1.5"(map_set_f64 真实调用,值往返证明)',
+      d6.code === 0 && e6.includes('[wasm] fn mf OK') && !e6.includes('REJECT') && !e6.includes('实例化失败')
+        && d6.stdout === '1.5\n',
+      `exit=${d6.code} stdout=${JSON.stringify(d6.stdout)} stderr=${JSON.stringify(e6.split('\n').filter((l) => l.includes('wasm')).slice(0, 4))}`);
+    const p7 = m76('v76_7_map_set_str.ming', [
+      'fn ms() -> str {',
+      '    let m: Map[str, str] = { "a": "x" };',
+      '    return m.get("a").unwrap();',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(ms());',
+      '}',
+    ].join('\n'));
+    const d7 = runMing(['run', p7, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+    const e7 = d7.stderr ?? '';
+    check('v76.7:wasm map_set_str 覆盖——strict-wasm exit 0 + [wasm] fn ms OK 无 REJECT/实例化失败 + stdout 逐字 "x"(map_set_str 真实调用,值往返证明)',
+      d7.code === 0 && e7.includes('[wasm] fn ms OK') && !e7.includes('REJECT') && !e7.includes('实例化失败')
+        && d7.stdout === 'x\n',
+      `exit=${d7.code} stdout=${JSON.stringify(d7.stdout)} stderr=${JSON.stringify(e7.split('\n').filter((l) => l.includes('wasm')).slice(0, 4))}`);
+  }
+
+  // ---- v76.8:VMInterp.fromArtifact 加载路径(src/vm.js 覆盖缺口闭合;coverage agent 补测裁决) ----
+  {
+    // 事实修正(实测,coverage agent 处方前提校正):tools 缓存命中走 toolArtifactToPrebuilt
+    // (deserializeArtifact + new VMInterp(bin/ming.js)),**不经** VMInterp.fromArtifact 静态方法
+    // ——bin/ming.js tools 缓存注释"命中直接 VMInterp.fromArtifact 执行"与实现不符(登记报告);
+    // "同一工具冷/热两次 CLI + 输出一致 + 第二次 [tools-cache] hit"形态已由 §61 v57.20 覆盖
+    // (6 例 + hit 标记),不重复。fromArtifact 唯一运行期调用方是 dist launcher(ming build 产物),
+    // 而 launcher 执行 dist/runtime/vm.js 副本——NODE_V8_COVERAGE 按 src/*.js 聚合不可见,
+    // 故 src/vm.js 的 fromArtifact 在覆盖基线中真实未覆盖。本用例进程内直调 fromArtifact
+    // (与 launcher AOT 模式同一加载语义:deserializeArtifact + makeCheckLike + precompiled):
+    // tools 冷跑写缓存 → 读缓存 JSON → fromArtifact 加载 → runMain 执行,断言 exit/输出与
+    // CLI 冷跑逐字一致,二次加载执行同断言(加载合同:产物加载执行与全链路输出一致)。
+    const dir768 = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v768-'));
+    const w768 = path.join(dir768, 'w.txt');
+    fs.writeFileSync(w768, 'alpha beta\nalpha\n', 'utf8'); // 2 行 3 词 17 字节
+    const TOOLS_CACHE_768 = path.join(ROOT, '.ming-cache', 'tools');
+    const hadCache768 = fs.existsSync(TOOLS_CACHE_768);
+    if (hadCache768) fs.rmSync(TOOLS_CACHE_768, { recursive: true, force: true }); // 冷跑保证条目恰 1
+    const noDbg768 = { MING_TOOLS_DEBUG: '' }; // 显式关掉继承(防宿主 shell 泄漏,§61 noDbg 同款)
+    const rCold = runMing(['tools', 'wc', w768], { cwd: dir768, env: noDbg768 });
+    const entries768 = fs.existsSync(TOOLS_CACHE_768)
+      ? fs.readdirSync(TOOLS_CACHE_768).filter((x) => x.endsWith('.json')) : [];
+    let fa768 = null, fa2Out = null, faErr = '';
+    try {
+      const artifact = JSON.parse(fs.readFileSync(path.join(TOOLS_CACHE_768, entries768[0]), 'utf8'));
+      const vm = VMInterp.fromArtifact(artifact, { capture: true });
+      const r1 = vm.runMain([w768]); // launcher 模板在 runMain 之前剥 "--",此处直接传实参
+      fa768 = { code: r1.exitCode, out: vm.flushCaptured() };
+      const vm2 = VMInterp.fromArtifact(artifact, { capture: true });
+      const r2 = vm2.runMain([w768]);
+      fa2Out = { code: r2.exitCode, out: vm2.flushCaptured() };
+    } catch (e) { faErr = String((e && e.message) || e); }
+    if (!hadCache768) fs.rmSync(TOOLS_CACHE_768, { recursive: true, force: true }); // 恢复原状态(目录 gitignored)
+    check('v76.8:VMInterp.fromArtifact 加载路径——缓存条目恰 1 + 进程内 fromArtifact 执行 exit/输出与 CLI 冷跑逐字一致,二次加载执行同断言(产物加载合同;vm.js fromArtifact 覆盖缺口闭合)',
+      rCold.code === 0 && entries768.length === 1 && faErr === '' && fa768 !== null
+        && fa768.code === 0 && fa768.out === rCold.stdout
+        && fa2Out !== null && fa2Out.code === 0 && fa2Out.out === rCold.stdout,
+      `cli=${rCold.code} entries=${entries768.length} faErr=${JSON.stringify(faErr)} `
+        + `fa=${fa768 ? fa768.code + '/' + JSON.stringify(fa768.out) : 'null'} `
+        + `fa2=${fa2Out ? fa2Out.code + '/' + JSON.stringify(fa2Out.out) : 'null'} `
+        + `cliOut=${JSON.stringify(rCold.stdout)}`);
+  }
+
+  // ---- v76.9(v0.73 审查 MAJOR-1 锁定):嵌套字符串插值跨实例递归——每层 new Parser 新实例,
+  // exprDepth 经构造器第三参(baseDepth)跨实例传递;修复前该形态 212 层裸崩(新最低崩点,
+  // 低于其余形态最低 221)——150 层稳定 M2001,100 层合法通过 ----
+  const BS769 = String.fromCharCode(92); // 反斜杠(Ming 插值开符 "\{" 的首字符;源码零反斜杠字面量——转义层纪律)
+  const mkInterp769 = (n) => {
+    let inner = '"x"';
+    for (let i = 0; i < n; i++) inner = '"' + BS769 + '{' + inner + ' }"';
+    return ['fn main() with io {', '    let x = ' + inner + ';', '    print(str(x.char_len()));', '}'].join(String.fromCharCode(10));
+  };
+  const p76_9a = m76('v76_9_interp150.ming', mkInterp769(150));
+  const r76_9a = runMing(['check', p76_9a, '--json']);
+  const p76_9b = m76('v76_9_interp100.ming', mkInterp769(100));
+  const r76_9b = runMing(['check', p76_9b]);
+  let j76_9a = null;
+  try { j76_9a = JSON.parse(r76_9a.stdout); } catch { /* 崩溃形态 → 断言点名 */ }
+  const d76_9a = j76_9a ? j76_9a.diagnostics.filter((d) => d.code === 'M2001' && (d.message || '').includes('嵌套过深')) : [];
+  check('v76.9:嵌套字符串插值守卫(baseDepth 跨实例传递)——150 层 → M2001 表达式嵌套过深(零裸栈 RangeError);100 层合法 exit 0(守卫不误伤)',
+    r76_9a.code === 1 && d76_9a.length >= 1
+      && (r76_9a.stderr ?? '').includes('Maximum call stack') === false
+      && r76_9b.code === 0,
+    `a=${r76_9a.code}/${JSON.stringify((r76_9a.stdout ?? '').slice(0, 120))} b=${r76_9b.code}`);
+
+  // ---- §76-END
+}
+
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');
   for (const f of failures) process.stdout.write(`  - ${f.name}\n`);
   process.exit(1);
 }
+
+
+  // ---- §76-END
 
