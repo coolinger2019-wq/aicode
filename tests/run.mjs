@@ -14762,7 +14762,8 @@ fn main() with io, fs {
   {
     // v74.10:m2 形态——Some(污) 载荷经泛型槽合法绑定为 Option[Untrusted[str]],let 标注位
     // 发 M3049(带净化处方)。实测改前 M3002"let 标注类型是 Option[str]..."(无净化 hint)
-    // → 改后恰 1 条 M3049。
+    // → 改后恰 1 条 M3049。v0.72 remedy 文案校准:actual 是复合载体(Option[...]),
+    // remedy 断言从中性"净化"收紧为中性措辞模板"不可信值嵌套于复合类型"(§75.5 同款)。
     const p = m74('v74_10_m2_some_let.ming', [
       'use std.env;',
       'fn main() with env {',
@@ -14772,15 +14773,17 @@ fn main() with io, fs {
     const res = chk74(p);
     const ds = ds74(res);
     const errs = ds.filter((d) => d.code !== 'W3101');
-    check('v74.10:M3049 化(m2:Some(污)→let 标注位)——恰 1 条 M3049,message 含期望 Option[str]/实际 Option[Untrusted[str]]/净化处方(旧 M3002 无 hint)',
+    check('v74.10:M3049 化(m2:Some(污)→let 标注位)——恰 1 条 M3049,message 含期望 Option[str]/实际 Option[Untrusted[str]]/复合载体中性净化处方(旧 M3002 无 hint)',
       errs.length === 1 && errs[0].code === 'M3049'
         && errs[0].message.includes('期望 Option[str]') && errs[0].message.includes('实际 Option[Untrusted[str]]')
-        && (errs[0].message || '').includes('净化'),
+        && (errs[0].message || '').includes('净化')
+        && (errs[0].message || '').includes('不可信值嵌套于复合类型'),
       `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
   }
   {
     // v74.11:N-63.1 块尾形态——块尾值 Option[Untrusted[str]] vs 签名 Option[str] → M3049。
-    // 实测改前 M3002@2:35 → 改后恰 1 条 M3049@2:35。
+    // 实测改前 M3002@2:35 → 改后恰 1 条 M3049@2:35。v0.72 remedy 文案校准:复合载体
+    // (Option[...])的 remedy 收紧断言为中性措辞模板"不可信值嵌套于复合类型"(§75.5 同款)。
     const p = m74('v74_11_blocktail.ming', [
       'use std.env;',
       'fn pick() -> Option[str] with env {',
@@ -14790,14 +14793,17 @@ fn main() with io, fs {
     const res = chk74(p);
     const ds = ds74(res);
     const errs = ds.filter((d) => d.code !== 'W3101');
-    check('v74.11:M3049 化(块尾形态)——恰 1 条 M3049,message 含"块尾返回类型不匹配:期望 Option[str],实际 Option[Untrusted[str]]"(旧 M3002)',
+    check('v74.11:M3049 化(块尾形态)——恰 1 条 M3049,message 含"块尾返回类型不匹配:期望 Option[str],实际 Option[Untrusted[str]]"+复合载体中性 remedy(旧 M3002)',
       errs.length === 1 && errs[0].code === 'M3049'
-        && errs[0].message.includes('块尾返回类型不匹配:期望 Option[str],实际 Option[Untrusted[str]]'),
+        && errs[0].message.includes('块尾返回类型不匹配:期望 Option[str],实际 Option[Untrusted[str]]')
+        && (errs[0].message || '').includes('不可信值嵌套于复合类型'),
       `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
   }
   {
     // v74.12:N-63.1 match 臂混型形态——污臂 vs 净臂。实测改前 3 条(M3049 块尾[顶层污已有]
     // + M3002 match 值类型 + M3002 分支混型)→ 改后 3 条全 M3049(块尾/match 值类型/分支混型)。
+    // v0.72 remedy 文案校准注记:本语料 actual 均为直传位(Untrusted[str]),直传 remedy 逐字
+    // 不受 MINOR-2 分流影响;复合位(actual 为容器/Result 形态)的中性措辞由 §75.5/§75.7 锁定。
     const p = m74('v74_12_match_arms.ming', [
       'use std.env;',
       'fn pick(n: i64) -> str with env {',
@@ -14907,6 +14913,261 @@ fn main() with io, fs {
   }
 
   // ---- §74-END
+}
+
+// ===================== 75. v0.72:诊断质量补刀小批(if 分支混型 M3049 对称化/复合载体 remedy 精确化)=====================
+// 文件所有权:§75 = 本区全部用例。零新增 M 码,无新语言面;两处改动都在 src/checker.js(v0.71 独立审查 2 MINOR):
+//   ① MINOR-1——if 分支混型点(checkIf 值形式,仿 match 臂 v0.71 先例)双向接入 untrustedMismatchDiag:
+//      分支混型且恰一侧含污 → M3049(what='if 两个分支类型不同',带净化处方);双侧净结构错配与双侧都含污
+//      (结构错配)两者都未发码才落通用 M3002(消息文本不变)。污在 then 或 else 均捕获(对称化)。
+//      注:合同实现下"恰一侧含污"数学上必发 M3049(两方向必有一向 actual 含污/expected 净)——
+//      "污参与且 M3002 维持"的可达形态 = 双侧含污且结构错配(v75.3/v75.8 实测锁定)。
+//   ② MINOR-2——untrustedMismatchDiag 的 remedy 按实际类型形态分流:直传位(a.k==='untrusted')的
+//      str/json 双 remedy 逐字不变(v74.15 锁定,v75.6 复锁);复合载体(opt/vec/map/res/tuple 等嵌套
+//      形态)改中性措辞"不可信值嵌套于复合类型:先投影取出污值→按载体净化",去掉对复合实参不成立的
+//      "把目标改声明为 Untrusted[str]"误导处方。注:非泛型 struct 字面量的污值经字段位直传 actual
+//      (Untrusted[str])先行拦截(字段位仍直传 remedy,v75.6 Raw 语料复锁)。注(v0.72 验证修正):
+//      含污字段 struct 整值赋给目标(如 let c: Clean = r)可产生复合 actual——Raw 语料实测该位
+//      换统一中性模板(误导子串消除,恰判定④原始目标);v75.6b 与该形态并存不冲突。复合位语料
+//      取 Vec[Untrusted[str]](v75.5)与 struct 整值(v75.6b 同族)双形态。
+// 纪律:全部先实测后断言;改前条数取自 HEAD b4a6f25(v0.71.0)实测(f2 原报 M3049@6:5 + M3002@6:31)。
+{
+  const dir75 = path.join(TMP, 'v75');
+  fs.mkdirSync(dir75, { recursive: true });
+  const m75 = (name, src) => { const f = path.join(dir75, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const chk75 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃/挂起形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const ds75 = (res) => (res.j && res.j.diagnostics) || [];
+  const codes75 = (res) => ds75(res).map((d) => d.code).sort().join(',');
+  const msgHas75 = (res, code, frag) => ds75(res).some((d) => d.code === code && (d.message || '').includes(frag));
+
+  // ---- MINOR-1:if 分支混型 M3049 对称化 ----
+  {
+    // v75.1:对称化正例(嵌套形态,#69 登记语料 f2)——污嵌在 then 臂 Result 载荷。改前
+    // M3049@6:5(let)+ M3002@6:31(if 混型回落)→ 改后恰 2 条 M3049,if 位消息 what=
+    // 'if 两个分支类型不同' + 复合载体中性 remedy(MINOR-2 分流),零 M3002 残留。
+    const p = m75('v75_1_if_tail.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let c = 1;',
+      '    let r: Result[str, str] = if c == 1 {',
+      '        Ok(u)',
+      '    } else {',
+      '        Ok("x")',
+      '    };',
+      '    print("x");',
+      '}',
+    ].join('\n'));
+    const res = chk75(p);
+    const ds = ds75(res);
+    const m3049 = ds.filter((d) => d.code === 'M3049');
+    check('v75.1:if 分支对称化正例(嵌套形态 f2)——恰 2 条 M3049(let 标注位 + if 混型位 what="if 两个分支类型不同"),复合 remedy,零 M3002(旧 M3002@6:31)',
+      ds.length === 3 && m3049.length === 2 && codes75(res) === 'M3049,M3049,W3101'
+        && msgHas75(res, 'M3049', 'let 标注类型不匹配:期望 Result[str, str],实际 Result[Untrusted[str], ?]')
+        && msgHas75(res, 'M3049', 'if 两个分支类型不同:期望 Result[str, ?],实际 Result[Untrusted[str], ?]')
+        && msgHas75(res, 'M3049', '不可信值嵌套于复合类型'),
+      `n=${ds.length} codes=${codes75(res)} msgs=${ds.map((d) => d.code + '@' + d.line + ':' + d.col).join(',')}`);
+  }
+  {
+    // v75.2:对称化正例(直传形态,双向覆盖)——then 臂污(g1):混型由反向调用 (tt,et) 捕获;
+    // else 臂污(g2):混型由首调 (et,tt) 捕获。两向消息同形 what='if 两个分支类型不同' + 直传 remedy
+    // 逐字;g2 的 let 反向(净 str 进 Untrusted 槽)维持 M3002(v0.61 口径,无隐式 mark)。
+    const p1 = m75('v75_2a_if_then_direct.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let c = 1;',
+      '    let s: str = if c == 1 { u } else { "x" };',
+      '    print("x");',
+      '}',
+    ].join('\n'));
+    const r1 = chk75(p1);
+    const p2 = m75('v75_2b_if_else_direct.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let c = 1;',
+      '    let w: Untrusted[str] = if c == 1 { "x" } else { u };',
+      '    let _ = w;',
+      '}',
+    ].join('\n'));
+    const r2 = chk75(p2);
+    check('v75.2:if 分支对称化正例(直传形态双向)——then 污与 else 污各发 1 条 if 位 M3049(what="if 两个分支类型不同" + 直传 remedy 逐字),else 污语料的 let 反向维持 M3002',
+      ds75(r1).length === 3 && msgHas75(r1, 'M3049', 'let 标注类型不匹配:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])')
+        && msgHas75(r1, 'M3049', 'if 两个分支类型不同:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])')
+        && ds75(r2).length === 2 && msgHas75(r2, 'M3049', 'if 两个分支类型不同:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])')
+        && msgHas75(r2, 'M3002', 'let 标注类型是 Untrusted[str],但初始化表达式是 str'),
+      `r1=${codes75(r1)} r2=${codes75(r2)} r2msgs=${ds75(r2).map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v75.3:单侧直传污 + 另一侧结构错配(亦含污)→ M3002 维持——分支一侧直传污(Untrusted[str])、
+    // 另一侧复合嵌套污(Option[Untrusted[str]]),双侧都含污是结构错配而非"污进净槽",
+    // 双向 untrustedMismatchDiag 都不发码落 M3002(不给误导净化处方,v74.16 同语义在 if 新调用点)。
+    // if 位零 M3049;唯一 M3049 在 let 标注位(actual=Untrusted[str] 直传,与 if 位无关)。
+    const p = m75('v75_3_if_dirty_vs_wrapped.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let c = 1;',
+      '    let o: Option[str] = if c == 1 { u } else { Some(u) };',
+      '    print("x");',
+      '}',
+    ].join('\n'));
+    const res = chk75(p);
+    const ds = ds75(res);
+    const ifM3049 = ds.some((d) => d.code === 'M3049' && (d.message || '').includes('if 两个分支类型不同'));
+    check('v75.3:if 单侧直传污+另一侧结构错配(亦含污)→ M3002 维持——if 位消息逐字"if 两个分支类型不同:Untrusted[str] 与 Option[Untrusted[str]]",if 位零 M3049(双侧污不发净化处方)',
+      ds.length === 3 && msgHas75(res, 'M3002', 'if 两个分支类型不同:Untrusted[str] 与 Option[Untrusted[str]]')
+        && !ifM3049 && msgHas75(res, 'M3049', 'let 标注类型不匹配:期望 Option[str],实际 Untrusted[str]'),
+      `n=${ds.length} codes=${codes75(res)} msgs=${ds.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v75.4:双侧净结构错配 → 通用 M3002 消息文本不变——对称化接入不得影响纯混型回落路径
+    // (str vs i64,无任何污参与),消息逐字"if 两个分支类型不同:str 与 i64"。
+    const p = m75('v75_4_if_clean_mixed.ming', [
+      'fn main() {',
+      '    let c = 1;',
+      '    let r: str = if c == 1 { "x" } else { 42 };',
+      '    let _ = r;',
+      '}',
+    ].join('\n'));
+    const res = chk75(p);
+    const ds = ds75(res);
+    check('v75.4:双侧净结构错配维持 M3002——恰 1 条诊断,消息逐字"if 两个分支类型不同:str 与 i64"(纯混型回落路径不受对称化影响)',
+      ds.length === 1 && ds[0].code === 'M3002' && ds[0].message === 'if 两个分支类型不同:str 与 i64',
+      `n=${ds.length} codes=${codes75(res)} msg=${JSON.stringify(ds[0] ? ds[0].message : '')}`);
+  }
+
+  // ---- MINOR-2:复合载体 remedy 中性措辞 ----
+  {
+    // v75.5:复合载体(actual=Vec[Untrusted[str]])remedy 中性措辞——message 含中性模板全文,
+    // 不含"把目标改声明为 Untrusted[str]"子串(对复合实参该处方不成立,MINOR-2 核心断言)。
+    const p = m75('v75_5_vec_composite.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let v = [u];',
+      '    let v2: Vec[str] = v;',
+      '    let _ = v2;',
+      '}',
+    ].join('\n'));
+    const res = chk75(p);
+    const ds = ds75(res);
+    const m3049 = ds.filter((d) => d.code === 'M3049');
+    check('v75.5:复合载体 remedy 中性措辞——恰 1 条 M3049,message 含"不可信值嵌套于复合类型:先投影取出污值(容器 .get/.unwrap/解构)再按其载体净化"模板且不含"把目标改声明为 Untrusted[str]"子串',
+      m3049.length === 1
+        && m3049[0].message.includes('let 标注类型不匹配:期望 Vec[str],实际 Vec[Untrusted[str]](不可信值嵌套于复合类型:先投影取出污值(容器 .get/.unwrap/解构)再按其载体净化(str 载荷经 std.unstr.sanitize_*;Json 载荷经 .as_str() 投影后净化),或在目标类型对应位置承载 Untrusted)')
+        && !m3049[0].message.includes('把目标改声明为 Untrusted[str]'),
+      `n=${ds.length} codes=${codes75(res)} msg=${JSON.stringify(m3049[0] ? m3049[0].message : '')}`);
+  }
+  {
+    // v75.6:直传 remedy 逐字回归锁(MINOR-2 分流不得误伤直传位)——(a) v74.15 同口径语料
+    // message 逐字;(b) Raw 结构体字段位语料:非泛型 struct 字面量污值经字段位直传 actual
+    // 拦截,字段位 remedy 仍逐字"把目标改声明为 Untrusted[str]"(字段位该处方成立:可改声明
+    // struct Raw { p: Untrusted[str] })。
+    const p1 = m75('v75_6a_direct_let.ming', [
+      'use std.env;',
+      'fn main() with env {',
+      '    let u = std.env.get("X").unwrap();',
+      '    let s: str = u;',
+      '}',
+    ].join('\n'));
+    const r1 = chk75(p1);
+    const p2 = m75('v75_6b_raw_field.ming', [
+      'use std.env;',
+      '',
+      'struct Raw {',
+      '    p: str,',
+      '}',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let w: Raw = Raw{ p: u };',
+      '    print("x");',
+      '}',
+    ].join('\n'));
+    const r2 = chk75(p2);
+    const m1 = ds75(r1).filter((d) => d.code === 'M3049');
+    const m2 = ds75(r2).filter((d) => d.code === 'M3049');
+    check('v75.6:直传 remedy 逐字回归锁——let 直传位与 Raw 字段位 message 均逐字"(不可信值:先净化,或把目标改声明为 Untrusted[str])"(v74.15 同口径;MINOR-2 分流仅改复合位)',
+      m1.length === 1 && m1[0].message === 'let 标注类型不匹配:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])'
+        && m2.length === 1 && m2[0].message === '字段 "p" 类型不匹配:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])',
+      `m1=${JSON.stringify(m1[0] ? m1[0].message : '')} m2=${JSON.stringify(m2[0] ? m2[0].message : '')}`);
+  }
+
+  // ---- 回归:match 位与双侧污语义不回退 ----
+  {
+    // v75.7:match 对称化回归(#69 登记语料 f3)——3 条 M3049(let 标注/match 值类型/match 分支
+    // 类型不一致)零 M3002,复合位 remedy 校准为中性措辞(v0.72);另 match 位双侧污结构错配
+    // (Untrusted[str] 臂 vs Option[Untrusted[str]] 臂)维持 M3002(bidirectional bail 不给处方)。
+    const p1 = m75('v75_7a_match_arms.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let u = env.get("X").unwrap();',
+      '    let n = 1;',
+      '    let r: Result[str, str] = match n {',
+      '        1 => Ok(u),',
+      '        _ => Ok("x"),',
+      '    };',
+      '    print("x");',
+      '}',
+    ].join('\n'));
+    const r1 = chk75(p1);
+    const p2 = m75('v75_7b_match_both_dirty.ming', [
+      'use std.env;',
+      '',
+      'fn pick(n: i64) -> str with env {',
+      '    match n {',
+      '        1 => env.get("A").unwrap(),',
+      '        _ => Some(env.get("B").unwrap()),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const r2 = chk75(p2);
+    check('v75.7:match 对称化回归——f3 语料恰 3 条全 M3049(块尾/match 的值类型/match 分支类型不一致各 1,复合位中性 remedy),零 M3002;match 位双侧污语料维持 1 条 M3002"match 分支类型不一致:Untrusted[str] 与 Option[Untrusted[str]]"',
+      ds75(r1).length === 4 && codes75(r1) === 'M3049,M3049,M3049,W3101'
+        && msgHas75(r1, 'M3049', 'match 的值类型不匹配:期望 Result[str, str],实际 Result[Untrusted[str], ?]')
+        && msgHas75(r1, 'M3049', 'match 分支类型不一致:期望 Result[str, ?],实际 Result[Untrusted[str], ?]')
+        && msgHas75(r1, 'M3049', '不可信值嵌套于复合类型')
+        && ds75(r2).length === 3 && msgHas75(r2, 'M3002', 'match 分支类型不一致:Untrusted[str] 与 Option[Untrusted[str]]')
+        && ds75(r2).filter((d) => d.code === 'M3049').length === 2,
+      `r1=${codes75(r1)} r2=${codes75(r2)} r2msgs=${ds75(r2).map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v75.8:双侧污 M3002 维持(v74.16 同款载体对在 if 新调用点)——Untrusted[str] 分支 vs
+    // Untrusted[Json] 分支是载体结构错配而非"污进净槽",if 位落 M3002 逐字,零 M3049
+    // (不给净化处方);let j/let w 两处反向错配维持 M3002(v0.61 口径)。
+    const p = m75('v75_8_if_both_dirty.ming', [
+      'use std.env;',
+      '',
+      'fn main() with env, io {',
+      '    let a: Untrusted[str] = env.get("X").unwrap();',
+      '    let j: Untrusted[Json] = a;',
+      '    let c = 1;',
+      '    let w: Untrusted[Json] = if c == 1 { a } else { j };',
+      '    let _ = w;',
+      '}',
+    ].join('\n'));
+    const res = chk75(p);
+    const ds = ds75(res);
+    check('v75.8:双侧污维持 M3002(if 位)——恰 3 条全 M3002 零 M3049,if 位消息逐字"if 两个分支类型不同:Untrusted[str] 与 Untrusted[Json]"(v74.16 语义在对称化新调用点不回退)',
+      ds.length === 3 && codes75(res) === 'M3002,M3002,M3002'
+        && msgHas75(res, 'M3002', 'if 两个分支类型不同:Untrusted[str] 与 Untrusted[Json]'),
+      `n=${ds.length} codes=${codes75(res)} msgs=${ds.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+
+  // ---- §75-END
 }
 
 

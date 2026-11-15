@@ -844,6 +844,8 @@ export class Checker {
   // (typeContainsUntrusted)——嵌套位置(Option[Untrusted[str]] 等容器载荷/变体构造载荷/
   // 块尾/match 臂混型/spawn_all 元素)也发 M3049,不再回落通用 M3002;全部仍正确拒绝,
   // 仅诊断质量(带净化处方 hint),非旁路。直传位(顶层 Untrusted)码与消息逐字不变。
+  // v0.72(v0.71 审查 MINOR-1/MINOR-2):if 分支混型点双向接入(仿 match 先例);
+  // remedy 按载体形态分流(直传位逐字不变,复合载体中性措辞)。
   untrustedMismatchDiag(actualT, expectedT, span, what) {
     const a = resolveT(actualT, new Map());
     if (!typeContainsUntrusted(a)) return false;
@@ -851,12 +853,23 @@ export class Checker {
     // 双侧都含污(如 Option[Untrusted[str]] vs Option[Untrusted[Json]])是结构错配,
     // 不是"污进净槽"——维持通用 M3002(给净化处方即误导)。
     if (e && typeContainsUntrusted(e)) return false;
-    // v0.68(ADR-004 §7.2):hint 文本载体感知——str 载荷先净化;Json 载荷先投影出
-    // Untrusted[str] 字段再净化(污点树不能整体进槽,stringify/parse 不开旁路,§4.2)。
-    const carrier = resolveT(a.el, new Map());
-    const remedy = carrier?.k === 'json'
-      ? '不可信 Json:先经 .as_str() 投影取出 Untrusted[str] 字段并净化(重建 Json 走 std.json.parse),或把目标改声明为 Untrusted[Json]'
-      : '不可信值:先净化,或把目标改声明为 Untrusted[str]';
+    // v0.72(v0.71 审查 MINOR-2):remedy 按实际类型形态分流——
+    //   · 直传位(a 是 Untrusted[...]):v0.68(ADR-004 §7.2)载体感知双 remedy 逐字不变
+    //     (v74.15 锁定)——str 载荷先净化;Json 载荷先投影出 Untrusted[str] 字段再净化
+    //     (污点树不能整体进槽,stringify/parse 不开旁路,§4.2)。
+    //   · 复合载体(opt/vec/map/res/struct/enum/tuple 等嵌套形态):污值嵌在内部,"把目标
+    //     整体改声明为 Untrusted[str]"不成立(如 Raw{p: Untrusted[str]} 复合实参),改中性
+    //     措辞——主句"先投影取出污值→按载体净化"方向不丢,str/json 两条净化路径都保留
+    //     (Json 内嵌复合形态的 as_str 指引不丢),不给"整体改声明"类误导处方。
+    let remedy;
+    if (a.k === 'untrusted') {
+      const carrier = resolveT(a.el, new Map());
+      remedy = carrier?.k === 'json'
+        ? '不可信 Json:先经 .as_str() 投影取出 Untrusted[str] 字段并净化(重建 Json 走 std.json.parse),或把目标改声明为 Untrusted[Json]'
+        : '不可信值:先净化,或把目标改声明为 Untrusted[str]';
+    } else {
+      remedy = '不可信值嵌套于复合类型:先投影取出污值(容器 .get/.unwrap/解构)再按其载体净化(str 载荷经 std.unstr.sanitize_*;Json 载荷经 .as_str() 投影后净化),或在目标类型对应位置承载 Untrusted';
+    }
     this.diags.push(err('M3049',
       `${what}:期望 ${typeStr(e)},实际 ${typeStr(a)}(${remedy})`,
       span));
@@ -5120,7 +5133,13 @@ export class Checker {
     const et = e.els.nt === 'If' ? this.checkIf(e.els, ctx, expected, true) : this.checkBlock(e.els, ctx, expected, true);
     const binds = new Map();
     if (tt && et && !unify(tt, et, binds) && tt.k !== 'never' && et.k !== 'never') {
-      this.diags.push(err('M3002', `if 两个分支类型不同:${typeStr(tt, binds)} 与 ${typeStr(et, binds)}`, e.span));
+      // v0.72(v0.71 审查 MINOR-1):分支混型且一侧含污(如污臂 vs 净臂)→ M3049(带净化处方),
+      // 仿 match 臂先例(untrustedMismatchDiag 双向接入)——污在 then 或 else 均捕获;
+      // 双侧净的结构错配与双侧都含污(结构错配)两者都未发码才落通用 M3002,消息文本不变。
+      if (!this.untrustedMismatchDiag(et, tt, e.span, 'if 两个分支类型不同')
+        && !this.untrustedMismatchDiag(tt, et, e.span, 'if 两个分支类型不同')) {
+        this.diags.push(err('M3002', `if 两个分支类型不同:${typeStr(tt, binds)} 与 ${typeStr(et, binds)}`, e.span));
+      }
     }
     return tt?.k === 'never' ? et : (tt ?? et);
   }
