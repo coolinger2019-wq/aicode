@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.70.0';
+export const VERSION = '0.71.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -573,7 +573,13 @@ async function cmdFmt(files, flags) {
     }
     if (formatted !== src) {
       changed++;
-      if (write) fs.writeFileSync(f, formatted, 'utf8');
+      if (write) {
+        fs.writeFileSync(f, formatted, 'utf8');
+        // N-68(v0.71 DX 裁量):--write 实际写入时补一行回执——此前写路径完全静默,
+        // 批量格式化时无法确认哪些文件被改。与 --check 的"<f>: 已是规范格式"文案对称。
+        // 不动 dry-run 路径(其 stdout 是格式化内容,tests/run.mjs 直接消费写回文件)。
+        process.stdout.write(`${f}: 已格式化\n`);
+      }
       else if (!check) process.stdout.write(formatted);
       else process.stdout.write(`${f}: 需要格式化\n`);
     } else if (check) {

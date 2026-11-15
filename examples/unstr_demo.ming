@@ -1,0 +1,19 @@
+// std.unstr:污点最小片(v0.61)——env.get 返回 Untrusted[str],净化后才能当 str 用
+use std.env;
+
+use std.unstr;
+
+fn main() with io, env {
+
+    // 来源窄源:env.get → Option[Untrusted[str]](整值标污)
+    let raw = match std.env.get("TARGET") { Some(u) => u, None => { print("未设置 TARGET,走默认:README.md"); return; } };
+
+    // 净化器:校验不改写——非空且无控制字符 → Ok(原串),否则 Err(拒绝)
+    match std.unstr.sanitize_cli_path(raw) {
+        Ok(path) => print("已校验目标: \{path}"),
+        Err(e) => {
+            print("拒绝非法路径: \{e}");
+            return;
+        },
+    }
+}

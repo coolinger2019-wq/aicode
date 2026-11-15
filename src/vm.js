@@ -384,7 +384,10 @@ export class VMInterp extends Interp {
       try {
         const idx = sub.compiled.fnIndexOfGet ? sub.compiled.fnIndexOfGet(entry) : sub.indexOfEntry(entry);
         if (idx === undefined || idx < 0) throw new Panic('M4001', `内部错误:测试函数未编译 ${testName}`);
-        sub.callCompiled(idx, [], null, false);
+        // #61(v0.71 任务 4):callSpan 传测试块声明位置——与基类 Interp.runTests 同款接线
+        // (#54 先例:双路径漏一条即门禁口径漂移);此前传 null,失败栈行
+        // 显示 `at test <名> (undefined:undefined:undefined)`。只影响失败栈行位置。
+        sub.callCompiled(idx, [], entry.decl.span ?? null, false);
         r.ok = true;
       } catch (e) {
         if (e instanceof Panic) {

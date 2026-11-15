@@ -566,7 +566,10 @@ export class Interp {
       const sub = new Interp(this.check, { out: this.out, errOut: this.errOut, capture: true, stdin: this.stdin, noWasm: this.noWasm, maxSteps: this.maxSteps, maxAlloc: this.maxAlloc, maxMs: this.maxMs });
       const r = { name: testName, ok: false, output: '', error: null, span: entry.decl.span };
       try {
-        sub.callUser(this.entry, entry, null, [], null);
+        // #61(v0.71 任务 4):callSpan 传测试块声明位置——此前传 null,失败诊断栈行
+        // 显示 `at test <名> (undefined:undefined:undefined)`。只影响失败栈行的位置,
+        // 通过路径行为/输出不变。N-60.4(test 模式 M4011 栈行 undefined)同源一并解决。
+        sub.callUser(this.entry, entry, null, [], entry.decl.span ?? null);
         r.ok = true;
       } catch (e) {
         if (e instanceof Panic) {
@@ -594,7 +597,10 @@ export class Interp {
       this.depth--;
       throw new Panic('M4005', `调用栈过深(>250 层递归);如需更深递归请改写为循环`, callSpan);
     }
-    this.callStack.push({ name: decl.name, span: callSpan });
+    // #61:测试块帧名与编译器口径对齐(compiler.js 给 test 块的函数名即 `test <名>`,
+    // VM 路径栈帧用它)——此前 tree 路径推裸 decl.name,失败栈行是 `at <名>` 而非
+    // `at test <名>`,三引擎分歧。仅 kind === 'test' 受影响,常规函数帧名不变。
+    this.callStack.push({ name: entry.kind === 'test' ? `test ${decl.name}` : decl.name, span: callSpan });
     this.ensuresStack.push(decl.ensures ?? null);
     // v0.56(A1):合约环境 = 形参帧 fenv。body 块环境是它的子环境,let 只写子层;
     // mut 形参重赋值写回 fenv,因此合约看到形参最终值(v0.49 既有语义)。

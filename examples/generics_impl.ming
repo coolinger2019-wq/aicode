@@ -69,9 +69,6 @@ fn main() with io {
     let words: Vec[str] = ["pear", "apple", "fig"];
     print(words.min().unwrap());
 
-    let inv = Pair {
-        left: Inventory { item: "apple", count: 3 },
-        right: Inventory { item: "pear", count: 7 },
-    };
+    let inv = Pair { left: Inventory { item: "apple", count: 3 }, right: Inventory { item: "pear", count: 7 } };
     print(inv.summary());
 }

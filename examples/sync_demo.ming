@@ -2,24 +2,31 @@
 use std.sync;
 
 fn fib(n: i64) -> i64 {
-    if n < 2 { return n; }
+    if n < 2 {
+        return n;
+    }
     return fib(n - 1) + fib(n - 2);
 }
 
 fn check_fib(n: i64) -> i64 {
-    if n < 0 { panic("fib 不接受负数"); }
+    if n < 0 {
+        panic("fib 不接受负数");
+    }
     return fib(n);
 }
 
 fn word_count(text: str) -> i64 {
     let mut n = 0;
     for part in text.split(" ") {
-        if part != "" { n += 1; }
+        if part != "" {
+            n += 1;
+        }
     }
     return n;
 }
 
 fn main() with io, sync {
+
     // 两个 CPU 密集任务真正并行(worker 线程)
     let h1 = std.sync.spawn(fib, 27);
     let h2 = std.sync.spawn(fib, 24);
@@ -35,7 +42,7 @@ fn main() with io, sync {
     print("词数 = \{std.sync.join(h3).unwrap()}");
 
     match std.sync.join(h4) {
-        Ok(v)  => print("不该到这: \{v}"),
+        Ok(v) => print("不该到这: \{v}"),
         Err(e) => print("子任务失败: \{e}"),
     }
 }

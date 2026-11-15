@@ -14539,6 +14539,376 @@ fn main() with io, fs {
   // ---- §73-END
 }
 
+// ===================== 74. v0.71:诊断残留收口(salvage 精化/valBrace 所有权/M3049 化)=====================
+// 文件所有权:§74 = 本区全部用例(任务 1/2/3;#61 test 栈位置与 N-68 fmt 文案由并行 agent 负责,不在本区)。
+// 三个机制(全部 src/parser.js + src/checker.js,零新增 M 码):
+//   ① #68 salvage 精化:recover(false) 语句层停机表新增深度 0 `id(` 启发式——当前 token 是标识符
+//      且下一个 token 是 `(` 时停机不消费(疑似新调用语句起始),交还块循环按语句解析抢救。
+//      效果:GUIDE 1259 登记语料 v0.70 = 1 条(行 8 真实 M3001 静默)→ v0.71 = 2 条(根因 M2001 +
+//      nosuchfn_xyz 的 M3001,真实错误恢复报出);基线 v0.69 = 4 条误导。
+//   ② #67 valBrace 构造级登记所有权:登记所有权分层(块入口快照)——本块内失败的值构造其收尾 `}`
+//      由本块 recover 消费结清(随消费同步递减),外层活构造的收尾交还外层构造的收尾 expectOp;
+//      不变量:任意 recover 退出时 valBrace 精确等于"已消费未匹配的 `{` 数"中仍活着的部分
+//      (无负数/无陈旧/无双重递减)。效果:"嵌套块在值构造内失败"形态的伪 M2002"期望 }"/伪 M2003
+//      全部消失,根因保留,真实诊断(checker 层)补位——error 总量持平伪→真。
+//   ③ #69 嵌套污点位置 M3049 化(N-63.1 五形态 + v0.68 审查 m2):untrustedMismatchDiag 判定改
+//      typeContainsUntrusted(actual) && !typeContainsUntrusted(expected)——嵌套位置(容器载荷/
+//      块尾/match 臂混型/spawn_all 元素/变体构造载荷)发 M3049 带净化处方,不再回落 M3002;
+//      全部仍正确拒绝,直传位码与消息逐字不变,双侧都含污维持 M3002,Some(污) 污类型自洽传播合法。
+// 纪律:全部先实测后断言;改前条数取自 HEAD 5c176d6(v0.70.0)与 v0.69 副本(Temp/v70verify/repo_head)实测。
+{
+  const dir74 = path.join(TMP, 'v74');
+  fs.mkdirSync(dir74, { recursive: true });
+  const m74 = (name, src) => { const f = path.join(dir74, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const chk74 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃/挂起形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const ds74 = (res) => (res.j && res.j.diagnostics) || [];
+  const codes74 = (res) => ds74(res).map((d) => d.code).sort().join(',');
+  const msgHas74 = (res, code, frag) => ds74(res).some((d) => d.code === code && (d.message || '').includes(frag));
+
+  // ---- 任务 1(#68 salvage 精化):深度 0 `id(` 停机启发式 ----
+  {
+    // v74.1:GUIDE 1259 登记语料形态(test 块后跟未知名调用)——根因保留 + salvage 生效。
+    // 实测:v0.69 基线 4 条误导 → v0.70(HEAD) 1 条(M2001@4 根因;行 8 nosuchfn_xyz 的真实
+    // M3001 静默)→ v0.71 恰 2 条(根因 + M3001@8)。salvage 把 `nosuchfn_xyz(` 停机交还,
+    // 语句被解析,checker 报出未知名。
+    const p = m74('v74_1_anchor_idcall.ming', [
+      'fn add(a: i64, b: i64) -> i64 { return a + b; }',
+      'fn main() with io {',
+      '    print("hi");',
+      '    test add_works {',
+      '        assert_eq(add(2, 3), 5);',
+      '        assert_eq(add(1, 1), 2);',
+      '    }',
+      '    nosuchfn_xyz();',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    check('v74.1:salvage 精化——GUIDE 1259 语料恰 2 条:根因 M2001@4 含 "test" + nosuchfn_xyz 的 M3001@8(真实错误恢复报出,旧 v0.70 静默/v0.69 4 条误导)',
+      ds.length === 2 && codes74(res) === 'M2001,M3001'
+        && ds.some((d) => d.code === 'M2001' && d.line === 4 && d.message.includes('test'))
+        && ds.some((d) => d.code === 'M3001' && d.line === 8 && d.message.includes('nosuchfn_xyz')),
+      `n=${ds.length} codes=${codes74(res)} lines=${ds.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.2:salvage 救回的调用语句之后的合法语句仍被解析(let z 产生 W3101 证明解析到位)。
+    // 实测 3 条:M2001@3(根因)+ M3001@6(未知名)+ W3101@6(z 未使用——即 let z 确实被解析)。
+    const p = m74('v74_2_salvage_then_let.ming', [
+      'fn main() with io {',
+      '    print("a");',
+      '    test broken {',
+      '        assert_eq(1, 1);',
+      '    }',
+      '    unknown_call_xyz(1);',
+      '    let z = 9;',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    check('v74.2:salvage 救回调用语句且后续 let 仍解析——M2001@3 根因 + M3001@6 未知名 + W3101@7(z 未使用证明 let 被解析到位)',
+      codes74(res) === 'M2001,M3001,W3101'
+        && ds.some((d) => d.code === 'M2001' && d.line === 3)
+        && ds.some((d) => d.code === 'M3001' && d.line === 6 && d.message.includes('unknown_call_xyz'))
+        && ds.some((d) => d.code === 'W3101' && d.line === 7),
+      `codes=${codes74(res)} lines=${ds.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.3:毒汤终止性冒烟——9 层 `id(` 嵌套毒汤(启发式停机点密集)+ 块内毒。
+    // 终止性链路:启发式停机不消费 → 失败点仍 id( 时 catch 强进(next()+recover)保证每轮
+    // 至少前进 1 token → 必达 eof。runMing 自带 30s timeout,挂起形态 r.code=null 被点名。
+    // 实测:exit 1,恰 4 条(M2001 根因 + M2002 + 2×M2001 级联毒,全部有界)。
+    const p = m74('v74_3_poison_terminate.ming', [
+      'fn main() {',
+      '  a( b( c( d( e( f( g( h( i( j( k(',
+      '  let q = ;',
+      '  zz(',
+      '}',
+      'fn t() { return 3; }',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    check('v74.3:毒汤终止性冒烟——9 层 id( 嵌套毒汤有限时间收敛(exit 1 非 timeout),诊断有界 ≤8 条,无挂起(启发式停机+强进链路实测)',
+      res.code === 1 && res.j !== null && ds.length >= 1 && ds.length <= 8,
+      `code=${res.code} j=${res.j === null ? 'null' : 'ok'} n=${ds.length} codes=${codes74(res)}`);
+  }
+
+  // ---- 任务 2(#67 valBrace 构造级登记所有权):四探针口径 ----
+  {
+    // v74.4:合法 struct 构造内嵌套块失败(纯 valBrace 形态)——伪 M2002"期望 }"消失,根因保留,
+    // checker 真实诊断补位。实测改前 5 error(2×M2001 根因 + 伪 M2002@3:40 + 2×M3029)
+    // → 改后 5 error(2×M2001 根因 + M3002@3:17 if 缺 else[真实] + 2×M3029),伪→真总量持平。
+    const p = m74('v74_4_valbrace_struct.ming', [
+      'struct S { a: i64 }',
+      'fn main() {',
+      '  let x = S{ a: if true { let q = ; } };',
+      '  print("good1");',
+      '  let y = 2 + ;',
+      '  print("good2");',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101'); // W3101(x/y 未使用)与恢复机制无关,单列
+    check('v74.4:valBrace 所有权(合法构造)——恰 5 条 error:M2001@3/M2001@5 根因保留 + M3002@3(if 缺 else,真实)+ 2×M3029;无伪 M2002"期望 }"',
+      errs.length === 5 && errs.map((d) => d.code).sort().join(',') === 'M2001,M2001,M3002,M3029,M3029'
+        && errs.some((d) => d.code === 'M2001' && d.line === 3)
+        && errs.some((d) => d.code === 'M2001' && d.line === 5)
+        && errs.some((d) => d.code === 'M3002' && d.line === 3 && d.message.includes('必须有 else'))
+        && !msgHas74(res, 'M2002', '期望 "}"'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).sort().join(',')} lines=${errs.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.5:p21 登记语料形态(Json{ 未导入)——伪 M2002@2:43"期望 }"消失,根因 2 条保留,
+    // checker 真实 M3001("Json" 不是结构体)补位。实测改前 5 error(伪 M2002 在列)→ 改后
+    // 5 error(伪→真 M3001@2:11),M2001 恰 2 条。
+    const p = m74('v74_5_valbrace_p21.ming', [
+      'fn main() {',
+      '  let x = Json{ a: if true { let q = ; } };',
+      '  print("good1");',
+      '  let y = 2 + ;',
+      '  print("good2");',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    const m2001 = errs.filter((d) => d.code === 'M2001');
+    check('v74.5:valBrace 所有权(p21 形态)——伪 M2002@2:43 消失(无任何"期望 }"),根因 M2001 恰 2 条,真实 M3001(Json 不是结构体)与 2×M3029 补位,共 5 条 error',
+      errs.length === 5 && m2001.length === 2
+        && m2001.some((d) => d.line === 2) && m2001.some((d) => d.line === 4)
+        && msgHas74(res, 'M3001', 'Json') && !msgHas74(res, 'M2002', '期望 "}"'),
+      `n=${errs.length} m2001=${m2001.length} codes=${errs.map((d) => d.code).sort().join(',')} lines=${errs.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.6:p24 顶层 const 形态——recover(true) 入口清零(v0.70 MAJOR-1)保留,顶层行为逐字不变。
+    // 实测新旧逐字同 4 条:M2002@1:16(根因)+ M2001@1:18 + M2001@3:15(根因)+ M3029@4:3。
+    const p = m74('v74_6_valbrace_p24.ming', [
+      'const K = S{ a 1 };',
+      'fn main() {',
+      '  let y = 2 + ;',
+      '  print("g");',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    check('v74.6:valBrace 所有权(p24 顶层 const 形态)——恰 4 条逐字:M2002@1 根因 + M2001@1 + M2001@3 根因 + M3029@4(顶层 recover(true) 行为逐字不变,回归锁)',
+      ds.length === 4 && codes74(res) === 'M2001,M2001,M2002,M3029'
+        && ds.some((d) => d.code === 'M2002' && d.line === 1 && d.message.includes('期望 ":"'))
+        && ds.some((d) => d.code === 'M2001' && d.line === 1)
+        && ds.some((d) => d.code === 'M2001' && d.line === 3),
+      `n=${ds.length} codes=${codes74(res)} lines=${ds.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.7:p05 单层嵌套形态——伪 M2002 消失。实测改前 3 error(M2001+伪 M2002+M3029)
+    // → 改后 3 error(M3001@2 真实 + M2001@2 根因 + M3029@3),error 总量持平伪→真。
+    const p = m74('v74_7_valbrace_p05.ming', [
+      'fn main() {',
+      '  let x = Json{ a: if true { let q = ; } };',
+      '  print("after");',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.7:valBrace 所有权(p05 形态)——恰 3 条 error:M3001@2(Json 不是结构体,真实)+ M2001@2 根因 + M3029@3;无伪 M2002',
+      errs.length === 3 && errs.map((d) => d.code).sort().join(',') === 'M2001,M3001,M3029'
+        && errs.some((d) => d.code === 'M2001' && d.line === 2)
+        && !msgHas74(res, 'M2002', '期望 "}"'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).sort().join(',')} lines=${errs.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.8:p06 match 臂嵌套块形态——伪 M2003(无效模式 ";")消失。实测改前 3 error
+    // (M2001+伪 M2003+M3029)→ 改后 3 error(M3001@2 找不到 x[真实]+M2001@2 根因+M3029@3)。
+    const p = m74('v74_8_valbrace_p06.ming', [
+      'fn main() {',
+      '  let r = match x { 1 => { let q = ; } };',
+      '  print("after");',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.8:valBrace 所有权(p06 match 形态)——恰 3 条 error:M3001@2(找不到值 x,真实)+ M2001@2 根因 + M3029@3;无伪 M2003',
+      errs.length === 3 && errs.map((d) => d.code).sort().join(',') === 'M2001,M3001,M3029'
+        && errs.some((d) => d.code === 'M2001' && d.line === 2)
+        && !errs.some((d) => d.code === 'M2003'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).sort().join(',')} lines=${errs.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.9:s1 压力复利不回升——200 行"构造内嵌套块失败"压力语料。实测改前 parser 层
+    // 400 条(200 M2001 根因 + 200 伪 M2002)→ 改后 parser 层 200 条(伪全消),check 总量
+    // 400 条(200 根因 + 200 真实 M3001)≤400 且不复利。
+    const lines = ['fn main() {'];
+    for (let i = 0; i < 200; i++) lines.push(`  let x${i} = Json{ a: if true { let q = ; } };`);
+    lines.push('}');
+    const p = m74('v74_9_valbrace_stress.ming', lines.join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101'); // W3101(x0..x199 未使用)200 条与恢复机制无关
+    const m2002fake = errs.filter((d) => d.code === 'M2002' && (d.message || '').includes('期望 "}"')).length;
+    check('v74.9:valBrace 所有权(200 行压力)——error 总量 ≤400 且无伪 M2002"期望 }"(改前 parser 层 200 条伪;复利不回升),M2001 根因恰 200 条,真实 M3001 恰 200 条',
+      errs.length <= 400 && m2002fake === 0
+        && errs.filter((d) => d.code === 'M2001').length === 200
+        && errs.filter((d) => d.code === 'M3001').length === 200,
+      `n=${errs.length} fakeM2002=${m2002fake} m2001=${errs.filter((d) => d.code === 'M2001').length} m3001=${errs.filter((d) => d.code === 'M3001').length}`);
+  }
+
+  // ---- 任务 3(#69 嵌套污点位置 M3049 化):五形态 + 直传逐字 + 双侧污 M3002 ----
+  {
+    // v74.10:m2 形态——Some(污) 载荷经泛型槽合法绑定为 Option[Untrusted[str]],let 标注位
+    // 发 M3049(带净化处方)。实测改前 M3002"let 标注类型是 Option[str]..."(无净化 hint)
+    // → 改后恰 1 条 M3049。
+    const p = m74('v74_10_m2_some_let.ming', [
+      'use std.env;',
+      'fn main() with env {',
+      '    let o: Option[str] = Some(std.env.get("X").unwrap());',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.10:M3049 化(m2:Some(污)→let 标注位)——恰 1 条 M3049,message 含期望 Option[str]/实际 Option[Untrusted[str]]/净化处方(旧 M3002 无 hint)',
+      errs.length === 1 && errs[0].code === 'M3049'
+        && errs[0].message.includes('期望 Option[str]') && errs[0].message.includes('实际 Option[Untrusted[str]]')
+        && (errs[0].message || '').includes('净化'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
+  }
+  {
+    // v74.11:N-63.1 块尾形态——块尾值 Option[Untrusted[str]] vs 签名 Option[str] → M3049。
+    // 实测改前 M3002@2:35 → 改后恰 1 条 M3049@2:35。
+    const p = m74('v74_11_blocktail.ming', [
+      'use std.env;',
+      'fn pick() -> Option[str] with env {',
+      '    Some(std.env.get("X").unwrap())',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.11:M3049 化(块尾形态)——恰 1 条 M3049,message 含"块尾返回类型不匹配:期望 Option[str],实际 Option[Untrusted[str]]"(旧 M3002)',
+      errs.length === 1 && errs[0].code === 'M3049'
+        && errs[0].message.includes('块尾返回类型不匹配:期望 Option[str],实际 Option[Untrusted[str]]'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
+  }
+  {
+    // v74.12:N-63.1 match 臂混型形态——污臂 vs 净臂。实测改前 3 条(M3049 块尾[顶层污已有]
+    // + M3002 match 值类型 + M3002 分支混型)→ 改后 3 条全 M3049(块尾/match 值类型/分支混型)。
+    const p = m74('v74_12_match_arms.ming', [
+      'use std.env;',
+      'fn pick(n: i64) -> str with env {',
+      '    match n {',
+      '        1 => std.env.get("A").unwrap(),',
+      '        _ => "clean",',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const m3049 = ds.filter((d) => d.code === 'M3049');
+    check('v74.12:M3049 化(match 臂混型)——恰 3 条全 M3049(块尾/match 的值类型/分支类型不一致各 1),零 M3002 残留(旧 2×M3002)',
+      ds.length === 3 && m3049.length === 3
+        && msgHas74(res, 'M3049', '块尾返回类型不匹配') && msgHas74(res, 'M3049', 'match 的值类型不匹配')
+        && msgHas74(res, 'M3049', 'match 分支类型不一致'),
+      `n=${ds.length} codes=${codes74(res)} msgs=${ds.map((d) => d.code + '@' + d.line).join(',')}`);
+  }
+  {
+    // v74.13:N-63.1 spawn_all 元素形态——Vec[Untrusted[str]] 传净参数函数 → M3049 指向元素。
+    // 实测改前 M3002"第二个参数必须是 Vec[str](实际 Vec[Untrusted[str]])"→ 改后恰 1 条 M3049。
+    const p = m74('v74_13_spawnall_elem.ming', [
+      'use std.env;',
+      'fn load(s: str) -> str with env {',
+      '    return s;',
+      '}',
+      'fn main() with sync, env {',
+      '    let us = [std.env.get("A").unwrap(), std.env.get("B").unwrap()];',
+      '    let rs = std.sync.spawn_all(load, us);',
+      '    let _ = rs;',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.13:M3049 化(spawn_all 元素形态)——恰 1 条 M3049,message 含"spawn_all 的 Vec 元素类型不匹配:期望 str,实际 Untrusted[str]"(旧 M3002 整参数位)',
+      errs.length === 1 && errs[0].code === 'M3049'
+        && errs[0].message.includes('spawn_all 的 Vec 元素类型不匹配:期望 str,实际 Untrusted[str]'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
+  }
+  {
+    // v74.14:m2 用户变体载荷形态——具体净槽(E.Mk 的 str 载荷)传污 → M3049。
+    // 实测改前 M3002@4:41"变体值类型不匹配:期望 str,实际 Untrusted[str]"→ 改后同位 M3049。
+    const p = m74('v74_14_variant_payload.ming', [
+      'use std.env;',
+      'enum E { Mk(str) }',
+      'fn main() with env {',
+      '    let e = E.Mk(std.env.get("X").unwrap());',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.14:M3049 化(用户变体载荷形态)——恰 1 条 M3049,message 含"变体载荷类型不匹配:期望 str,实际 Untrusted[str]"(旧 M3002"变体值类型不匹配")',
+      errs.length === 1 && errs[0].code === 'M3049'
+        && errs[0].message.includes('变体载荷类型不匹配:期望 str,实际 Untrusted[str]'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
+  }
+  {
+    // v74.15:直传位逐字不变——顶层 Untrusted 进净槽的 M3049 码与消息 v0.61 起逐字稳定。
+    // 实测改前后同:1 条 M3049,message 逐字(含载体感知净化 hint)。
+    const p = m74('v74_15_direct_unchanged.ming', [
+      'use std.env;',
+      'fn main() with env {',
+      '    let u = std.env.get("X").unwrap();',
+      '    let s: str = u;',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const m3049 = ds.filter((d) => d.code === 'M3049');
+    check('v74.15:直传位逐字不变——恰 1 条 M3049,message 逐字"let 标注类型不匹配:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])"',
+      m3049.length === 1 && m3049[0].message === 'let 标注类型不匹配:期望 str,实际 Untrusted[str](不可信值:先净化,或把目标改声明为 Untrusted[str])',
+      `n=${m3049.length} codes=${codes74(res)} msg=${JSON.stringify(m3049[0] ? m3049[0].message : '')}`);
+  }
+  {
+    // v74.16:双侧都含污(结构错配)维持 M3002——Untrusted[str] 值进 Untrusted[Json] 槽
+    // 不是"污进净槽",给净化处方即误导。实测恰 1 条 M3002,零 M3049。
+    const p = m74('v74_16_both_dirty.ming', [
+      'use std.env;',
+      'fn main() with env {',
+      '    let a: Untrusted[str] = std.env.get("X").unwrap();',
+      '    let j: Untrusted[Json] = a;',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    const ds = ds74(res);
+    const errs = ds.filter((d) => d.code !== 'W3101');
+    check('v74.16:双侧含污维持 M3002——恰 1 条 M3002(Untrusted[str] vs Untrusted[Json] 结构错配),零 M3049(不给误导净化处方)',
+      errs.length === 1 && errs[0].code === 'M3002' && errs[0].message.includes('Untrusted[Json]') && errs[0].message.includes('Untrusted[str]'),
+      `n=${errs.length} codes=${errs.map((d) => d.code).join(',')} msg=${JSON.stringify(errs[0] ? errs[0].message : '')}`);
+  }
+  {
+    // v74.17:Some(污) 污类型自洽传播合法——泛型载荷槽 unify 绑定(v0.61 deepResolveT 保的
+    // 合法性),无任何诊断 exit 0。#69 改动不得误伤此路径(callCtor 前置只在 unify 失败后)。
+    const p = m74('v74_17_some_dirty_ok.ming', [
+      'use std.env;',
+      'fn main() with env {',
+      '    let o = Some(std.env.get("X").unwrap());',
+      '    match o { Some(u) => { let _ = u; }, None => {} }',
+      '}',
+    ].join('\n'));
+    const res = chk74(p);
+    check('v74.17:Some(污) 污类型自洽传播合法——check exit 0 且零诊断(泛型载荷槽绑定合法,v0.61 语义不回退)',
+      res.code === 0 && res.j !== null && res.j.ok === true && ds74(res).length === 0,
+      `code=${res.code} ok=${res.j && res.j.ok} n=${ds74(res).length}`);
+  }
+
+  // ---- §74-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

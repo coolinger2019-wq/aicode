@@ -840,11 +840,17 @@ export class Checker {
   // (调用实参/赋值/let 标注/return/Map 键/方法实参等一切"期待 T 实际 Untrusted[T]"的位置)
   // → M3049[untrusted-mismatch]。返回 true 表示已发专用码,调用方跳过通用 M3002(避免双报)。
   // 反向(期待 Untrusted、实参裸载体)不在此列——由既有 M3002 拒绝(必须显式 mark,无隐式转换)。
+  // v0.71(#69 = N-63.1 + v0.68 审查 m2):判定从"顶层 Untrusted"扩为"递归含污"
+  // (typeContainsUntrusted)——嵌套位置(Option[Untrusted[str]] 等容器载荷/变体构造载荷/
+  // 块尾/match 臂混型/spawn_all 元素)也发 M3049,不再回落通用 M3002;全部仍正确拒绝,
+  // 仅诊断质量(带净化处方 hint),非旁路。直传位(顶层 Untrusted)码与消息逐字不变。
   untrustedMismatchDiag(actualT, expectedT, span, what) {
     const a = resolveT(actualT, new Map());
-    if (a?.k !== 'untrusted') return false;
+    if (!typeContainsUntrusted(a)) return false;
     const e = expectedT != null ? resolveT(expectedT, new Map()) : null;
-    if (e?.k === 'untrusted') return false;
+    // 双侧都含污(如 Option[Untrusted[str]] vs Option[Untrusted[Json]])是结构错配,
+    // 不是"污进净槽"——维持通用 M3002(给净化处方即误导)。
+    if (e && typeContainsUntrusted(e)) return false;
     // v0.68(ADR-004 §7.2):hint 文本载体感知——str 载荷先净化;Json 载荷先投影出
     // Untrusted[str] 字段再净化(污点树不能整体进槽,stringify/parse 不开旁路,§4.2)。
     const carrier = resolveT(a.el, new Map());
@@ -3922,6 +3928,12 @@ export class Checker {
     if (ctor.ps) {
       for (let i = 0; i < Math.min(argTs.length, ctor.ps.length); i++) {
         if (!unify(argTs[i], ctor.ps[i], binds)) {
+          // v0.71(#69 m2):变体构造载荷位接入污点专用码——与 struct 字面量字段前置
+          // (checkStructLit,v0.61)同款先例,但不采用其"先前置"结构:Some/Ok/Err 的载荷槽
+          // 是泛型 tvar,污实参 unify 成功(绑定 T=Untrusted[...])是污类型自洽传播
+          // (v0.61 deepResolveT 修复所保的合法性),必须放行——统一走"unify 失败后前置",
+          // 仅具体净槽(用户变体 str 载荷等)发 M3049(带净化处方),其余维持 M3002。
+          if (this.untrustedMismatchDiag(argTs[i], ctor.ps[i], e.args[i].span, '变体载荷类型不匹配')) continue;
           this.diags.push(err('M3002', `变体值类型不匹配:期望 ${typeStr(ctor.ps[i], binds)},实际 ${typeStr(argTs[i], binds)}`, e.args[i].span));
         }
       }
@@ -4087,7 +4099,11 @@ export class Checker {
       const vT = this.checkExpr(e.args[1], ctx);
       const vR = resolveT(vT, new Map());
       if (!vR || vR.k !== 'vec' || !unify(vR.el, fnR.ps[0], new Map())) {
-        this.diags.push(err('M3002', `spawn_all 的第二个参数必须是 Vec[${typeStr(fnR.ps[0])}](实际 ${typeStr(vR, new Map())})`, e.args[1].span));
+        // v0.71(#69 N-63.1):元素含污(实际 Vec[Untrusted[...]] 传给净参数函数)→ M3049
+        // 指向元素类型,不再回落"第二个参数必须是 Vec[X]"通用码;其余形态维持 M3002。
+        if (!(vR && vR.k === 'vec' && this.untrustedMismatchDiag(vR.el, fnR.ps[0], e.args[1].span, 'spawn_all 的 Vec 元素类型不匹配'))) {
+          this.diags.push(err('M3002', `spawn_all 的第二个参数必须是 Vec[${typeStr(fnR.ps[0])}](实际 ${typeStr(vR, new Map())})`, e.args[1].span));
+        }
         return null;
       }
       const ret = fnR.ret;
@@ -5146,7 +5162,12 @@ export class Checker {
       if (vt) {
         if (resultT === null) resultT = vt;
         else if (!unify(vt, resultT, armBinds) && vt.k !== 'never' && resultT.k !== 'never') {
-          this.diags.push(err('M3002', `match 分支类型不一致:${typeStr(resultT, armBinds)} 与 ${typeStr(vt, armBinds)}`, arm.span));
+          // v0.71(#69 N-63.1):臂间混型且一侧含污(如污臂 vs 净臂)→ M3049(带净化处方),
+          // 不再报通用 M3002;双侧净的结构错配与双侧都含污仍走 M3002。
+          if (!this.untrustedMismatchDiag(vt, resultT, arm.span, 'match 分支类型不一致')
+            && !this.untrustedMismatchDiag(resultT, vt, arm.span, 'match 分支类型不一致')) {
+            this.diags.push(err('M3002', `match 分支类型不一致:${typeStr(resultT, armBinds)} 与 ${typeStr(vt, armBinds)}`, arm.span));
+          }
         }
       }
     }
@@ -5177,7 +5198,11 @@ export class Checker {
     }
 
     if (expected && resultT && !unify(resultT, expected, binds) && resultT.k !== 'never') {
-      this.diags.push(err('M3002', `match 的值类型 ${typeStr(resultT, binds)} 与期望的 ${typeStr(expected)} 不匹配`, e.span));
+      // v0.71(#69 N-63.1):match 整体值含污而期望净(臂值污→整体污)→ M3049,不再 M3002;
+      // 双侧净错配/双侧含污维持 M3002。
+      if (!this.untrustedMismatchDiag(resultT, expected, e.span, 'match 的值类型不匹配')) {
+        this.diags.push(err('M3002', `match 的值类型 ${typeStr(resultT, binds)} 与期望的 ${typeStr(expected)} 不匹配`, e.span));
+      }
     }
     return resultT;
   }

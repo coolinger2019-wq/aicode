@@ -105,9 +105,35 @@ export class Parser {
   // 包括其中的关键字字面量),depth===0 时按语句边界停机,顶层级联消除。
   // 预期副作用(记录):失败语句到下一个 `;`/语句关键字之间的好语句会被 panic-mode 吞掉
   // (如锚定语料的 `print("bye");`)——程序反正编译失败,诊断正确性优先于语句 salvage。
-  recover(topLevel) {
+  // v0.71(#67 构造级登记所有权 + #68 salvage 精化):
+  //   blockVB = 调用块(parseBlock)入口时登记数与本块 catch 时登记数之差(块内构造余量)。
+  //   登记所有权分层:本块内失败的值构造,其收尾 `}` 由本块 recover 消费结清;外层活构造
+  //   (如 `Json{ a: if true { 失败 } }` 的 Json{)的登记**不属于本块**——它的收尾 `}`
+  //   交还外层构造的收尾 expectOp 消费,不被本块当块收尾误吞(p21 伪 M2002@2:43 的根源:
+  //   旧全局种子让内层块吞掉 if 收尾、外层收尾被块错位消费,字段循环 expectOp 撞 `;`)。
+  //   blockVB 未提供的调用点(finishExprStmt 的 inline 恢复/parseProgram 顶层强进续扫):
+  //   沿用全局登记(终态与 v0.70 入口清账同——到达 depth 0 恰递减种子次;实测逐字一致,
+  //   v0.71 审查 NOTE-1:活构造内触发的 inline 恢复种子可 >0,此为正确种子而非残留)。
+  //   同步递减(方案 a 要素):扫描每消费一个"种子层"的 `}`(递减前 depth ≤ 种子)同步
+  //   `valBrace = max(0, valBrace-1)`——登记随消费结清,不再入口一次性清零;种子之上的
+  //   嵌套块收尾(递减前 depth > 种子)不动登记。不变量:任意 recover 退出时,valBrace
+  //   恰等于"已消费未匹配的 `{` 数"中仍活着的部分——无负数(递减钳 0)、无陈旧(随消费
+  //   结清;唯一例外 eof 退出,随后 parseBlock 的 eof bail 抛到顶层由 recover(true) 清零)、
+  //   无双重递减(成功路径 `--` 有 >0 守卫,同步递减只在种子层消费处执行)。
+  //   #68 深度 0 `id(` 停机启发式:当前 token 是标识符且下一个 token 是 `(` → 停机不消费
+  //   (疑似新调用语句起始,交还块循环按语句解析抢救——合法调用救回,未知名由 checker 报
+  //   M3001,真实错误恢复报出而非静默)。仅 depth===0;depth>0(被吞 {} 区域内)不受影响。
+  //   终止性核实(启发式不得引入不停机路径,链路推演):
+  //     启发式停机**不消费**,cur 仍是该 `id`。此后块循环 mark=pos 重新记录,parseStmtOrTail
+  //     二分:(i) 解析成功 → 必然消费若干 token(pos 前进);(ii) 解析再失败 → catch 再进
+  //     recover:若失败点已越过该 `id`(pos 前进),扫描正常推进;若失败点恰仍是该 `id(`,
+  //     启发式立即停机返回(未消费)→ catch 强进路径 `pos === mark` 成立 → `next()` 消费
+  //     1 token + 继续 recover(false)——强进保证每轮循环至少前进 1 token。token 流有限、
+  //     pos 单调不减且卡点时每轮 +1,必达 eof(parseBlock eof → bail 块未闭合;parseProgram
+  //     eof → 循环结束),无挂起。毒汤语料实测收敛(§74 v74.3)。
+  recover(topLevel, blockVB = null) {
     if (topLevel) {
-      // 顶层恢复:行为逐字不变(v0.70 仅改语句层)。
+      // 顶层恢复:行为逐字不变(v0.70 仅改语句层;v0.71 语句层改动不回传顶层)。
       // v0.70 审查 MAJOR-1(陈旧正值路径):顶层失败点若是值构造(如顶层 const 初始化器
       // 内的 `S{ a 1 }`),登记未被语句层结清——残余 +1 会污染后续任何语句层 recover 的
       // 深度种子,使停机表失效吞掉后续根因。失败构造已死亡,残余登记必然陈旧:入口清零。
@@ -122,26 +148,30 @@ export class Parser {
       }
     }
     // 语句层:深度感知 panic-mode(test 已从停机表移除——它只能顶层)。
-    // 深度 = 恢复扫描自身计数 + 失败语句已消费未闭合的值构造 brace(valBrace)——
+    // 深度 = 恢复扫描自身计数 + 种子(失败语句已消费未闭合的值构造 brace 的**块内余量**)——
     // 后者让 `Json{ ... }` 类失败语句被整句吞到匹配 `}`,字面量的 `}` 不会被误当块收尾。
-    // 扫描开始即结清登记:无论从哪条路径退出,残余登记都不得污染后续恢复。
-    // v0.70 审查 MAJOR-1(负数路径):值构造内嵌套块(if/while/match 臂/unsafe)失败时,
-    // 内层 parseBlock 的 recover 先把 valBrace 结清为 0,外层构造循环随后仍执行 `--`
-    // → valBrace = -1 → `depth > 0` 与 `depth === 0` 两个停机分支全部失效,一次吞到块尾。
-    // 下限钳 0(Math.max)防负种子;事后 `--` 只在登记仍在时执行,双保险。
-    let depth = Math.max(0, this.valBrace);
-    this.valBrace = 0;
+    // v0.70 审查 MAJOR-1(负数路径):下限钳 0(Math.max)防负种子;同步递减也钳 0,双保险。
+    const seed = Math.max(0, blockVB != null ? blockVB : this.valBrace);
+    let depth = seed;
     for (;;) {
       const t = this.cur();
       if (t.kind === 'eof') return;
       if (t.kind === 'op' && t.val === '{') { depth++; this.next(); continue; }
       if (t.kind === 'op' && t.val === '}') {
-        if (depth > 0) { depth--; this.next(); continue; }
+        if (depth > 0) {
+          // 种子层收尾消费 → 登记随消费同步结清(仅种子层;种子之上的嵌套块收尾不动)。
+          if (depth <= seed) this.valBrace = Math.max(0, this.valBrace - 1);
+          depth--;
+          this.next();
+          continue;
+        }
         return; // depth===0:这是当前块的收尾 brace,不消费,交还块循环闭合
       }
       if (depth === 0) {
         if (t.kind === 'kw' && ['fn', 'let', 'return', 'while', 'for', 'loop', 'if', 'match', 'unsafe'].includes(t.val)) return;
         if (t.kind === 'op' && t.val === ';') { this.next(); return; }
+        // v0.71(#68):深度 0 `id(` 停机——疑似调用语句起始,抢救(见函数头终止性推演)。
+        if (t.kind === 'id' && this.peek(1).kind === 'op' && this.peek(1).val === '(') return;
       }
       this.next(); // depth>0:丢弃一切(含关键字);depth===0:丢弃非停机 token
     }
@@ -471,6 +501,10 @@ export class Parser {
     }
     this.next();
     const start = startTok;
+    // v0.71(#67):块入口登记快照——登记所有权分层。块内 catch 时种子 = 当前登记 - 快照
+    // = 本块内新增的值构造登记;外层活构造的登记不属于本块,其收尾 `}` 由 recover 交还
+    // 给外层构造的收尾 expectOp(见 recover 注释)。`{` 是块不是值构造,登记数此刻不变。
+    const enterVB = this.valBrace;
     const stmts = [];
     let tail = null;
     for (;;) {
@@ -486,11 +520,13 @@ export class Parser {
       } catch (e) {
         if (e && e.mingParse) {
           this.diags.push(e.diag);
-          this.recover(false);
-          // v0.70(#63):recover 未前进(cur 是语句停机关键字但解析它失败)时,强进 1 token
-          // 后继续 recover(false) 推进到下一个语句边界——避免 +1 后 `ident {` 被误解析为
+          this.recover(false, Math.max(0, this.valBrace - enterVB));
+          // v0.70(#63):recover 未前进(cur 是语句停机关键字/启发式停机点但解析它失败)时,
+          // 强进 1 token 后继续 recover(false) 推进到下一个语句边界——避免 +1 后 `ident {` 被误解析为
           // 结构体字面量(锚定语料的 M2002 级联)。recover 已前进时不强进。
-          if (this.pos === mark) { this.next(); this.recover(false); }
+          // v0.71(#68):启发式停机不消费——失败点本身即 `id(` 时走此强进路径保证前进
+          // (终止性链路见 recover 注释);强进后续扫同样带块种子,所有权口径一致。
+          if (this.pos === mark) { this.next(); this.recover(false, Math.max(0, this.valBrace - enterVB)); }
           continue;
         }
         throw e;

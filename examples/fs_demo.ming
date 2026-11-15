@@ -1,18 +1,23 @@
 // std.fs:capability 文件系统(v0.6)——所有 fs 操作必须声明效果
 use std.fs;
+
 use std.path;
 
 fn main() with io, fs {
+
     // 写入:write_file 返回 Result[bool, str]
     match std.fs.write_file("demo.txt", "第一行\n第二行\n") {
-        Ok(_)   => print("写入成功"),
-        Err(e)  => { print("写入失败: \{e}"); return; }
+        Ok(_) => print("写入成功"),
+        Err(e) => {
+            print("写入失败: \{e}");
+            return;
+        },
     }
 
     // 读取:read_file 返回 Result[str, str]
     match std.fs.read_file("demo.txt") {
         Ok(content) => print("读回 \{content.char_len()} 个字符"),
-        Err(e)      => print("读取失败: \{e}"),
+        Err(e) => print("读取失败: \{e}"),
     }
 
     // 列目录
@@ -21,7 +26,7 @@ fn main() with io, fs {
             for name in entries {
                 print("  - \{name}");
             }
-        }
+        },
         Err(e) => print("列目录失败: \{e}"),
     }
 

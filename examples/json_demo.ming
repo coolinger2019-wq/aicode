@@ -2,12 +2,10 @@
 use std.json;
 
 fn main() with io {
+
     // 解析:Result[Json, str],语法错误带位置
     let text = "{\"name\": \"ming\", \"version\": 10, \"tags\": [\"fast\", \"safe\"], \"meta\": {\"ok\": true}}";
-    let doc = match std.json.parse(text) {
-        Ok(j)   => j,
-        Err(e)  => { print("解析失败: \{e}"); return; }
-    };
+    let doc = match std.json.parse(text) { Ok(j) => j, Err(e) => { print("解析失败: \{e}"); return; } };
 
     // 对象访问:get 返回 Option[Json]
     let name = doc.get("name");
@@ -29,7 +27,7 @@ fn main() with io {
     print("missing = \{debug(doc.get("nope"))}");
 
     // stringify:静态检查 JSON 兼容类型(结构体/枚举会在编译期报 M3033)
-    let config: Map[str, str] = {"host": "127.0.0.1", "port": "8080"};
+    let config: Map[str, str] = { "host": "127.0.0.1", "port": "8080" };
     print(std.json.stringify(config));
 
     let scores: Vec[f64] = [1.5, 2.5];
@@ -43,7 +41,7 @@ fn main() with io {
 
     // 语法错误带位置
     match std.json.parse("{\"a\": }") {
-        Ok(_)   => print("不该到这"),
-        Err(e)  => print("错误: \{e}"),
+        Ok(_) => print("不该到这"),
+        Err(e) => print("错误: \{e}"),
     }
 }
