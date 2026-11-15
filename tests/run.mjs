@@ -14276,6 +14276,269 @@ fn main() with io, fs {
   // ---- §72-END
 }
 
+// ===================== 73. v0.70:诊断校准二期(#63 parser 级联抑制——深度感知 panic-mode 恢复)=====================
+// 文件所有权:§73 = 本区全部用例。
+// 根因机制:旧 recover(false) 语句停机表含顶层关键字 `test`(test 只能顶层,不是语句)——语句解析
+// 失败落在 `test` 上时 recover 立即返回(未消费),catch 强进 1 token 到 `ident {`,下一轮被误解析为
+// 结构体字面量(字段名路径 → M2002"期望 :"+错误 fix),函数体提前闭合 → 后续合法语句与收尾 `}`
+// 在顶层级联雪崩。锚定语料改前 1 根因 → 4 条诊断(3×M2001 + 1×M2002)。
+// 实现(src/parser.js 单文件):① recover(false) 深度感知 panic-mode(失败语句 {...} 区域整体吞掉,
+// `test` 移出语句停机表,depth===0 时 `}` 不消费交还块循环);② 值构造 brace 登记(valBrace:
+// struct/map 字面量、match 体已消费未闭合的 `{`,失败穿越时整句吞到匹配 `}`,字面量自己的 `}`
+// 不再被误当块收尾);③ parseProgram/parseBlock catch 强进路径改造(recover 未前进时强进 1 token
+// 后继续 recover(false) 推进到下一个语句边界)。recover(true) 顶层行为逐字不变。
+// 预期副作用(记录):失败语句到下一个 `;`/语句关键字之间的好语句被 panic-mode 吞掉(如锚定语料的
+// `print("bye");`)——程序反正编译失败 exit 1,诊断正确性优先于语句 salvage。
+// 纪律:全部先实测后断言;改前条数取自 HEAD 449b59f 基线(git worktree 实测)。
+{
+  const dir73 = path.join(TMP, 'v73');
+  fs.mkdirSync(dir73, { recursive: true });
+  const m73 = (name, src) => { const f = path.join(dir73, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const chk73 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const ds73 = (res) => (res.j && res.j.diagnostics) || [];
+  const codes73 = (res) => ds73(res).map((d) => d.code).sort().join(',');
+  const hasTop73 = (res) => ds73(res).some((d) => (d.message || '').includes('顶层'));
+
+  const ANCHOR73 = [
+    'fn add(a: i64, b: i64) -> i64 { return a + b; }',
+    'fn main() with io {',
+    '    print("hi");',
+    '    test add_works {',
+    '        assert_eq(add(2, 3), 5);',
+    '        assert_eq(add(1, 1), 2);',
+    '    }',
+    '    print("bye");',
+    '}',
+  ].join('\n');
+
+  // ---- v73.1 锚定语料:恰 1 条 M2001(根因指向性保留),无 fix,无 M2002/顶层级联 ----
+  // v0.70 恢复策略校准:旧 4 条(① M2001 无法解析的表达式:"test"@4:5 根因 ② M2002 期望":"@5:18
+  // 结构体字面量误解析 ③ M2001 顶层…"print"@8:5 ④ M2001 顶层…"}"@9:1)→ 新 1 条(根因 ① 保留,
+  // 级联 ②③④ 消除)。实测:1 条,M2001@4,"test" 在 message,fix 字段不存在。
+  {
+    const p = m73('v73_1_anchor.ming', ANCHOR73);
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.1:锚定语料——恰 1 条诊断 code=M2001 message 含 "test" 无 fix 字段,无 M2002/顶层级联(v0.70 恢复策略校准:旧 4 条 → 新 1 条,根因 ① 保留,级联 ②③④ 消除)',
+      ds.length === 1 && ds[0].code === 'M2001' && ds[0].message.includes('test') && ds[0].fix === undefined
+        && res.j && res.j.ok === false,
+      `n=${ds.length} codes=${codes73(res)} msg=${JSON.stringify(ds[0] ? ds[0].message : '')} fix=${ds[0] && ds[0].fix === undefined ? 'NONE' : JSON.stringify(ds[0] && ds[0].fix)}`);
+  }
+
+  // ---- v73.2 长函数体:第 3 句放 test 块,诊断不随体长线性放大 ----
+  // v0.70 恢复策略校准:旧 14 条(11×M2001 + 1×M2002 + 2×W3101,随体长线性放大)→ 新 1 条(根因 M2001@4)。
+  {
+    const p = m73('v73_2_longbody.ming', [
+      'fn main() with io {',
+      '    let a = 1;',
+      '    let b = 2;',
+      '    test x {',
+      '        assert_eq(a, 1);',
+      '    }',
+      '    let c = 3;',
+      '    let d = 4;',
+      '    let e = 5;',
+      '    let f = 6;',
+      '    let g = 7;',
+      '    let h = 8;',
+      '    let i = 9;',
+      '    let j = 10;',
+      '    print(a + b + c + d + e + f + g + h + i + j);',
+      '}',
+    ].join('\n'));
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.2:长函数体(12+ 语句,第 3 句放 test 块)——诊断数 ≤2 且首条为根因 M2001(不随体长线性放大;旧 14 条 → 新 1 条,级联消除)',
+      ds.length <= 2 && ds[0] && ds[0].code === 'M2001' && ds[0].message.includes('test'),
+      `n=${ds.length} codes=${codes73(res)} msg0=${JSON.stringify(ds[0] ? ds[0].message : '')}`);
+  }
+
+  // ---- v73.3 关键字语句恢复:错误语句后的 let/return 语句仍被解析,毒化行为正常 ----
+  // 植入 checker 可见错误(let x = nosuch)证明后续语句确实被解析(而非被吞)。实测新 3 条:
+  // M2001@2(根因)+ W3101@5 + M3001@5(毒化形态,三者均无 fix)。旧 5 条(4×M2001+1×M2002,
+  // 级联淹没 M3001/W3101)→ 新 3 条且无"顶层"级联。
+  {
+    const p = m73('v73_3_kwrecovery.ming', [
+      'fn main() with io {',
+      '    test broken {',
+      '        assert_eq(1, 1);',
+      '    }',
+      '    let x = nosuch;',
+      '    return;',
+      '}',
+    ].join('\n'));
+    const res = chk73(p);
+    const ds = ds73(res);
+    const m3001 = ds.find((d) => d.code === 'M3001');
+    check('v73.3:关键字语句恢复——错误语句后 let/return 仍被解析,无"顶层"级联 M2001;毒化形态正常(M3001 nosuch 无 fix,旧 5 条 → 新 3 条)',
+      codes73(res) === 'M2001,M3001,W3101' && !hasTop73(res) && m3001 && m3001.fix === undefined && m3001.message.includes('nosuch'),
+      `codes=${codes73(res)} hasTop=${hasTop73(res)} m3001fix=${m3001 && m3001.fix === undefined ? 'NONE' : 'HAS'}`);
+  }
+
+  // ---- v73.4 struct literal 失败语句:整句吞到 ";",无 N 条级联 ----
+  // 参照 §66 的 Json 构造形态反例。v0.70 恢复策略校准:旧 4 条(1×M2002 期望字段名 + 3×M2001 顶层
+  // ——"实际是 ";"",字面量自己的 `}` 曾被误当块收尾提前闭合 main)→ 新 1 条(valBrace 登记让字面量
+  // 的 `}` 被深度感知吞掉,整句吞到 ";")。
+  {
+    const p = m73('v73_4_structlit.ming', [
+      'fn main() with io {',
+      '    let r = Json{ "status": 1 };',
+      '    print(1);',
+      '}',
+    ].join('\n'));
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.4:struct literal 失败语句(Json{"status": 1})——1-2 条,根因 M2002 期望字段名保留,整句吞到 ";",无顶层级联(旧 4 条 → 新 1 条)',
+      ds.length >= 1 && ds.length <= 2 && ds.some((d) => d.code === 'M2002' && (d.message || '').includes('期望字段名')) && !hasTop73(res),
+      `n=${ds.length} codes=${codes73(res)} hasTop=${hasTop73(res)}`);
+  }
+
+  // ---- v73.5 未闭合块:恰 1 条 M2002 块未闭合,无顶层级联雪崩 ----
+  // 新旧行为一致(改前 1 条 → 改后 1 条,回归锁)。
+  {
+    const p = m73('v73_5_unclosed.ming', [
+      'fn f() {',
+      '    let x = 1;',
+    ].join('\n'));
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.5:未闭合块——M2002 块未闭合恰 1 条,无顶层级联雪崩(旧 1 条 → 新 1 条,回归锁)',
+      ds.length === 1 && ds[0].code === 'M2002' && (ds[0].message || '').includes('块未闭合') && !hasTop73(res),
+      `n=${ds.length} codes=${codes73(res)}`);
+  }
+
+  // ---- v73.6 顶层 recover 不变:顶层非法 token 的 M2001 顶层 + hint 保留;后续声明仍解析 ----
+  // 6a:快照 e22 顶层 let 形态——M2001 顶层 + hint 逐字保留(改前 1 条 → 改后 1 条,回归锁)。
+  // 6b:顶层多个声明中夹一个非法 token(整数 123 标识符 abc)——后续 fn main 仍解析
+  // (line≥3 无任何"顶层"诊断;M3002@1 是语料自身 fn a 的 return 类型错,新旧一致)。
+  {
+    const pa = m73('v73_6a_toplevel.ming', [
+      'let x = 1;',
+      '',
+      'fn main() with io {',
+      '    print(1);',
+      '}',
+    ].join('\n'));
+    const ra = chk73(pa);
+    const dsa = ds73(ra);
+    check('v73.6a:顶层 recover 不变——顶层 let 的 M2001 顶层 + hint 保留,恰 1 条(旧 1 条 → 新 1 条,回归锁)',
+      dsa.length === 1 && dsa[0].code === 'M2001' && (dsa[0].message || '').includes('顶层') && (dsa[0].hint || '').includes('顶层不能写 let'),
+      `n=${dsa.length} codes=${codes73(ra)} msg=${JSON.stringify(dsa[0] ? dsa[0].message : '')} hint=${JSON.stringify(dsa[0] ? dsa[0].hint : '')}`);
+  }
+  {
+    const pb = m73('v73_6b_stray.ming', [
+      'fn a() { return 1; }',
+      '123 abc',
+      'fn main() with io {',
+      '    print(1);',
+      '}',
+    ].join('\n'));
+    const rb = chk73(pb);
+    const dsb = ds73(rb);
+    check('v73.6b:顶层声明间夹非法 token——M2001 顶层@2 保留,后续声明仍解析(line≥3 无"顶层"诊断;旧 2 条 → 新 2 条,回归锁)',
+      dsb.length === 2 && dsb.some((d) => d.code === 'M2001' && d.line === 2 && (d.message || '').includes('顶层'))
+        && !dsb.some((d) => d.line >= 3 && (d.message || '').includes('顶层')),
+      `n=${dsb.length} codes=${codes73(rb)} lines=${dsb.map((d) => d.line).join(',')}`);
+  }
+
+  // ---- v73.7 "5 6" 缺分号形态: M2002 根因保留,级联不劣化 ----
+  // v0.70 恢复策略校准:旧 1 条(M2002 语句后缺少 ";",根因后的 print("…") 被 inline recover 吞到 ";")
+  // → 新 1 条,不劣化(回归锁)。
+  {
+    const p = m73('v73_7_nosemi.ming', [
+      'fn main() with io {',
+      '    5 6',
+      '    print(1);',
+      '}',
+    ].join('\n'));
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.7:"5 6" 缺分号形态——M2002 根因保留恰 1 条,级联不劣化(旧 1 条 → 新 1 条,回归锁)',
+      ds.length === 1 && ds[0].code === 'M2002' && (ds[0].message || '').includes('语句后缺少'),
+      `n=${ds.length} codes=${codes73(res)} msg=${JSON.stringify(ds[0] ? ds[0].message : '')}`);
+  }
+
+  // ---- v73.8 嵌套失败块:if 块内语法错 → 外层函数其余部分恢复,诊断 ≤2 ----
+  // v0.70 恢复策略校准:旧 3 条(M2001@3 + M2002 级联 + M3001 误解析连坐)→ 新 1 条(根因 M2001@3)。
+  {
+    const p = m73('v73_8_nested.ming', [
+      'fn main() with io {',
+      '    if 1 < 2 {',
+      '        test broken { }',
+      '        print(1);',
+      '    }',
+      '    print(2);',
+      '}',
+    ].join('\n'));
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.8:嵌套失败块——if 块内语法错诊断 ≤2 且首条为根因 M2001,外层函数其余部分恢复无顶层级联(旧 3 条 → 新 1 条)',
+      ds.length <= 2 && ds[0] && ds[0].code === 'M2001' && ds[0].message.includes('test') && !hasTop73(res),
+      `n=${ds.length} codes=${codes73(res)} hasTop=${hasTop73(res)}`);
+  }
+
+  // ---- v73.9 深度守卫:失败语句含未闭合 "{" → 恢复不吞到文件尾 ----
+  // 9a(字面形态 `test x { let a = 1;` 无收尾):深度感知扫描吞掉被盗的一个 `}`(失败块区域整体
+  // 平衡)后停在语句关键字边界——恰 2 条有界诊断(根因 M2001@3 + M2002 块未闭合@f 的 "{"),零
+  // "顶层"级联。旧 4 条(2×M2001 + M3002 + W3101,旧级联路径意外救回 f/g 但带伪诊断)→ 新 2 条。
+  // 注:被盗 brace 使 f 收尾缺失 → pre-existing 块未闭合语义(parseFn 无 body catch)丢弃 f 条目,
+  // 与 v73.5 未闭合块同一传播路径,非本次改动引入。
+  // 代价如实登记(v0.70 审查 MINOR-1):HEAD 报出的 g 内真实 M3002@5 不再报(g 随 f 的未闭合
+  // bail 整体丢弃)——与 GUIDE 诚实边界"被吞区域内的诊断不报"同口径;换得 HEAD 漏报的块
+  // 未闭合 M2002 被报出。
+  // 9b(补 `}` 形态):扫描停在 `fn` 边界,第二个 fn 顶层真实解析+检查(M3002@6 为语料自身
+  // return 类型错)——直接证明"恢复不吞到文件尾,第二个 fn 正常"。旧 5 条 → 新 2 条。
+  {
+    const pa = m73('v73_9a_depthguard.ming', [
+      'fn f() with io {',
+      '    print(1);',
+      '    test x { let a = 1;',
+      '}',
+      'fn g() { return 2; }',
+    ].join('\n'));
+    const ra = chk73(pa);
+    const dsa = ds73(ra);
+    check('v73.9a:深度守卫(失败语句含未闭合 "{")——恰 2 条有界诊断(M2001 根因 + M2002 块未闭合),恢复不吞到文件尾,零顶层级联(旧 4 条 → 新 2 条)',
+      dsa.length === 2 && codes73(ra) === 'M2001,M2002' && dsa.some((d) => d.code === 'M2001' && d.message.includes('test')) && !hasTop73(ra),
+      `n=${dsa.length} codes=${codes73(ra)} hasTop=${hasTop73(ra)}`);
+  }
+  {
+    const pb = m73('v73_9b_depthguard2.ming', [
+      'fn f() with io {',
+      '    print(1);',
+      '    test x { let a = 1;',
+      '}',
+      '}',
+      'fn g() { return 2; }',
+    ].join('\n'));
+    const rb = chk73(pb);
+    const dsb = ds73(rb);
+    const m3002b = dsb.find((d) => d.code === 'M3002');
+    check('v73.9b:深度守卫(补 `}` 形态)——第二个 fn 顶层真实解析+检查(M3002@6 为语料自身类型错),零顶层级联,证明恢复停在语句边界(旧 5 条 → 新 2 条)',
+      dsb.length === 2 && codes73(rb) === 'M2001,M3002' && dsb.some((d) => d.code === 'M2001' && d.message.includes('test'))
+        && m3002b && m3002b.line === 6 && !hasTop73(rb),
+      `n=${dsb.length} codes=${codes73(rb)} lines=${dsb.map((d) => d.line).join(',')}`);
+  }
+
+  // ---- v73.10 --json 协议:锚定语料 diagnostics 数组长度=1 且 codes=['M2001'] ----
+  {
+    const p = m73('v73_10_json.ming', ANCHOR73);
+    const res = chk73(p);
+    const ds = ds73(res);
+    check('v73.10:--json 协议——JSON 可解析,ok=false,diagnostics 长度=1,codes 恰为 [\'M2001\']',
+      res.j !== null && res.j.ok === false && Array.isArray(res.j.diagnostics) && res.j.diagnostics.length === 1
+        && JSON.stringify(res.j.diagnostics.map((d) => d.code)) === JSON.stringify(['M2001']),
+      `j=${res.j === null ? 'null' : 'ok'} n=${ds.length} codes=${JSON.stringify(ds.map((d) => d.code))}`);
+  }
+
+  // ---- §73-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

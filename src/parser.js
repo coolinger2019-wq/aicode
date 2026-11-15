@@ -43,6 +43,10 @@ export class Parser {
     this.diags = [];
     this.noStructLit = 0; // 上下文标志深度
     this.contractClause = 0; // v0.56(#33):requires/ensures 子句表达式深度(该处 `{` 优先判为函数体)
+    // v0.70(#63):值构造(struct/map 字面量、match 体)已消费但尚未闭合的 `{` 数。
+    // 这些构造失败时会穿越自己的 `}` 向上抛,recover 看不到已消费的开括号——不登记的话,
+    // 字面量自己的 `}` 会被当成当前块的收尾 brace 提前闭合函数体(级联雪崩的另一半根因)。
+    this.valBrace = 0;
   }
 
   peek(o = 0) { return this.toks[Math.min(this.pos + o, this.toks.length - 1)]; }
@@ -93,15 +97,53 @@ export class Parser {
   }
 
   // ---- 错误恢复:收集多个诊断而不是遇错即停 ----
+  // v0.70(#63 诊断校准二期):语句层恢复改为深度感知 panic-mode。
+  // 根因:旧语句停机表含顶层关键字 `test`(test 只能顶层,不是语句)——语句解析失败落在
+  // `test` 上时 recover 立即返回(未消费),catch 强进 1 token 到 `ident {`,下一轮被误解析为
+  // 结构体字面量(字段名路径 → M2002"期望 :"+错误 fix),函数体提前闭合 → 顶层级联雪崩
+  // (锚定语料实测 1 根因 → 4 条诊断)。现在失败语句的 {...} 区域整体吞掉(depth>0 丢弃一切,
+  // 包括其中的关键字字面量),depth===0 时按语句边界停机,顶层级联消除。
+  // 预期副作用(记录):失败语句到下一个 `;`/语句关键字之间的好语句会被 panic-mode 吞掉
+  // (如锚定语料的 `print("bye");`)——程序反正编译失败,诊断正确性优先于语句 salvage。
   recover(topLevel) {
+    if (topLevel) {
+      // 顶层恢复:行为逐字不变(v0.70 仅改语句层)。
+      // v0.70 审查 MAJOR-1(陈旧正值路径):顶层失败点若是值构造(如顶层 const 初始化器
+      // 内的 `S{ a 1 }`),登记未被语句层结清——残余 +1 会污染后续任何语句层 recover 的
+      // 深度种子,使停机表失效吞掉后续根因。失败构造已死亡,残余登记必然陈旧:入口清零。
+      this.valBrace = 0;
+      for (;;) {
+        const t = this.cur();
+        if (t.kind === 'eof') return;
+        if (t.kind === 'kw' && ['fn', 'struct', 'enum', 'use', 'test', 'pub'].includes(t.val)) return;
+        if (t.kind === 'op' && t.val === '}') return;
+        if (t.kind === 'op' && t.val === ';') { this.next(); return; }
+        this.next();
+      }
+    }
+    // 语句层:深度感知 panic-mode(test 已从停机表移除——它只能顶层)。
+    // 深度 = 恢复扫描自身计数 + 失败语句已消费未闭合的值构造 brace(valBrace)——
+    // 后者让 `Json{ ... }` 类失败语句被整句吞到匹配 `}`,字面量的 `}` 不会被误当块收尾。
+    // 扫描开始即结清登记:无论从哪条路径退出,残余登记都不得污染后续恢复。
+    // v0.70 审查 MAJOR-1(负数路径):值构造内嵌套块(if/while/match 臂/unsafe)失败时,
+    // 内层 parseBlock 的 recover 先把 valBrace 结清为 0,外层构造循环随后仍执行 `--`
+    // → valBrace = -1 → `depth > 0` 与 `depth === 0` 两个停机分支全部失效,一次吞到块尾。
+    // 下限钳 0(Math.max)防负种子;事后 `--` 只在登记仍在时执行,双保险。
+    let depth = Math.max(0, this.valBrace);
+    this.valBrace = 0;
     for (;;) {
       const t = this.cur();
       if (t.kind === 'eof') return;
-      if (topLevel && t.kind === 'kw' && ['fn', 'struct', 'enum', 'use', 'test', 'pub'].includes(t.val)) return;
-      if (!topLevel && t.kind === 'kw' && ['fn', 'let', 'return', 'while', 'for', 'loop', 'if', 'match', 'test', 'unsafe'].includes(t.val)) return;
-      if (t.kind === 'op' && t.val === '}') return;
-      if (t.kind === 'op' && t.val === ';') { this.next(); return; }
-      this.next();
+      if (t.kind === 'op' && t.val === '{') { depth++; this.next(); continue; }
+      if (t.kind === 'op' && t.val === '}') {
+        if (depth > 0) { depth--; this.next(); continue; }
+        return; // depth===0:这是当前块的收尾 brace,不消费,交还块循环闭合
+      }
+      if (depth === 0) {
+        if (t.kind === 'kw' && ['fn', 'let', 'return', 'while', 'for', 'loop', 'if', 'match', 'unsafe'].includes(t.val)) return;
+        if (t.kind === 'op' && t.val === ';') { this.next(); return; }
+      }
+      this.next(); // depth>0:丢弃一切(含关键字);depth===0:丢弃非停机 token
     }
   }
 
@@ -116,7 +158,10 @@ export class Parser {
         if (e && e.mingParse) {
           this.diags.push(e.diag);
           this.recover(true);
-          if (this.pos === mark) this.next(); // 保证前进
+          // v0.70(#63):recover 未前进(cur 是顶层停机关键字/`}` 但解析它失败)时,
+          // 强进 1 token 后继续 recover(false) 推进到下一个语句边界——避免 +1 后
+          // `ident {` 被误解析为结构体字面量产生级联。recover 已前进时不强进。
+          if (this.pos === mark) { this.next(); this.recover(false); }
           continue;
         }
         throw e;
@@ -442,7 +487,10 @@ export class Parser {
         if (e && e.mingParse) {
           this.diags.push(e.diag);
           this.recover(false);
-          if (this.pos === mark) this.next();
+          // v0.70(#63):recover 未前进(cur 是语句停机关键字但解析它失败)时,强进 1 token
+          // 后继续 recover(false) 推进到下一个语句边界——避免 +1 后 `ident {` 被误解析为
+          // 结构体字面量(锚定语料的 M2002 级联)。recover 已前进时不强进。
+          if (this.pos === mark) { this.next(); this.recover(false); }
           continue;
         }
         throw e;
@@ -854,6 +902,7 @@ export class Parser {
 
   parseStructLitFrom(path, startTok) {
     this.expectOp('{');
+    this.valBrace++; // v0.70(#63):登记已消费的 `{`,失败穿越时 recover 深度感知吞到匹配的 `}`
     const fields = [];
     const seen = new Set();
     while (!this.atOp('}')) {
@@ -866,6 +915,7 @@ export class Parser {
       if (this.atOp(',')) { this.next(); continue; }
       break;
     }
+    if (this.valBrace > 0) this.valBrace--; // 收尾 `}` 即将消费,撤回登记(仅登记仍在时;负数路径见 recover 注释,v0.70 审查 MAJOR-1)
     this.expectOp('}');
     return { nt: 'StructLit', path, fields, span: this.spanFrom(startTok) };
   }
@@ -1014,6 +1064,7 @@ export class Parser {
     const scrutinee = this.parseExpr();
     this.noStructLit--;
     this.expectOp('{');
+    this.valBrace++; // v0.70(#63):登记已消费的 `{`,失败穿越时 recover 深度感知吞到匹配的 `}`
     const arms = [];
     while (!this.atOp('}')) {
       if (this.at('eof')) this.bail('M2002', 'match 未闭合(缺少 "}")', start.span);
@@ -1037,12 +1088,14 @@ export class Parser {
         this.bail('M2002', `match 分支之间需要 ","(分支 "${patternBrief(pat)}" 之后)`, this.cur().span);
       }
     }
+    if (this.valBrace > 0) this.valBrace--; // 收尾 `}` 即将消费,撤回登记(仅登记仍在时;负数路径见 recover 注释,v0.70 审查 MAJOR-1)
     this.expectOp('}');
     return { nt: 'Match', scrutinee, arms, span: this.spanFrom(start) };
   }
 
   parseMapLit() {
     const start = this.expectOp('{');
+    this.valBrace++; // v0.70(#63):登记已消费的 `{`,失败穿越时 recover 深度感知吞到匹配的 `}`
     const entries = [];
     while (!this.atOp('}')) {
       const k = this.parseExpr();
@@ -1052,6 +1105,7 @@ export class Parser {
       if (this.atOp(',')) { this.next(); continue; }
       break;
     }
+    if (this.valBrace > 0) this.valBrace--; // 收尾 `}` 即将消费,撤回登记(仅登记仍在时;负数路径见 recover 注释,v0.70 审查 MAJOR-1)
     this.expectOp('}');
     return { nt: 'MapLit', entries, span: this.spanFrom(start) };
   }
