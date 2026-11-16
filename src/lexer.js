@@ -33,6 +33,17 @@ const OPS2 = ['->', '=>', '==', '!=', '<=', '>=', '&&', '||', '<<', '>>',
   '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '..'];
 const OPS1 = '+-*/%<>=!&|^?:;,(){}[].';
 
+// v0.75(plan §4.10 残留裸栈崩溃面清零):插值嵌套递归深度上限——裸栈 RangeError →
+// 稳定 M4005[stack-overflow] 诊断("栈溢出"语义本名,复用零新增码;先例 = v0.73 parser
+// exprDepth 复用 M2001 的变体模式)。递归链:scanString → lexInterpExpr → lexToken →
+// scanString → …,每层插值嵌套约 3 帧。scanString 里既有的局部 depth 计数只管单个插值
+// 表达式内部的 {}/{} 配对,与跨层递归无关——本守卫另用实例字段计数嵌套层数。
+// 阈值依据(2026-11-16 本机实测,Node v24/win32-x64,直连 parse API 最浅入口二分):
+// 插值嵌套最低崩点 1762(1761 存活)。950 层 ≈ 崩点的 54%,留跨机余量(V8 帧大小随版本
+// 浮动 ±30% 量级)。合法程序受 parser 侧 exprDepth=120 约束(嵌套插值经跨实例传递),
+// 远低于阈值——正常程序绝不触发(§78 v78.6 锁定)。
+const INTERP_DEPTH_LIMIT = 950;
+
 function isIdentStart(ch) { return /[A-Za-z_]/.test(ch); }
 function isIdentChar(ch) { return /[A-Za-z0-9_]/.test(ch); }
 function isDigit(ch) { return ch >= '0' && ch <= '9'; }
@@ -43,6 +54,7 @@ export class Lexer {
     this.i = 0; this.line = 1; this.col = 1;
     this.tokens = [];
     this.comments = []; // {span, text, doc}
+    this.interpDepth = 0; // v0.75:插值嵌套递归层数(scanString 进入插值表达式前计数)
   }
 
   peek(o = 0) { return this.src[this.i + o] ?? ''; }
@@ -212,7 +224,20 @@ export class Lexer {
         if (e === '{') { // 插值 \{expr}
           this.adv();
           flush();
-          const toks = this.lexInterpExpr();
+          // v0.75:插值嵌套递归守卫——递归链 scanString → lexInterpExpr → lexToken →
+          // scanString → …,嵌套层数超过 INTERP_DEPTH_LIMIT 时稳定诊断替代裸栈
+          // RangeError。词法错误即抛 MingError(本类 error 既有语义,lex 中止,诊断唯一)
+          // ——栈已回卷到浅层,安全;计数 try/finally 配对,抛出路径必然递减。
+          if (this.interpDepth >= INTERP_DEPTH_LIMIT) {
+            this.error('M4005', `插值嵌套过深(>${INTERP_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, m);
+          }
+          this.interpDepth++;
+          let toks;
+          try {
+            toks = this.lexInterpExpr();
+          } finally {
+            this.interpDepth--;
+          }
           parts.push({ tokens: toks });
           continue;
         }

@@ -15829,6 +15829,208 @@ fn main() with io, fs {
   // ---- §77-END
 }
 
+// ===================== 78. v0.75:健壮性收尾(残留裸栈崩溃面全面清零)=====================
+// 文件所有权:§78 = 本区全部用例。改动面:src/checker.js + src/lexer.js + src/parser.js
+// 三文件——零新增 M 码,复用 M4005[stack-overflow] 作 check/parse/lex-time 诊断变体
+// ("栈溢出"语义本名;先例 = v0.73 parser exprDepth 复用 M2001 的变体模式)。
+//   ① checker:checkExpr 入口深度守卫(CHECK_DEPTH_LIMIT=450,try/finally 配对)——
+//     二元/调用/成员/下标链是解析器**迭代**下降产物,AST 深度远超解析递归深度,类型检查
+//     递归裸崩;超限 bail(MingError 携 M4005)由毒化网入账:checkLet(绑定毒化 never,
+//     v0.67 切口 1 先例)/checkBlock 语句网(后续语句正常检查)/checkBodies 函数网(块尾
+//     与契约表达式);constExprType 独立递归面同口径(CONST_DEPTH_LIMIT=1200,实测崩点
+//     ~2200);depthBailed 登记使只读静态遍历(摘要/证明/边界/测试字面量/serve 扫描)跳过
+//     已报告声明,防根因报告后二次裸崩。
+//   ② lexer:插值嵌套守卫(INTERP_DEPTH_LIMIT=950)——scanString→lexInterpExpr→lexToken
+//     递归链,每层嵌套约 3 帧;词法错误即抛 MingError(既有语义),诊断唯一。
+//   ③ parser:parseType/parsePattern 深度守卫(TYPE_DEPTH_LIMIT=1450/PAT_DEPTH_LIMIT=2000,
+//     与 exprDepth 分域计数)——checker 类型树遍历实测崩点 2701 是真实约束(低于 parseType
+//     自身崩点 5674);顺带(v0.74 审查 NOTE-2)asm 块在表达式位的专用诊断(原回落结构体
+//     字面量路径报误导的 M2002"期望字段名")。
+// 阈值依据(2026-11-16 本机实测,Node v24.11.0/win32-x64,直连 API 二分到个位,详见各源文件头注):
+//   checker 链:调用链 ×814(最低)/成员链 ×1291/二元链 ×1465/下标链 ×2068;类型树遍历 ×2701;
+//   模式 ×3761;插值 ×1762(最浅入口);const 链 ×2200。阈值 ≈ 各域最低崩点的 53-55%
+//   (v0.73 审查口径:留跨机余量,V8 帧大小随版本浮动 ±30% 量级);合法程序(examples+tools
+//   32 文件)各域深度个位数~低两位,fuzz 生成器表达式预算 ≤3 层——正常程序绝不触发。
+// 纪律:全部先实测后断言;裸崩判定 = 输出含 "Maximum call stack"/"RangeError"。
+{
+  const dir78 = path.join(TMP, 'v78');
+  fs.mkdirSync(dir78, { recursive: true });
+  const m78 = (name, src) => { const f = path.join(dir78, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const chk78 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 裸栈崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j, out: r.stdout + r.stderr };
+  };
+  const crash78 = (res) => res.out.includes('Maximum call stack') || res.out.includes('RangeError');
+  const codes78 = (res) => (res.j && res.j.diagnostics || []).map((d) => d.code);
+  const diags78 = (res, code) => (res.j && res.j.diagnostics || []).filter((d) => d.code === code);
+
+  // 语料生成器(与架构师基线 .zcode/v75/ 同形态;层次可参数化)
+  const binSrc78 = (n) => 'fn main() with io {\n    let x = ' + Array.from({ length: n }, () => '1').join(' + ') + ';\n    print(str(x));\n}\n';
+  const callSrc78 = (n) => 'fn main() with io {\n    let s = "ab"' + '.replace("a", "b")'.repeat(n) + ';\n    print(s);\n}\n';
+  const interpSrc78 = (n) => 'fn main() with io {\n    let x = ' + '"\\{ '.repeat(n) + '1' + ' }"'.repeat(n) + ';\n    print(str(x));\n}\n';
+  const typeSrc78 = (n) => 'fn f(v: ' + 'Vec['.repeat(n) + 'i64' + ']'.repeat(n) + ') -> i64 with io { return 0; }\nfn main() with io { print(str(f([])));\n}\n';
+  const patSrc78 = (n) => 'fn main() with io {\n    let o: Option[i64] = Some(1);\n    let r = match o { ' + 'Some('.repeat(n) + 'v' + ')'.repeat(n) + ' => 1, _ => 0 };\n    print(str(r));\n}\n';
+
+  // ---- v78.1:binchain 形态(3001 项二元链)→ 稳定 M4005,零裸栈崩溃 ----
+  {
+    // 改前(HEAD 8fbbe13):裸 RangeError "Maximum call stack size exceeded"(checkExpr
+    // 栈帧)exit 1;改后:恰 1 条 M4005"表达式嵌套过深(>450 层)"(绑定毒化 never,
+    // print(str(x)) 不级联——实测诊断集 = M4005×1,零其他 M 码)。
+    const p = m78('v78_1_binchain.ming', binSrc78(3001));
+    const res = chk78(p);
+    const m = diags78(res, 'M4005');
+    check('v78.1:binchain 3001 项二元链——check exit 1 + 恰 1 条 M4005"表达式嵌套过深(>450 层)"逐字稳定诊断(绑定毒化零级联),零裸栈崩溃',
+      res.code === 1 && res.j !== null && m.length === 1
+        && (m[0].message || '') === '表达式嵌套过深(>450 层);提示:拆分嵌套结构或引入中间绑定'
+        && codes78(res).every((c) => c === 'M4005')
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.2:callchain 形态(2000 层方法调用链)→ 稳定 M4005,零裸栈崩溃 ----
+  {
+    // 调用链是 checker 最低崩点形态(×814,2000 层远超);改后同 v78.1 口径:
+    // 恰 1 条 M4005"表达式嵌套过深(>450 层)",绑定毒化零级联。
+    const p = m78('v78_2_callchain.ming', callSrc78(2000));
+    const res = chk78(p);
+    const m = diags78(res, 'M4005');
+    check('v78.2:callchain 2000 层方法调用链——check exit 1 + 恰 1 条 M4005"表达式嵌套过深(>450 层)"稳定诊断(最低崩点形态),零裸栈崩溃',
+      res.code === 1 && res.j !== null && m.length === 1
+        && (m[0].message || '').includes('>450 层')
+        && codes78(res).every((c) => c === 'M4005')
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.3:lexerinterp 形态(2900 层嵌套插值)→ 稳定 M4005(词法域),零裸栈崩溃 ----
+  {
+    // 改前:裸 RangeError(lexer scanString→lexInterpExpr→lexToken 递归链,peek 栈帧);
+    // 改后:lex 中止 + 恰 1 条 M4005"插值嵌套过深(>950 层)"(词法错误即抛 MingError
+    // 是本类既有语义,诊断唯一;码裁决:M1004[invalid-escape] 语义不符,M4005 本名)。
+    const p = m78('v78_3_interp.ming', interpSrc78(2900));
+    const res = chk78(p);
+    const m = diags78(res, 'M4005');
+    check('v78.3:lexerinterp 2900 层嵌套插值——check exit 1 + 恰 1 条 M4005"插值嵌套过深(>950 层)"逐字稳定诊断(词法域),零裸栈崩溃',
+      res.code === 1 && res.j !== null && m.length === 1
+        && (m[0].message || '') === '插值嵌套过深(>950 层);提示:拆分嵌套结构或引入中间绑定'
+        && codes78(res).every((c) => c === 'M4005')
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.4:deeptype 形态(3500 层 Vec 类型嵌套)→ 稳定 M4005(类型域),零裸栈崩溃 ----
+  {
+    // 改前:裸 RangeError(checker 类型树遍历 resolveTypeAst/checkJoinNotStored 族,×2701
+    // 全管线最低崩点;parseType 自身崩点 5674 更深);改后:parseType 守卫 1450 先触发——
+    // 恰 1 条 M4005"类型嵌套过深(>1450 层)";签名 bail 走既有 item 级恢复,伴 M2001
+    // 恢复落点与 main 引用级联(M3001/M3002)同既有签名 bail 行为(实测 fn f(v: ) 同形),
+    // 断言只钉 M4005 存在性与逐字消息,不钉恢复伴生诊断数。
+    const p = m78('v78_4_deeptype.ming', typeSrc78(3500));
+    const res = chk78(p);
+    const m = diags78(res, 'M4005');
+    check('v78.4:deeptype 3500 层 Vec 嵌套——check exit 1 + 恰 1 条 M4005"类型嵌套过深(>1450 层)"逐字稳定诊断(类型域,checker 遍历崩点 2701 之下),零裸栈崩溃',
+      res.code === 1 && res.j !== null && m.length === 1
+        && (m[0].message || '') === '类型嵌套过深(>1450 层);提示:拆分嵌套结构或引入中间绑定'
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.5:deeppat 形态(2100 层模式嵌套)→ 稳定 M4005(模式域),零裸栈崩溃 ----
+  {
+    // 改前:纯模式嵌套 Some(Some[…]) 实测崩点 3761(2100 在 v0.73 exprDepth 守卫下曾是
+    // 盲区——模式不经 parsePrimary);改后:parsePattern 守卫 2000 触发,恰 1 条 M4005
+    // "模式嵌套过深(>2000 层)";match 语句 bail 走语句级恢复,r 未绑定级联(M3001/M3002)
+    // 同既有语句 bail 行为,不钉伴生诊断数。
+    const p = m78('v78_5_deeppat.ming', patSrc78(2100));
+    const res = chk78(p);
+    const m = diags78(res, 'M4005');
+    check('v78.5:deeppat 2100 层 Some 嵌套模式——check exit 1 + 恰 1 条 M4005"模式嵌套过深(>2000 层)"逐字稳定诊断(模式域,实测崩点 3761 的 53%),零裸栈崩溃',
+      res.code === 1 && res.j !== null && m.length === 1
+        && (m[0].message || '') === '模式嵌套过深(>2000 层);提示:拆分嵌套结构或引入中间绑定'
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(32 文件冒烟)----
+  {
+    // 合法程序各域嵌套深度个位数~低两位,守卫阈值 450/950/1450/2000 远离;改前基线同。
+    // 本条同时锁"examples(20)+ 自举工具(12)= 32 文件"两个面。
+    const dirs = ['examples', 'tools'];
+    const files = [];
+    for (const d of dirs) {
+      for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith('.ming')).sort()) {
+        files.push(path.join(ROOT, d, f));
+      }
+    }
+    const bad = [];
+    for (const f of files) {
+      const r = runMing(['check', f]);
+      if (r.code !== 0 || crash78({ out: r.stdout + r.stderr })) bad.push(`${path.basename(path.dirname(f))}/${path.basename(f)}(exit=${r.code})`);
+    }
+    check('v78.6:合法面不误伤——examples+tools 共 32 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
+      files.length === 32 && bad.length === 0,
+      `n=${files.length} bad=${bad.join(',') || '无'}`);
+  }
+
+  // ---- v78.7:恢复路径零残留——守卫触发后同文件后续语句正常检查(毒化纪律)----
+  {
+    // 深 2000 层 let 初始化器(checkLet 毒化网)→ 绑定 x 毒化 never →
+    //   print(str(x)) 按底类型收敛(零 M3001/M3003 级联,v0.67 切口 1 先例);
+    // 后续独立语句 let y: i64 = "s" 照常检查(M3002 存在 = 后续语句未被放弃)。
+    // 断言:M4005 恰 1(根因唯一)、M3002 存在、M3001 零(毒化收敛)、零裸崩。
+    const p = m78('v78_7_recover.ming', [
+      'fn main() with io {',
+      '    let x = ' + Array.from({ length: 2000 }, () => '1').join(' + ') + ';',
+      '    print(str(x));',
+      '    let y: i64 = "s";',
+      '}',
+    ].join('\n') + '\n');
+    const res = chk78(p);
+    check('v78.7:恢复路径零残留——M4005 恰 1 + 后续语句独立诊断 M3002 存在(检查未中断)+ 毒化绑定零 M3001 级联 + 零裸栈崩溃',
+      res.code === 1 && res.j !== null && diags78(res, 'M4005').length === 1
+        && diags78(res, 'M3002').length >= 1 && diags78(res, 'M3001').length === 0
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.8:asm 块在表达式位 → 点名 asm 的专用诊断(v0.74 审查 NOTE-2)----
+  {
+    // 改前:`let x = asm { "nop" };` 回落结构体字面量路径 → M2002"期望字段名,实际是
+    // 字符串字面量"(误导);改后:parsePrimary 表达式位 asm+{ 点名 bail M2001
+    // "asm 块仅能作为语句使用(不能作表达式);把 asm 块移到语句位"。语句位 asm 块
+    // (v77 全套)不受影响——守卫只拦"结构体字面量回落路径"这一个位。
+    const p = m78('v78_8_asm_expr.ming', 'fn main() with io {\n    let x = asm { "nop" };\n    print(str(x));\n}\n');
+    const res = chk78(p);
+    const asmDiags = (res.j && res.j.diagnostics || []).filter((d) => d.code === 'M2001' && (d.message || '').includes('asm'));
+    check('v78.8:asm 表达式位——check exit 1 + 恰 1 条 M2001 且消息点名 asm(仅能作为语句使用/不能作表达式/移到语句位),零裸栈崩溃',
+      res.code === 1 && res.j !== null && asmDiags.length === 1
+        && (asmDiags[0].message || '').includes('asm 块仅能作为语句使用(不能作表达式)')
+        && (asmDiags[0].message || '').includes('把 asm 块移到语句位')
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} asm诊断=${asmDiags.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- v78.9:const 初始化器深链(constExprType 独立递归面)→ 稳定 M4005,零裸栈崩溃 ----
+  {
+    // const X = 1+1+…(1500 项):constExprType 不经 checkExpr(v0.75 同口径独立守卫
+    // 1200 层,实测裸崩点 ~2200)——改前裸 RangeError;改后 bail 由 resolveSigs const
+    // 分支入账,rtype 毒化 never → print(str(X)) 零级联。恰 1 条 M4005 逐字消息。
+    const p = m78('v78_9_constchain.ming', 'const X = ' + Array.from({ length: 1500 }, () => '1').join(' + ') + ';\nfn main() with io { print(str(X)); }\n');
+    const res = chk78(p);
+    const m = diags78(res, 'M4005');
+    check('v78.9:const 链 1500 项——check exit 1 + 恰 1 条 M4005"常量表达式嵌套过深(>1200 层)"逐字稳定诊断(独立递归面),零裸栈崩溃',
+      res.code === 1 && res.j !== null && m.length === 1
+        && (m[0].message || '') === '常量表达式嵌套过深(>1200 层);提示:拆分嵌套结构或引入中间绑定'
+        && codes78(res).every((c) => c === 'M4005')
+        && !crash78(res),
+      `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
+  }
+
+  // ---- §78-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

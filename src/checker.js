@@ -63,6 +63,21 @@ export function resetVarIds() { nextVarId = 0; }
 // 每个调用点按直线段遍历序编号(res$0, res$1, ...),保证确定性。
 const CALL_RESULT_SYM_PREFIX = 'res$';
 
+// v0.75(plan §4.10 残留裸栈崩溃面清零):checker 表达式递归深度上限——裸栈 RangeError
+// → 稳定 M4005[stack-overflow] 诊断(运行时"栈溢出"语义本名,复用零新增码;先例 =
+// v0.73 parser exprDepth 复用 M2001 的变体模式 + interp.js 调用栈 depth>250 守卫)。
+// 阈值依据(2026-11-16 本机实测,Node v24/win32-x64;直连 Checker API 与 CLI 双口径一致,
+// 二分到个位):方法调用链 ".replace(...)" ×N 最低崩点 814 / 成员链 .len ×1291 /
+// 二元链 1+1+… ×1465 / 下标链 v[0]… ×2068。守卫计数 = checkExpr 递归层数。
+// 450 层 ≈ 最低崩点的 55%(v0.73 审查口径:留跨机余量,V8 帧大小随版本浮动 ±30% 量级)。
+// 合法程序实测(examples+tools 32 文件)表达式检查深度远低于 100,fuzz 生成器表达式
+// 预算 ≤3 层——阈值余量一个数量级,正常程序绝不触发(§78 v78.6 锁定)。
+const CHECK_DEPTH_LIMIT = 450;
+
+// v0.75:const 初始化器走 constExprType 独立递归(不经 checkExpr),实测裸崩点 ~2200
+// (2100 存活/2200 崩)——同口径守卫,1200 层 ≈ 54%。
+const CONST_DEPTH_LIMIT = 1200;
+
 export function resolveT(t, binds) {
   while (t && t.k === 'var' && binds.has(t.id)) t = binds.get(t.id);
   return t;
@@ -603,6 +618,28 @@ export class Checker {
     // (切口 1 的 never 毒化标记)被置位,供 M3012 发射点抑制 debug 建议。合法 never
     // 绑定(loop 派生)不带毒化标记,不置位(其 debug 建议仍然有效)。
     this.nameProbe = null;
+    // v0.75(plan §4.10):表达式/常量递归深度计数器(checkExpr/constExprType 入口
+    // try/finally 配对进出;异常路径 bail 抛出时 finally 保证递减,恢复路径零残留)。
+    this.checkDepth = 0;
+    this.constDepth = 0;
+    // v0.75:深度守卫正在检查的顶层声明(fn/test/方法 decl 或 const decl)——语句级
+    // 捕获网(checkBlock/checkLet)据此登记 depthBailed。函数级网(checkBodies)直接
+    // 传入条目,不经此字段。
+    this.curBailOwner = null;
+    // v0.75:深度守卫已报告的顶层声明 AST 节点。守卫不截断 AST,深子树仍在——后续
+    // 只读 AST 的静态遍历(摘要收集/契约静态证明/索引边界/测试字面量/serve 扫描/
+    // const 交叉引用)跳过这些声明,防止根因报告后的二次裸崩(遍历器帧更轻但深度同量级)。
+    this.depthBailed = new Set();
+  }
+
+  // v0.75:函数体级深度守卫网——从语句网(checkBlock/checkLet)逃逸的 M4005 bail
+  // (块尾表达式、契约表达式)在此入账;毒化该条目并登记 depthBailed,后续只读静态
+  // 遍历跳过(poisoned 门槛既有语义)。非 MingError 一律重抛(不含裸 RangeError 吞噬)。
+  absorbDepthBail(e, entry) {
+    if (!(e instanceof MingError)) throw e;
+    this.diags.push(...e.diags);
+    entry.poisoned = true;
+    this.depthBailed.add(entry.decl);
   }
 
   // ---------- 加载 ----------
@@ -909,7 +946,11 @@ export class Checker {
     // 沿 v1 口径(span = 内层 serve 调用自身;多点时取声明体子树序首个,与修前遍历序一致)。
     for (const site of this.serveCallSites) {
       const hEntry = site.mod.items.get(site.handlerName);
-      const innerServes = hEntry?.decl?.body ? this.findServeCalls(hEntry.decl.body) : [];
+      // v0.75:深度守卫已报告的 handler 跳过嵌套 serve 扫描(泛 Object.keys 递归对深子树
+      // 会二次裸崩);程序因 M4005 已被拒绝,扫描缺失不影响诊断结论。
+      const innerServes = hEntry?.decl?.body && !this.depthBailed.has(hEntry.decl)
+        ? this.findServeCalls(hEntry.decl.body)
+        : [];
       if (innerServes.length) {
         this.diags.push(err('M3002',
           'serve 不能在 handler 内调用(v1 嵌套服务未定义;外层超时硬杀会连带内层服务)',
@@ -977,7 +1018,22 @@ export class Checker {
         }
       } else if (entry.kind === 'const') {
         const d = entry.decl;
-        entry.rtype = this.constExprType(d.init, mod, new Set([entry]));
+        // v0.75:常量表达式深度守卫网——bail 入账后 rtype 毒化 never(底类型与一切
+        // unify,标注位不级联;使用点按 never 收敛);登记 depthBailed 后,声明序在前的
+        // const 交叉引用(constExprType Ident 分支)不再二次下钻、也不二次报告。
+        if (this.depthBailed.has(d)) {
+          entry.rtype = T_NEVER;
+        } else {
+          try {
+            entry.rtype = this.constExprType(d.init, mod, new Set([entry]));
+          } catch (e) {
+            if (e instanceof MingError) {
+              this.diags.push(...e.diags);
+              entry.rtype = T_NEVER;
+              this.depthBailed.add(d);
+            } else throw e;
+          }
+        }
         if (d.type) {
           const declared = this.resolveTypeAst(d.type, mod);
           if (!unify(entry.rtype, declared, new Map())) {
@@ -990,7 +1046,22 @@ export class Checker {
 
   // 常量表达式:字面量、四则/逻辑运算、字符串拼接、集合/元组字面量、其他常量的引用。
   // 调用、方法、字段访问等一律不是常量(M3031)。
+  // v0.75:独立递归面(不经 checkExpr),实测裸崩点 ~2200 → CONST_DEPTH_LIMIT 守卫。
+  // 超限 bail(MingError 携带 M4005),由 resolveSigs 的 const 分支捕获入账并毒化 never。
+  // try/finally 配对:bail 抛出路径计数必然递减,恢复路径零残留。
   constExprType(ast, mod, visiting) {
+    if (this.constDepth >= CONST_DEPTH_LIMIT) {
+      throw new MingError([err('M4005', `常量表达式嵌套过深(>${CONST_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, ast.span)]);
+    }
+    this.constDepth++;
+    try {
+      return this.constExprTypeInner(ast, mod, visiting);
+    } finally {
+      this.constDepth--;
+    }
+  }
+
+  constExprTypeInner(ast, mod, visiting) {
     switch (ast.nt) {
       case 'IntLit': return tint(ast.bits, ast.signed);
       case 'FloatLit': return tfloat(ast.bits);
@@ -1090,32 +1161,68 @@ export class Checker {
     //     线性形式",而它在 checkFnBody 内被调用 → 必须先于 checkFnBody 建立。
     // 两者都只读 AST(不依赖类型检查结果),失败一律静默(不产诊断、不改既有行为)。
     this.buildSummaries(mod);
+    // v0.75:buildCallSiteLinear 只读下钻表达式树(descend/walk 递归,帧轻但深度同量级),
+    // 且在深度守卫运行之前(本遍先于 checkFnBody)——此处裸崩以静默放弃兜底(遍历器设计
+    // 合同即"失败一律静默,不产诊断、不改既有行为");程序若真有深链,随后 checkFnBody
+    // 的守卫会报 M4005,不影响诊断结论。
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'fn' && !entry.poisoned) this.buildCallSiteLinear(entry);
+      if (entry.kind === 'fn' && !entry.poisoned) {
+        try { this.buildCallSiteLinear(entry); } catch (e) { if (!(e instanceof RangeError)) throw e; }
+      }
     }
     for (const entry of this.methodEntries) {
-      if (entry.mod === mod) this.buildCallSiteLinear(entry);
+      if (entry.mod === mod) {
+        try { this.buildCallSiteLinear(entry); } catch (e) { if (!(e instanceof RangeError)) throw e; }
+      }
     }
     for (const [, entry] of mod.items) {
       if (entry.kind === 'fn' && entry.decl.body) {
         if (entry.poisoned) continue; // v0.46:解析恢复产物(真实错误已在解析期报告)
-        this.checkFnBody(entry, mod);
+        // v0.75:函数体级深度守卫网——curBailOwner 供语句网(checkBlock/checkLet)登记
+        // depthBailed;块尾/契约表达式的 bail 由 absorbDepthBail 入账并毒化条目。
+        this.curBailOwner = entry.decl;
+        try {
+          this.checkFnBody(entry, mod);
+        } catch (e) {
+          this.absorbDepthBail(e, entry);
+        } finally {
+          this.curBailOwner = null;
+        }
       }
-      if (entry.kind === 'test') this.checkTest(entry, mod);
+      if (entry.kind === 'test') {
+        this.curBailOwner = entry.decl;
+        try {
+          this.checkTest(entry, mod);
+        } catch (e) {
+          this.absorbDepthBail(e, entry);
+        } finally {
+          this.curBailOwner = null;
+        }
+      }
     }
     // impl 方法体(在 resolveImpls 中注册到 methodEntries)
     for (const entry of this.methodEntries) {
-      if (entry.mod === mod) this.checkFnBody(entry, mod);
+      if (entry.mod === mod) {
+        this.curBailOwner = entry.decl;
+        try {
+          this.checkFnBody(entry, mod);
+        } catch (e) {
+          this.absorbDepthBail(e, entry);
+        } finally {
+          this.curBailOwner = null;
+        }
+      }
     }
     // v0.44:测试字面量过拟合检查(实现分支条件中出现测试断言的字面量)
     this.checkTestLiteralOverfit(mod);
     // v0.48(M3042):ensures 直线体符号执行(QF_LIA 第一片);v0.55 阶段 2 传入模块摘要表
+    // v0.75:depthBailed 条目跳过——守卫已报根因,深子树仍在,静态遍历会二次裸崩。
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'fn' && !entry.poisoned) this.checkEnsuresStatically(entry, mod);
+      if (entry.kind === 'fn' && !entry.poisoned && !this.depthBailed.has(entry.decl)) this.checkEnsuresStatically(entry, mod);
     }
     // v0.52 阶段 2(M3045/W3105,QF_LIA 第二片):requires 线性边界的 Vec 索引越界静态证明
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'fn' && !entry.poisoned) this.checkIndexBoundsStatically(entry, mod);
+      if (entry.kind === 'fn' && !entry.poisoned && !this.depthBailed.has(entry.decl)) this.checkIndexBoundsStatically(entry, mod);
     }
   }
 
@@ -1141,7 +1248,8 @@ export class Checker {
       }
     };
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'test') collect(entry.decl.body);
+      // v0.75:深度守卫已报告的 test 块跳过(泛 Object.keys 递归对深子树会二次裸崩)。
+      if (entry.kind === 'test' && !this.depthBailed.has(entry.decl)) collect(entry.decl.body);
     }
     if (lits.size === 0) return;
     // 2) 实现体:if/while 条件内的比较,一侧是变量、另一侧是测试字面量 → 告警
@@ -1187,10 +1295,11 @@ export class Checker {
       }
     };
     for (const [, entry] of mod.items) {
-      if (entry.kind === 'fn' && entry.decl.body) walkBody(entry.decl.body);
+      // v0.75:深度守卫已报告的函数跳过(泛 Object.keys 递归对深子树会二次裸崩)。
+      if (entry.kind === 'fn' && entry.decl.body && !this.depthBailed.has(entry.decl)) walkBody(entry.decl.body);
     }
     for (const entry of this.methodEntries) {
-      if (entry.mod === mod && entry.decl.body) walkBody(entry.decl.body);
+      if (entry.mod === mod && entry.decl.body && !this.depthBailed.has(entry.decl)) walkBody(entry.decl.body);
     }
   }
 
@@ -1705,7 +1814,20 @@ export class Checker {
       // 与 tree execBlock 提升 / 编译器 precompileLocalFns 同口径
       scope.registerLocalFn(s.decl.name, s.decl.localFnSig);
     }
-    for (const s of block.stmts) this.checkStmt(s, ctx);
+    // v0.75:语句级深度守卫网——表达式/契约的 M4005 bail 在最近语句边界入账,毒化纪律:
+    // 根因已报,该语句后续检查放弃,同块后续语句正常检查(§78 v78.7 锁定)。登记
+    // curBailOwner 到 depthBailed,后续只读静态遍历(摘要/证明/边界/字面量)跳过本声明。
+    // 最近的网先捕获:嵌套块的深链由内层 checkBlock 入账,不重复报告。
+    for (const s of block.stmts) {
+      try {
+        this.checkStmt(s, ctx);
+      } catch (e) {
+        if (e instanceof MingError) {
+          this.diags.push(...e.diags);
+          if (this.curBailOwner) this.depthBailed.add(this.curBailOwner);
+        } else throw e;
+      }
+    }
     let bt;
     if (block.tail) {
       // 前面若有必然终止的语句,尾表达式不可达
@@ -1859,7 +1981,18 @@ export class Checker {
     // 诊断入账(诊断计数守卫,保证毒化只在"根因已报"时生效,不吞任何诊断)。
     const initDiagMark = this.diags.length;
     if (s.init) {
-      initT = this.checkExpr(s.init, ctx, declared ?? undefined, true);
+      try {
+        initT = this.checkExpr(s.init, ctx, declared ?? undefined, true);
+      } catch (e) {
+        // v0.75:深度守卫 bail——根因 M4005 已随异常入账,这里 initT 置 null 走下方
+        // v0.67 切口 1 既有毒化收敛(initFailed → 绑定 never):后续使用点不再级联
+        // M3001-nearest 假 fix;登记 depthBailed 供只读静态遍历跳过本声明。
+        if (e instanceof MingError) {
+          this.diags.push(...e.diags);
+          if (this.curBailOwner) this.depthBailed.add(this.curBailOwner);
+          initT = null;
+        } else throw e;
+      }
     }
     const initFailed = s.init && initT === null && this.diags.length > initDiagMark;
     const binds = new Map();
@@ -2076,7 +2209,29 @@ export class Checker {
   // ---------- 表达式 ----------
   // valuePos:该表达式处于"值位置"(let 初始化、实参、return 值等)。
   // 用于区分语句位置的 if(允许无 else)与值位置的 if(必须有 else)。
+  //
+  // v0.75(plan §4.10):表达式递归深度守卫。解析器对二元/调用/成员/下标链是**迭代**
+  // 下降(v0.73 exprDepth 守卫罩不到),AST 深度可以远超解析递归深度——类型检查时
+  // checkExpr 沿深 AST 递归,裸栈 RangeError(实测:调用链 ×814 / 成员链 ×1291 /
+  // 二元链 ×1465 / 下标链 ×2068)。守卫在入口计数,超限立即 bail:MingError 携带
+  // M4005[stack-overflow] 稳定诊断("栈溢出"语义本名,复用零新增码),由最近的
+  // 捕获网入账——checkLet(绑定毒化 never 收敛,v0.67 切口 1 先例)/ checkBlock 语句网
+  // (后续语句正常检查)/ checkBodies 函数网(块尾与契约表达式)。毒化纪律:根因已报,
+  // 不崩、不雪崩、不误导。
+  // try/finally 配对:bail 抛出路径计数必然递减,恢复路径零残留(§76 v76.3 口径)。
   checkExpr(e, ctx, expected, valuePos = false) {
+    if (this.checkDepth >= CHECK_DEPTH_LIMIT) {
+      throw new MingError([err('M4005', `表达式嵌套过深(>${CHECK_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, e.span)]);
+    }
+    this.checkDepth++;
+    try {
+      return this.checkExprInner(e, ctx, expected, valuePos);
+    } finally {
+      this.checkDepth--;
+    }
+  }
+
+  checkExprInner(e, ctx, expected, valuePos = false) {
     const binds = new Map();
     switch (e.nt) {
       case 'IntLit': {
@@ -2985,12 +3140,22 @@ export class Checker {
         if (p.type?.k !== 'int' || p.type.bits !== 64 || !p.type.signed) { allI64 = false; break; }
       }
       if (!allI64) continue;
+      // v0.75:collectCalls 只读下钻整棵函数体(泛 Object.keys 递归),在深度守卫运行之前
+      // ——裸崩以静默放弃兜底(本遍设计合同"失败一律静默");真有深链随后 checkFnBody
+      // 守卫报 M4005,摘要缺失不影响诊断结论。
+      let calls;
+      try {
+        calls = this.collectCalls(entry.decl.body, mod);
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e;
+        calls = [];
+      }
       fns.push({
         name: entry.decl.name,
         params: sig.params.map(p => ({ name: p.name, type: p.type })),
         requires: entry.decl.requires?.expr ?? null,
         ensures: entry.decl.ensures?.expr ?? null,
-        calls: this.collectCalls(entry.decl.body, mod),
+        calls,
       });
       entryByName.set(entry.decl.name, entry);
     }

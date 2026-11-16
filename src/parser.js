@@ -22,6 +22,20 @@ const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=']
 // ≤~15)——阈值留 10 倍余量,正常程序绝不触发(§76 v76.2/v76.4 锁定"合法深层表达式不误伤")。
 const PARSE_DEPTH_LIMIT = 120;
 
+// v0.75(plan §4.10 残留裸栈崩溃面清零):类型/模式解析递归深度上限——裸栈 RangeError →
+// 稳定 M4005[stack-overflow] 诊断("栈溢出"语义本名,复用零新增码;先例 = v0.73 exprDepth
+// 守卫的变体模式)。与表达式域(exprDepth)分域计数:类型与模式互不嵌套(模式不含类型
+// 标注,类型不含模式),各自独立成域。
+// 阈值依据(2026-11-16 本机实测,Node v24/win32-x64,直连 parse API 二分校准):
+//   类型域:parseType 自身崩点 5674(Vec[Vec[…]];5673 存活),但全管线下 checker 类型树
+//     遍历(resolveTypeAst/checkJoinNotStored 族)更低——2700 存活/2701 崩——是真实约束;
+//   模式域:parsePattern 崩点 3761(Some(Some[…]);3760 存活),checker 模式遍历未先崩。
+// 取值:TYPE 1450 ≈ 2701 的 54%(跨机余量照 v0.73 审查口径);PAT 2000 ≈ 3761 的 53%。
+// 合法程序实测(examples+tools 32 文件)类型/模式嵌套深度个位数,fuzz 不生成深类型——
+// 正常程序绝不触发(§78 v78.6 锁定)。
+const TYPE_DEPTH_LIMIT = 1450;
+const PAT_DEPTH_LIMIT = 2000;
+
 export function parse(file, src) {
   const { tokens, comments } = lex(file, src);
   const p = new Parser(tokens, file);
@@ -71,6 +85,13 @@ export class Parser {
     // (§76 v76.3 锁定;残留会让后续深嵌套语句误触 M2001)。
     // 初始化在本构造器上方(exprDepth = baseDepth,默认 0)——此处不得再置 0,
     // 否则跨实例传递的父深度被覆盖(v0.73 审查 MAJOR-1 修复的合并教训)。
+    // v0.75(plan §4.10):类型域/模式域深度计数器,同 try/finally 配对纪律。挂点两处:
+    // parseType(mut/泛型实参/括号元组/fn 类型直接自递归)+ parsePattern(parsePatternArgs
+    // 直接自递归)——均不经 parsePrimary,exprDepth 罩不到。插值子解析器(parseInterpExpr
+    // 的 new Parser)不传这两个域:插值表达式内可有 `as` 类型(各实例独立计满阈值,组合
+    // 深度 expr≤120×帧 + type≤1450×帧 仍低于裸崩点,见常量注释)。
+    this.typeDepth = 0;
+    this.patDepth = 0;
   }
 
   peek(o = 0) { return this.toks[Math.min(this.pos + o, this.toks.length - 1)]; }
@@ -804,7 +825,23 @@ export class Parser {
 
   // ---- 模式 ----
 
+  // v0.75:模式递归深度守卫——Some(Some[…])/(a,(b,(…))) 经 parsePatternArgs 直接自递归,
+  // 不经 parsePrimary(exprDepth 罩不到),实测裸崩点 3761 层(2026-11-16 直连 parse API
+  // 二分)。超限 bail 稳定 M4005 替代裸栈 RangeError;try/finally 配对,bail 抛出路径
+  // 计数必然递减,恢复路径零残留(§76 v76.3 口径)。
   parsePattern() {
+    if (this.patDepth >= PAT_DEPTH_LIMIT) {
+      this.bail('M4005', `模式嵌套过深(>${PAT_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+    }
+    this.patDepth++;
+    try {
+      return this.parsePatternInner();
+    } finally {
+      this.patDepth--;
+    }
+  }
+
+  parsePatternInner() {
     const t = this.cur();
     if (t.kind === 'op' && t.val === '_') { this.next(); return { nt: 'PWild', span: t.span }; }
     if (t.kind === 'op' && t.val === '(') {
@@ -879,7 +916,25 @@ export class Parser {
 
   // ---- 类型 ----
 
+  // v0.75:类型递归深度守卫——Vec[Vec[…]]/mut Ptr[…]/(…,(…))/fn 类型经泛型实参等
+  // 位直接自递归,不经 parsePrimary(exprDepth 罩不到)。parseType 自身实测裸崩点 5674 层,
+  // 但全管线下 checker 类型树遍历(resolveTypeAst/checkJoinNotStored 族)在 2701 层先崩
+  // (2026-11-16 直连 API 二分)——守卫 1450 层同时保护两侧(≈2701 的 54%,跨机余量照
+  // v0.73 审查口径)。超限 bail 稳定 M4005 替代裸栈 RangeError;try/finally 配对,bail
+  // 抛出路径计数必然递减,恢复路径零残留(§76 v76.3 口径)。
   parseType() {
+    if (this.typeDepth >= TYPE_DEPTH_LIMIT) {
+      this.bail('M4005', `类型嵌套过深(>${TYPE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+    }
+    this.typeDepth++;
+    try {
+      return this.parseTypeInner();
+    } finally {
+      this.typeDepth--;
+    }
+  }
+
+  parseTypeInner() {
     const t = this.cur();
     let base = null;
     let wasParen = false;
@@ -1155,6 +1210,13 @@ export class Parser {
     if (t.kind === 'id') {
       this.next();
       if (this.atOp('{') && this.noStructLit === 0 && !this.bodyBraceAhead()) {
+        // v0.75(v0.74 审查 NOTE-2):asm 块出现在表达式位(`let x = asm { … }`)——
+        // 此前回落结构体字面量路径,报误导的 M2002"期望字段名"+ 使用点级联。asm 是
+        // 上下文关键字(仅语句位,ADR-006),表达式位点名给稳定 hint。
+        if (t.val === 'asm') {
+          this.bail('M2001', 'asm 块仅能作为语句使用(不能作表达式);把 asm 块移到语句位', t.span,
+            '写法:asm { "指令" out("=r", mut x) } —— 块后不需要分号,结果经 out 子句写入 mut 变量。');
+        }
         return this.parseStructLitFrom([t.val], t);
       }
       return { nt: 'Ident', name: t.val, span: t.span };

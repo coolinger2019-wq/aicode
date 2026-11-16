@@ -99,7 +99,7 @@
 | M4002 | integer-overflow | 整数溢出/移位越界(算术全程检查) |
 | M4003 | index-out-of-bounds | Vec 索引越界 / slice 越界(用 .get(i) 得 Option) |
 | M4004 | division-by-zero | 整数除零/取模零 |
-| M4005 | stack-overflow | 递归过深(>250 层;建议改写为循环) |
+| M4005 | stack-overflow | 递归过深(>250 层;建议改写为循环) |(另复用于编译管线深度守卫(v0.75):消息"表达式/插值/类型/模式/常量表达式嵌套过深(>N 层)"五变体——阈值 450/950/1450/2000/1200 实测二分校准,编译期拒绝而非运行时 panic)
 | M4006 | unwrap-failed | 对 None/Err 调用 unwrap / expect |
 | M4007 | missing-key | map 下标缺键(用 .get(k) 得 Option) |
 | M4008 | assertion-failed | assert / assert_eq 失败(附两侧 debug 值) |
