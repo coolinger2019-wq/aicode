@@ -191,6 +191,53 @@ export function typeStr(t, binds = null) {
   }
 }
 
+// v0.76(M3002 族 fix 处方扩面,§79):实际类型能否作为合法类型标注写回源码——
+// 可则返回标注文本(渲染与 typeStr 同一来源,零新协议),不可则返回 null(宁缺毋滥,
+// 不给应用后必然引入新错误的处方)。
+// 排除面:未解析 var('?')/never('!')/unit 与空元组('()')/enum ctor/元类型(typename 族)/
+// 带效果函数类型(parseType 的 TFn 不接受 with 效果子句,替换后必引入新 M2002)。
+// 污点边界不在此判:调用点对 typeContainsUntrusted(declared) 先行拒绝——建议摘除
+// Untrusted 标注即洗白旁路(M3049 直传位 remedy 措辞纪律同源:直传位语义精确)。
+function annotationFixType(t, binds) {
+  const b = binds ?? new Map();
+  const ok = (x) => {
+    x = resolveT(x, b);
+    if (!x) return false;
+    switch (x.k) {
+      case 'int': case 'float': case 'bool': case 'str': case 'json': case 'param': return true;
+      case 'vec': case 'opt': case 'range': case 'join': case 'ptr': case 'untrusted': return ok(x.el);
+      case 'map': return ok(x.kt) && ok(x.vt);
+      case 'res': return ok(x.ok) && ok(x.err);
+      case 'tuple': return x.ts.length > 0 && x.ts.every(ok);
+      case 'fn': return !(x.effects && x.effects.size) && x.ps.every(ok) && ok(x.ret);
+      case 'struct': case 'enum': return (x.targs ?? []).every(ok);
+      default: return false;
+    }
+  };
+  if (!ok(t)) return null;
+  const s = typeStr(t, b);
+  return s === '?' || s === '!' || s === '()' ? null : s;
+}
+
+// v0.76 审查 MAJOR-2:Binary/Range/Call/Index/PostQ/Field 六形态的 span 自**操作符**
+// token 起(spanFrom(t) 既有口径——M3008 等诊断位置黄金依赖之,parser 不可改),而
+// fix 右界需要表达式真实首 token。本助手沿最左子链下钻(Call→callee/Index·Field→
+// base/PostQ→expr/Binary→l/Range→lo)直到 full-extent 节点(Ident/字面量/VecLit/
+// MapLit/StructLit/Unary 等自首 token 起),取其 span。64 步上限防病理链;取不到
+// (null)时调用点回落 init.span 并放弃发射(宁缺毋滥)。
+function exprFirstSpan(e) {
+  for (let i = 0; e && i < 64; i++) {
+    if (e.nt === 'Call') { e = e.callee; continue; }
+    if (e.nt === 'Index') { e = e.base; continue; }
+    if (e.nt === 'PostQ') { e = e.expr; continue; }
+    if (e.nt === 'Field') { e = e.base; continue; }
+    if (e.nt === 'Binary') { e = e.l; continue; }
+    if (e.nt === 'Range') { e = e.lo; continue; }
+    break;
+  }
+  return e && e.span;
+}
+
 // 判断类型是否可安全做 == (运行时结构相等)
 export function isComparable(t, binds) {
   t = resolveT(t, binds);
@@ -1037,7 +1084,20 @@ export class Checker {
         if (d.type) {
           const declared = this.resolveTypeAst(d.type, mod);
           if (!unify(entry.rtype, declared, new Map())) {
-            this.diags.push(err('M3002', `常量 "${d.name}" 标注类型是 ${typeStr(declared)},但表达式是 ${typeStr(entry.rtype)}`, d.span));
+            const dc = err('M3002', `常量 "${d.name}" 标注类型是 ${typeStr(declared)},但表达式是 ${typeStr(entry.rtype)}`, d.span);
+            // v0.76(M3002 族 fix 处方扩面):与 checkLet 同款处方——把常量标注改为表达式的
+            // 实际类型;替换域同理以 init 起点为右界。污点/不可标注形态不给(见
+            // annotationFixType 注释)。
+            const fixT = typeContainsUntrusted(declared) ? null : annotationFixType(entry.rtype, null);
+            const endSp = exprFirstSpan(d.init) || d.init?.span;
+            if (fixT && d.type?.span?.line && endSp?.line) {
+              dc.fix = {
+                start: { line: d.type.span.line, col: d.type.span.col },
+                end: { line: endSp.line, col: endSp.col },
+                replacement: `${fixT} = `,
+              };
+            }
+            this.diags.push(dc);
           }
         }
       }
@@ -1999,7 +2059,24 @@ export class Checker {
     if (s.init && declared) {
       if (!this.untrustedMismatchDiag(initT, declared, s.span, 'let 标注类型不匹配')
         && !unify(initT, declared, binds)) {
-        this.diags.push(err('M3002', `let 标注类型是 ${typeStr(declared)},但初始化表达式是 ${typeStr(initT, binds)}`, s.span));
+        const d = err('M3002', `let 标注类型是 ${typeStr(declared)},但初始化表达式是 ${typeStr(initT, binds)}`, s.span);
+        // v0.76(M3002 族 fix 处方扩面,沿 v0.44 fix 协议零新协议):"把声明类型改为实际
+        // 类型"处方。替换域 = 标注首 token 起、初始化表达式首 token 止(含其间 "=")——
+        // 类型 AST 的 span 只覆盖首 token,标注全文末尾不可机械取得,故以 init 起点为右界,
+        // 替换文本自带 " = "(标注与 = 之间的任意空距/注释一并归一)。污点边界不摘:
+        // declared 含 Untrusted → 不给处方(摘标注即洗白旁路);不可标注形态由
+        // annotationFixType 判 null(宁缺毋滥)。
+        const fixT = typeContainsUntrusted(declared) ? null : annotationFixType(initT, binds);
+        // 审查 MAJOR-2:六操作符起始形态的 init.span 自操作符起,右界取表达式真实首 token
+        const endSp = exprFirstSpan(s.init) || s.init?.span;
+        if (fixT && s.type?.span?.line && endSp?.line) {
+          d.fix = {
+            start: { line: s.type.span.line, col: s.type.span.col },
+            end: { line: endSp.line, col: endSp.col },
+            replacement: `${fixT} = `,
+          };
+        }
+        this.diags.push(d);
       }
     }
     if (!s.init && !declared) {

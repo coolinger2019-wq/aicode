@@ -13176,11 +13176,21 @@ fn main() with io, fs {
     `utype=${codes70(rut)} noimpl=${codes70(rutNi)}`);
 
   // v70.8 处方应用后果探针回归(f01–f05,快照 §0 判据 6):五条旧误导处方在新诊断输出中已不存在
-  // (毒化收敛后 M3001-nearest 处方不再发射)——断言五形态全部诊断零 fix 字段,即"应用后更糟"
-  // 无应用面:f01(e13 r→str)/f02(e16 e→Ok)/f03(e06 n→s)/f04(e14 z→单字母)/f05(e04 n→u)。
+  // (毒化收敛后 M3001-nearest 处方不再发射)——断言五形态的 M3001/毒化级联诊断零 fix 字段,即
+  // "应用后更糟"无应用面:f01(e13 r→str)/f02(e16 e→Ok)/f03(e06 n→s)/f04(e14 z→单字母)/f05(e04 n→u)。
   // 注意:M3029/M2002 的合法 fix 不在本口径(其位置准,快照实测"好")。
-  check('v70.8:f01–f05 探针回归——五形态(e13/e16/e06/e14/e04)新输出零 fix 字段,旧误导处方无应用面',
-    noFix70(r13) && noFix70(r16) && noFix70(r06) && noFix70(r14) && noFix70(r04),
+  // v0.76 重校准(理由化,逐条):e14 语料首行 `let a: i64 = "s";` 是**真实根因** let 标注
+  // 位类型不匹配(非毒化级联——initT=str 具体、无未解析名),v0.76 M3002 fix 扩面在其上
+  // 发射"把标注改为 str"处方(§79.10 同款;应用后该根因消除且不新增错误,v44 纪律实测)。
+  // 这不是 f01–f05 旧误导处方的回归——五条旧处方全部挂在 M3001-nearest/毒化位上,本断言
+  // 对 M3001 维持零 fix 逐字锁定;e14 的 fix 字段仅允许出现且必须出现在 M3002 let 标注位
+  // (replacement 恰 "str = ",硬锚点)。e13/e16/e06/e04 无 let/const 标注位真实根因,
+  // 全诊断零 fix 口径不变。
+  check('v70.8:f01–f05 探针回归——五形态 M3001/毒化级联零 fix 字段(旧误导处方无应用面);e14 另允许且仅允许 M3002 let 标注位处方(replacement 恰 "str = ",v0.76 扩面重校准)',
+    noFix70(r13) && noFix70(r16) && noFix70(r06) && noFix70(r04)
+      && !!r14.j && r14.j.diagnostics.every((d) => d.code !== 'M3001' || d.fix === undefined)
+      && r14.j.diagnostics.filter((d) => d.fix).every((d) => d.code === 'M3002' && d.fix.replacement === 'str = ')
+      && r14.j.diagnostics.some((d) => d.code === 'M3002' && d.fix),
     `e13=${codes70(r13)} e16=${codes70(r16)} e06=${codes70(r06)} e14=${codes70(r14)} e04=${codes70(r04)}`);
 
   // v70.9 REPL #60(方案 a,plan §4.6.4/§4.7.2 定案):let 行执行成功后回显"仅当前输入生效"
@@ -16029,6 +16039,332 @@ fn main() with io, fs {
   }
 
   // ---- §78-END
+}
+
+// ===================== 79. v0.76:第五崩面收口(call-arg 嵌套守卫盲视)+ fix 处方扩面 =====================
+// 文件所有权:§79 = 本区全部用例。改动面:src/parser.js(parsePostfix 三重入点守卫)+
+// src/checker.js(M3002 let/const 标注位 fix + annotationFixType 助手)——零新增 M 码,
+// 零新 fix 协议(沿 v0.44 d.fix = {start,end,replacement})。
+//   ① 第五崩面(v0.75 §5.1 RED FLAG:call-arg 嵌套 ~240/250 层 Parser 裸 RangeError,
+//     pre-existing 两版本一致):根因 = parsePostfix 循环内的 parseExpr 完整重入(调用实参
+//     `f(` / 下标 `v[` / postfix 结构体字面量链 `a.b{`)发生在 parsePrimary 返回**之后**,
+//     exprDepth 已递减——嵌套深度不累积而 JS 栈照常增长,120 阈值守卫形同虚设(v0.73
+//     头注把"调用嵌套"归入"经 parsePrimary 的形态"系误判,已修正)。修复 = 三重入点
+//     配对登记(try/finally 纪律同 parseUnary/parseIf/parseBlock,v0.73 先例)。
+//     实测裸崩点(2026-11-17 本机 Node v24.11.0/win32-x64,全管线 check 二分校准到个位):
+//     call 253(252 存活/253 崩)/index 253/postfix 字面量链 243——RED FLAG 的 "~240/250"
+//     与本实测吻合(形态差异 ±个位)。
+//   ② 有效合法边界(函数体内 let 位,计数确定性 = 与机器无关的纯计数算术):
+//     fn 体块贡献 1 层(parseBlock 挂点),实参重入每层 +1,内层 parsePrimary 叶子瞬时
+//     +1——118 层存活(叶子峰值 120 不超阈)/119 层触发 M2001(叶子峰值 121>120)。
+//     守卫触达点栈深 ≈ 裸崩点的 47%(v0.73 审查口径 53-55% 同源,跨机余量:V8 帧大小
+//     ±30% 浮动下守卫点栈深仍 < 裸崩点栈深,guard 先于裸崩恒成立)。
+//   ③ fix 处方扩面(77 码中 M2002/M3029/M3001 三族之后的新族):M3002 let/const 标注位
+//     "把声明类型改为实际类型"处方——替换域 = 标注首 token 起、初始化表达式首 token 止
+//     (类型 AST span 只覆盖首 token,标注全文末尾不可机械取得,故以 init 起点为右界,
+//     替换文本自带 " = ")。不可标注形态(未解析 var/never/unit/空元组/带效果 fn 类型/
+//     enum ctor/元类型)由 annotationFixType 判 null;declared 含 Untrusted 一律不给
+//     (摘标注即洗白旁路,M3049 直传位 remedy 措辞纪律同源);实参位 M3002 不在本扩面。
+//     M2002 块未闭合:收尾 "}" 机械定位于 eof 插入(诊断 span 已指向未闭合块的 "{";
+//     多重未闭合逐轮收敛);仅挂 fix 字段,控制流与诊断计数不变(v73.5 恰 1 条断言不受影响)。
+//   ④ 既有嵌套测试(§76 全部/§78 全部)零校准:既有语料全部为括号/一元/裸块/else-if/
+//     if-expr/插值/类型/模式形态,无深 call-arg/index/postfix 字面量链——三重入点挂点
+//     对其深度贡献为零(v76.2 括号 100 层/v78.6 合法面 32 文件同套件复跑锁零回归)。
+{
+  const dir79 = path.join(TMP, 'v79');
+  fs.mkdirSync(dir79, { recursive: true });
+  const m79 = (name, src) => { const f = path.join(dir79, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const chk79 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 裸栈崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j, out: r.stdout + r.stderr };
+  };
+  const crash79 = (res) => res.out.includes('Maximum call stack') || res.out.includes('RangeError');
+  const deepMsg79 = (res) => (res.j && res.j.diagnostics || []).filter((d) => d.code === 'M2001' && (d.message || '').includes('嵌套过深'));
+  const M2001_MSG = '表达式嵌套过深(>120 层);提示:拆分嵌套结构或引入中间绑定'; // v0.73 文案逐字口径
+  // 语料生成器(RED FLAG 基线 .zcode/v76/nested_*.ming 同形态;层次可参数化)。
+  // 注意 return 0:main 的 i64 返回值即进程退出码(v0.69 #65 惯用法),语料深求值结果
+  // 非零会让合法层位的 `ming run` 以 exit 1"成功返回"——合法面断言必须 return 0。
+  const callArgSrc79 = (n) => 'fn f(x: i64) -> i64 { return x + 0; }\nfn main() -> i64 { let x: i64 = ' + 'f('.repeat(n) + '1' + ')'.repeat(n) + '; return 0; }\n';
+  const indexSrc79 = (n) => 'fn main() -> i64 { let v: Vec[i64] = [1, 2, 3]; let x: i64 = ' + 'v['.repeat(n) + '0' + ']'.repeat(n) + '; return 0; }\n';
+  const postStructSrc79 = (n) => 'struct S { f: S }\nfn main() -> i64 { let z: i64 = ' + 'a.b{f: '.repeat(n) + 'S{}' + '}'.repeat(n) + '.f; return z; }\n';
+  // v44 同款 applyFix(§79 本地副本;§39 的 applyFix 在其分节块内不可见)
+  const applyFix79 = (src, fix) => {
+    const lines = src.split('\n');
+    const off = (p) => { let o = 0; for (let i = 0; i < p.line - 1; i++) o += lines[i].length + 1; return o + p.col - 1; };
+    return src.slice(0, off(fix.start)) + fix.replacement + src.slice(off(fix.end));
+  };
+
+  // ---- v79.1:call-arg 250 层(RED FLAG 语料层位,裸崩点 253 之下)→ 稳定 M2001 逐字 ----
+  {
+    // 改前:该层位 check 通过(守卫盲视——深度不累积);253 层裸 RangeError exit 1。
+    // 改后:250 层获得诚实 M2001(>118 合法边界的超限形态统一进稳定诊断),零裸崩。
+    const p = m79('v79_1_call250.ming', callArgSrc79(250));
+    const res = chk79(p);
+    const deep = deepMsg79(res);
+    check('v79.1:call-arg 250 层(RED FLAG 层位)——check exit 1 + M2001"表达式嵌套过深(>120 层)"≥1 条且逐条逐字(panic-mode 恢复重解析允许多条),零裸栈崩溃',
+      res.code === 1 && res.j !== null && deep.length >= 1
+        && deep.every((d) => (d.message || '') === M2001_MSG)
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deep.length} 裸崩=${crash79(res)} codes=${res.j ? (res.j.diagnostics || []).map((d) => d.code).join(',') : String(res.out).slice(0, 120)}`);
+  }
+
+  // ---- v79.2:崩点+10 = 263 层 → M2001 逐字稳定(实测裸崩点 253 的上方)----
+  {
+    const p = m79('v79_2_call263.ming', callArgSrc79(263));
+    const res = chk79(p);
+    const deep = deepMsg79(res);
+    check('v79.2:call-arg 263 层(实测裸崩点 253 +10)——M2001 ≥1 条且逐条逐字稳定诊断,零裸栈崩溃(裸 RangeError 被 guard 前置消除)',
+      res.code === 1 && res.j !== null && deep.length >= 1
+        && deep.every((d) => (d.message || '') === M2001_MSG)
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deep.length} 裸崩=${crash79(res)}`);
+  }
+
+  // ---- v79.3:300 层 → 零裸 RangeError(任务 RED FLAG 复核层位)----
+  {
+    const p = m79('v79_3_call300.ming', callArgSrc79(300));
+    const res = chk79(p);
+    const deep = deepMsg79(res);
+    check('v79.3:call-arg 300 层——M2001 ≥1 条逐字 + 零裸栈崩溃(改前 260 层即裸崩,300 层纳入稳定诊断面)',
+      res.code === 1 && res.j !== null && deep.length >= 1
+        && deep.every((d) => (d.message || '') === M2001_MSG)
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deep.length} 裸崩=${crash79(res)}`);
+  }
+
+  // ---- v79.4:4000 层极端深度 → 恢复路径终止(不挂起),零裸崩 ----
+  {
+    const p = m79('v79_4_call4000.ming', callArgSrc79(4000));
+    const res = chk79(p);
+    const deep = deepMsg79(res);
+    check('v79.4:call-arg 4000 层——check 在 runMing 30s 超时内完成(exit 1)+ M2001 ≥1 条逐字 + 零裸栈崩溃(恢复路径零挂起)',
+      res.code === 1 && res.j !== null && deep.length >= 1
+        && deep.every((d) => (d.message || '') === M2001_MSG)
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deep.length} 裸崩=${crash79(res)}`);
+  }
+
+  // ---- v79.5:合法边界 118 层 call-arg → 不误伤,check exit 0 零 M 码 ----
+  {
+    // 计数确定性边界:fn 体块 1 层 + 每层实参重入 +1 + 内层叶子瞬时 +1 → 118 层叶子峰值
+    // 120 不超阈(118 与机器无关;机器相关的只是裸崩点,guard 点栈深 ≈ 裸崩点 47% 恒前置)。
+    const p = m79('v79_5_call118_ok.ming', callArgSrc79(118));
+    const c = chk79(p);
+    const r = runMing(['run', p]);
+    const mCodes79 = (c.j && c.j.diagnostics || []).filter((d) => /^M/.test(d.code || ''));
+    check('v79.5:call-arg 118 层(实测合法边界)——check exit 0 且 run exit 0 且零 M 码诊断(守卫不误伤;改前该深度亦 exit 0,行为不变)',
+      c.code === 0 && c.j !== null && mCodes79.length === 0 && r.code === 0 && !crash79(c) && !crash79({ out: r.stdout + r.stderr }),
+      `check_exit=${c.code} run_exit=${r.code} codes=${c.j ? (c.j.diagnostics || []).map((d) => d.code).join(',') : '?'} 裸崩=${crash79(c)}`);
+  }
+
+  // ---- v79.6:边界 +1 = 119 层 → M2001 恰 1 条(有效边界精确性)----
+  {
+    const p = m79('v79_6_call119_fire.ming', callArgSrc79(119));
+    const res = chk79(p);
+    const deep = deepMsg79(res);
+    check('v79.6:call-arg 119 层(边界 +1)——check exit 1 + 恰 1 条 M2001 逐字(叶子峰值 121>120;panic-mode 吞语句后剩余实参不再二次超限),零裸栈崩溃',
+      res.code === 1 && res.j !== null && deep.length === 1
+        && (deep[0].message || '') === M2001_MSG
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deep.length} 裸崩=${crash79(res)}`);
+  }
+
+  // ---- v79.7:index 形态(同盲点同栈形)——118 合法 / 300 层稳定诊断 ----
+  {
+    const pOk = m79('v79_7a_index118_ok.ming', indexSrc79(118));
+    const cOk = chk79(pOk);
+    const mCodesOk = (cOk.j && cOk.j.diagnostics || []).filter((d) => /^M/.test(d.code || ''));
+    const pDeep = m79('v79_7b_index300.ming', indexSrc79(300));
+    const cDeep = chk79(pDeep);
+    const deep = deepMsg79(cDeep);
+    check('v79.7:index 嵌套(实测裸崩点 253,与 call-arg 同栈形)——118 层合法 exit 0 零 M 码 + 300 层 M2001 ≥1 条逐字,全部零裸栈崩溃',
+      cOk.code === 0 && cOk.j !== null && mCodesOk.length === 0 && !crash79(cOk)
+        && cDeep.code === 1 && cDeep.j !== null && deep.length >= 1
+        && deep.every((d) => (d.message || '') === M2001_MSG)
+        && !crash79(cDeep),
+      `118: exit=${cOk.code} codes=${cOk.j ? (cOk.j.diagnostics || []).map((d) => d.code).join(',') : '?'} | 300: exit=${cDeep.code} M2001=${deep.length} 裸崩=${crash79(cDeep)}`);
+  }
+
+  // ---- v79.8:postfix 结构体字面量链(a.b{f: …},实测裸崩点 243)→ 稳定诊断 ----
+  {
+    // parsePrimaryInner 直入路径(`S { … }`)本就在守卫区内(行为不变);本形态经 postfix
+    // `.` 分支重入——修复前 243 层裸崩,修复后纳入稳定诊断面。
+    const p = m79('v79_8_pstruct300.ming', postStructSrc79(300));
+    const res = chk79(p);
+    const deep = deepMsg79(res);
+    check('v79.8:postfix 结构体字面量链 300 层——check exit 1 + M2001 ≥1 条逐字 + 零裸栈崩溃(实测裸崩点 243 上方)',
+      res.code === 1 && res.j !== null && deep.length >= 1
+        && deep.every((d) => (d.message || '') === M2001_MSG)
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deep.length} 裸崩=${crash79(res)}`);
+  }
+
+  // ---- v79.9:恢复路径零残留(§76.3 同款三函数连排,call-arg 版本)----
+  {
+    // 三函数连排:深100(合法)→ 深130(守卫触发)→ 深100(合法,后位独立判定)。
+    // 断言:M2001"嵌套过深"恰 1 条(只由 broken 发出)——若 bail 穿透后计数残留,后位
+    // 深100 形态(叶子峰值 102)会误触第二条 M2001;broken 的 return b 走毒化纪律
+    // (M3001 级联为既有语句 bail 行为,不钉);零裸崩。
+    const p = m79('v79_9_recover.ming', [
+      'fn f(x: i64) -> i64 { return x + 0; }',
+      'fn f1() -> i64 { let a = ' + 'f('.repeat(100) + '1' + ')'.repeat(100) + '; return a; }',
+      'fn broken() -> i64 { let b = ' + 'f('.repeat(130) + '1' + ')'.repeat(130) + '; return b; }',
+      'fn f2() -> i64 { let c = ' + 'f('.repeat(100) + '2' + ')'.repeat(100) + '; return c; }',
+    ].join('\n') + '\n');
+    const res = chk79(p);
+    check('v79.9:恢复路径零残留(call-arg 版)——M2001 嵌套过深恰 1 条(broken 独发;计数 finally 递减,后位深100 形态独立判定不误触)+ 零裸栈崩溃',
+      res.code === 1 && res.j !== null && deepMsg79(res).length === 1
+        && (deepMsg79(res)[0].message || '') === M2001_MSG
+        && !crash79(res),
+      `exit=${res.code} json=${res.j !== null} M2001=${deepMsg79(res).length} codes=${res.j ? (res.j.diagnostics || []).map((d) => d.code).join(',') : '?'} 裸崩=${crash79(res)}`);
+  }
+
+  // ---- v79.10:M3002 let 标注位 fix 正例——fix JSON 硬锚点逐字 + applyFix 复检干净 ----
+  {
+    // 沿 v44 applyFix 纪律:应用处方后复检必须零错误(机械正确性证明)。
+    // 替换域 = 标注首 token(i64@2:12)起、初始化表达式首 token("hello"@2:18)止,
+    // 替换文本 "str = " 自带等号(实测锚点,2026-11-17)。
+    const src = ['fn main() -> i64 {', '    let x: i64 = "hello";', '    return 0;', '}', ''].join('\n');
+    const p = m79('v79_10_letfix.ming', src);
+    const res = chk79(p);
+    const d = (res.j && res.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const fixOk = !!d && !!d.fix
+      && JSON.stringify(d.fix) === JSON.stringify({ start: { line: 2, col: 12 }, end: { line: 2, col: 18 }, replacement: 'str = ' });
+    let cleanOk = false;
+    if (fixOk) {
+      const f2 = m79('v79_10_letfix_fixed.ming', applyFix79(src, d.fix));
+      const r2 = runMing(['check', f2]);
+      cleanOk = r2.code === 0;
+    }
+    check('v79.10:M3002 let 标注位 fix——消息逐字 + fix JSON 硬锚点(start 2:12/end 2:18/replacement "str = ")+ 应用后复检 exit 0',
+      res.code === 1 && res.j !== null && !!d
+        && (d.message || '') === 'let 标注类型是 i64,但初始化表达式是 str'
+        && fixOk && cleanOk,
+      `exit=${res.code} msg=${JSON.stringify(d && d.message)} fix=${JSON.stringify(d && d.fix)} 应用后clean=${cleanOk}`);
+  }
+
+  // ---- v79.11:M3002 const 标注位 fix 正例——同款硬锚点 + applyFix 复检干净 ----
+  {
+    const src = ['const N: i64 = "x";', '', 'fn main() -> i64 { return 0; }', ''].join('\n');
+    const p = m79('v79_11_constfix.ming', src);
+    const res = chk79(p);
+    const d = (res.j && res.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const fixOk = !!d && !!d.fix
+      && JSON.stringify(d.fix) === JSON.stringify({ start: { line: 1, col: 10 }, end: { line: 1, col: 16 }, replacement: 'str = ' });
+    let cleanOk = false;
+    if (fixOk) {
+      const f2 = m79('v79_11_constfix_fixed.ming', applyFix79(src, d.fix));
+      const r2 = runMing(['check', f2]);
+      cleanOk = r2.code === 0;
+    }
+    check('v79.11:M3002 const 标注位 fix——消息逐字 + fix JSON 硬锚点(start 1:10/end 1:16/replacement "str = ")+ 应用后复检 exit 0',
+      res.code === 1 && res.j !== null && !!d
+        && (d.message || '') === '常量 "N" 标注类型是 i64,但表达式是 str'
+        && fixOk && cleanOk,
+      `exit=${res.code} msg=${JSON.stringify(d && d.message)} fix=${JSON.stringify(d && d.fix)} 应用后clean=${cleanOk}`);
+  }
+
+  // ---- v79.12:M2002 块未闭合 fix 正例——收尾 "}" 机械定位于 eof + applyFix 复检干净 ----
+  {
+    // 语料无尾换行: eof 定位于 line 3 col 19(print(str(x)); 末尾);fix 即在此插入 "}"。
+    const src = ['fn main() with io {', '    let x = 1;', '    print(str(x));'].join('\n');
+    const p = m79('v79_12_blockfix.ming', src);
+    const res = chk79(p);
+    const d = (res.j && res.j.diagnostics || []).find((x) => x.code === 'M2002');
+    const fixOk = !!d && !!d.fix
+      && JSON.stringify(d.fix) === JSON.stringify({ start: { line: 3, col: 19 }, end: { line: 3, col: 19 }, replacement: '}' });
+    let cleanOk = false;
+    if (fixOk) {
+      const f2 = m79('v79_12_blockfix_fixed.ming', applyFix79(src, d.fix));
+      const r2 = runMing(['check', f2]);
+      cleanOk = r2.code === 0;
+    }
+    check('v79.12:M2002 块未闭合 fix——消息逐字 + fix JSON 硬锚点(start/end 3:19/replacement "}")+ 应用后复检 exit 0(v73.5 恰 1 条断言零校准:仅挂 fix 字段)',
+      res.code === 1 && res.j !== null && !!d
+        && (d.message || '') === '块未闭合(缺少 "}")'
+        && fixOk && cleanOk,
+      `exit=${res.code} msg=${JSON.stringify(d && d.message)} fix=${JSON.stringify(d && d.fix)} 应用后clean=${cleanOk}`);
+  }
+
+  // ---- v79.13:M3002 fix 负例三连——不可标注形态/污点边界/非标注位一律不给(宁缺毋滥)----
+  {
+    // (a) 污点边界:declared 含 Untrusted → 不给处方(建议摘标注即洗白旁路);
+    // (b) unit 初始化器:() 不可作为类型标注回写(不给处方);
+    // (c) 实参位 M3002(非 let/const 标注位):不在本扩面,fix === undefined 维持。
+    const srcU = ['use std.unstr;', '', 'fn main() -> i64 {', '    let u: Untrusted[str] = "x";', '    return 0;', '}', ''].join('\n');
+    const rU = chk79(m79('v79_13a_untrusted.ming', srcU));
+    const dU = (rU.j && rU.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const srcE = ['fn main() with io {', '    let x: i64 = print("a");', '}', ''].join('\n');
+    const rE = chk79(m79('v79_13b_unit.ming', srcE));
+    const dE = (rE.j && rE.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const srcA = ['fn f(x: i64) -> i64 { return x; }', '', 'fn main() -> i64 {', '    let z = f("s");', '    return 0;', '}', ''].join('\n');
+    const rA = chk79(m79('v79_13c_argsite.ming', srcA));
+    const dA = (rA.j && rA.j.diagnostics || []).find((x) => x.code === 'M3002');
+    check('v79.13:M3002 fix 负例三连——污点边界(declared Untrusted[str])/unit 初始化器/实参位均 M3002 在但 fix 缺失(宁缺毋滥,不给应用后更糟的处方)',
+      rU.code === 1 && !!dU && dU.fix === undefined && (dU.message || '').includes('Untrusted[str]')
+        && rE.code === 1 && !!dE && dE.fix === undefined && (dE.message || '').includes('()')
+        && rA.code === 1 && !!dA && dA.fix === undefined,
+      `untrusted: ${dU ? JSON.stringify(dU.fix) : '无诊断'} | unit: ${dE ? JSON.stringify(dE.fix) : '无诊断'} | argsite: ${dA ? JSON.stringify(dA.fix) : '无诊断'}`);
+  }
+
+  // ---- v79.14:审查 MAJOR-2 回归——Binary init(操作符起始 span 形态)fix 右界取真实首 token ----
+  {
+    // 修复前:fix end 落在 '+'@2:20(应用后 "let x: i64 = + 2;" → 二次 M2001);
+    // 修复后:exprFirstSpan 下钻 Binary.l,fix end 落 '1'@2:18,应用后复检干净。
+    const src = ['fn main() -> i64 {', '    let x: str = 1 + 2;', '    return 0;', '}', ''].join('\n');
+    const res = chk79(m79('v79_14_bin.ming', src));
+    const d = (res.j && res.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const fixOk = !!d && !!d.fix
+      && JSON.stringify(d.fix) === JSON.stringify({ start: { line: 2, col: 12 }, end: { line: 2, col: 18 }, replacement: 'i64 = ' });
+    let cleanOk = false;
+    if (fixOk) {
+      const f2 = m79('v79_14_bin_fixed.ming', applyFix79(src, d.fix));
+      cleanOk = runMing(['check', f2]).code === 0;
+    }
+    check('v79.14:MAJOR-2 回归——Binary init(1 + 2)的 fix 右界取真实首 token(end 2:18 非 2:20)+ 应用后复检 exit 0',
+      res.code === 1 && !!d && fixOk && cleanOk,
+      `msg=${JSON.stringify(d && d.message)} fix=${JSON.stringify(d && d.fix)} 应用后clean=${cleanOk}`);
+  }
+
+  // ---- v79.15:MAJOR-2 回归——Call init(callee 起始形态)fix 右界下钻到 callee 首 token ----
+  {
+    // 修复前:fix end 落 '('(callee 被吞,应用后 "let a: i64 = ();" 二次 M3002)。
+    const src = ['fn g() -> i64 { return 1; }', '', 'fn main() -> i64 {', '    let a: str = g();', '    return 0;', '}', ''].join('\n');
+    const res = chk79(m79('v79_15_call.ming', src));
+    const d = (res.j && res.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const fixOk = !!d && !!d.fix
+      && JSON.stringify(d.fix) === JSON.stringify({ start: { line: 4, col: 12 }, end: { line: 4, col: 18 }, replacement: 'i64 = ' });
+    let cleanOk = false;
+    if (fixOk) {
+      const f2 = m79('v79_15_call_fixed.ming', applyFix79(src, d.fix));
+      cleanOk = runMing(['check', f2]).code === 0;
+    }
+    check('v79.15:MAJOR-2 回归——Call init(g())的 fix 右界下钻 callee(end 4:18)+ 应用后复检 exit 0',
+      res.code === 1 && !!d && fixOk && cleanOk,
+      `msg=${JSON.stringify(d && d.message)} fix=${JSON.stringify(d && d.fix)} 应用后clean=${cleanOk}`);
+  }
+
+  // ---- v79.16:MAJOR-2 回归——Range init(下界被吞形态)fix 右界下钻 lo + Range[i64] 标注回写 ----
+  {
+    // 修复前:fix end 落 '..'(下界 0 被吞,应用后 "let r: Range[i64] = ..3;" → M2001)。
+    const src = ['fn main() -> i64 {', '    let r: i64 = 0..3;', '    return 0;', '}', ''].join('\n');
+    const res = chk79(m79('v79_16_range.ming', src));
+    const d = (res.j && res.j.diagnostics || []).find((x) => x.code === 'M3002');
+    const fixOk = !!d && !!d.fix
+      && JSON.stringify(d.fix) === JSON.stringify({ start: { line: 2, col: 12 }, end: { line: 2, col: 18 }, replacement: 'Range[i64] = ' });
+    let cleanOk = false;
+    if (fixOk) {
+      const f2 = m79('v79_16_range_fixed.ming', applyFix79(src, d.fix));
+      cleanOk = runMing(['check', f2]).code === 0;
+    }
+    check('v79.16:MAJOR-2 回归——Range init(0..3)的 fix 右界下钻 lo(end 2:18)+ Range[i64] 回写后复检 exit 0',
+      res.code === 1 && !!d && fixOk && cleanOk,
+      `msg=${JSON.stringify(d && d.message)} fix=${JSON.stringify(d && d.fix)} 应用后clean=${cleanOk}`);
+  }
+
+  // ---- §79-END
 }
 
 

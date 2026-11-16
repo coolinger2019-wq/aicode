@@ -13,9 +13,13 @@ const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=']
 // 阈值依据(2026-11-15 本机实测,Node v24/win32-x64;合同原拟 300 基于抽测深度 1200-2000,
 // 实测最小崩点远低于此,300 落在崩区内——maplit@300 实测裸崩,故下调):
 //   经 parsePrimary 的表达式形态裸崩点:lambda ~221 层(最低)/括号 ~234/Vec/struct 字面量 ~237/
-//   调用嵌套 ~246/if-expr ~291/match ~293/Map 字面量 ~296;
+//   if-expr ~291/match ~293/Map 字面量 ~296;
 //   不经 parsePrimary 的直接递归形态裸崩点:裸块 ~1137、一元链 ~2050、else-if 链 ~4150
 //   (后三者由同一计数器在各自递归点配对登记,见 parseUnary/parseIf/parseBlock)。
+// v0.76(§5.1 RED FLAG 第五崩面收口):调用实参/下标/postfix 结构体字面量链三个 parseExpr
+// 重入点此前被误归入"经 parsePrimary"——实参重入发生在 parsePrimary 返回之后,深度不累积,
+// 守卫对之盲视(实测裸崩:调用 253/下标 253/postfix 字面量链 243,2026-11-17 二分校准)。
+// 现于 parsePostfix 三个重入点配对登记(见 parsePostfix 注释),阈值 120 不变。
 // 守卫须低于全部崩点并留跨机余量(V8 栈限 ~984KB 机器无关,帧大小随 V8 版本浮动 ±30% 量级):
 // 120 层时守卫触达点栈深约为最低崩点的 55%。合法程序实测(2026-11-15,32 文件:20 examples +
 // 12 自举工具)最大下降深度 12 层(tools/diaghot.ming),fuzz 生成器表达式预算 ≤3 层(解析下降
@@ -570,7 +574,16 @@ export class Parser {
     let tail = null;
     for (;;) {
       if (this.atOp('}')) { this.next(); break; }
-      if (this.at('eof')) this.bail('M2002', '块未闭合(缺少 "}")', start.span);
+      if (this.at('eof')) {
+        // v0.76:结构化修复处方(v0.44 fix 协议零新协议)——块未闭合的收尾 "}" 机械定位于
+        // eof 插入:诊断 span 已精确指向未闭合块的 "{",缺失的收尾大括号在 eof 补一个即
+        // 语法闭合(多重未闭合时逐轮收敛,每轮补一个,fix 迭代应用面)。控制流与诊断计数
+        // 不变(仅挂 fix 字段;v73.5 恰 1 条断言不受影响)。
+        const eofTok = this.cur();
+        const d = err('M2002', '块未闭合(缺少 "}")', start.span);
+        d.fix = { start: { line: eofTok.span.line, col: eofTok.span.col }, end: { line: eofTok.span.line, col: eofTok.span.col }, replacement: '}' };
+        throw { mingParse: true, diag: d };
+      }
       if (tail !== null) this.bail('M2001', '尾表达式(无分号的表达式)必须是块的最后一个元素', this.cur().span,
         '给它后面的语句补上前置的 ";",或把这个表达式移到块尾。');
       const mark = this.pos;
@@ -1105,7 +1118,23 @@ export class Parser {
         this.next();
         const args = [];
         while (!this.atOp(')')) {
-          args.push(this.parseExpr());
+          // v0.76(§5.1 RED FLAG 第五崩面收口):调用实参是 parsePostfix 循环内的 parseExpr
+          // 完整重入——此时 parsePrimary 已返回(exprDepth 已递减),重入不经过任何活跃守卫区,
+          // 嵌套调用 f(f(f(…))) 的深度不累积而 JS 栈照常增长(v0.73 注释把"调用嵌套"归入
+          // "经 parsePrimary 的形态"是误判——实测 253 层裸 RangeError,120 阈值形同虚设)。
+          // 在重入点配对登记(同 parseUnary/parseIf/parseBlock 挂点纪律,try/finally 保证
+          // bail 穿透时计数递减,恢复路径零残留)。实测裸崩点 253(2026-11-17 本机
+          // Node v24/win32-x64,二分校准:252 存活/253 崩);阈值 120 时守卫触达点栈深
+          // 约为裸崩点的 48%,与 v0.73 校准口径一致且留跨机余量。
+          this.exprDepth++;
+          try {
+            if (this.exprDepth > PARSE_DEPTH_LIMIT) {
+              this.bail('M2001', `表达式嵌套过深(>${PARSE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+            }
+            args.push(this.parseExpr());
+          } finally {
+            this.exprDepth--;
+          }
           if (this.atOp(',')) { this.next(); continue; }
           break;
         }
@@ -1115,7 +1144,18 @@ export class Parser {
       }
       if (t.kind === 'op' && t.val === '[') {
         this.next();
-        const idx = this.parseExpr();
+        // v0.76:下标表达式与调用实参同栈形同盲点(重入在 parsePrimary 返回之后;实测裸崩点
+        // 253 层,二分校准:252 存活/253 崩)——同挂点配对登记,消息/code 与 v0.73 逐字一致。
+        this.exprDepth++;
+        let idx;
+        try {
+          if (this.exprDepth > PARSE_DEPTH_LIMIT) {
+            this.bail('M2001', `表达式嵌套过深(>${PARSE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+          }
+          idx = this.parseExpr();
+        } finally {
+          this.exprDepth--;
+        }
         this.expectOp(']');
         e = { nt: 'Index', base: e, index: idx, span: this.spanFrom(t) };
         continue;
@@ -1135,7 +1175,19 @@ export class Parser {
             this.bail('M2001', `"{" 不能跟在字段访问之后;结构体字面量只能跟在类型名后`, this.cur().span);
           }
           path.push(nameTok.val);
-          e = this.parseStructLitFrom(path, t);
+          // v0.76:postfix `.` 进入的结构体字面量(a.b { … })与调用实参同盲点——字段值
+          // parseExpr 重入在 parsePrimary 返回之后,嵌套链深度不累积(实测裸崩点 243 层,
+          // 二分校准:242 存活/243 崩)。parsePrimaryInner 直入路径(`S { … }`)本就在守卫区内,
+          // 不经此挂点,行为不变。同挂点纪律:try/finally 配对,消息/code 逐字。
+          this.exprDepth++;
+          try {
+            if (this.exprDepth > PARSE_DEPTH_LIMIT) {
+              this.bail('M2001', `表达式嵌套过深(>${PARSE_DEPTH_LIMIT} 层);提示:拆分嵌套结构或引入中间绑定`, this.cur().span);
+            }
+            e = this.parseStructLitFrom(path, t);
+          } finally {
+            this.exprDepth--;
+          }
           continue;
         }
         e = { nt: 'Field', base: e, name: nameTok.val, nameSpan: nameTok.span, span: this.spanFrom(t) };
