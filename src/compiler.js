@@ -613,6 +613,14 @@ class BytecodeCompiler {
         // 由循环上下文回填(编译时通过 breakCtx 栈)
         const bctx = st.breakCtx?.[st.breakCtx.length - 1];
         if (!bctx) { this.emit(st, OP.POP, 0, 0, s.span); return; } // 检查器已拦截;防御
+        // v0.78 #70:match 臂内的 break/continue 跳出时,先弹掉本循环内仍活着的
+        // match 宗量临时值。match 编译把宗量留在操作数栈上跨越整个臂体——continue
+        // 直跳循环头会让 for 的 ITERNEXT 把栈顶宗量误当迭代器(iter.next 崩溃,
+        // tree 引擎因递归求值无此问题);while 虽不崩但每轮泄漏一个宗量值。
+        // popN = 循环登记之后新开的 match 宗量层数;循环之前(外层 match)的宗量
+        // 位于迭代器之下、仍被外层 match 使用,必须保留。
+        const popN = (st.matchTemps ?? 0) - (bctx.matchTemps ?? 0);
+        for (let i = 0; i < popN; i++) this.emit(st, OP.POP, 0, 0, s.span);
         if (s.nt === 'Break') {
           this.emit(st, OP.JUMP, 0, 0, s.span);
           bctx.breaks.push(this.here(st) - 1);
@@ -623,7 +631,7 @@ class BytecodeCompiler {
         return;
       }
       case 'While': {
-        const b = { breaks: [], continues: [] };
+        const b = { breaks: [], continues: [], matchTemps: st.matchTemps ?? 0 };
         (st.breakCtx ??= []).push(b);
         const top = this.here(st);
         this.compileExpr(s.cond, st);           // [cond]
@@ -638,7 +646,7 @@ class BytecodeCompiler {
         return;
       }
       case 'WhileLet': {
-        const b = { breaks: [], continues: [] };
+        const b = { breaks: [], continues: [], matchTemps: st.matchTemps ?? 0 };
         (st.breakCtx ??= []).push(b);
         const top = this.here(st);
         this.compileExpr(s.expr, st);                    // [v]
@@ -676,7 +684,7 @@ class BytecodeCompiler {
       case 'For': {
         this.compileExpr(s.iter, st);                    // [iter]
         this.emit(st, OP.ITERNEW, 0, 0, s.span);
-        const b = { breaks: [], continues: [] };
+        const b = { breaks: [], continues: [], matchTemps: st.matchTemps ?? 0 };
         (st.breakCtx ??= []).push(b);
         const top = this.here(st);
         this.emit(st, OP.ITERNEXT, 0, 0, s.span);        // peek 迭代器;push 值或跳
@@ -729,7 +737,7 @@ class BytecodeCompiler {
         return;
       }
       case 'Loop': {
-        const b = { breaks: [], continues: [] };
+        const b = { breaks: [], continues: [], matchTemps: st.matchTemps ?? 0 };
         (st.breakCtx ??= []).push(b);
         const top = this.here(st);
         this.compileBlock(s.body, st, false);
@@ -997,6 +1005,9 @@ class BytecodeCompiler {
       }
       case 'Match': {
         this.compileExpr(e.scrutinee, st);              // [scrut]
+        // v0.78 #70:宗量是跨越臂体的栈上临时——登记活临时层数,break/continue
+        // 从臂体跳出时按层数弹栈(见 Break/Continue 分支注释)。
+        st.matchTemps = (st.matchTemps ?? 0) + 1;
         const jEnds = [];
         for (const arm of e.arms) {
           this.emit(st, OP.DUP, 0, 0, arm.span);        // [scrut, 副本]
@@ -1026,6 +1037,7 @@ class BytecodeCompiler {
         this.emit(st, OP.CONST, this.poolAdd(V.str('内部错误:match 未命中')), 0, e.span);
         this.emit(st, OP.PANICX, 0, 0, e.span);
         for (const j of jEnds) this.patch(st, j, this.here(st));
+        st.matchTemps = (st.matchTemps ?? 0) - 1;       // 宗量临时已消费,撤销登记
         return;
       }
       case 'VecLit': {

@@ -17193,6 +17193,457 @@ fn main() with io, fs {
   // ---- §80-END
 }
 
+// 文件所有权:§81 = 本区全部用例。缺陷 #70(P1,v0.78):for 内 match 臂中的 continue
+// → VM `内部错误: TypeError: iter.next is not a function` 进程崩溃(tree 正常,双引擎分歧)。
+// 根因:match 编译为表达式,宗量(scrutinee)整个臂体期间留在操作数栈上;臂内 break/continue
+// 的 JUMP 直达循环头/尾,栈上宗量未弹——for 的 ITERNEXT peek 栈顶把宗量误当迭代器
+// (崩溃),while 虽不崩但每轮泄漏一个宗量值(JUMPFALSE 弹的是真条件,泄漏在下方)。
+// 修复(src/compiler.js,纯字节码层,vm.js/interp.js 零改动):
+//   ① compileStmt Break/Continue 发射前置 POP——弹掉"循环登记后新开的 match 宗量"层数
+//     (popN = st.matchTemps - bctx.matchTemps;循环之前的外层宗量在迭代器之下,保留);
+//   ② compileExpr Match:宗量编译后 st.matchTemps++、臂序列结束 --(词法计数器);
+//   ③ For/While/WhileLet/Loop 四循环点在 breakCtx 登记 matchTemps 快照。
+// 范围边界(实测):wasm 无 Match 分支 → 含 match 函数恒不 eligible,回落 VM(本修复面),
+//   strict-wasm 三态 'none' exit 0 不变;cc emitValue 对"块含语句的臂"诚实 C1 拒绝,
+//   无错值面;tree 递归求值天然正确,零改动。语料源自 tools/log_analyzer.ming 迁移期形态。
+{
+  const dir81 = path.join(TMP, 'v81');
+  fs.mkdirSync(dir81, { recursive: true });
+  const m81 = (name, src) => { const f = path.join(dir81, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags81 = ['', '--no-wasm', '--tree'];
+  const runAll81 = (p) => flags81.map(fl => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const same81 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns81 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+
+  // v81.1 基线形态(#70 最小复现,log_analyzer 迁移期原形态):for-in + match 臂 continue。
+  // 修复前 VM 内部错误 exit 2;期望 stdout = "2\n3\n" 三引擎逐字。
+  {
+    const f = m81('v81_1_probe.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        match x {',
+      '            1 => { continue; }',
+      '            _ => { print(str(x)); }',
+      '        }',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.1:for-in + match 臂 continue(#70 基线)——三引擎逐字 2\\n3\\n exit 0(修复前 VM iter.next 崩溃)',
+      same81(runs, '2\n3\n'), fmtRuns81(runs));
+    const strict = runMing(['run', f, '--strict-wasm']);
+    check('v81.1b:同语料 --strict-wasm exit 0(含 match 函数恒不 eligible,三态 none,v53.4/v72.13 口径零变化)',
+      strict.code === 0 && strict.stdout === '2\n3\n', `code=${strict.code} out=${JSON.stringify(strict.stdout)}`);
+  }
+
+  // v81.2 break 在 match 臂内(修复前静默泄漏宗量+迭代器,输出侥幸一致;修复后栈干净)。
+  {
+    const f = m81('v81_2_break.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        match x {',
+      '            1 => { break; }',
+      '            _ => { print(str(x)); }',
+      '        }',
+      '    }',
+      '    print("done");',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.2:match 臂内 break——三引擎逐字 done(宗量前置弹栈,迭代器泄漏面消除)',
+      same81(runs, 'done\n'), fmtRuns81(runs));
+  }
+
+  // v81.3 match 值形态(表达式位置)含 continue 臂——never 臂与 i64 臂统一(修复前同崩)。
+  {
+    const f = m81('v81_3_expr.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        let y = match x {',
+      '            1 => { continue; }',
+      '            _ => x * 10,',
+      '        };',
+      '        print(str(y));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.3:match 值形态(let y = match)含 continue 臂——三引擎逐字 20\\n30\\n',
+      same81(runs, '20\n30\n'), fmtRuns81(runs));
+  }
+
+  // v81.4 嵌套 match:两层宗量同时在栈,内层臂 continue 需弹两层(修复前同崩)。
+  {
+    const f = m81('v81_4_nested.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3, 4];',
+      '    for x in v {',
+      '        match x {',
+      '            1 => { continue; }',
+      '            2 => {',
+      '                match x {',
+      '                    2 => { continue; }',
+      '                    _ => { print("never"); }',
+      '                }',
+      '                print("after-inner");',
+      '            }',
+      '            _ => { print(str(x)); }',
+      '        }',
+      '        print("tail");',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.4:嵌套 match 臂内 continue(两层宗量)——三引擎逐字 3\\ntail\\n4\\ntail\\n',
+      same81(runs, '3\ntail\n4\ntail\n'), fmtRuns81(runs));
+  }
+
+  // v81.5 嵌套 for:内层 match 臂 continue/break 只作用内层循环(修复前内层 ITERNEXT 同崩)。
+  {
+    const f = m81('v81_5_nestfor.ming', [
+      'fn main() -> i64 with io {',
+      '    for a in [1, 2] {',
+      '        for b in [1, 2, 3] {',
+      '            match b {',
+      '                1 => { continue; }',
+      '                3 => { break; }',
+      '                _ => { print(str(a) + str(b)); }',
+      '            }',
+      '            print("inner-tail");',
+      '        }',
+      '        print("outer-iter");',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.5:嵌套 for + match 臂 continue/break(内层宗量只弹到内层循环头)——三引擎逐字 12\\ninner-tail\\nouter-iter\\n22\\ninner-tail\\nouter-iter\\n',
+      same81(runs, '12\ninner-tail\nouter-iter\n22\ninner-tail\nouter-iter\n'), fmtRuns81(runs));
+  }
+
+  // v81.6 多臂 continue + guard 臂 continue(guard 失败落点栈平衡不回退)。
+  {
+    const f = m81('v81_6_multi.ming', [
+      'fn main() -> i64 with io {',
+      '    for x in [1, 2, 3, 4, 5] {',
+      '        match x {',
+      '            1 => { continue; }',
+      '            2 if x > 0 => { continue; }',
+      '            3 => { print("three"); }',
+      '            _ => { print(str(x)); }',
+      '        }',
+      '        print("t");',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.6:多臂 continue + guard 臂 continue——三引擎逐字 three\\nt\\n4\\nt\\n5\\nt\\n',
+      same81(runs, 'three\nt\n4\nt\n5\nt\n'), fmtRuns81(runs));
+  }
+
+  // v81.7 guard 位置嵌套 match 表达式(宗量嵌宗量)+ guard 臂 continue。
+  {
+    const f = m81('v81_7_guard.ming', [
+      'fn main() -> i64 with io {',
+      '    for x in [1, 2] {',
+      '        match x {',
+      '            1 if match x { 1 => true, _ => false } => { print("one"); }',
+      '            _ => { print(str(x)); }',
+      '        }',
+      '    }',
+      '    for y in [1, 2, 3] {',
+      '        match y {',
+      '            2 => { print("two"); }',
+      '            _ if y == 3 => { continue; }',
+      '            _ => { print(str(y)); }',
+      '        }',
+      '        print("g");',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.7:guard 嵌套 match + guard 臂 continue——三引擎逐字 one\\n2\\n1\\ng\\ntwo\\ng\\n',
+      same81(runs, 'one\n2\n1\ng\ntwo\ng\n'), fmtRuns81(runs));
+  }
+
+  // v81.8 while + match 臂 continue/break(修复前不崩但每轮泄漏宗量;修复后语义不变、栈干净)。
+  {
+    const f = m81('v81_8_while.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut i = 0;',
+      '    while i < 5 {',
+      '        i += 1;',
+      '        match i {',
+      '            1 => { continue; }',
+      '            3 => { break; }',
+      '            _ => { print(str(i)); }',
+      '        }',
+      '    }',
+      '    print(str(i));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.8:while + match 臂 continue/break——三引擎逐字 2\\n3\\n(泄漏面消除,行为与 tree 逐字)',
+      same81(runs, '2\n3\n'), fmtRuns81(runs));
+  }
+
+  // v81.9 while-let + match 臂 continue(PATMATCH 路径循环;修复前泄漏)。
+  {
+    const f = m81('v81_9_wlet.ming', [
+      'fn getv(i: i64) -> Option[i64] { if i % 2 == 0 { return Some(i); } return None; }',
+      'fn main() -> i64 with io {',
+      '    let mut k = 0;',
+      '    while let Some(n) = getv(k) {',
+      '        k += 1;',
+      '        match n {',
+      '            0 => { continue; }',
+      '            2 => { print("two"); }',
+      '            _ => { print(str(n)); }',
+      '        }',
+      '        print("wt");',
+      '    }',
+      '    print("done " + str(k));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.9:while-let + match 臂 continue——三引擎逐字 done 1(getv(0)=Some(0)→continue,getv(1)=None 退出)',
+      same81(runs, 'done 1\n'), fmtRuns81(runs));
+  }
+
+  // v81.10 bare loop + match 臂 continue/break(loop 表达式值 = break 落点 unit)。
+  {
+    const f = m81('v81_10_loop.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut i = 0;',
+      '    loop {',
+      '        i += 1;',
+      '        match i {',
+      '            1 => { continue; }',
+      '            2 => { print("loop-two"); }',
+      '            _ => { break; }',
+      '        }',
+      '    }',
+      '    print(str(i));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.10:bare loop + match 臂 continue/break——三引擎逐字 loop-two\\n3\\n',
+      same81(runs, 'loop-two\n3\n'), fmtRuns81(runs));
+  }
+
+  // v81.11 if 表达式臂与臂内块(if 分支无活宗量;宗量来自外层 match,继续弹一层)。
+  {
+    const f = m81('v81_11_ifarm.ming', [
+      'fn main() -> i64 with io {',
+      '    for x in [1, 2, 3] {',
+      '        match x {',
+      '            1 => if x == 1 { continue; } else { print("no"); },',
+      '            2 => { if x == 2 { continue; } print("no2"); }',
+      '            _ => { print(str(x)); }',
+      '        }',
+      '        print("t");',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.11:if 表达式臂/臂内块 continue——三引擎逐字 3\\nt\\n',
+      same81(runs, '3\nt\n'), fmtRuns81(runs));
+  }
+
+  // v81.12 unsafe 块内 continue(match 臂内;inLoop 穿透 unsafe,修复前同面泄漏/崩溃)。
+  {
+    const f = m81('v81_12_unsafe.ming', [
+      'fn main() -> i64 with io, unsafe {',
+      '    let mut i = 0;',
+      '    while i < 3 {',
+      '        i += 1;',
+      '        match i {',
+      '            1 => { unsafe { continue; } }',
+      '            _ => { print("u" + str(i)); }',
+      '        }',
+      '        print("ut");',
+      '    }',
+      '    print("end");',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.12:unsafe 块内 continue(臂内)——三引擎逐字 u2\\nut\\nu3\\nut\\nend\\n(块内无指针操作,M4016 不触发)',
+      same81(runs, 'u2\nut\nu3\nut\nend\n'), fmtRuns81(runs));
+  }
+
+  // v81.13 连续多轮 continue 的栈界回归:1000 轮全部走 continue 臂(修复前 while 形态每轮
+  // 泄漏 1 个宗量值;for 形态首轮即崩——此处 3 引擎逐字锁定无泄漏累积可观测面)。
+  {
+    const f = m81('v81_13_stress.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut n = 0;',
+      '    for x in 0..1000 {',
+      '        match x {',
+      '            _ => { continue; }',
+      '        }',
+      '    }',
+      '    while n < 1000 {',
+      '        n += 1;',
+      '        match n {',
+      '            _ => { continue; }',
+      '        }',
+      '    }',
+      '    print(str(n));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.13:1000 轮 continue 臂(for+while)栈不增长——三引擎逐字 1000',
+      same81(runs, '1000\n'), fmtRuns81(runs));
+  }
+
+  // v81.14 engdiff 多后端差分(基线语料 tree/vm(wasm)/vm-only 三腿一致)。
+  {
+    const f = m81('v81_14_diff.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut total = 0;',
+      '    for x in [1, 2, 3, 4, 5, 6] {',
+      '        match x % 3 {',
+      '            0 => { continue; }',
+      '            _ => { total += x; }',
+      '        }',
+      '    }',
+      '    print(str(total));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const d = runMing(['tools', 'diff', f]);
+    check('v81.14:engdiff 三后端差分一致(match-in-for continue 载荷)——退出码 0',
+      d.code === 0 && (d.stdout ?? '').includes('engdiff: 一致'), `code=${d.code} out=${JSON.stringify((d.stdout ?? '').split('\n')[0])}`);
+    const runs = runAll81(f);
+    check('v81.14b:同语料三引擎逐字 12(1+2+4+5,跳过 3/6)',
+      same81(runs, '12\n'), fmtRuns81(runs));
+  }
+
+  // v81.15 既有语义回归:无 match 的 break/continue 字节码路径零变化(popN=0 → 无前置 POP,
+  // 与 v0.77 逐字节同)。语料 = 纯 for/while/loop break+continue 黄金输出。
+  {
+    const f = m81('v81_15_plain.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut s = 0;',
+      '    for x in 1..10 {',
+      '        if x % 2 == 0 { continue; }',
+      '        if x > 7 { break; }',
+      '        s += x;',
+      '    }',
+      '    let mut t = 0;',
+      '    let mut k = 0;',
+      '    while k < 100 {',
+      '        k += 1;',
+      '        if k % 3 == 0 { continue; }',
+      '        if k > 9 { break; }',
+      '        t += k;',
+      '    }',
+      '    print(str(s) + "," + str(t));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.15:无 match 的 continue/break(1+3+5+7=16;1+2+4+5+7+8=27)——三引擎逐字(既有语义零变化)',
+      same81(runs, '16,27\n'), fmtRuns81(runs));
+  }
+
+  // v81.16 外层 match 包住循环:外层宗量位于迭代器之下必须跨循环存活,popN 只弹
+  // 循环内新开的宗量层(快照不变量;修复前内层 ITERNEXT 同崩,修复后外层臂继续执行)。
+  {
+    const f = m81('v81_16_outer.ming', [
+      'fn main() -> i64 with io {',
+      '    let a = 1;',
+      '    match a {',
+      '        1 => {',
+      '            for x in [1, 2, 3] {',
+      '                match x {',
+      '                    2 => { break; }',
+      '                    3 => { continue; }',
+      '                    _ => { print(str(x)); }',
+      '                }',
+      '                print("it");',
+      '            }',
+      '            print("after-loop");',
+      '        }',
+      '        _ => { print("no"); }',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll81(f);
+    check('v81.16:外层 match 包住循环(宗量跨循环存活)——三引擎逐字 1\\nit\\nafter-loop\\n',
+      same81(runs, '1\nit\nafter-loop\n'), fmtRuns81(runs));
+  }
+
+
+  // ---- v81.17:审查 MINOR-2 补测——三层嵌套 match popN=3(快照不变量激进面)----
+  {
+    const p = m81('v81_17_pop3.ming', [
+      'fn main() -> i64 with io {',
+      '    for x in [1, 2, 3] {',
+      '        match x {',
+      '            _ => {',
+      '                match x {',
+      '                    _ => {',
+      '                        match x {',
+      '                            2 => { continue; }',
+      '                            _ => { print(str(x)); }',
+      '                        }',
+      '                    }',
+      '                }',
+      '            }',
+      '        }',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join(String.fromCharCode(10)));
+    const runs = runAll81(p);
+    check('v81.17:三层嵌套 match popN=3——continue 恰弹三层宗量(return 2),三引擎逐字(1\n3\n)',
+      same81(runs, '1\n3\n'), fmtRuns81(runs));
+  }
+
+  // ---- v81.18:审查 MINOR-2 补测——循环在 match 臂内,两层各有 match+continue(跨快照边界 popN=1/1)----
+  {
+    const p = m81('v81_18_cross.ming', [
+      'fn main() -> i64 with io {',
+      '    for x in [1, 2] {',
+      '        match x {',
+      '            _ => {',
+      '                for y in [1, 2] {',
+      '                    match y {',
+      '                        1 => { continue; }',
+      '                        _ => { print(str(x) + str(y)); }',
+      '                    }',
+      '                }',
+      '            }',
+      '        }',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join(String.fromCharCode(10)));
+    const runs = runAll81(p);
+    check('v81.18:循环在 match 臂内跨快照边界(popN=1/1)——内层 continue 只弹内层宗量,外层宗量跨迭代存活,三引擎逐字(12\n22\n)',
+      same81(runs, '12\n22\n'), fmtRuns81(runs));
+  }
+
+  // ---- §81-END
+}
+
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
