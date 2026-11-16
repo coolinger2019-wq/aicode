@@ -6,6 +6,11 @@
 //
 // 用法:node bin/ming.js run tools/tree.ming -- <目录> [深度]
 //   (也可用环境变量 TREE_ROOT;深度 1 = 只看顶层)
+//
+// v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]]——每个条目先过
+// std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)再作路径/比较串;
+// 含控制字符等不可作路径的条目计入失败(错误走 stderr 纪律)。良性路径行为与
+// 迁移前逐字节一致。
 use std.fs;
 
 use std.path;
@@ -21,18 +26,27 @@ fn print_tree(dir: str, prefix: str, depth: i64, maxdepth: i64, mut count: i64, 
             let n = entries.len();
             while i < n {
                 let name = entries[i];
-                let full = std.path.join(dir, name);
-                let is_last = i == n - 1;
-                let branch = if is_last { "└── " } else { "├── " };
-                print("\{prefix}\{branch}\{name}");
-                count += 1;
-                if std.fs.is_dir(full) {
-                    if !name.starts_with(".") && name != "node_modules" && name != "dist" {
-                        let next_prefix = if is_last { prefix + "    " } else { prefix + "│   " };
-                        let (c, f) = print_tree(full, next_prefix, depth + 1, maxdepth, count, failed);
-                        count = c;
-                        failed = f;
-                    }
+                match std.unstr.sanitize_cli_path(name) {
+                    Ok(clean) => {
+                        let full = std.path.join(dir, clean);
+                        let is_last = i == n - 1;
+                        let branch = if is_last { "└── " } else { "├── " };
+                        print("\{prefix}\{branch}\{clean}");
+                        count += 1;
+                        if std.fs.is_dir(full) {
+                            if !clean.starts_with(".") && clean != "node_modules" && clean != "dist" {
+                                let next_prefix = if is_last { prefix + "    " } else { prefix + "│   " };
+                                let (c, f) = print_tree(full, next_prefix, depth + 1, maxdepth, count, failed);
+                                count = c;
+                                failed = f;
+                            }
+                        }
+                    },
+                    Err(_) => {
+
+                        // 污条目不能作路径(含控制字符等)——按失败计,不中断其余条目
+                        failed += 1;
+                    },
                 }
                 i += 1;
             }

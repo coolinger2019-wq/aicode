@@ -6,9 +6,16 @@
 // 精确匹配、确定性、错误显式化(0 处或多处命中都拒绝写入)。
 //
 // 用法:node bin/ming.js run tools/mingkit.ming -- <子命令> ...
+//
+// v0.77 污点迁移(ADR-007):read_file → Untrusted[str]——内容沿污值代数保污链
+// 处理(split/contains/slice_chars/char_len/byte_len/拼接);回显走 print/print_raw
+// 出向透传(污 str 合法输出);落盘走 write_file/append_file 出向透传位。
+// 污/净混合拼接的净侧经 std.unstr.mark 显式标注(标脏入口);良性路径行为与
+// 迁移前逐字节一致。
 use std.fs;
 
 // 转义解释:\\n → 换行,\\t → 制表,\\\\ → 反斜杠;未知转义原样保留
+// (实参来自命令行——净值,esc 保持净签名不变)
 fn esc(s: str) -> str {
     let mut out = "";
     let mut bs = false;
@@ -34,8 +41,9 @@ fn esc(s: str) -> str {
 }
 
 // 行列表 → 文本(保留"是否以换行结尾"的原貌:split 产生的末空元素负责还原)
-fn join_lines(lines: Vec[str]) -> str {
-    let mut out = "";
+// v0.77:行载荷保污(Vec[Untrusted[str]]),拼接输出保污 → Untrusted[str]
+fn join_lines(lines: Vec[Untrusted[str]]) -> Untrusted[str] {
+    let mut out = std.unstr.mark("");
     let mut first = true;
     for ln in lines {
         if !first {
@@ -79,7 +87,9 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if args.len() < 2 {
             return fail("read 需要 <file> [start] [end]");
         }
-        let mut content = "";
+
+        // v0.77:污内容承接用 mark("") 起点,后续赋值/拼接保污
+        let mut content = std.unstr.mark("");
         match std.fs.read_file(args[1]) {
             Ok(t) => {
                 content = t;
@@ -110,7 +120,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             if start > end {
                 return fail("start 不能大于 end");
             }
-            if content == "" {
+            if content.is_empty() {
 
                 // 空文件没有行
                 return 0;
@@ -128,7 +138,8 @@ fn main(args: Vec[str]) -> i64 with io, fs {
 
         // 原样输出:剥掉一个尾部换行,抵消 print 自带的换行;
         // 无尾部换行的文件用 print_raw 精确输出,不附加换行
-        if content == "" {
+        // (v0.77:污内容经 print/print_raw 出向透传,回显合法)
+        if content.is_empty() {
 
             // 空文件:没有任何内容
             return 0;
@@ -165,7 +176,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if args.len() < 4 {
             return fail(cmd + " 需要 <file> <old> <new>");
         }
-        let mut content = "";
+        let mut content = std.unstr.mark("");
         match std.fs.read_file(args[1]) {
             Ok(t) => {
                 content = t;
@@ -180,7 +191,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             return fail("old 不能为空串");
         }
         let parts = content.split(old);
-        let mut out = "";
+        let mut out = std.unstr.mark("");
         if cmd == "replace" {
             if parts.len() == 1 {
                 return fail("未找到目标串(0 处): " + args[2]);
@@ -214,7 +225,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if args.len() < 4 {
             return fail(cmd + " 需要 <file> <pat> <text>");
         }
-        let mut content = "";
+        let mut content = std.unstr.mark("");
         match std.fs.read_file(args[1]) {
             Ok(t) => {
                 content = t;
@@ -226,15 +237,15 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         let pat = esc(args[2]);
         let text = esc(args[3]);
         let lines = content.split("\n");
-        let mut outv: Vec[str] = [];
+        let mut outv: Vec[Untrusted[str]] = [];
         let mut done = false;
         for ln in lines {
             if !done && ln.contains(pat) {
                 if cmd == "insert-after" {
                     outv.push(ln);
-                    outv.push(text);} else {
+                    outv.push(std.unstr.mark(text));} else {
 
-                    outv.push(text);
+                    outv.push(std.unstr.mark(text));
                     outv.push(ln);
                 }
                 done = true;} else {
@@ -260,7 +271,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if args.len() < 3 {
             return fail("delete-lines 需要 <file> <start> [end]");
         }
-        let mut content = "";
+        let mut content = std.unstr.mark("");
         match std.fs.read_file(args[1]) {
             Ok(t) => {
                 content = t;
@@ -293,7 +304,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         let mut n = lines.len();
 
         // 末尾换行产生的空元素不算一行;空文件算 0 行
-        if n > 0 && lines[n - 1] == "" {
+        if n > 0 && lines[n - 1].is_empty() {
             n = n - 1;
         }
         if start < 1 {
@@ -310,7 +321,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if end > n {
             end = n;
         }
-        let mut outv: Vec[str] = [];
+        let mut outv: Vec[Untrusted[str]] = [];
         let mut i: i64 = 0;
         for ln in lines {
             i = i + 1;
@@ -333,7 +344,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if args.len() < 2 {
             return fail("count 需要 <file>");
         }
-        let mut content = "";
+        let mut content = std.unstr.mark("");
         match std.fs.read_file(args[1]) {
             Ok(t) => {
                 content = t;
@@ -346,7 +357,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         let mut n = lines.len();
 
         // 末尾换行产生的空元素不算一行;空文件算 0 行
-        if n > 0 && lines[n - 1] == "" {
+        if n > 0 && lines[n - 1].is_empty() {
             n = n - 1;
         }
         print("行 " + str(n));

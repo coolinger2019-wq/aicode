@@ -8,12 +8,19 @@
 //   json cfg.json name            → ming(裸字符串)
 //   json cfg.json servers.0.host  → 逐段下钻
 //   json cfg.json deps            → {"a":1}(非字符串按 JSON 原貌)
+//
+// v0.77 污点迁移(ADR-007 清单 5,json.parse 两域接缝):read_file → Untrusted[str]
+// → json.parse 按载体分派 → Untrusted[Json],下钻走投影表(get/at → 保污载荷);
+// 字符串叶子经 print 出向透传(污 str 合法回显);非字符串叶子按 jsonWrite 紧凑
+// 形态重建(污载体无 debug/stringify 净出口——两者都是洗白禁面,序列化器用投影 +
+// 保污拼接复刻:键走净槽转义,值载荷保污,数值经 parse/stringify 往返取 JSON
+// 数值口径)。良性路径行为与迁移前逐字节一致。
 use std.json;
 
 use std.fs;
 
-// 沿点路径下钻:obj 段用 get,arr 段用 at
-fn lookup(j: Json, path: str) -> Result[Json, str] {
+// 沿点路径下钻:obj 段用 get,arr 段用 at(v0.77:污载体投影,载荷保污)
+fn lookup(j: Untrusted[Json], path: str) -> Result[Untrusted[Json], str] {
     let segs = path.split(".");
     let mut cur = j;
     for seg in segs {
@@ -49,19 +56,141 @@ fn lookup(j: Json, path: str) -> Result[Json, str] {
     return Ok(cur);
 }
 
-// 叶子输出:字符串裸输出,其余 JSON 原貌(双引擎一致的 debug 形态)
-fn show(v: Json) with io {
+// JSON 字符串转义(净串形态,用于对象键):复刻 jsonWrite 的 JSON.stringify 口径
+// (\ " \n \r \t \b \f;其余 C0 控制字符的 \uXXXX 形态无法在语言面按码点识别,
+// 原样透出——良性文件不含此类字符,plan.md §5.1(2026-11-17 登记) 如实登记)
+fn json_escape(s: str) -> str {
+    let mut out = s;
+    out = out.replace("\\", "\\\\");
+    out = out.replace("\"", "\\\"");
+    out = out.replace("\n", "\\n");
+    out = out.replace("\r", "\\r");
+    out = out.replace("\t", "\\t");
+    out = out.replace("\u{8}", "\\b");
+    out = out.replace("\u{c}", "\\f");
+    return "\"" + out + "\"";
+}
+
+// 污字符串版转义(值载荷):replace 的 pattern/replacement 都是净槽常量,输出保污
+fn json_escape_u(s: Untrusted[str]) -> Untrusted[str] {
+    let mut out = s;
+    out = out.replace("\\", "\\\\");
+    out = out.replace("\"", "\\\"");
+    out = out.replace("\n", "\\n");
+    out = out.replace("\r", "\\r");
+    out = out.replace("\t", "\\t");
+    out = out.replace("\u{8}", "\\b");
+    out = out.replace("\u{c}", "\\f");
+    return "\"" + out + "\"";
+}
+
+// JSON 数值原貌:jsonNum = String(n),与 debug(f64) 的整数形态不同(3 vs 3.0)——
+// 经 parse/stringify 往返复刻(全净值域,合法;有限数逐字节等价,NaN/Inf 不经
+// JSON 字面量产生)
+fn json_num_text(n: f64) -> str {
+    match json.parse(str(n)) {
+        Ok(j) => {
+            return json.stringify(j);
+        },
+        Err(_) => {
+            return str(n);
+        },
+    }
+}
+
+// 污 Json → jsonWrite 紧凑形态(debug(Json) 的原貌口径):标量经投影取净值,
+// 字符串载荷保污拼接,键是净槽(Map 键)走净转义;插入序与解析序一致(Map 插入序)
+fn json_text(v: Untrusted[Json]) -> Untrusted[str] {
+    if v.is_null() {
+        return std.unstr.mark("null");
+    }
+    if v.is_bool() {
+        match v.as_bool() {
+            Some(b) => {
+                return std.unstr.mark(debug(b));
+            },
+            None => {
+            },
+        }
+    }
+    if v.is_num() {
+        match v.as_num() {
+            Some(n) => {
+                return std.unstr.mark(json_num_text(n));
+            },
+            None => {
+            },
+        }
+    }
+    if v.is_str() {
+        match v.as_str() {
+            Some(s) => {
+                return json_escape_u(s);
+            },
+            None => {
+            },
+        }
+    }
+    if v.is_arr() {
+        match v.as_arr() {
+            Some(arr) => {
+                let mut out = std.unstr.mark("[");
+                let mut first = true;
+                for el in arr {
+                    if !first {
+                        out = out + ",";
+                    }
+                    out = out + json_text(el);
+                    first = false;
+                }
+                return out + "]";
+            },
+            None => {
+            },
+        }
+    }
+    if v.is_obj() {
+        match v.as_obj() {
+            Some(m) => {
+                let mut out = std.unstr.mark("{");
+                let mut first = true;
+                for k in m.keys() {
+                    if !first {
+                        out = out + ",";
+                    }
+                    out = out + json_escape(k);
+                    out = out + ":";
+                    match m.get(k) {
+                        Some(val) => {
+                            out = out + json_text(val);
+                        },
+                        None => {
+                        },
+                    }
+                    first = false;
+                }
+                return out + "}";
+            },
+            None => {
+            },
+        }
+    }
+    return std.unstr.mark("null");
+}
+
+// 叶子输出:字符串裸输出(污 str 出向透传),其余 JSON 原貌(json_text 重建)
+fn show(v: Untrusted[Json]) with io {
     if v.is_str() {
         match v.as_str() {
             Some(s) => {
                 print(s);
             },
             None => {
-                print(debug(v));
+                print(json_text(v));
             },
         }} else {
 
-        print(debug(v));
+        print(json_text(v));
     }
 }
 

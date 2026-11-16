@@ -1,4 +1,6 @@
 // tests/net_e2e.mjs — std.net 端到端测试(独立子进程 HTTP 服务器,避免与阻塞的主线程死锁)
+// v0.77 校准(ADR-007 清单 8):http_get/http_request 响应 body 翻转 → Untrusted[str];插值
+// \{body} 是 M3050 洗白禁面 → 改拼接传播 + print 出向透传(ADR-007 §8.1)。期望 stdout 逐字不变。
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -15,12 +17,12 @@ const src = [
   'fn main(args: Vec[str]) with io, net {',
   '    let url = args[0];',
   '    match std.net.http_get(url) {',
-  '        Ok((status, body)) => print("\\u005c{status} \\u005c{body}"),',
+  '        Ok((status, body)) => print(str(status) + " " + body),',
   '        Err(e)             => print("请求失败: " + e),',
   '    }',
   '}',
   '',
-].join('\n').replace(/\\u005c/g, '\\');
+].join('\n');
 fs.writeFileSync(prog, src, 'utf8');
 
 let passed = 0, failed = 0;
@@ -83,12 +85,12 @@ try {
     'fn main(args: Vec[str]) with io, net {',
     '    let headers = {"x-ming": "v07"};',
     '    match std.net.http_request("POST", args[0], headers, "ming-body") {',
-    '        Ok((status, body)) => print("\\u005c{status} \\u005c{body}"),',
+    '        Ok((status, body)) => print(str(status) + " " + body),',
     '        Err(e)             => print("请求失败: " + e),',
     '    }',
     '}',
     '',
-  ].join('\n').replace(/\\u005c/g, '\\'), 'utf8');
+  ].join('\n'), 'utf8');
   for (const engine of ['vm', 'tree']) {
     const args = [path.join(ROOT, 'bin', 'ming.js'), 'run', postProg];
     if (engine === 'tree') args.push('--tree');

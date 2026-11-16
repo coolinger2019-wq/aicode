@@ -6,14 +6,23 @@
 // 用法:node bin/ming.js run tools/engdiff.ming -- <file.ming>
 // 同一程序在 默认(VM+wasm) / --tree / --no-wasm 三引擎下运行;
 // stdout 与退出码完全一致 → 打印"一致"退出 0;否则逐引擎列差异退出 1。
+//
+// v0.77 污点迁移(ADR-007 清单 7):proc.exec stdout/stderr → Untrusted[str]——
+// 引擎 stdout 全程保污对比/回显(污-污 == 比较合法、print/eprint 出向透传);
+// cmd/args 全是程序常量,天然合规(cmd 是命令注入 sink,污值 → M3049)。
+// 子进程 stderr 拼进 Err 载荷保污 → Err 槽位 Untrusted[str];exec 自身 Err 载荷
+// 是 Ming 自产消息(净),为与另一分支同型经 mark 显式标注。良性路径行为与
+// 迁移前逐字节一致(含分歧路径的完整输出)。
 use std.proc;
+
+use std.unstr;
 
 const NODE: str = "node";
 
 const MING: str = "bin/ming.js";
 
 // 跑一个引擎;flag 为 "" 表示默认引擎。返回 (退出码, stdout)。
-fn run_engine(file: str, flag: str) -> Result[(i64, str), str] with proc, io {
+fn run_engine(file: str, flag: str) -> Result[(i64, Untrusted[str]), Untrusted[str]] with proc, io {
 
     // exec(NODE, args) 的 args 不含命令名本身
     let mut args: Vec[str] = [MING, "run", file];
@@ -29,7 +38,7 @@ fn run_engine(file: str, flag: str) -> Result[(i64, str), str] with proc, io {
             return Ok((code, out));
         },
         Err(e) => {
-            return Err("exec 失败: " + e);
+            return Err(std.unstr.mark("exec 失败: " + e));
         },
     }
 }
@@ -45,7 +54,7 @@ fn main(args: Vec[str]) -> i64 with io, proc {
     let file = args[0];
     let engines: Vec[str] = ["", "--tree", "--no-wasm"];
     let names: Vec[str] = ["vm+wasm", "tree", "vm-only"];
-    let mut results: Vec[(i64, str)] = [];
+    let mut results: Vec[(i64, Untrusted[str])] = [];
     let mut i = 0;
     while i < engines.len() {
         match run_engine(file, engines[i]) {

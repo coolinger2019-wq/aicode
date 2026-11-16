@@ -6,6 +6,11 @@
 // 用法:node bin/ming.js run tools/batch_rename.ming -- <目录> <前缀> [扩展名]
 //   (也可用环境变量 RENAME_DIR / RENAME_PREFIX / RENAME_EXT)
 // 目录必须显式给出,不再默认 "."。
+//
+// v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]]——每个条目先过
+// std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)再作路径/比较串;
+// 含控制字符等不可作路径的条目计入失败(错误走 stderr 纪律)。良性路径行为与
+// 迁移前逐字节一致。
 use std.fs;
 
 use std.path;
@@ -15,28 +20,33 @@ fn batch_rename(dir: str, prefix: str, ext: str, mut count: i64, mut failed: i64
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             for name in entries {
-                if std.fs.is_dir(std.path.join(dir, name)) {
-                    continue;
-                }
+                match std.unstr.sanitize_cli_path(name) {
+                    Ok(clean) => {
+                        let is_dir = std.fs.is_dir(std.path.join(dir, clean));
 
-                // 幂等:已带前缀的跳过
-                if name.starts_with(prefix) {
-                    continue;
-                }
-                let file_ext = std.path.extension(name);
-                if ext != "" && file_ext != ext {
-                    continue;
-                }
-                let new_name = prefix + name;
-                let old_path = std.path.join(dir, name);
-                let new_path = std.path.join(dir, new_name);
-                match std.fs.rename(old_path, new_path) {
-                    Ok(_) => {
-                        print("重命名: \{name} -> \{new_name}");
-                        count += 1;
+                        // 幂等:已带前缀的跳过
+                        let has_prefix = clean.starts_with(prefix);
+                        let file_ext = std.path.extension(clean);
+                        let ext_skip = ext != "" && file_ext != ext;
+                        if !is_dir && !has_prefix && !ext_skip {
+                            let new_name = prefix + clean;
+                            let old_path = std.path.join(dir, clean);
+                            let new_path = std.path.join(dir, new_name);
+                            match std.fs.rename(old_path, new_path) {
+                                Ok(_) => {
+                                    print("重命名: \{clean} -> \{new_name}");
+                                    count += 1;
+                                },
+                                Err(e) => {
+                                    eprint("batch_rename: 失败: \{clean}: \{e}");
+                                    failed += 1;
+                                },
+                            }
+                        }
                     },
-                    Err(e) => {
-                        eprint("batch_rename: 失败: \{name}: \{e}");
+                    Err(_) => {
+
+                        // 污条目不能作路径(含控制字符等)——按失败计,不中断其余条目
                         failed += 1;
                     },
                 }

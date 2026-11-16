@@ -6,6 +6,11 @@
 // 用法:node bin/ming.js run tools/file_organizer.ming -- <目录>
 //   (也可用环境变量 ORGANIZE_ROOT)
 // 目录必须显式给出,不再默认 "."。
+//
+// v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]]——每个条目先过
+// std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)再作路径/比较串;
+// 含控制字符等不可作路径的条目计入失败(错误走 stderr 纪律)。良性路径行为与
+// 迁移前逐字节一致。
 use std.fs;
 
 use std.path;
@@ -15,35 +20,44 @@ fn organize(dir: str, mut moved: i64, mut failed: i64) -> (i64, i64) with io, fs
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             for name in entries {
-                let full = std.path.join(dir, name);
-                if std.fs.is_dir(full) {
-                    continue;
-                }
-                let mut ext = std.path.extension(name);
-                if ext == "" {
-                    ext = "noext";
-                }
+                match std.unstr.sanitize_cli_path(name) {
+                    Ok(clean) => {
+                        let full = std.path.join(dir, clean);
+                        let is_dir = std.fs.is_dir(full);
+                        let mut ext = std.path.extension(clean);
+                        if ext == "" {
+                            ext = "noext";
+                        }
 
-                // 去掉前导点
-                if ext.starts_with(".") {
-                    ext = ext.slice_chars(1, ext.char_len());
-                }
-                let target_dir = std.path.join(dir, ext);
-                match std.fs.make_dir(target_dir) {
-                    Ok(_) => {
+                        // 去掉前导点
+                        if ext.starts_with(".") {
+                            ext = ext.slice_chars(1, ext.char_len());
+                        }
+                        let target_dir = std.path.join(dir, ext);
+                        if !is_dir {
+                            match std.fs.make_dir(target_dir) {
+                                Ok(_) => {
+                                },
+                                // 已存在是常态;真正的失败由后续 rename 暴露
+                                Err(_) => {
+                                },
+                            }
+                            let target = std.path.join(target_dir, clean);
+                            match std.fs.rename(full, target) {
+                                Ok(_) => {
+                                    print("移动: \{full} -> \{target}");
+                                    moved += 1;
+                                },
+                                Err(e) => {
+                                    eprint("file_organizer: 失败: \{full}: \{e}");
+                                    failed += 1;
+                                },
+                            }
+                        }
                     },
-                    // 已存在是常态;真正的失败由后续 rename 暴露
                     Err(_) => {
-                    },
-                }
-                let target = std.path.join(target_dir, name);
-                match std.fs.rename(full, target) {
-                    Ok(_) => {
-                        print("移动: \{full} -> \{target}");
-                        moved += 1;
-                    },
-                    Err(e) => {
-                        eprint("file_organizer: 失败: \{full}: \{e}");
+
+                        // 污条目不能作路径(含控制字符等)——按失败计,不中断其余条目
                         failed += 1;
                     },
                 }

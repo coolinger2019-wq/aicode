@@ -14,17 +14,21 @@ fn main() with io, fs {
         },
     }
 
-    // 读取:read_file 返回 Result[str, str]
+    // 读取:read_file 返回 Result[Untrusted[str], str](v0.77 内容源标污——
+    // 文件内容是污值;char_len 是污值代数 clean 面,计数净)
     match std.fs.read_file("demo.txt") {
         Ok(content) => print("读回 \{content.char_len()} 个字符"),
         Err(e) => print("读取失败: \{e}"),
     }
 
-    // 列目录
+    // 列目录:list_dir 条目 → Vec[Untrusted[str]](路径名标污);
+    // 这里只回显不当作路径——拼接 + print 出向透传即可(污值合法回显);
+    // 若要拿条目当路径用,先过 std.unstr.sanitize_cli_path(污值直接进
+    // path.join/fs.open → M3049)
     match std.fs.list_dir(".") {
         Ok(entries) => {
             for name in entries {
-                print("  - \{name}");
+                print("  - " + name);
             }
         },
         Err(e) => print("列目录失败: \{e}"),

@@ -4,6 +4,10 @@
 // 计数口径不变:含 ERROR/WARN/INFO 的行分类计数(一行命中多类时按此优先级),
 // 末尾换行产生的空行不计。
 //
+// v0.77 污点迁移(ADR-007):read_file → Untrusted[str],逐行 split 保污
+// (Vec[Untrusted[str]]);contains 是污值代数 clean 面(谓词,污点在布尔上终结),
+// 行分类逻辑零改动;计数输出全是净值。良性路径行为与迁移前逐字节一致。
+//
 // 用法:node bin/ming.js run tools/log_analyzer.ming -- <日志文件>
 //   (也可用环境变量 LOG_FILE)
 use std.fs;
@@ -19,8 +23,8 @@ fn analyze(path: str) -> i64 with io, fs {
             let mut i = 0;
             let mut n = lines.len();
 
-            // 末尾换行产生的空元素不算一行(与 wc 口径一致)
-            if n > 0 && lines[n - 1] == "" {
+            // 末尾换行产生的空元素不算一行(与 wc 口径一致;污串与净串比较禁 → is_empty)
+            if n > 0 && lines[n - 1].is_empty() {
                 n = n - 1;
             }
             while i < n {

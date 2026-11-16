@@ -5,11 +5,15 @@
 //
 // 用法:node bin/ming.js run tools/todo_scan.ming -- <目录>
 //   (也可用环境变量 TODO_SCAN_ROOT)
+//
+// v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]],read_file →
+// Untrusted[str]——条目先过 std.unstr.sanitize_cli_path(校验不改写:拒控制字符,
+// Ok 原样)再作路径/比较串,不可作路径的条目计入失败;行内容沿污值代数保污链
+// 处理,TODO|FIXME|XXX|HACK 正则改写为逐 contains(固定串,与无锚点 alternation
+// 逐字节等价),命中行经 print 出向透传回显。良性路径行为与迁移前逐字节一致。
 use std.fs;
 
 use std.path;
-
-use std.re;
 
 const SCAN_EXTS: Vec[str] = [".ming", ".js", ".mjs", ".cjs", ".ts", ".md", ".py", ".go", ".rs"];
 
@@ -28,26 +32,28 @@ fn scan_dir(dir: str, mut count: i64, mut failed: i64) -> (i64, i64) with io, fs
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             for name in entries {
-                let full = std.path.join(dir, name);
-                if std.fs.is_dir(full) {
+                match std.unstr.sanitize_cli_path(name) {
+                    Ok(clean) => {
+                        let full = std.path.join(dir, clean);
+                        if std.fs.is_dir(full) {
 
-                    // 跳过隐藏目录与 node_modules/dist
-                    if name.starts_with(".") {
-                        continue;
-                    }
-                    if name == "node_modules" {
-                        continue;
-                    }
-                    if name == "dist" {
-                        continue;
-                    }
-                    let (c, f) = scan_dir(full, count, failed);
-                    count = c;
-                    failed = f;} else if is_scan_target(name) {
+                            // 跳过隐藏目录与 node_modules/dist
+                            if !clean.starts_with(".") && clean != "node_modules" && clean != "dist" {
+                                let (c, f) = scan_dir(full, count, failed);
+                                count = c;
+                                failed = f;
+                            }} else if is_scan_target(clean) {
 
-                    let (c, f) = scan_file(full, count, failed);
-                    count = c;
-                    failed = f;
+                            let (c, f) = scan_file(full, count, failed);
+                            count = c;
+                            failed = f;
+                        }
+                    },
+                    Err(_) => {
+
+                        // 污条目不能作路径(含控制字符等)——按失败计,不中断其余条目
+                        failed += 1;
+                    },
                 }
             }
         },
@@ -68,8 +74,11 @@ fn scan_file(path: str, mut count: i64, mut failed: i64) -> (i64, i64) with io, 
             let n = lines.len();
             while i < n {
                 let line = lines[i];
-                if std.re.is_match("(TODO|FIXME|XXX|HACK)", line) {
-                    print("\{path}:\{i + 1}: \{line.trim()}");
+
+                // v0.77:污行不可入 re 净槽——固定串与 (TODO|FIXME|XXX|HACK)
+                // 无锚点 alternation 逐字节等价;回显走拼接 + print 出向透传
+                if line.contains("TODO") || line.contains("FIXME") || line.contains("XXX") || line.contains("HACK") {
+                    print(path + ":" + str(i + 1) + ": " + line.trim());
                     count += 1;
                 }
                 i += 1;

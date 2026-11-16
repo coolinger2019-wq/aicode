@@ -1,6 +1,6 @@
 # Ming(明)使用指南
 
-**版本:v0.76.0** · **v0.76 健壮性补刀 + fix 处方扩面(第五崩面 call-arg 嵌套收口——parsePostfix 三重入点计入 exprDepth,崩点实测 253;M3002 fix 族,79 码发射族 3→4;零新增 M 码;§79 13 条)** + **v0.74 内联汇编(显式能力 `with asm`,北星支柱 2 兑现,ADR-006 12/12 go:第 13 效果 asm 门禁/类型化 i64 操作数 GCC 约束模型/仅 ming cc 真实执行+M4017[asm-cc-only] 具名回落(号段复用登记)/C6 旗标/build 具名回退/注入卫生=模板与约束字面量强制;可执行内存与 ROP 明确不做)** + **v0.73 技术债与观测收口(解析深嵌套守卫——裸栈 RangeError → 稳定 M2001"表达式嵌套过深(>120 层)",四挂点 try/finally 进出配对,阈值二分实测校准;coverage 基线复测刷新 94.8% 行/89.7% 函数;GUIDE 交叉引用 15 行 29 引用全效;零新增 M 码)** + **v0.72 诊断质量补刀(if 分支混型 M3049 对称化——checkIf 仿 match 双向接入;M3049 remedy 复合载体精确化——直传位逐字不变,复合位中性措辞去"整体改声明"误导;零新增 M 码)** + **v0.71 诊断残留收口(salvage 精化:深度 0 `id(` 停机启发式,被吞区域疑似调用行救回——probe_anchor 真实 M3001 复活/valBrace 块入口快照所有权:伪诊断→真实诊断/嵌套污点 M3049 化五形态:统一净化 hint/#61 ming test 失败栈位置接线:undefined → file:line:col 三引擎逐字 + 预存 tree/VM 帧名分歧修复;N-68 fmt --write 回执;零新增 M 码)** + **v0.70 诊断校准二期(#63 parser 级联抑制:语句层 recover 改深度感知 panic-mode 恢复——`{}` 深度跟踪吞掉失败语句的 `{...}` 区域、`;` 仅深度 0 停机、`}` 深度 0 交还块循环、语句停机表移除 `test`、parseBlock/parseProgram 强进路径修复;锚定语料 4 条 → 1 条、级联比 11x → 1x;诚实边界——失败语句后到下一语句边界的合法语句一并吞掉,顶层 recover 不变;零新增 M 码)** + **v0.69 eval 运行时编译执行(显式能力 `with eval`,第 12 个效果门禁面;独立编译单元检查零降级/失败 Err 化 `--json` 同构载荷/污点 sink 无净化器/内层恒 tree/配额按调用重置;#65 serve 退出码惯用法文档化;零新增 M 码)** + **v0.67 诊断协议校准(三切口:毒化收敛双路径/M3012 语境化/M3015 nearest;REPL let 回显+横幅单一事实来源;快照复测误导 7→1/fix 错误 4→0/级联 3.8→1.4)** + **v0.66 观测与反馈(纯校准版:覆盖率/bench 基线刷新——双项 WARN 复测注记落盘;AI 修正回路快照——诊断协议校准 GO;真实 serve 服务观察——serve v1.1 no-go 推迟;Untrusted[Json] 载荷 ADR-004 落盘;零语义改动)** + **v0.64 信任边界与诚实失败收口(AOT artifact 结构校验——四损坏形态统一稳定诊断;嵌套 serve 编译期拒绝(两遍式,checker 真实解析为单一事实来源);sanitize_cli_path 闸门扩展(DEL/C1/双向控制符);M4013/M5001 登记;零新增 M 码)** + **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + **v0.63 wasm 守护收口 slice 2(下标读/元素写/Option unwrap/VecLit/f64 复合赋值真实经 wasm;strict 新形态 fallback=0)** + **v0.65 wasm 守护收口 slice 3(expect/Map·Err unwrap/Vec[str] 读/下标复合赋值;#59 嵌套栈帧;守护具名清零)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.68 Untrusted[Json](serve 载荷整树标污;投影表;stringify 拒绝;净化器族不扩;零新增 M 码)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
+**版本:v0.77.0** · **v0.77 内容源扩面(ADR-007:fs/net/proc 源翻转/污值代数 28 方法/json 接缝/write·print 出向透传/exec 双向/第三载体 Vec[u8];零新增 M 码;§80 21 条 37 check)** + **v0.76 健壮性补刀 + fix 处方扩面(第五崩面 call-arg 嵌套收口——parsePostfix 三重入点计入 exprDepth,崩点实测 253;M3002 fix 族,79 码发射族 3→4;零新增 M 码;§79 13 条)** + **v0.74 内联汇编(显式能力 `with asm`,北星支柱 2 兑现,ADR-006 12/12 go:第 13 效果 asm 门禁/类型化 i64 操作数 GCC 约束模型/仅 ming cc 真实执行+M4017[asm-cc-only] 具名回落(号段复用登记)/C6 旗标/build 具名回退/注入卫生=模板与约束字面量强制;可执行内存与 ROP 明确不做)** + **v0.73 技术债与观测收口(解析深嵌套守卫——裸栈 RangeError → 稳定 M2001"表达式嵌套过深(>120 层)",四挂点 try/finally 进出配对,阈值二分实测校准;coverage 基线复测刷新 94.8% 行/89.7% 函数;GUIDE 交叉引用 15 行 29 引用全效;零新增 M 码)** + **v0.72 诊断质量补刀(if 分支混型 M3049 对称化——checkIf 仿 match 双向接入;M3049 remedy 复合载体精确化——直传位逐字不变,复合位中性措辞去"整体改声明"误导;零新增 M 码)** + **v0.71 诊断残留收口(salvage 精化:深度 0 `id(` 停机启发式,被吞区域疑似调用行救回——probe_anchor 真实 M3001 复活/valBrace 块入口快照所有权:伪诊断→真实诊断/嵌套污点 M3049 化五形态:统一净化 hint/#61 ming test 失败栈位置接线:undefined → file:line:col 三引擎逐字 + 预存 tree/VM 帧名分歧修复;N-68 fmt --write 回执;零新增 M 码)** + **v0.70 诊断校准二期(#63 parser 级联抑制:语句层 recover 改深度感知 panic-mode 恢复——`{}` 深度跟踪吞掉失败语句的 `{...}` 区域、`;` 仅深度 0 停机、`}` 深度 0 交还块循环、语句停机表移除 `test`、parseBlock/parseProgram 强进路径修复;锚定语料 4 条 → 1 条、级联比 11x → 1x;诚实边界——失败语句后到下一语句边界的合法语句一并吞掉,顶层 recover 不变;零新增 M 码)** + **v0.69 eval 运行时编译执行(显式能力 `with eval`,第 12 个效果门禁面;独立编译单元检查零降级/失败 Err 化 `--json` 同构载荷/污点 sink 无净化器/内层恒 tree/配额按调用重置;#65 serve 退出码惯用法文档化;零新增 M 码)** + **v0.67 诊断协议校准(三切口:毒化收敛双路径/M3012 语境化/M3015 nearest;REPL let 回显+横幅单一事实来源;快照复测误导 7→1/fix 错误 4→0/级联 3.8→1.4)** + **v0.66 观测与反馈(纯校准版:覆盖率/bench 基线刷新——双项 WARN 复测注记落盘;AI 修正回路快照——诊断协议校准 GO;真实 serve 服务观察——serve v1.1 no-go 推迟;Untrusted[Json] 载荷 ADR-004 落盘;零语义改动)** + **v0.64 信任边界与诚实失败收口(AOT artifact 结构校验——四损坏形态统一稳定诊断;嵌套 serve 编译期拒绝(两遍式,checker 真实解析为单一事实来源);sanitize_cli_path 闸门扩展(DEL/C1/双向控制符);M4013/M5001 登记;零新增 M 码)** + **v0.62 服务端 v1(std.net.serve:worker-per-connection,固定 127.0.0.1 回环;16 worker/256 队列/8MB 体/30s 超时;请求/响应 Json 载荷;错误体统一 Json{code,message};零新增 M 码;serve 内 sync/unsafe/ffi 编译期拒绝)** + **v0.63 wasm 守护收口 slice 2(下标读/元素写/Option unwrap/VecLit/f64 复合赋值真实经 wasm;strict 新形态 fallback=0)** + **v0.65 wasm 守护收口 slice 3(expect/Map·Err unwrap/Vec[str] 读/下标复合赋值;#59 嵌套栈帧;守护具名清零)** + 字节码 VM + WASM 分层(**strict-wasm 三态观测** + v0.59 **wasm 覆盖收口:f64 局部/Map 形参/str 返回/值型 if/块尾 if 真实经 wasm**,剩余回落具名)+ **v0.61 污点最小片(窄源:`Untrusted[str]` 类型标注;来源 = env.get/read_line/extern 返回强制;操作面白名单 5 方法;debug/插值/as 洗白禁面;std.unstr 净化族;M3049/M3050)** + **v0.68 Untrusted[Json](serve 载荷整树标污;投影表;stringify 拒绝;净化器族不扩;零新增 M 码)** + **v0.60 资源门禁一致性(--max-alloc/--max-ms 承诺与实现、四引擎一致:外部输入计费 + 阻塞内建钳制 + ming test 旗标传播;read_line/RegExp 不可抢占边界具名)** + **C 后端 C1–C5**(ming cc:数值/str/Vec/Map/Option/f64 + extern fn FFI + **str for-in 码点迭代** + **`with unsafe` 受限指针:Ptr[u8]/Ptr[mut u8]、std.mem.alloc/free、M4016 原生限定**;--static)+ **契约系统**(M4015/M3040/M3041/M3042/M3043/M3044 + **静态边界证明** M3045/W3105 + **v0.57 循环/守卫敏感边界证明:范围 for 内 `buf[i]` 义务两向证明(义务 additive `scope: body|loop`)** + **跨函数契约摘要** + `--proof-report` + **fmt 契约保真**)+ **ABI 哈希构建缓存**(ming build;--clean-cache;构建键 = 项目相对路径 + 内容 + Node 主版本 + 编译器源码指纹)+ **CI 矩阵**(Linux/macOS/Windows × Node 18/20/22 + nightly 深模糊)+ **引擎一致性**(tree/VM/wasm 作用域与捕获闭包统一,v0.56 清零 P1)+ **自举工具 12 个 + ming tools 统一入口 + v0.57 工具 AOT 缓存(MING_TOOLS_DEBUG 观测;热缓存净开销 ~25–30ms)** + **v0.57 覆盖率/bench 观测基线(tests/coverage.mjs;tests/bench.mjs --write-baseline)+ v0.59 invariant bench 项** + **v0.58 AI 协作体验(LSP 补全/跳转定义/文档符号;std.str.join;ming doc --json/--index;Release 打包)+ v0.59 本地函数恢复(块级条目/递归/契约;三条限制)** + JSON + 正则 + capability fs/net/sync/proc/env/rand/crypto + HTTP + std.fmt/log/math/crypto/bin + 线性句柄 + 泛型 impl + REPL · 需要 Node.js ≥ 18(Windows / macOS / Linux;C 后端另需 gcc/clang)
 
 > Ming 的承诺:**程序的含义必须和它写出来的一模一样**。没有隐式转换,没有 null,没有静默溢出,没有隐藏的控制流。
 
@@ -657,11 +657,12 @@ $ node bin/ming.js test mylib.ming
 
 `sqrt pow abs floor ceil round min max exp ln sin cos tan` + **v0.29 补全**:`asin acos atan atan2(y, x) sinh cosh tanh log2 log10 cbrt hypot(a, b)` — 均为 f64(实参必须显式 f64,int 不隐式转换);`pi` `e` 为常量函数。全部纯函数,wasm 导入桥接(eligible 函数内零回落)。
 
-### std.str(纯函数,v0.58)
+### std.str(纯函数,v0.58;index_of v0.77)
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
 | `join` | `(Vec[str]) -> str` | **单次 O(n) 拼接**(v0.58;Builder 方案的最小替代,plan §4.3.5):依序连接,空 Vec → `""`,语义与 `+` 循环逐字相等;`use std.str;` 后 `str.join(v)` 调用(裸 `str(42)` 仍内建;模块级 `fn str` 遮蔽调用时模块 fn 赢)。纯函数,无效果声明即可调用。**v0.59(#49)起按结果长度计入 `--max-alloc` 配额**(与 Vec 方法 join / `+` 同口径;紧配额下可能 M4011) |
+| `index_of` | `(hay, needle) -> Option[i64]`(v0.77,ADR-007 清单 4) | 子串定位:**返回字符(码点)下标**,与 `.char_len`/`.slice_chars` 同口径(非 UTF-16 码元——含增补平面字符时两口径才会分歧);未找到 → `None`(与 Vec.index_of 一致用 Option 承载,无 -1 哨兵)。hay 是**载体感知参数位**(污 str 合法流入纯函数计算,输出 = 位置标量净,污点在计数上终结——污值代数的定位原语);needle 保持净槽(污模式 → M3049)。纯扫描不计费 |
 
 **与 Vec 方法 `join` 的 API 不对称(如实说明)**:`v.join(sep)`(Vec 方法,带分隔符)与 `str.join(v)`(std 函数,无分隔符)是两个不同的 API;`use std.str` 下局部变量 `str` 遮蔽导入时,`str.join(sep)` 按局部值的 Vec 方法解析(遮蔽守卫)。**分配记账(v0.59 #49 已对称化)**:Vec 方法 `join` 与 `std.str.join` 均按结果长度计入 `--max-alloc`(v0.58 时 std join 不计费,该不对称已消除);`std.str.join` 在紧配额下与 `+`/Vec join 一样可能 M4011。wasm 层:含 `str.join` 调用的函数非直接调用形态 REJECT(`--strict-wasm` 可见回落,不影响语义);C 后端 C1 发射期显式拒绝。
 
@@ -669,7 +670,9 @@ $ node bin/ming.js test mylib.ming
 
 > 参见:§14 效果系统(能力 `io`)、§16 模块与可见性(`use std.io`)、§18 std.unstr 节(read_line 返回污值的消费与净化)。
 
-`read_line() -> Untrusted[str]` · 效果 `io` — 读一行(去换行);EOF 返回 `""`。**v0.61 起返回标污**(窄源来源之一):结果只能经白名单方法(parse_i64/char_len/byte_len/is_empty)消费、声明 `Untrusted[str]` 形参透传,或经 `std.unstr.sanitize_*` 净化后当 `str` 用(直接 print/拼接/当路径 → M3049)。EOF 空串同理标污(空串经 sanitize_cli_path/sanitize_path 判 Err/Ok 见各自语义)。
+`read_line() -> Untrusted[str]` · 效果 `io` — 读一行(去换行);EOF 返回 `""`。**v0.61 起返回标污**(窄源来源之一):结果按 §18 污值代数消费(解析/计数/谓词/保污变换)、声明 `Untrusted[str]` 形参透传、`print` 出向透传回显,或经 `std.unstr.sanitize_*` 净化后当 `str` 用(当路径/进 debug/插值 → M3049/M3050)。EOF 空串同理标污(空串经 sanitize_cli_path/sanitize_path 判 Err/Ok 见各自语义)。
+
+`read_to_end() -> str` · 效果 `io` — stdin 全量读取。**v0.77 如实登记**:read_to_end 维持净 `str`(ADR-007 清单未含 io 全量源——stdin 整行 read_line 已标,同源的全量形态未标 = 既有口径差异,登记不预支,后续按族扩展纪律另裁)。
 
 ### std.time
 
@@ -688,8 +691,8 @@ $ node bin/ming.js test mylib.ming
 
 | 函数/方法 | 签名 | 说明 |
 |------|------|------|
-| `parse` | `(str) -> Result[Json, str]` | 解析;错误带位置 |
-| `stringify` | `(JSON 兼容类型) -> str` | **静态检查兼容性**(M3033) |
+| `parse` | `(str) -> Result[Json, str]`;**载体感知(v0.77,ADR-007 清单 5)**:`Untrusted[str]` 实参 → `Result[Untrusted[Json], str]` | 解析;错误带位置。按实参载体分派:污 str → 污 Json(投影表全套消费面直接适用),净 str → 净 Json(逐字不变)——两域接缝就此闭合,污内容不可能经 parse 洗白 |
+| `stringify` | `(JSON 兼容类型) -> str`;`Untrusted[Json]` → **M3049** | **静态检查兼容性**(M3033) |
 | `.is_null is_bool is_num is_str is_arr is_obj` | `(JSON) -> bool` | 类型判定 |
 | `.as_bool as_num as_str` | `(JSON) -> Option[...]` | 取标量 |
 | `.as_arr as_obj` | `(JSON) -> Option[Vec[Json] / Map[str, Json]]` | 取容器(**副本**) |
@@ -701,7 +704,7 @@ $ node bin/ming.js test mylib.ming
 | 方法(接收者 `Untrusted[Json]`) | 返回类型 | 污点语义 |
 |------|------|------|
 | `.get(k) .at(i)` | `Option[Untrusted[Json]]` | 子树整树污(递归) |
-| `.as_str()` | `Option[Untrusted[str]]` | **载体收窄为 str**——接 v1 str 全套面(§18:白名单 5 方法 + sanitize 族),污点不因投影消失 |
+| `.as_str()` | `Option[Untrusted[str]]` | **载体收窄为 str**——接污值代数全套面(§18:28 方法代数 + sanitize 族),污点不因投影消失 |
 | `.as_num()` | `Option[f64]` | 净值(污点在数值上终结) |
 | `.as_bool()` | `Option[bool]` | 净值 |
 | `.as_arr()` | `Option[Vec[Untrusted[Json]]]` | 容器载荷保污(副本语义不变) |
@@ -710,7 +713,7 @@ $ node bin/ming.js test mylib.ming
 | `.eq(other)` | `bool` | 净值(实参净污均可) |
 
 - 投影表外的方法 → **M3050**;`json.stringify(Untrusted[Json])` → **M3049**——Json→str 的唯一整体出口在类型层闭合(污点树无法整体变成字符串流进文件/日志/HTTP 体;污进污出变体 `stringify_untrusted` 登记候选**不预支**)。
-- `json.parse` 的 `Untrusted[str]` 实参 → **M3049**(v1 既有):污点内容必须净化后才能重建 Json。**两域接缝(如实登记,v0.68 ADR-004)**:fs/net/proc 内容源 v1 不标 → "净 str 经 parse → 净 Json"的流在污点面外(v1.2 另裁决);serve 域内不受影响(载荷直接以 `Untrusted[Json]` 进 handler,不经 parse)。
+- `json.parse` 的载体分派(**v0.77 两域接缝闭合,ADR-007 清单 5**;机制先例 = v0.68 投影表"按接收者载体分派"):污 str 实参 → **`Result[Untrusted[Json], str]`**(污进污出——文件/网络/进程内容解析出的 Json 整树污,经投影表消费);净 str → 净 Json 逐字不变(既有调用零迁移)。与 `stringify` 拒绝污值(M3049)对称——**读侧污进污出、写侧整体出口闭合**,v0.68 登记的接缝就此关闭。污载体非 str(如 `Untrusted[Json]`)的实参 → M3049。
 - 污值构造唯一入口:`std.unstr.mark_json(Json) -> Untrusted[Json]`(§18——**标脏入口非净化器**);**响应方向 handler 返回 Json 不标**:回显透传(`req` 或其子值直接进响应构造)被 M3049 免费拦截,echo 合法形态 = 投影 + 净化 + 重建(§18 std.net 节 serve 示例)。
 
 JSON 兼容类型(可 stringify):int / float / bool / str / Vec[T] / Map[str, T] / Option[T](None→null)/ 元组(→数组)/ Json。结构体与枚举**不**自动序列化(编译期 M3033)——拆解字段或先转 Map。
@@ -733,26 +736,26 @@ fn main() with io {
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `read_file` | `(str) -> Result[str, str]` | 读文本文件 |
-| `write_file` | `(str, str) -> Result[bool, str]` | 写文本文件(覆盖) |
-| `append_file` | `(str, str) -> Result[bool, str]` | 追加 |
+| `read_file` | `(str) -> Result[Untrusted[str], str]`(**v0.77 内容源标污**,ADR-007 清单 1) | 读文本文件;内容是污值,按 §18 污值代数消费(处理/回显/落盘),或经 sanitize 族净化后当 `str` 用 |
+| `write_file` | `(str, str) -> Result[bool, str]`(内容参数**出向透传位**,清单 6) | 写文本文件(覆盖);**污值合法写盘**(存储不是边界穿越;路径保持净槽——污路径 → M3049) |
+| `append_file` | `(str, str) -> Result[bool, str]`(内容出向透传) | 追加 |
 | `exists` | `(str) -> bool` | 路径是否存在 |
 | `is_dir` | `(str) -> bool` | 是否目录 |
-| `list_dir` | `(str) -> Result[Vec[str], str]` | 列目录项 |
+| `list_dir` | `(str) -> Result[Vec[Untrusted[str]], str]`(**v0.77 条目标污**,清单 2) | 列目录项;条目是污值——当路径/比较串用先过 `std.unstr.sanitize_cli_path`(机械净化器直接适用),只回显可 `print` 透传 |
 | `make_dir` | `(str) -> Result[bool, str]` | 建目录(含父级) |
 | `remove_file` | `(str) -> Result[bool, str]` | 删文件 |
-| `read_bytes` | `(str) -> Result[Vec[u8], str]` | 二进制读(v0.31):整文件,单文件上限 8MB;无流式 |
-| `write_bytes` | `(str, Vec[u8]) -> Result[bool, str]` | 二进制写/覆盖(v0.31) |
-| `append_bytes` | `(str, Vec[u8]) -> Result[bool, str]` | 二进制追加(v0.31) |
+| `read_bytes` | `(str) -> Result[Untrusted[Vec[u8]], str]`(**v0.77 第三载体**,清单 3) | 二进制读(v0.31):整文件,单文件上限 8MB;无流式;操作面 = `len`/`is_empty`(元素消费面 re/bin/crypto 维持净槽 → M3049) |
+| `write_bytes` | `(str, Vec[u8]) -> Result[bool, str]`(数据**出向透传位**,清单 6) | 二进制写/覆盖(v0.31) |
+| `append_bytes` | `(str, Vec[u8]) -> Result[bool, str]`(数据出向透传) | 二进制追加(v0.31) |
 
-二进制配套转换(纯函数):`s.to_bytes() -> Vec[u8]`(UTF-8 编码)与 `bytes.to_str() -> str`(UTF-8 解码,无效序列 → U+FFFD;仅 Vec[u8] 有此方法)。
+二进制配套转换(纯函数):`s.to_bytes() -> Vec[u8]`(UTF-8 编码;污接收者 → `Untrusted[Vec[u8]]` keepBytes,与 read_bytes 对称)与 `bytes.to_str() -> str`(UTF-8 解码,无效序列 → U+FFFD;仅净 Vec[u8] 有此方法——污字节载体无 to_str,元素消费面维持净槽)。
 
 ```ming
 use std.fs;
 
 fn main() with io, fs {
     match std.fs.read_file("config.txt") {
-        Ok(content) => print(content),
+        Ok(content) => print(content),   // v0.77:content 是污值,print 出向透传合法回显
         Err(e)      => print("读不到: \{e}"),
     }
 }
@@ -764,20 +767,21 @@ fn main() with io, fs {
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `http_get` | `(str) -> Result[(i64, str), str]` | HTTP GET:Ok 为 (状态码, 响应体) |
-| `http_request` | `(method, url, headers: Map[str, str], body: str) -> Result[(i64, str), str]`(body 可省略) | 完整 HTTP:自定义方法/头/体 |
-| `http_request_opts` | `(method, url, headers: Map[str, str], body: str, timeout_ms: i64) -> Result[(i64, Map[str, str], str), str]`(v0.27) | Ok 为 (状态码, 响应头, 响应体);超时毫秒可配 |
+| `http_get` | `(str) -> Result[(i64, Untrusted[str]), str]`(**v0.77 body 标污**,ADR-007 清单 8) | HTTP GET:Ok 为 (状态码, 响应体);url 保持净槽(污值拼 URL → M3049) |
+| `http_request` | `(method, url, headers: Map[str, str], body: str) -> Result[(i64, Untrusted[str]), str]`(body 可省略;method/url/headers/body 全净槽——污值进 headers = 头注入面 → M3049) | 完整 HTTP:自定义方法/头/体 |
+| `http_request_opts` | `(method, url, headers: Map[str, str], body: str, timeout_ms: i64) -> Result[(i64, Map[str, str], Untrusted[str]), str]`(v0.27) | Ok 为 (状态码, 响应头, 响应体);超时毫秒可配 |
 
 - 同步实现(worker 线程 fetch + Atomics 阻塞),响应体上限 8MB(超出截断),遵循重定向;`http_get`/`http_request` 默认 35s 超时,`http_request_opts` 按参数。
 - `http_request` 的 body 可省略;GET/HEAD 不发送体。
 - 重定向固定遵循(redirect: follow);响应头键为小写。
+- **污点口径(v0.77,清单 8)**:响应 body → `Untrusted[str]`(外部内容源,按 §18 污值代数消费);请求侧 method/url/headers/body 保持净槽(出向透传**仅限本地存储**——网络出向是数据外传面,sink 维持拒绝)。
 
 ```ming
 use std.net;
 
 fn main(args: Vec[str]) with io, net {
     match std.net.http_get(args[0]) {
-        Ok((status, body)) => print("\{status} \{body}"),
+        Ok((status, body)) => print(str(status) + " " + body),   // v0.77:body 是污值,拼接保污 + print 出向透传
         Err(e)             => print("请求失败: \{e}"),
     }
 }
@@ -1047,23 +1051,57 @@ fn main() with io {
 
 > 可运行示例:examples/unstr_demo.ming(env.get → Option[Untrusted[str]] → sanitize_cli_path 三分支;`TARGET=../bad` 的放行是正确语义——`..` 遍历拒绝属 sanitize_path 职责,见 §18 sanitize_path 行)。
 
-**污点模型(窄源 v1,ADR-002;v0.68 载体扩面,ADR-004)**:类型 `Untrusted[str]` / `Untrusted[Json]` 是编译期标签、运行时擦除——值就是载体(`str`/`Json`),四引擎输出与标注无关。**来源(v1 三处 + v0.68 serve 载荷)**:`std.env.get`、`std.io.read_line`、extern 返回强制(签名禁写裸 `-> str`,必须 `-> Untrusted[str]`,否则 M3049)、**serve handler 形参 `Untrusted[Json]`** = 网络内容源标污(v0.68,ADR-004——请求载荷 `{method, path, headers, body}` 整树标污,签名即全部含义);`fs.read_file`/`read_bytes`/`read_to_end`/`proc.exec` stdout/stderr/`http` body 的 str 污点 **v1.2 仍不标**(泄漏窗口,如实登记——净 str 经 `json.parse` 重建的 Json 也是净的,**两域以 parse 为接缝**,v1.2 另裁决;serve 域内不受影响:载荷直接以 `Untrusted[Json]` 进 handler,不经 parse,见 §18 std.json(投影表)/§18 std.net(serve))。
+**污点模型(窄源 v1,ADR-002;v0.68 载体扩面 {str, Json},ADR-004;v0.77 内容源扩面 + 污值代数 + 第三载体,ADR-007)**:类型 `Untrusted[str]` / `Untrusted[Json]` / `Untrusted[Vec[u8]]` 是编译期标签、运行时擦除——值就是载体,四引擎输出与标注无关。**来源必污纪律一次到位(v0.77)**:外部影响的字节进入 Ming 后类型可区分,全部 sink 门禁(M3049)对其生效;处理能力由污值代数承担(见下表),净化仍只有 sanitize 族两个路径类函数(净化器族不扩,ADR-007 清单 10)。
 
-- **sink 门禁免费**:任何期待载体类型(`str`/`Json`)的位置(调用实参/赋值/let 推断/return/Map 键/方法接收者/struct 字段/分支混型(if/match 臂))对 `Untrusted` 报 **M3049[untrusted-mismatch]**(hint 载体感知:str → sanitize 族,Json → `as_str` 投影 + sanitize);反向(期待 Untrusted、给裸载体)→ M3002(必须显式 `mark` / `mark_json`)。
-- **操作面白名单(载体键控)**:`Untrusted[str]` 仅 5 个产出纯值的方法 `parse_i64 / parse_f64 / char_len / byte_len / is_empty`;`Untrusted[Json]` 按投影表访问(§16:`get/at/as_str/as_num/as_bool/as_arr/as_obj/is_*/eq`);**表外任何方法 → M3050[untrusted-method-forbidden]**。
-- **禁面(洗白通道,与 Ptr 同款)**:`debug(u)`、插值 `\{u}`、`u as T` → **M3050**;`"a" + u` → M3008。
+**来源全景表(v0.77;逐源签名与消费口径)**:
+
+| 来源 | 签名(污点相关部分) | 登记批次 |
+|------|------|------|
+| `std.env.get` | `-> Option[Untrusted[str]]` | v0.61 |
+| `std.io.read_line` | `-> Untrusted[str]`(stdin 整行) | v0.61 |
+| extern 返回 | 签名禁写裸 `-> str`,必须 `-> Untrusted[str]`(否则 M3049) | v0.61 |
+| serve handler 形参 | `Untrusted[Json]`——请求载荷 `{method, path, headers, body}` 整树标污 | v0.68 |
+| `fs.read_file` | `-> Result[Untrusted[str], str]` | v0.77 |
+| `fs.read_bytes` | `-> Result[Untrusted[Vec[u8]], str]`(第三载体) | v0.77 |
+| `fs.list_dir` 条目 | `-> Result[Vec[Untrusted[str]], str]`(路径类,机械净化器直接适用) | v0.77 |
+| `proc.exec` stdout/stderr | `-> Result[(i64, Untrusted[str], Untrusted[str]), str]`(cmd/args 反向 = 命令注入 sink) | v0.77 |
+| `net.http_*` 响应 body | `-> Result[(i64, Untrusted[str]), …]`(请求侧 url/method/headers/body 保持净槽) | v0.77 |
+
+- **如实登记的未覆盖源**:`io.read_to_end`(stdin 全量)维持净 `str`——同源 read_line 已标而全量形态未标是既有口径差异,登记不预支(见 §18 std.io);**argv 载体**(`fn main(args: Vec[str])` 的 args 来自 OS)按 ADR-007 清单 13 **defer v1.3**——main 签名翻转是独立迁移面,一版一主题。
+- **extern 注记(v0.61 纪律,v0.77 重申)**:extern 返回声明的载体标注必须匹配 C 真实签名——把 `size_t` 返回误标成 `Untrusted[str]`(NUL 结尾 C 串)会以 NUL 截断乃至 SEGFAULT 形态失败(实测语料见 v0.77 会话);类型系统不校验 FFI 语义,签名即承诺。
+
+**污值代数(v0.77,ADR-007 清单 4——保污纯函数集,28 方法)**:`Untrusted[str]` 的操作面。规则 = 无效果 str 纯函数在污接收者上输出保污;标量/布尔输出净(位置与计数不携带内容,v0.61 parse_i64/char_len 先例);逐函数裁决表在 checker `UNTRUSTED_STR_ALGEBRA`(单一事实来源,可审计)。**保污 ≠ 洗白**:keep 类输出仍是 `Untrusted[str]`,全部 sink 门禁照常拒绝;`split`/`chars` 输出 `Vec[Untrusted[str]]`(载荷精确保污——v0.61"get(i) 字符重组旁路"由载荷保污关闭)。
+
+| 类别 | 方法 | 输出 | 说明 |
+|------|------|------|------|
+| clean(13) | `parse_i64 parse_f64` | `Result[i64/f64, str]` | 数值解析;Err 是解析器消息非内容 |
+| clean(13) | `char_len byte_len` | `i64` | 计数(位置/计数不携带内容) |
+| clean(13) | `is_empty starts_with ends_with contains is_alpha is_digit is_space is_upper is_lower` | `bool` | 谓词 |
+| keep(10) | `trim trim_start trim_end to_upper to_lower` | `Untrusted[str]` | 内容子集/变换,逐字符衍生 |
+| keep(10) | `replace repeat slice_chars pad_left pad_right` | `Untrusted[str]` | 内容重写/切片/补齐(repl/needle/参数位净槽——污模式 → M3049) |
+| keepVec(2) | `chars split` | `Vec[Untrusted[str]]` | 内容衍生子串序列(逐行/逐段/逐码点) |
+| keepOpt(1) | `get` | `Option[Untrusted[str]]` | 内容衍生子串 |
+| keepBytes(2) | `bytes to_bytes` | `Untrusted[Vec[u8]]` | 内容字节化(与 read_bytes 第三载体对称;re/bin/crypto 消费面维持净槽,无字节洗白旁路) |
+
+- **拼接传播(实现期微调 ①)**:`+` 是内容处理的基本组合子——污+净/污+污 → 污(污点只增不减);v0.61 的 `"a"+u → M3008` 拦截面后移到消费 sink。**净目标 `+=` 污值 → M3049**(微调 ②——复合赋值不得成为洗白旁路;污目标累计合法)。
+- **定位原语**:`std.str.index_of(hay, needle) -> Option[i64]`(v0.77 新函数,§18 std.str——字符下标口径含增补平面;hay 载体感知,needle 净槽)。
+- **`Untrusted[Vec[u8]]` 操作面(清单 3)**:`len` / `is_empty`(载体计数;元素消费面 re/bin/crypto 维持净槽 → M3049)。
+- **sink 门禁免费**:任何期待载体类型(`str`/`Json`/`Vec[u8]`)的位置(调用实参/赋值/let 推断/return/Map 键/方法接收者/struct 字段/分支混型(if/match 臂))对 `Untrusted` 报 **M3049[untrusted-mismatch]**(hint 载体感知:str → sanitize 族,Json → `as_str` 投影 + sanitize);反向(期待 Untrusted、给裸载体)→ M3002(必须显式 `mark` / `mark_json`)。
+- **禁面(洗白通道,与 Ptr 同款;不受代数影响)**:`debug(u)`、插值 `\{u}`、`u as T`、`str(u)` → **M3050/M3049**;`Untrusted[Json]`/`Untrusted[Vec[u8]]` 进 print/eprint → M3049(先 `as_str` 投影/投影消费)。
+- **出向透传位(v0.77,清单 6 + 实现期裁决——storage 非边界穿越)**:污值**合法流出**的槽位,机制与 sink 槽同源:① **本地存储**——`fs.write_file/append_file` 内容、`fs.write_bytes/append_bytes` 数据(污值合法写盘;路径参数保持净 sink);② **CLI 存储面**——`print`/`print_raw`/`eprint` 实参(`Untrusted[str]` 载体合法回显——stdout/stderr 是 CLI 工具的存储面,mingkit read = cat 的回显行为;`Untrusted[Json]` 等其他载体维持 M3049,先投影);③ **载体感知计算槽**——`std.str.index_of` 的 hay(纯计算,输出标量净)。**网络出向不是存储**:`http_request` 的 headers/body 污值 → M3049(数据外传面,清单 8);`debug()`/插值/`as`/`str()` 维持禁面(值出口/调试通道,不是存储面)。
+- **双向函数(清单 7,唯一双向点)**:`proc.exec`——`cmd`/`args` 是**命令注入 sink**(污值流入 → M3049;命令应由程序常量构造),`stdout`/`stderr` 是 **source**(`Untrusted[str]`);`sync.spawn` 同口径(任务参数污值经形参载体位合法流入,任务返回白名单扩入污载体)。污文件内容 → eval 同样被 M3049 拦截(v0.69 登记的"污内容直入 eval"窗口就此机械关闭)。
 - **净化族(唯一类型跃迁出口,纯函数,契约内可调用)**:
 
 | 函数 | 签名 | 语义 |
 |------|------|------|
-| `mark` | `(str) -> Untrusted[str]` | 把干净值标脏(测试块/已知干净场景) |
+| `mark` | `(str) -> Untrusted[str]` | 把干净值标脏(测试块/已知干净场景/同型化 fallback) |
 | `mark_json` | `(Json) -> Untrusted[Json]` | 把净 Json 标脏(v0.68,ADR-004;**标脏入口非净化器**——测试块/`unwrap_or` fallback 需要,污点类型不可构造则测试写不出;`mark(str)` 口径不变) |
 | `sanitize_path` | `(Untrusted[str]) -> Result[str, str]` | 拒绝绝对路径(**含 `C:x` 盘符相对——冒号即绝对**)、`..` 段、内部空段(连续分隔符)、空串;Ok = 规范化相对路径(`./a/./b/`→`a/b`;尾随分隔符容忍剥除);Err 消息含原因与原串 |
-| `sanitize_cli_path` | `(Untrusted[str]) -> Result[str, str]` | **校验不改写**:非空且不含 NUL/C0 控制字符 → Ok **原串原样**(允许绝对/相对/`..` 段);Err 消息控制字符按 `\uXXXX` 转义。授权位 = 路径实参位 + **CLI 匹配/比较串**(2026-11-14 扩权,ADR-002 §3.4) |
+| `sanitize_cli_path` | `(Untrusted[str]) -> Result[str, str]` | **校验不改写**:非空且不含 NUL/C0/DEL/C1/双向控制符 → Ok **原串原样**(允许绝对/相对/`..` 段);Err 消息控制字符按 `\uXXXX` 转义。授权位 = 路径实参位 + **CLI 匹配/比较串**(2026-11-14 扩权,ADR-002 §3.4;v0.77 工具迁移中用于 list_dir 条目与聚合键) |
 
-- **净化器族不扩(v0.68 裁决,ADR-004 §4.4)**:`sanitize_json` 不设——净化器 = 可信根扩权,须真实 sink 用例驱动;"净化的 Json"语义不明(剩余威胁是内容级,净化目标因 sink 而异);投影 + 既有 sanitize 族已是最小闭环(`as_str` → `Untrusted[str]` 接本节净化族,§16 投影表)。污进污出 `stringify_untrusted` 登记候选**不预支**(JSON 转义不覆盖内容级注入,标污 stringify 会诱导"标污即安全"错觉)。
-- **惯例**:`env.get(k).unwrap_or("")` 会因"净 Option + 裸 str fallback"报 M3002/脏 fallback 需同污点——回退值请用 `unwrap_or(std.unstr.mark(""))`,或统一走 `match` + 净化(12 个自举工具的迁移形态)。
-- **wasm/C**:资格按载体判定(顶层 `Untrusted[str]` 形参在资格分析前解包为 str,ADR-002 清单 14;`Untrusted[Json]` 解包为 Json 同款零改动——v0.68 沿 compiler tryWasm 先例,`analyze()` 单一事实来源不裂化);嵌套容器形参(`Vec[Untrusted[str]]` 等)整函数资格拒绝 → 回落 VM,输出三引擎一致(strict 具名)。C 后端按载体发射(`mingTyNum`/`annoTarget` 载体穿透);`Result[str,str]` 的 `let 标注` 仍受 C2 既有载体面限制(显式拒绝,非污点缺口)。
+- **净化器族不扩(v0.68 裁决,ADR-004 §4.4;ADR-007 清单 10 第三次适用)**:`sanitize_json` 不设、文本内容无机械净化定义(剩余威胁是内容级,净化目标因 sink 而异);路径类 sanitize_cli_path/sanitize_path 照用;`assume_clean` 逃逸舱**不做**(清单 12——显式信任断言破坏"来源必污"构造性保证,处理能力由污值代数承担)。污进污出 `stringify_untrusted` 登记候选**不预支**。
+- **迁移惯例(v0.77,12 自举工具实测)**:净变量承接污值改 `Untrusted[str]` 标注(起点 `std.unstr.mark("")`);`Err(_) => std.unstr.mark("")` 同型化 fallback;`u == ""` 比较禁 → `u.is_empty()`;list_dir 条目作路径前 `match std.unstr.sanitize_cli_path(name)` 显式 Err 处理;回显/落盘直接走出向透传位。良性路径行为逐字节不变(v0.61 口径,12 工具 52 命令冒烟对照)。
+- **wasm/C**:资格按载体判定(顶层 `Untrusted[str]`/`Untrusted[Json]`/`Untrusted[Vec[u8]]` 形参在资格分析前解包为载体,ADR-002 清单 14 先例;`analyze()` 单一事实来源不裂化);嵌套容器形参(`Vec[Untrusted[str]]` 等)整函数资格拒绝 → 回落 VM,输出三引擎一致(strict 具名)。C 后端按载体发射(`mingTyNum`/`annoTarget` 载体穿透);`Result[str,str]` 的 `let 标注` 仍受 C2 既有载体面限制(显式拒绝,非污点缺口)。
 - **契约可用**:`requires u.byte_len() < 256 && std.unstr.sanitize_path(u).is_ok()` 合法(净化纯函数,M3029 通道完好);违反 → 运行时 M4015。
 - 深拷贝保污点是类型恒等式;`?`/Option/Result/Vec/Map/struct 载荷类型精确传播;容器装脏值与取出值同污点,无旁路。
 
@@ -1168,7 +1206,7 @@ fn my_getpid() -> i64 with asm {           // 仅 Linux x86-64
 
 - **① 显式能力(`with eval`)**:新效果名 `eval`,M3029 逐层传播——效果清单即审计清单。`eval` 效果的语义 = "本函数执行动态编译的代码,其内部效果不可枚举"(与 `proc` 同款的能力粒度声明)。**不是隐瞒**:字符串里写着什么,审计者 grep 字面量就能看到;动态拼接使字符串内容不可静态审计——这个固有代价由 `with eval` 这行签名如实标出(有动态执行这件事本身可见,内容不可见)。
 - **② 独立编译单元,检查零降级,失败一律 Err 化**:内层复用既有编译管线,全部 M 检查(词法 M1xxx / 语法 M2xxx / 类型·效果·契约·污点·穷尽性 M3xxx)在内层原档执行、**零降级**,诊断 `file='<eval>'`;外层不做任何对内层的静态分析——这正是"独立编译单元"的含义。内层缺 `main` → Err 含 **M3023**[missing-main]。**Err 载荷恒为 `--json` 协议同构 JSON 字符串**:编译失败 = N 条诊断;运行时失败(内层 panic M4003/M4015/… 与配额熔断 M4001/M4012/M4011)= 单条合成诊断,**内层诊断码不降级**;内层 panic/熔断**不穿透 eval 边界**(Err 化,外层存活——与 spawn"panic → join Err"同款隔离)。调用方 `json.parse` 后按现有 `--json` 消费习惯处理。
-- **③ 污点 sink,无净化器**:eval 实参是污点 sink 位,`Untrusted[str]` 实参 → **M3049**(编译错误);**v1 无授权净化器**——"净化的代码"无机械定义(字符级闸拦不住语义;任何字符级白名单都会让"审核通过 = 可执行任意代码"成为错觉),污点值无类型出口进入 eval。**"标污外部输入(env/stdin/extern)永不动态执行"由类型系统机械保证**——这是 Ming 的 eval 与其它语言的决定性差异。**诚实边界**:fs/net/proc 内容源 v1 不标污(v0.61 已登记的泄漏窗口),其内容可零诊断直入 eval——如需拦截按族扩展纪律另裁(登记不预支)。合法来源 = 字面量 + 程序内合成的净 str(模板拼接、插件文本经程序自身逻辑生成);若未来出现执行用户提供脚本的真实用例,专属净化器按族扩展纪律另裁(登记不预支)。
+- **③ 污点 sink,无净化器**:eval 实参是污点 sink 位,`Untrusted[str]` 实参 → **M3049**(编译错误);**v1 无授权净化器**——"净化的代码"无机械定义(字符级闸拦不住语义;任何字符级白名单都会让"审核通过 = 可执行任意代码"成为错觉),污点值无类型出口进入 eval。**"标污外部输入(env/stdin/extern + v0.77 fs/net/proc 内容源)永不动态执行"由类型系统机械保证**——这是 Ming 的 eval 与其它语言的决定性差异(v0.69 登记的"fs/net/proc 内容可零诊断直入 eval"泄漏窗口,随 v0.77 内容源标污机械关闭)。合法来源 = 字面量 + 程序内合成的净 str(模板拼接、插件文本经程序自身逻辑生成);若未来出现执行用户提供脚本的真实用例,专属净化器按族扩展纪律另裁(登记不预支)。
 - **④ 内层恒 tree 参考实现(2026-11-15 裁决微调)**:sync 子解释器先例同款(效果 builtin 内子执行同构),无引擎旗标——原"恒 VM"立场在实现期废弃(interp.js→vm.js 为 ESM 循环导入;tree 无字节码编译面,内层失败模式只剩 panic/熔断两类,Err 化干净完整);"恒 VM"的实质承诺全部保留:**内层永不 wasm/cc 加速、无引擎旗标、per-call 无缓存、动态性非性能**——代价 = 内层性能为 tree 级(低于 VM 字节码,per-call 编译成本反而更低),动态性换性能,明示取舍。
 
 Err 载荷形态(字段与 `check --json` 协议同构):
@@ -1357,6 +1395,18 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v0.77.0(2026-11-17)
+
+- **v1.2 内容源扩面(fs/net/proc 污点来源 + 污值代数 + 两域接缝,ADR-007 清单 14 项全部采纳默认立场;安全能力版,零新增 M 码——M3049/M3050 复用)**:
+  - **来源必污一次到位(清单 1/2/3,签名翻转不留 clean 变体)**:`fs.read_file → Result[Untrusted[str], str]`、`fs.read_bytes → Result[Untrusted[Vec[u8]], str]`(**第三载体**——载体白名单 {str, Json} 扩入 Vec[u8],操作面 = `len`/`is_empty`;元素消费面 re/bin/crypto 维持净槽 M3049,无字节洗白旁路)、`fs.list_dir → Result[Vec[Untrusted[str]], str]`(路径类,机械净化器 sanitize_cli_path 直接适用)、`proc.exec` stdout/stderr → `Untrusted[str]`(**唯一双向点**:cmd/args 反向 = 命令注入 sink,污值 → M3049;sync.spawn 同口径——任务返回白名单扩入污载体 wireableRetType)、`net.http_*` 响应 body → `Untrusted[str]`(请求侧 url/method/headers/body 全净槽——headers 污值 = 头注入面;URL 拼污已被洗白禁面拦截);env/stdin(read_line)/extern/serve 不动(清单 9,v0.61/v0.68 交付)。**argv 载体 defer v1.3**(清单 13——main 签名翻转独立迁移面,一版一主题);**assume_clean 逃逸舱不做**(清单 12——处理能力由代数承担);`io.read_to_end` 维持净 str(口径差异如实登记,GUIDE §18 std.io)。
+  - **污值代数(清单 4,THE CRUX——没有保污纯函数集,文件内容在语言里不可处理)**:`Untrusted[str]` 操作面从 5 方法扩为 **28 方法代数**(clean 13:parse_i64/parse_f64/char_len/byte_len/is_empty/starts_with/ends_with/contains/is_alpha/is_digit/is_space/is_upper/is_lower——标量/布尔净,污点在计数与谓词上终结;keep 10:trim/trim_start/trim_end/to_upper/to_lower/replace/repeat/slice_chars/pad_left/pad_right——str→str 输出保污;keepVec 2:chars/split——`Vec[Untrusted[str]]` 载荷精确保污,v0.61"字符重组旁路"由载荷保污关闭;keepOpt 1:get;keepBytes 2:bytes/to_bytes——与 read_bytes 第三载体对称);规则 = 无效果 str 纯函数在污接收者上输出保污,逐函数裁决表落 checker `UNTRUSTED_STR_ALGEBRA`(单一事实来源);**`+` 拼接传播**(实现期微调 ①:污+净→污,v0.61 的 M3008 拦截面后移到消费 sink)+ **净目标 `+=` 污值 → M3049**(微调 ②,洗白旁路闭合)。
+  - **两域接缝闭合(清单 5)**:`json.parse` 载体感知——污 str 实参 → `Result[Untrusted[Json], str]`(投影表 v0.68 全套消费面直接适用),净 str → 净 Json 逐字不变;与 stringify 拒绝对称,**读侧污进污出、写侧整体出口闭合**,v0.68 登记的接缝就此关闭;污内容 → eval 的窗口随之机械关闭(清单 11 零新机制——wasm tryWasm 解包/C mingTyNum/eval sink 全走 v0.61 已验证机制,回归核验)。
+  - **出向透传(清单 6 + 实现期裁决)**:新增参数类别"出向透传位"(污值合法流出的存储/纯计算槽,机制与 sink 槽同源)——`fs.write_file/append_file` 内容、`fs.write_bytes/append_bytes` 数据(**污值合法写盘**,存储不是边界穿越,不造 write_raw 变体);实现期发现 echo 型工具的回显子命令在标污后无净出口 → **print/print_raw/eprint 内容参数开出向透传位**(架构师裁决,ADR-007 §8.1——stdout/stderr 是 CLI 工具的存储面;`Untrusted[str]` 载体合法回显,Untrusted[Json] 等维持 M3049 先投影;debug()/插值/as/str() 维持禁面);`std.str.index_of(hay, needle) -> Option[i64]` 新函数(字符下标口径含增补平面,与 slice_chars 同口径;hay 载体感知/needle 净槽——代数最小集的定位原语)。
+  - **净化器族不扩**(清单 10,ADR-004 §4.4 四条理由第三次适用):文本内容无机械净化定义,路径类 sanitize_cli_path/sanitize_path 照用(工具迁移中用于 list_dir 条目与聚合键——CLI 匹配/比较串授权位)。
+  - **迁移面(tools/examples/examples 由本 agent,tests 归 tests agent)**:**12 自举工具 23 源/汇位**——内容处理型 mingkit/edit/json_query/log_analyzer/wc(污值代数保污链 + 回显透传;wc 词计数 re.split→等价 is_space 扫描、todo_scan re.is_match→逐 contains 固定串等价改写、json_query 非字符串叶子按 jsonWrite 紧凑形态重建:投影 + 保污拼接 + 键净槽转义 + 数值 parse/stringify 往返)、路径处理型 tree/find_files/batch_rename/file_organizer/todo_scan/diaghot(list_dir 条目 sanitize_cli_path 显式 Err 处理)、进程型 engdiff/diaghot(exec stdout 保污链;engdiff Err 载荷污 stderr 保污传播);**验收 = 良性路径逐字节不变**(v0.61 口径):12 工具 52 命令冒烟基线(git archive HEAD 副本采集)对照 **155/156 文件逐字节一致 + 1(仅 ENOENT 系统消息嵌入的根路径绝对路径差,消息同构)**;examples fs_demo 1 位(插值污条目 → 拼接透传)逐字节对照一致;unstr_demo/serve_demo 零改动 check 绿。
+  - **文档**:GUIDE §18 std.unstr 污点节重写(来源全景表 9 源 + 污值代数 28 方法表 + 出向透传三类 + exec 双向 + extern 注记 + 迁移惯例)、§18 std.str(index_of)/std.io(read_to_end 登记)/std.json(parse 载体分派+接缝闭合)/std.fs/net(签名表翻转+示例同步)、eval 节泄漏窗口表述更新;docs/capabilities.md 污点行未覆盖清单消项;docs/diagnostics.md M3049/M3050 口径同步。
+  - 测试:§80 源/汇位与代数专项 **TODO 占位(待集成回填——条数与全量总数由 tests agent 决定)**;fuzz/proof_fuzz 结论 TODO 占位(待集成回填)。
 
 ### v0.76.0(2026-11-17)
 

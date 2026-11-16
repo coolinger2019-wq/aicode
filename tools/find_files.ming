@@ -5,6 +5,11 @@
 //
 // 用法:node bin/ming.js run tools/find_files.ming -- <目录> <文件名子串>
 //   (也可用环境变量 FIND_ROOT / FIND_NAME)
+//
+// v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]]——每个条目先过
+// std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)再作路径/比较串;
+// 含控制字符等不可作路径的条目计入失败(错误走 stderr 纪律)。良性路径行为与
+// 迁移前逐字节一致。
 use std.fs;
 
 use std.path;
@@ -14,22 +19,27 @@ fn find(dir: str, needle: str, mut count: i64, mut failed: i64) -> (i64, i64) wi
     match std.fs.list_dir(dir) {
         Ok(entries) => {
             for name in entries {
-                let full = std.path.join(dir, name);
-                if std.fs.is_dir(full) {
-                    if name.starts_with(".") {
-                        continue;
-                    }
-                    if name == "node_modules" {
-                        continue;
-                    }
-                    let (c, f) = find(full, needle, count, failed);
-                    count = c;
-                    failed = f;} else {
+                match std.unstr.sanitize_cli_path(name) {
+                    Ok(clean) => {
+                        let full = std.path.join(dir, clean);
+                        if std.fs.is_dir(full) {
+                            if !clean.starts_with(".") && clean != "node_modules" {
+                                let (c, f) = find(full, needle, count, failed);
+                                count = c;
+                                failed = f;
+                            }} else {
 
-                    if name.contains(needle) {
-                        print(full);
-                        count += 1;
-                    }
+                            if clean.contains(needle) {
+                                print(full);
+                                count += 1;
+                            }
+                        }
+                    },
+                    Err(_) => {
+
+                        // 污条目不能作路径(含控制字符等)——按失败计,不中断其余条目
+                        failed += 1;
+                    },
                 }
             }
         },

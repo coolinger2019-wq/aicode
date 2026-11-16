@@ -282,6 +282,9 @@ fn main() with io {
   check('fs:效果强制(M3029)', jc.ok === false && jc.diagnostics.some(d => d.code === 'M3029'), rc.stdout.slice(0, 300));
 
   // 端到端:临时目录内 写入→读取→列目录→清理
+  // v0.77 校准(ADR-007 清单 1):read_file 翻转 → content: Untrusted[str];trim() 保污(代数 keep),
+  // 插值 \{污} 是 M3050 洗白禁面 → 改拼接传播("读到: "+污→污)+ print 出向透传(§8.1 微调)。
+  // 期望输出逐字不变("读到: hello ming")——良性路径逐字节口径。
   const fsDir = path.join(TMP, 'fsdemo');
   fs.mkdirSync(fsDir, { recursive: true });
   const prog = path.join(fsDir, 'fs_demo_prog.ming');
@@ -294,7 +297,7 @@ fn main() with io, fs {
         Err(e)  => { print("写入失败: \\{e}"); return; }
     }
     match std.fs.read_file("data.txt") {
-        Ok(content) => print("读到: \\{content.trim()}"),
+        Ok(content) => print("读到: " + content.trim()),
         Err(e)      => print("读取失败: \\{e}"),
     }
     match std.fs.list_dir(".") {
@@ -1078,6 +1081,10 @@ fn main() with io, fs {
 // ===================== 31. v0.31:二进制 I/O 雏形 + 任务超时/取消 =====================
 {
   // 二进制:to_bytes/to_str 往返 + write/read/append_bytes(含 0/255 边界)
+  // v0.77 校准(ADR-007 清单 3,Untrusted[Vec[u8]] 第三载体):read_bytes 翻转 → Ok(v) 的 v 是
+  // Untrusted[Vec[u8]],内容字节按设计不可读值(下标 v[2] → M3020)——原 `print(str(v[2]))` 位
+  // 重设计为白名单面 len()/is_empty() + is_empty 分支(任务移交口径);写出方向 write_bytes/
+  // append_bytes 内容位出向透传(实参恒净,行为不变)。期望输出 255 → nonempty,其余逐字不变。
   const bio = mingFile('v31-binary.ming', [
     'use std.fs;',
     'use std.io;',
@@ -1092,7 +1099,7 @@ fn main() with io, fs {
     '        Err(e) => print("W-ERR: " + e),',
     '    }',
     '    match std.fs.read_bytes("/tmp/ming-v31.bin") {',
-    '        Ok(v) => { print(str(v.len())); print(str(v[2])); }',
+    '        Ok(v) => { print(str(v.len())); if v.is_empty() { print("empty"); } else { print("nonempty"); } }',
     '        Err(e) => print("R-ERR: " + e),',
     '    }',
     '    std.fs.append_bytes("/tmp/ming-v31.bin", [7]);',
@@ -1104,7 +1111,7 @@ fn main() with io, fs {
     '    print(str(bad.to_str().char_len()));',
     '}',
   ].join('\n'));
-  const wantBio = '9\n中文abc\n4\n255\n5\n1\n';
+  const wantBio = '9\n中文abc\n4\nnonempty\n5\n1\n';
   for (const eng of [[], ['--tree']]) {
     const r = runMing(['run', bio, ...eng]);
     check('v31:二进制 I/O 往返' + (eng.length ? '(tree)' : '(vm)'), r.code === 0 && r.stdout === wantBio,
@@ -1115,6 +1122,12 @@ fn main() with io, fs {
   const rb = mingFile('v31-read-missing.ming', 'use std.fs;\nuse std.io;\nfn main() with io, fs { match std.fs.read_bytes("/tmp/ming-v31-nope.bin") { Ok(_) => print("bug"), Err(_) => print("err-ok") } }');
   const rrb = runMing(['run', rb]);
   check('v31:read_bytes 缺文件 Err', rrb.code === 0 && rrb.stdout === 'err-ok\n', rrb.stderr.slice(0, 150));
+
+  // v0.77 校准(ADR-007 清单 3):污字节内容不可读值——Untrusted[Vec[u8]] 下标 → M3020(新增负例,
+  // 锁定"内容字节按设计不可读值"语义;正例消费面 = len/is_empty 白名单)
+  const bidx = mingFile('v31-tainted-index.ming', 'use std.fs;\nuse std.io;\nfn main() with io, fs { match std.fs.read_bytes("/tmp/ming-v31.bin") { Ok(v) => print(str(v[0])), Err(_) => print("err") } }');
+  const rbidx = runMing(['check', bidx]);
+  check('v31:污字节下标读拒绝 M3020', rbidx.code === 1 && rbidx.stderr.includes('M3020'), rbidx.stderr.slice(0, 150));
 
   // 类型门槛:Vec[i64].to_str → M3015;join_detailed 非句柄 → M3002
   const bt = mingFile('v31-tostr-type.ming', 'use std.io;\nfn main() with io { let v: Vec[i64] = [1]; v.to_str(); }');
@@ -9737,7 +9750,10 @@ fn main() with io, fs {
       same65(runs, 'OK a.txt\n'), fmtRuns65(runs));
   }
 
-  // v65.3 read_line → print M3049(窄源第 2 来源;check 层)
+  // v65.3(v0.77 校准,ADR-007 §8.1 微调:print/print_raw/eprint 出向透传——stdout/stderr 是
+  // CLI 工具的存储面,污值写出 = 存储非边界穿越):read_line → print 原 M3049 断言翻转。
+  // 新合同 = echo 形态合法:check exit 0 + stdin 内容原样回显(三引擎逐字);debug()/插值
+  // 洗白通道维持拒绝(v65.7/v65.8 不动,负例面不缩)。
   {
     const f = m65('k3_readline_print.ming', [
       'use std.io;',
@@ -9747,7 +9763,9 @@ fn main() with io, fs {
       '    print(line);',
       '}',
     ].join('\n'));
-    chk65('v65.3:read_line → print M3049(check exit 1,码在 stderr 首行)', f, 'M3049');
+    const runs = flags65.map(fl => runMing(fl ? ['run', f, fl] : ['run', f], { stdin: 'echo-me\n' }));
+    check('v65.3:read_line → print 出向透传(ADR-007 微调;check exit 0 + echo 语义,三引擎一致)',
+      runs.every(r => r.code === 0 && r.stdout === 'echo-me\n'), fmtRuns65(runs));
   }
 
   // v65.4 read_line → parse_i64 白名单 OK(stdin 注入;三引擎一致,污点在数值上终结)
@@ -9810,7 +9828,9 @@ fn main() with io, fs {
       same65(runs, '43\n3.5\n2\n2\nnonempty\n'), fmtRuns65(runs));
   }
 
-  // v65.6 白名单负例:u.trim() → M3050(白名单外方法;check 层)
+  // v65.6(v0.77 校准,ADR-007 清单 4 污值代数):trim 入保污纯函数集(keep),原 M3050 断言翻转。
+  // u.trim() 本身合法;keep 语义经 return 槽锁定——返回类型 str(净)接收 Untrusted[str] → M3049
+  // (保污 ≠ 洗白:白名单放行了操作,净槽位照拦)。原"白名单外方法"负例由 e04(u.zap)继续承担。
   {
     const f = m65('k6_trim.ming', [
       'use std.unstr;',
@@ -9822,7 +9842,7 @@ fn main() with io, fs {
       'fn main() with io {',
       '}',
     ].join('\n'));
-    chk65('v65.6:u.trim() 白名单外方法 → M3050(check exit 1,码在 stderr 首行)', f, 'M3050');
+    chk65('v65.6:u.trim() 保污(keep)——trim 合法但净 return 槽拦截 → M3049(check exit 1,码在 stderr 首行)', f, 'M3049');
   }
 
   // v65.7 禁面:debug(u) → M3050(调试通道即洗白通道;全码名锁定)
@@ -9854,9 +9874,11 @@ fn main() with io, fs {
     chk65('v65.8:插值 \\{u} → M3050(check exit 1,码在 stderr 首行)', f, 'M3050');
   }
 
-  // v65.9 禁面:"a" + u → M3008(拼接通道;专用码不适用,通用码兜底)
+  // v65.9(v0.77 校准,ADR-007 §8.1 微调①②):"a" + u 由 M3008 拦截改为**拼接传播**(污+净→污,
+  // 拦截面后移到消费 sink)。正例 = 拼接合法 + 结果保污经 print 透传逐字;负例两发 = 传播结果进净
+  // return 槽 → M3049、净目标 += 污值 → M3049(复合赋值洗白旁路封死,微调②)。
   {
-    const f = m65('k9_plus.ming', [
+    const fp = m65('k9_plus.ming', [
       'use std.unstr;',
       '',
       'fn main() with io {',
@@ -9864,7 +9886,33 @@ fn main() with io, fs {
       '    print("a" + u);',
       '}',
     ].join('\n'));
-    chk65('v65.9:"a" + u → M3008(check exit 1,码在 stderr 首行)', f, 'M3008');
+    const runs = runAll65(fp);
+    check('v65.9:"a" + u 拼接传播(ADR-007 微调①;结果保污经 print 出向透传,输出 ax,三引擎一致)',
+      same65(runs, 'ax\n'), fmtRuns65(runs));
+
+    const fr = m65('k9_plus_sink.ming', [
+      'use std.unstr;',
+      '',
+      'fn f(u: Untrusted[str]) -> str {',
+      '    return "a" + u;',
+      '}',
+      '',
+      'fn main() with io {',
+      '}',
+    ].join('\n'));
+    chk65('v65.9:拼接结果进净 return 槽 → M3049(check exit 1,码在 stderr 首行)', fr, 'M3049');
+
+    const fa = m65('k9_pluseq.ming', [
+      'use std.unstr;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("x");',
+      '    let mut n = "net";',
+      '    n += u;',
+      '    print(n);',
+      '}',
+    ].join('\n'));
+    chk65('v65.9:净目标 += 污值 → M3049(微调②;复合赋值洗白旁路封死,check exit 1,码在 stderr 首行)', fa, 'M3049');
   }
 
   // v65.10 载荷传播:Vec[Untrusted[str]] push/下标取出再净化 OK(三引擎一致)
@@ -12959,10 +13007,13 @@ fn main() with io, fs {
     'use std.io;',
     'fn main() with io {',
     '    let u = io.read_line();',
-    '    let n = u.trim();',
+    '    let n = u.zap();',
     '    print(n);',
     '}',
   ].join('\n'));
+  // v0.77 校准(ADR-007 清单 4):快照 e04 原语料 `u.trim()` 在 v0.61 白名单外(M3050),v0.77 trim
+  // 入保污代数(keep)→ 语料改为同样"白名单外"的 zap()——e04 形态(根因 M3050 唯一、无级联、
+  // 无 fix)逐字保持,v70.3/v70.11 断言零校准。
   const e06 = m70('e06_method_typo.ming', [
     'fn main() with io {',
     '    let s = "hello";',
@@ -14211,20 +14262,18 @@ fn main() with io, fs {
     `runs=${fmtRuns72(runs72_17)}`);
 
   // ---- v72.18(v0.69 审查 MAJOR-1 锁定):eval 链式自递归 → 64 层确定性守卫 Panic M4005
-  // → Err 化不穿透(外层存活 exit 0);深度与机器栈大小无关(64 DONE = 守卫深度)----
-  const selfRec72 = path.join(dir72, 'v72_selfrec.ming').replace(/\\/g, '/');
-  fs.writeFileSync(selfRec72, [
-    'use std.fs;',
-    'fn main() with io, eval, fs {',
-    '    let src = std.fs.read_file("' + selfRec72 + '").unwrap();',
-    '    match eval(src) {',
-    '        Ok(s) => print("NESTED-OK:" + s),',
-    '        Err(e) => { print("NESTED-ERR:" + e); },',
-    '    }',
-    '    print("DONE");',
-    '}',
-  ].join('\n'), 'utf8');
-  const runs72_18 = runAll72(selfRec72);
+  // → Err 化不穿透(外层存活 exit 0);深度与机器栈大小无关(64 DONE = 守卫深度)。
+  // v0.77 校准(ADR-007 清单 1+11):原夹具 `eval(read_file(自身))` 自递归正是本 ADR 关闭的形态
+  // (污内容永不动态执行,read_file 翻转后 eval(污) → M3049)——改**净源构造**:夹具是 JSON 往返
+  // quine(程序用 json.stringify 的转义 = 源面字面量转义(探针逐字节核对)重建自身文本再 eval,
+  // 全程纯净无 I/O),嵌套链与守卫语义与原夹具完全一致(63 层 NESTED-OK + 第 65 层 eval 调用
+  // M4005 → 上层 evalInner 转 Err;恰 64 个 DONE)。
+  const esc72 = (s) => '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n') + '"';
+  const head72 = 'use std.json;\n\nfn main() with io, eval {\n    let s = ';
+  const tail72 = ';\n    let ph = "@Q" + "Q@";\n    match eval(s.replace(ph, json.stringify(s))) {\n        Ok(s2) => print("NESTED-OK:" + s2),\n        Err(e) => { print("NESTED-ERR:" + e); },\n    }\n    print("DONE");\n}\n';
+  const quineRec72 = path.join(dir72, 'v72_selfrec.ming');
+  fs.writeFileSync(quineRec72, head72 + esc72(head72 + '@QQ@' + tail72) + tail72, 'utf8');
+  const runs72_18 = runAll72(quineRec72);
   const dones72_18 = (runs72_18[0].stdout.match(/DONE/g) ?? []).length;
   check('v72.18:eval 链式自递归 → 64 层守卫 Err 化——63 层 NESTED-OK 后第 64 层 eval 调用 Panic M4005(消息含 "嵌套过深")由上层 evalInner 转 Err;恰 64 个 DONE;exit 0(外层存活);三引擎逐字一致',
     same3_72(runs72_18) && runs72_18[0].code === 0 && dones72_18 === 64
@@ -16365,6 +16414,783 @@ fn main() with io, fs {
   }
 
   // ---- §79-END
+}
+
+// 文件所有权:§80 = 本区全部用例(ADR-007 §8 实现期义务核验:v1.2 内容源扩面——fs/net/proc 污点
+// 来源、两域接缝、污值代数)。改动面:src 全线(源翻转/代数/接缝/出向透传)已由实现 agent 交付,
+// 本分节只锁定义务,不改 src。既有断言迁移(v65.3/v65.6/v65.9/v70.3/v70.11/v72.18/fs e2e/v31)
+// 逐条理由化见各原位校准注释;本区全部为**新增**断言(无既有校准)。
+// 义务映射:清单 1/2/3(逐源标污 v80.1–v80.6)/清单 4(代数逐类别 keep/keepVec/keepOpt/keepBytes/
+// clean v80.7–v80.11)/§8.1 微调①(+ 传播 v80.12)②(+= 禁面 v80.12)③(bytes 消费面 v80.10)/
+// 清单 6 出向透传(write v80.15 + print v80.13)/清单 5(接缝双向 v80.14)/清单 7(exec 双向 v80.4/
+// v80.5)/清单 8(http body v80.6)/清单 11 引擎面(wasm 资格回归 v80.17)/清单 11+ADR-005(eval
+// 污内容 M3049,v80.16;自递归链净源化=v72.18 校准)。
+{
+  const dir80 = path.join(TMP, 'v80');
+  fs.mkdirSync(dir80, { recursive: true });
+  const m80 = (name, src) => { const f = path.join(dir80, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags80 = ['', '--no-wasm', '--tree'];
+  const runAll80 = (p) => flags80.map(fl => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const same80 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns80 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const firstCode80 = (r) => (r.stderr ?? '').split('\n')[0];
+  const j80 = (p) => { const r = runMing(['check', p, '--json']); try { return { r, j: JSON.parse(r.stdout) }; } catch { return { r, j: null }; } };
+
+  // v80.1 清单 1:read_file 标污——Ok 载体 Untrusted[str]。负例 = 净槽拦截 M3049;正例 = 白名单
+  // 消费(char_len/byte_len 标量终结)三引擎逐字。
+  {
+    const f80 = m80('v80_1_readfile.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_file("' + path.join(dir80, 'src1.txt').replace(/\\/g, '/') + '") {',
+      '        Ok(content) => { print(str(content.char_len())); print(str(content.byte_len())); }',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir80, 'src1.txt'), 'ab\n', 'utf8');
+    const runs = runAll80(f80);
+    check('v80.1:read_file → Untrusted[str] 标污(清单 1)——白名单消费 char_len/byte_len 三引擎逐字(ab\\n=3/3)',
+      same80(runs, '3\n3\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_1_readfile_neg.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    let c = std.fs.read_file("' + path.join(dir80, 'src1.txt').replace(/\\/g, '/') + '").unwrap();',
+      '    let clean: str = c;',
+      '    print(str(clean.byte_len()));',
+      '}',
+    ].join('\n')));
+    check('v80.1:read_file 结果进净槽 → M3049(check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.2 清单 3:read_bytes 标污——Untrusted[Vec[u8]] 第三载体;操作面 = len/is_empty(白名单),
+  // 内容字节不可读值(下标 M3020;正例重设计面已在 v31 锁定,此处锁定负例 + is_empty)。
+  {
+    fs.writeFileSync(path.join(dir80, 'src2.bin'), Buffer.from([1, 2, 3]), 'binary');
+    const f80 = m80('v80_2_readbytes.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes("' + path.join(dir80, 'src2.bin').replace(/\\/g, '/') + '") {',
+      '        Ok(v) => { print(str(v.len())); if v.is_empty() { print("empty"); } else { print("nonempty"); } }',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.2:read_bytes → Untrusted[Vec[u8]] 标污(清单 3)——len/is_empty 白名单消费三引擎逐字(3/nonempty)',
+      same80(runs, '3\nnonempty\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_2_readbytes_neg.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes("' + path.join(dir80, 'src2.bin').replace(/\\/g, '/') + '") {',
+      '        Ok(v) => print(str(v[0])),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.2:污字节下标读 → M3020(内容字节按设计不可读值;check exit 1)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3020'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.3 清单 2:list_dir 条目标污——Vec[Untrusted[str]];消费 = len(净)+ get(0) → Option[污]
+  // → sanitize_cli_path(机械净化器,Ok 原样);负例 = 条目进净槽 M3049。目录由夹具固定 1 条目(确定性)。
+  {
+    const d80 = path.join(dir80, 'listdir');
+    fs.mkdirSync(d80, { recursive: true });
+    fs.writeFileSync(path.join(d80, 'only.txt'), 'x', 'utf8');
+    const f80 = m80('v80_3_listdir.ming', [
+      'use std.fs;',
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.list_dir("' + d80.replace(/\\/g, '/') + '") {',
+      '        Ok(entries) => {',
+      '            print(str(entries.len()));',
+      '            match entries.get(0) {',
+      '                Some(name) => match std.unstr.sanitize_cli_path(name) {',
+      '                    Ok(np) => print("OK " + np),',
+      '                    Err(e) => print("SE:" + e),',
+      '                },',
+      '                None => print("none"),',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.3:list_dir → Vec[Untrusted[str]] 标污(清单 2)——len + get(0) + sanitize_cli_path Ok 原样,三引擎逐字(1/OK only.txt)',
+      same80(runs, '1\nOK only.txt\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_3_listdir_neg.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.list_dir("' + d80.replace(/\\/g, '/') + '") {',
+      '        Ok(entries) => { match entries.get(0) { Some(name) => { let c: str = name; print(c); }, None => print("none") } },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.3:list_dir 条目进净槽 → M3049(check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.4 清单 7(source 向):proc.exec stdout/stderr 标污——cmd 用 node -e(确定性输出 "abc\n";
+  // PATH 解析);消费 = exit(净 i64)+ stdout byte_len/is_empty;负例 = stdout 进净槽 M3049。
+  // sync.spawn 同口径由本用例的 stderr 侧覆盖(同一 exec 载荷)。
+  {
+    const nodeLit = JSON.stringify(process.execPath);
+    const f80 = m80('v80_4_exec.ming', [
+      'use std.proc;',
+      'use std.io;',
+      '',
+      'fn main() with io, proc {',
+      '    match std.proc.exec(' + nodeLit + ', ["-e", "console.log(\'abc\')"]) {',
+      '        Ok((exit, so, se)) => { print(str(exit)); print(str(so.byte_len())); print(str(so.is_empty())); print(str(se.is_empty())); }',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.4:proc.exec stdout/stderr → Untrusted[str] 标污(清单 7 source 向)——exit 净 + stdout byte_len/is_empty 白名单,三引擎逐字(0/4/false/true)',
+      same80(runs, '0\n4\nfalse\ntrue\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_4_exec_neg.ming', [
+      'use std.proc;',
+      'use std.io;',
+      '',
+      'fn main() with io, proc {',
+      '    match std.proc.exec(' + nodeLit + ', ["-e", "console.log(\'abc\')"]) {',
+      '        Ok((_, so, _)) => { let c: str = so; print(c); },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.4:exec stdout 进净槽 → M3049(check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.5 清单 7(sink 向):exec cmd = 命令注入 sink——污值进 cmd → M3049(唯一双向点,双向各锁;
+  // 与 v80.4 构成 exec 的 source/sink 双向锁定)。
+  {
+    const nodeLit = JSON.stringify(process.execPath);
+    const neg = j80(m80('v80_5_exec_cmd.ming', [
+      'use std.proc;',
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io, proc {',
+      '    let c: Untrusted[str] = std.unstr.mark(' + nodeLit + ');',
+      '    match std.proc.exec(c, ["-e", "console.log(\'abc\')"]) {',
+      '        Ok((_, _, _)) => print("ok"),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.5:exec cmd sink——污 cmd → M3049(命令注入面;check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.6 清单 8:http 响应 body 标污——独立子进程 echo 服务器(§10 同款模式),固定响应体;
+  // 消费 = status(净)+ body byte_len 白名单;负例 = body 进净槽 M3049。URL 保持净槽由 v27 覆盖。
+  {
+    const echoServer = spawn(process.execPath, ['-e', [
+      'import * as http from "node:http";',
+      'const server = http.createServer((req, res) => {',
+      '  res.writeHead(200, { "content-type": "text/plain" });',
+      '  res.end("taint-80-body");',
+      '});',
+      'server.listen(0, "127.0.0.1", () => console.log("PORT:" + server.address().port));',
+      'process.stdin.resume();',
+      'process.stdin.on("end", () => process.exit(0));',
+    ].join('\n')], { cwd: ROOT, stdio: ['pipe', 'pipe', 'pipe'] });
+    let port80 = 0;
+    try {
+      port80 = await new Promise((resolve, reject) => {
+        let buf = '';
+        const onData = (c) => { buf += c; const m = buf.match(/PORT:(\d+)/); if (m) { echoServer.stdout.off('data', onData); resolve(Number(m[1])); } };
+        echoServer.stdout.on('data', onData);
+        echoServer.on('exit', () => reject(new Error('echo exited')));
+        setTimeout(() => reject(new Error('echo timeout')), 10000);
+      });
+      const f80 = m80('v80_6_http.ming', [
+        'use std.net;',
+        'use std.io;',
+        '',
+        'fn main() with io, net {',
+        '    match std.net.http_get("http://127.0.0.1:' + String(port80) + '/t80") {',
+        '        Ok((status, body)) => { print(str(status)); print(str(body.byte_len())); print(str(body.is_empty())); }',
+        '        Err(e) => print("ERR:" + e),',
+        '    }',
+        '}',
+      ].join('\n'));
+      const runs = runAll80(f80);
+      check('v80.6:http 响应 body → Untrusted[str] 标污(清单 8)——status 净 + body byte_len/is_empty 白名单,三引擎逐字(200/13/false)',
+        same80(runs, '200\n13\nfalse\n'), fmtRuns80(runs));
+      const neg = j80(m80('v80_6_http_neg.ming', [
+        'use std.net;',
+        'use std.io;',
+        '',
+        'fn main() with io, net {',
+        '    match std.net.http_get("http://127.0.0.1:' + String(port80) + '/t80") {',
+        '        Ok((_, body)) => { let c: str = body; print(c); },',
+        '        Err(e) => print("ERR:" + e),',
+        '    }',
+        '}',
+      ].join('\n')));
+      check('v80.6:http body 进净槽 → M3049(请求侧净槽;headers sink 锁定见 v80.21;check exit 1)',
+        neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+        `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+    } finally {
+      echoServer.kill();
+    }
+  }
+
+  // v80.7 清单 4 keep 类:str→str 纯函数输出保污——trim/to_upper/replace/slice_chars 各一;
+  // keep 语义锁定 = 结果进净槽 M3049(保污 ≠ 洗白)+ 运行时值经 print 透传逐字。
+  {
+    const f80 = m80('v80_7_keep.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("  aBc ");',
+      '    print(u.trim());',
+      '    print(u.trim().to_upper());',
+      '    print(u.trim().replace("a", "X"));',
+      '    print(u.trim().slice_chars(1, 2));',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.7:keep 代数(trim/to_upper/replace/slice_chars)运行值逐字(aBc/ABC/XBc/B;print 出向透传)',
+      same80(runs, 'aBc\nABC\nXBc\nB\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_7_keep_neg.ming', [
+      'use std.unstr;',
+      '',
+      'fn f(u: Untrusted[str]) -> str {',
+      '    return u.trim().to_upper();',
+      '}',
+      '',
+      'fn main() with io {',
+      '}',
+    ].join('\n')));
+    check('v80.7:keep 结果进净 return 槽 → M3049(保污 ≠ 洗白;check exit 1)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.8 清单 4 keepVec 类:split → Vec[Untrusted[str]](载荷精确保污)——len 净、元素 byte_len
+  // 白名单、元素进净槽 M3049(log_analyzer 分行迁移面)。
+  {
+    const f80 = m80('v80_8_keepvec.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("a,bb,ccc");',
+      '    let parts = u.split(",");',
+      '    print(str(parts.len()));',
+      '    match parts.get(1) {',
+      '        Some(p) => print(str(p.byte_len())),',
+      '        None => print("none"),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.8:keepVec 代数(split)——len 净 + 元素 byte_len 白名单,三引擎逐字(3/2)',
+      same80(runs, '3\n2\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_8_keepvec_neg.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("a,b");',
+      '    let parts = u.split(",");',
+      '    match parts.get(0) {',
+      '        Some(p) => { let c: str = p; print(c); },',
+      '        None => print("none"),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.8:keepVec 元素进净槽 → M3049(载荷保污,无重组洗白旁路;check exit 1)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.9 清单 4 keepOpt 类:get(i) → Option[Untrusted[str]](内容衍生子串)——unwrap 消费 +
+  // byte_len;负例 = 取出子串进净槽 M3049(edit 行级切片迁移面)。
+  {
+    const f80 = m80('v80_9_keepopt.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("hello");',
+      '    match u.get(1) {',
+      '        Some(c) => print(str(c.byte_len())),',
+      '        None => print("none"),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.9:keepOpt 代数(get(i) → Option[Untrusted[str]])——单字符 byte_len,三引擎逐字(1)',
+      same80(runs, '1\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_9_keepopt_neg.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("hello");',
+      '    match u.get(1) {',
+      '        Some(c) => { let s: str = c; print(s); },',
+      '        None => print("none"),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.9:keepOpt 取出子串进净槽 → M3049(check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.10 清单 4 keepBytes 类(§8.1 微调③):bytes/to_bytes → Untrusted[Vec[u8]](与 read_bytes
+  // 第三载体对称)——len/is_empty 消费;字节消费面维持净槽:污字节进净 Vec[u8] 标注 → M3049,
+  // 无 re/bin 洗白旁路。
+  {
+    const f80 = m80('v80_10_keepbytes.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("abcd");',
+      '    let b = u.to_bytes();',
+      '    print(str(b.len()));',
+      '    print(str(b.is_empty()));',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.10:keepBytes 代数(to_bytes → Untrusted[Vec[u8],微调③)——len/is_empty 消费,三引擎逐字(4/false)',
+      same80(runs, '4\nfalse\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_10_keepbytes_neg.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("abcd");',
+      '    let c: Vec[u8] = u.to_bytes();',
+      '    print(str(c.len()));',
+      '}',
+    ].join('\n')));
+    check('v80.10:污字节进净 Vec[u8] 槽 → M3049(re/bin 消费面维持净槽,无字节洗白旁路;check exit 1)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.11 清单 4 clean 类:标量/布尔/计数输出污点终结(位置与计数不携带内容,v0.61 先例推广)——
+  // char_len/byte_len/parse_i64(净 Err 消息)/contains/is_alpha 三引擎逐字。
+  {
+    const f80 = m80('v80_11_clean.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("42ab");',
+      '    let w = std.unstr.mark("42");',
+      '    print(str(u.char_len()));',
+      '    print(str(u.byte_len()));',
+      '    match w.parse_i64() {',
+      '        Ok(n) => print(str(n + 1)),',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '    print(str(u.contains("42")));',
+      '    print(str(u.is_alpha()));',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.11:clean 代数(char_len/byte_len/parse_i64/contains/is_alpha)——标量终结,三引擎逐字(4/4/43/true/false)',
+      same80(runs, '4\n4\n43\ntrue\nfalse\n'), fmtRuns80(runs));
+  }
+
+  // v80.12 §8.1 微调①②:+ 拼接传播与 += 禁面——污+净→污、污+污→污(print 透传逐字);
+  // 净目标 += 污值 → M3049(复合赋值洗白旁路封死;v65.9 迁移面之外的本区锁定)。
+  {
+    const f80 = m80('v80_12_plus.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let a = std.unstr.mark("x");',
+      '    let b = std.unstr.mark("y");',
+      '    print("a" + a);',
+      '    print(a + b);',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.12:+ 拼接传播(微调①)——污+净→污、污+污→污,print 出向透传逐字(ax/xy,三引擎一致)',
+      same80(runs, 'ax\nxy\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_12_pluseq.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("x");',
+      '    let mut n = "net";',
+      '    n += u;',
+      '    print(n);',
+      '}',
+    ].join('\n')));
+    check('v80.12:净目标 += 污值 → M3049(微调②;check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.13 清单 6 出向透传(print 家族):污 str 放行 = 存储非边界穿越(v65.3 echo 形态之外的
+  // 全码名锁定);debug()/插值维持拒绝;污 Json 进 print → M3049 且 hint 带投影 remedy(.as_str,
+  // v0.68 载体感知)。
+  {
+    const okP = m80('v80_13_print_ok.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("t80");',
+      '    print(u);',
+      '    print_raw(u);',
+      '    eprint(u);',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(okP);
+    check('v80.13:print/print_raw/eprint 出向透传(清单 6 微调)——污 str 放行逐字(stdout "t80\\nt80" + stderr "t80\\n"),三引擎一致',
+      runs.every(r => r.code === 0 && r.stdout === 't80\nt80' && r.stderr === 't80\n'), fmtRuns80(runs));
+    const dbg = j80(m80('v80_13_debug.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("t80");',
+      '    print(debug(u));',
+      '}',
+    ].join('\n')));
+    check('v80.13:debug(污) 维持 M3050(调试通道即洗白通道,出向透传不扩到 debug;check exit 1)',
+      dbg.r.code === 1 && !!dbg.j && dbg.j.diagnostics.some(d => d.code === 'M3050'),
+      `code=${dbg.r.code} first=${JSON.stringify(firstCode80(dbg.r))}`);
+    const jn = j80(m80('v80_13_print_json.ming', [
+      'use std.unstr;',
+      'use std.json;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    match json.parse("{}") {',
+      '        Ok(j) => { let u = std.unstr.mark_json(j); print(u); },',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    const jdiag = (jn.j && jn.j.diagnostics || []).find(d => d.code === 'M3049');
+    check('v80.13:print(污 Json) → M3049 且 hint 带投影 remedy(.as_str,载体感知;check exit 1)',
+      jn.r.code === 1 && !!jdiag && (jdiag.hint ?? '').includes('.as_str()'),
+      `code=${jn.r.code} first=${JSON.stringify(firstCode80(jn.r))} hint=${JSON.stringify(jdiag ? jdiag.hint : null)}`);
+  }
+
+  // v80.14 清单 5:两域接缝双向——污进污出(read_file → json.parse → Untrusted[Json] → get/as_str
+  // 投影保污)与净路径逐字不变(净字面量 parse → 净 Json,同消费同输出)。同一夹具内容两个来源
+  // (污/净)输出逐字相同 = 接缝只在载体分派,值语义零变化。
+  {
+    const fixture = path.join(dir80, 'j80.json');
+    fs.writeFileSync(fixture, '{"name":"ming","n":3}', 'utf8');
+    const docLit80 = '"{\\"name\\":\\"ming\\",\\"n\\":3}"';
+    const consumeBody80 = [
+      '    let mut out = "";',
+      '    match j.get("name") {',
+      '        Some(v) => {',
+      '            match v.as_str() {',
+      '                Some(s) => { out = out + str(s.byte_len()); },',
+      '                None => { out = out + "?"; },',
+      '            }',
+      '        },',
+      '        None => { out = out + "!"; },',
+      '    }',
+      '    match j.get("n") {',
+      '        Some(v) => {',
+      '            match v.as_num() {',
+      '                Some(n) => { out = out + "," + str(n); },',
+      '                None => { out = out + "?"; },',
+      '            }',
+      '        },',
+      '        None => { out = out + "!"; },',
+      '    }',
+      '    return out;',
+    ];
+    const f80 = m80('v80_14_seam.ming', [
+      'use std.fs;',
+      'use std.json;',
+      'use std.io;',
+      '',
+      'fn consume(j: Json) -> str {',
+      ...consumeBody80,
+      '}',
+      '',
+      'fn consumeT(j: Untrusted[Json]) -> str {',
+      ...consumeBody80,
+      '}',
+      '',
+      'fn main() with io, fs {',
+      '    match json.parse(' + docLit80 + ') {',
+      '        Ok(j) => print("clean:" + consume(j)),',
+      '        Err(e) => print("PE:" + e),',
+      '    }',
+      '    match std.fs.read_file("' + fixture.replace(/\\/g, '/') + '") {',
+      '        Ok(raw) => {',
+      '            match json.parse(raw) {',
+      '                Ok(j) => print("taint:" + consumeT(j)),',
+      '                Err(e) => print("PE:" + e),',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.14:json 接缝双向(清单 5)——净路径逐字(clean:4,3.0)+ 污进污出(taint:4,3.0,parse(污 str) → Untrusted[Json] 投影消费),两路输出逐字相同,三引擎一致',
+      same80(runs, 'clean:4,3.0\ntaint:4,3.0\n'), fmtRuns80(runs));
+    const neg = j80(m80('v80_14_seam_neg.ming', [
+      'use std.json;',
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u: Untrusted[str] = std.unstr.mark("{\\"a\\":1}");',
+      '    match json.parse(u) {',
+      '        Ok(j) => { let c: Json = j; print(str(c.as_obj().is_some())); },',
+      '        Err(e) => print("PE:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    check('v80.14:parse(污) 结果进净 Json 槽 → M3049(污进污出,接缝不洗白;check exit 1)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+  }
+
+  // v80.15 清单 6 出向透传(write 家族):写污 → 回读 → byte_len 逐字验证——write_file(str 污
+  // 内容)+ append_bytes(污字节,to_bytes 产物)合法落盘(存储非边界穿越),回读值逐字相等。
+  {
+    const wf = path.join(dir80, 'w80.txt').replace(/\\/g, '/');
+    const f80 = m80('v80_15_write.ming', [
+      'use std.fs;',
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    let u = std.unstr.mark("abc\\n");',
+      '    match std.fs.write_file("' + wf + '", u) {',
+      '        Ok(_) => { },',
+      '        Err(e) => { print("WERR:" + e); return; },',
+      '    }',
+      '    match std.fs.append_bytes("' + wf + '", std.unstr.mark("Z").to_bytes()) {',
+      '        Ok(_) => { },',
+      '        Err(e) => { print("AERR:" + e); return; },',
+      '    }',
+      '    match std.fs.read_file("' + wf + '") {',
+      '        Ok(back) => print(str(back.byte_len())),',
+      '        Err(e) => print("RERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(f80);
+    check('v80.15:write 透传(清单 6)——write_file 污内容 + append_bytes 污字节合法落盘,回读 byte_len=5 逐字,三引擎一致',
+      same80(runs, '5\n'), fmtRuns80(runs));
+  }
+
+  // v80.16 清单 11 + ADR-005:eval 污内容 M3049 回归——污源构造 = read_file(...).unwrap() 进 eval
+  // (非自递归夹具;自递归链净源化 = v72.18 JSON-quine 校准);对照 = eval 净字面量 run 正常。
+  {
+    const src80 = path.join(dir80, 'ev80.ming');
+    fs.writeFileSync(src80, 'fn main() with io { print("ev80-ok"); }\n', 'utf8');
+    const neg = j80(m80('v80_16_eval_neg.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, eval, fs {',
+      '    let u = std.fs.read_file("' + src80.replace(/\\/g, '/') + '").unwrap();',
+      '    match eval(u) { Ok(s) => print(s), Err(e) => print("E:" + e) }',
+      '}',
+    ].join('\n')));
+    check('v80.16:eval(污内容) → M3049(污内容永不动态执行,窗口机械关闭;check exit 1,首行码锁定)',
+      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3049'),
+      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+    const okP = m80('v80_16_eval_ok.ming', [
+      'use std.io;',
+      '',
+      'fn main() with io, eval {',
+      '    match eval("fn main() with io { print(\\"clean-ok\\"); }") {',
+      '        Ok(s) => print("OK:" + s),',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll80(okP);
+    check('v80.16:eval(净字面量) 不受影响——Ok 载荷逐字(OK:clean-ok),三引擎一致',
+      same80(runs, 'OK:clean-ok\n\n'), fmtRuns80(runs));
+  }
+
+  // v80.17 清单 11 引擎面:wasm/C 资格按载体判定(零新机制,回归核验)——(a) 污形参函数
+  // (顶层 Untrusted[str] + 嵌套容器 Vec[Untrusted[str]] 解包)用资格内操作(strict exit 0,
+  // 资格不因污点标注改变)且三引擎逐字;(b) 含污程序中既有具名守卫(unwrap_or 链/byte_len 非直调
+  // 形态——对照实验:净 str byte_len 同码,资格按操作而非污点)仍 strict 可见 exit 2 原因具名,
+  // 非 strict 回落输出一致。污点面不改写资格判定,回落永远可见 = 清单 11 的诚实回落语义。
+  {
+    const f80a = m80('v80_17_wasm_ok.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn count(vs: Vec[Untrusted[str]]) -> i64 {',
+      '    return vs.len();',
+      '}',
+      '',
+      'fn has(u: Untrusted[str]) -> bool {',
+      '    return u.contains("b");',
+      '}',
+      '',
+      'fn main() with io {',
+      '    let v: Vec[Untrusted[str]] = [std.unstr.mark("a"), std.unstr.mark("bb")];',
+      '    print(str(count(v)));',
+      '    print(str(has(std.unstr.mark("abc"))));',
+      '}',
+    ].join('\n'));
+    const rs = runMing(['run', f80a, '--strict-wasm']);
+    const runs = runAll80(f80a);
+    check('v80.17:(a) 污形参 wasm 资格回归(清单 11)——Untrusted[str]/Vec[Untrusted[str]] 形参解包,资格内操作 strict-wasm exit 0,三引擎逐字(2/true)',
+      rs.code === 0 && same80(runs, '2\ntrue\n'), `strict=${rs.code} ${JSON.stringify(rs.stderr.slice(0, 120))} ${fmtRuns80(runs)}`);
+    const f80b = m80('v80_17_wasm_named.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      '',
+      'fn blen(u: Untrusted[str]) -> i64 {',
+      '    return u.byte_len();',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(str(blen(std.unstr.mark("abc"))));',
+      '}',
+    ].join('\n'));
+    const rstrict = runMing(['run', f80b, '--strict-wasm']);
+    const runsB = runAll80(f80b);
+    check('v80.17:(b) 污形参 + 资格外操作仍具名回落——byte_len(非直调形态,净 str 同码)strict exit 2 原因具名(非直接调用),非 strict 回落输出三引擎一致(3)',
+      rstrict.code === 2 && (rstrict.stderr ?? '').includes('strict-wasm: wasm 编译回落') && (rstrict.stderr ?? '').includes('非直接调用') && same80(runsB, '3\n'),
+      `strict=${rstrict.code} ${JSON.stringify((rstrict.stderr ?? '').slice(0, 120))} ${fmtRuns80(runsB)}`);
+    const f80c = m80('v80_17_wasm_twin.ming', [
+      'use std.io;',
+      '',
+      'fn blen(u: str) -> i64 {',
+      '    return u.byte_len();',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(str(blen("abc")));',
+      '}',
+    ].join('\n'));
+    const rstrict2 = runMing(['run', f80c, '--strict-wasm']);
+    const runsC = runAll80(f80c);
+    const reasonB = ((rstrict.stderr ?? '').match(/wasm 编译回落\([^)]*\):([^\n]+)/) ?? [])[1] ?? '';
+    const reasonC = ((rstrict2.stderr ?? '').match(/wasm 编译回落\([^)]*\):([^\n]+)/) ?? [])[1] ?? '';
+    check('v80.17:(c) 资格判定污点中性(净/污孪生对照)——净 str 版 blen 与 (b) 污版同 strict 判定(exit 2 + 同原因字面),非 strict 输出同(3)',
+      rstrict2.code === 2 && reasonB !== '' && reasonB === reasonC && same80(runsC, '3\n'),
+      `strict=${rstrict2.code} reasonB=${JSON.stringify(reasonB)} reasonC=${JSON.stringify(reasonC)} ${fmtRuns80(runsC)}`);
+  }
+
+  // ---- v80.18:审查 B1 修正——污接收者 parse_i64 的 Err 载荷保污(keepResErr)----
+  // 修复前:Err 文本回显原串且为净 str(审查实测 "LEAKED:不是有效的整数: \"SECRET-...\"" +
+  // 净 str 直入 eval 零诊断——击穿 ADR-005);修复后:Ok 净 i64 不变,Err 载荷 Untrusted[str]。
+  {
+    const okSrc = [
+      'use std.unstr;',
+      '',
+      'fn main() -> i64 with io {',
+      '    let u: Untrusted[str] = std.unstr.mark("42");',
+      '    match u.parse_i64() {',
+      '        Ok(n) => print(str(n)),',
+      '        Err(msg) => print("ERR"),',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n');
+    const runsOk = runAll80(m80('v80_18_ok.ming', okSrc));
+    check('v80.18:(a) Ok 路径净 i64 不变(keepResErr 只包 Err 载荷)——三引擎逐字(42)',
+      same80(runsOk, '42\n'), fmtRuns80(runsOk));
+    const leakSrc = [
+      'use std.unstr;',
+      '',
+      'fn main() with io, eval {',
+      '    let u: Untrusted[str] = std.unstr.mark("SECRET-abc");',
+      '    match u.parse_i64() {',
+      '        Ok(n) => print(str(n)),',
+      '        Err(msg) => { let s: str = msg; eval(s); }',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n');
+    const jL = j80(m80('v80_18_leak.ming', leakSrc));
+    const dL = (jL.j && jL.j.diagnostics || []).find((x) => x.code === 'M3049');
+    check('v80.18:(b) Err 载荷保污——污 Err msg 进净 str 槽 M3049,eval(污) 仍拒绝(审查实测的 eval 击穿就此关闭)',
+      jL.r.code === 1 && jL.j !== null && !!dL,
+      `exit=${jL.r.code} M3049=${!!dL} 首行=${firstCode80(jL.r)}`);
+  }
+
+  // ---- v80.19:审查 M1 裁决(翻转)——io.read_to_end → Untrusted[str](与 read_line 同源同污)----
+  {
+    const okSrc = ['use std.io;', '', 'fn main() with io {', '    let t: Untrusted[str] = std.io.read_to_end();', '    print(str(t.char_len()));', '}', ''].join('\n');
+    const runsOk = runAll80(m80('v80_19_ok.ming', okSrc));
+    const badSrc = ['use std.io;', '', 'fn main() with io {', '    let s: str = std.io.read_to_end();', '}', ''].join('\n');
+    const jBad = j80(m80('v80_19_bad.ming', badSrc));
+    const dBad = (jBad.j && jBad.j.diagnostics || []).find((x) => x.code === 'M3049');
+    check('v80.19:M1 裁决(翻转)——read_to_end 污槽承接编译通过(EOF 空 Three 引擎 0\n)+ 净槽 M3049',
+      same80(runsOk, '0\n') && jBad.r.code === 1 && !!dBad, fmtRuns80(runsOk));
+  }
+
+  // ---- v80.20:审查 m3——std.str.index_of 回归(字符下标口径/增补平面/None)----
+  {
+    const hitSrc = ['use std.str;', '', 'fn main() -> i64 with io {', '    print(str(str.index_of("a🎉b🎉cd", "cd").unwrap()));', '    return 0;', '}', ''].join('\n');
+    const runsHit = runAll80(m80('v80_20_hit.ming', hitSrc));
+    const noneSrc = ['use std.str;', '', 'fn main() -> i64 with io {', '    print(str(str.index_of("abc", "zz").unwrap_or(-1)));', '    return 0;', '}', ''].join('\n');
+    const runsNone = runAll80(m80('v80_20_none.ming', noneSrc));
+    check('v80.20:(a) index_of 字符下标(增补平面 🎉 按码点计)——三引擎逐字(4)',
+      same80(runsHit, '4\n'), fmtRuns80(runsHit));
+    check('v80.20:(b) index_of 未找到 None → unwrap_or(-1) 三引擎逐字(-1)',
+      same80(runsNone, '-1\n'), fmtRuns80(runsNone));
+  }
+
+  // ---- v80.21:审查 m4 四锁定——exec args sink M3049/json.parse(接缝污 Json 直入) M3049/污+=污 保污正例 ----
+  {
+    // FRAG 自 §80.14 seam_neg 语料行程序化提取(run.mjs 源级转义原样,零手打反斜杠)。
+    const FRAG = "std.unstr.mark(\"{\\\\\"a\\\\\":1}\")";
+    const argsSrc = ['use std.unstr;', 'use std.proc;', '', 'fn main() with proc {', '    let t: Untrusted[str] = std.unstr.mark("x");', '    std.proc.exec("cmd", [t]);', '}', ''].join('\n');
+    const jArgs = j80(m80('v80_21_args.ming', argsSrc));
+    const dArgs = (jArgs.j && jArgs.j.diagnostics || []).find((x) => x.code === 'M3049');
+    const tjSrc = ['use std.json;', 'use std.unstr;', 'use std.io;', '', 'fn main() with io {', '    match json.parse(std.unstr.mark("[1,2,3]")) {', '        Ok(u) => { let v = json.parse(u); },', '        Err(e) => print("PE:" + e),', '    }', '}', ''].join(String.fromCharCode(10));
+    const jTj = j80(m80('v80_21_tj.ming', tjSrc));
+    const dTj = (jTj.j && jTj.j.diagnostics || []).find((x) => x.code === 'M3049');
+    const incSrc = ['use std.unstr;', '', 'fn main() -> i64 with io {', '    let mut t: Untrusted[str] = std.unstr.mark("x");', '    t += std.unstr.mark("y");', '    print(t);', '    return 0;', '}', ''].join('\n');
+    const runsInc = runAll80(m80('v80_21_inc.ming', incSrc));
+    check('v80.21:(a) exec args sink M3049+(b) json.parse(接缝污 Json 直入) M3049+(c) 污+=污累计保污经 print 透传逐字(xy)',
+      jArgs.r.code === 1 && !!dArgs && jTj.r.code === 1 && !!dTj && same80(runsInc, 'xy\n'),
+      `args=${!!dArgs} tj=${!!dTj} ${fmtRuns80(runsInc)}`);
+  }
+
+  // ---- §80-END
 }
 
 

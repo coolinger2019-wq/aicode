@@ -10,6 +10,12 @@
 //
 // 用法:node bin/ming.js run tools/diaghot.ming -- <文件或目录...> [--top N]
 //   ming tools diag examples -- --top 5
+//
+// v0.77 污点迁移(ADR-007):list_dir 条目先过 sanitize_cli_path 再作路径/比较串;
+// proc.exec stdout → Untrusted[str],经 json.parse 载体泛化 → Untrusted[Json],
+// 聚合走投影表(get/as_str/as_arr);诊断码/文件名作聚合键前过 sanitize_cli_path
+// 取净值(CLI 匹配/比较串授权位),message 原样保污、输出走 print 出向透传。
+// 良性路径行为与迁移前逐字节一致。
 use std.proc;
 
 use std.json;
@@ -22,8 +28,8 @@ const NODE: str = "node";
 
 const MING: str = "bin/ming.js";
 
-// Json 可选字段读取(缺键/类型不符都给默认)
-fn jstr(j: Json, key: str, dflt: str) -> str {
+// Json 可选字段读取(缺键/类型不符都给默认;污载体投影,v0.77 返回保污)
+fn jstr(j: Untrusted[Json], key: str, dflt: str) -> Untrusted[str] {
     match j.get(key) {
         Some(v) => {
             match v.as_str() {
@@ -31,12 +37,12 @@ fn jstr(j: Json, key: str, dflt: str) -> str {
                     return s;
                 },
                 None => {
-                    return dflt;
+                    return std.unstr.mark(dflt);
                 },
             }
         },
         None => {
-            return dflt;
+            return std.unstr.mark(dflt);
         },
     }
 }
@@ -49,29 +55,32 @@ fn expand(p: str, files: Vec[str]) -> Result[Vec[str], str] with fs {
         match std.fs.list_dir(p) {
             Ok(entries) => {
                 for name in entries {
-                    if name.starts_with(".") {
-                        continue;
-                    }
-                    if name == "node_modules" || name == "dist" {
-                        continue;
-                    }
-                    let full = std.path.join(p, name);
-                    if std.fs.is_dir(full) {
-                        match expand(full, out) {
-                            Ok(v) => {
-                                out = v;
-                            },
-                            Err(e) => {
-                                return Err(e);
-                            },
-                        }} else if name.ends_with(".ming") {
+                    match std.unstr.sanitize_cli_path(name) {
+                        Ok(clean) => {
+                            if !clean.starts_with(".") && clean != "node_modules" && clean != "dist" {
+                                let full = std.path.join(p, clean);
+                                if std.fs.is_dir(full) {
+                                    match expand(full, out) {
+                                        Ok(v) => {
+                                            out = v;
+                                        },
+                                        Err(e) => {
+                                            return Err(e);
+                                        },
+                                    }} else if clean.ends_with(".ming") {
 
-                        if !out.contains(full) {
-                            out.push(full);
-                        }
+                                    if !out.contains(full) {
+                                        out.push(full);
+                                    }
+                                }
+                            }
+                        },
+                        Err(_) => {
+                        },
                     }
                 }
             },
+            // 污条目不能作路径(含控制字符等)——跳过(expand 无失败计数面)
             Err(e) => {
                 return Err("无法读取目录 " + p + ": " + e);
             },
@@ -172,7 +181,7 @@ fn main(args: Vec[str]) -> i64 with io, proc, fs {
     cmd.push("--json");
     let out = match std.proc.exec(NODE, cmd) { Ok(t) => { let (code, o, err) = t; if code < 0 { eprint("diaghot: check 进程异常: " + err); return 1; } o }, Err(e) => { eprint("diaghot: exec 失败: " + e); return 1; } };
     let doc = match std.json.parse(out) { Ok(j) => j, Err(e) => { eprint("diaghot: 输出不是合法 JSON: " + e); return 1; } };
-    let mut diags: Vec[Json] = [];
+    let mut diags: Vec[Untrusted[Json]] = [];
     match doc.get("diagnostics") {
         Some(d) => {
             match d.as_arr() {
@@ -188,13 +197,16 @@ fn main(args: Vec[str]) -> i64 with io, proc, fs {
     }
 
     // 聚合:码 → 次数 / 文件列表 / 首条消息
+    // v0.77:码/文件名作聚合键(Map 键是净槽)前过 sanitize_cli_path 取净值
+    // (CLI 匹配/比较串授权位,2026-11-14 裁决;Err 回退 "?" 占位,与缺字段同型);
+    // message 原样保污(Map 值载荷 Untrusted[str]),输出走 print 出向透传
     let mut counts: Map[str, i64] = {};
     let mut filesByCode: Map[str, Vec[str]] = {};
-    let mut sample: Map[str, str] = {};
+    let mut sample: Map[str, Untrusted[str]] = {};
     for d in diags {
-        let code = jstr(d, "code", "?");
+        let code = match std.unstr.sanitize_cli_path(jstr(d, "code", "?")) { Ok(c) => c, Err(_) => "?" };
         counts.set(code, counts.get(code).unwrap_or(0) + 1);
-        let f = jstr(d, "file", "?");
+        let f = match std.unstr.sanitize_cli_path(jstr(d, "file", "?")) { Ok(c) => c, Err(_) => "?" };
         let mut fl: Vec[str] = [];
         match filesByCode.get(code) {
             Some(v) => {
@@ -257,8 +269,8 @@ fn main(args: Vec[str]) -> i64 with io, proc, fs {
             },
         }
         print("  " + str(rank) + ". " + code + "  x" + str(cnt) + "  (" + str(nf) + " 个文件)");
-        let m = match sample.get(code) { Some(s) => s, None => "" };
-        if m != "" {
+        let m = match sample.get(code) { Some(s) => s, None => std.unstr.mark("") };
+        if !m.is_empty() {
             print("     " + m);
         }
         rank = rank + 1;

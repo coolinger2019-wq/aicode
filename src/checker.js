@@ -304,9 +304,15 @@ export const BUILTIN_CMP_TYPES = new Set(['int', 'float', 'str']);
 
 // sig(params:[Type|'any'], minArgs, maxArgs, ret, effect?: 'io'|'time')
 export const BUILTIN_FNS = {
-  print: { params: ['display'], ret: T_UNIT, effect: 'io' },
-  eprint: { params: ['display'], ret: T_UNIT, effect: 'io' },
-  print_raw: { params: ['display'], ret: T_UNIT, effect: 'io' },
+  // v0.77(架构师裁决,ADR-007 实现期微调):print/print_raw/eprint 内容参数开出向
+  // 透传位('outdisplay')——stdout/stderr 是 CLI 工具的存储面,污值写出 = 存储而非
+  // 边界穿越(与清单 6 write_file 同判;mingkit read = cat 的回显行为)。透传面仅限
+  // Untrusted[str] 载体(Untrusted[Json] 仍 M3049,先 .as_str() 投影);
+  // str() 显示位与 debug()/插值/as/stringify/panic 消息位维持 sink(值出口/调试通道,
+  // 不是存储面)。运行时零改动:污值擦除为载体值,print 按值输出。
+  print: { params: ['outdisplay'], ret: T_UNIT, effect: 'io' },
+  eprint: { params: ['outdisplay'], ret: T_UNIT, effect: 'io' },
+  print_raw: { params: ['outdisplay'], ret: T_UNIT, effect: 'io' },
   str: { params: ['display'], ret: T_STR },
   debug: { params: ['any'], ret: T_STR, noFn: true },
   assert: { params: [T_BOOL, T_STR], min: 1, max: 2, ret: T_UNIT },
@@ -364,10 +370,10 @@ export const STD_MODULES = {
   io: {
     fns: [
       // v0.61(ADR-002 §3.1 窄源 v1):read_line 返回 Untrusted[str](stdin 整行不可信)。
-      // read_to_end 等 fs/net/proc 内容源 v1 不标——泄漏窗口如实登记(ADR §6.2 ②)。
+      // v0.77(ADR-007 审查 M1 裁决:翻转):stdin 全量内容与 read_line 同源同污——
+      // "来源必污一次到位"对本源同样成立;重复注册两行(HEAD 预存)一并清理。
       mF('read_line', [], mkUntrusted(T_STR), { effect: 'io' }),
-      mF('read_to_end', [], T_STR, { effect: 'io' }),
-      mF('read_to_end', [], T_STR, { effect: 'io' }),
+      mF('read_to_end', [], mkUntrusted(T_STR), { effect: 'io' }),
     ],
   },
   time: {
@@ -381,14 +387,22 @@ export const STD_MODULES = {
     ],
   },
   // 文件系统(capability:必须声明 fs 效果才可调用)
+  // v0.77(ADR-007 清单 1/2/3/6)来源必污一次到位 + 出向透传:
+  //   · 源(source,返回污):read_file → Result[Untrusted[str], str];
+  //     read_bytes → Result[Untrusted[Vec[u8]], str](第三载体,清单 3);
+  //     list_dir → Result[Vec[Untrusted[str]], str](路径条目,sanitize_cli_path 机械净化器直接适用)。
+  //   · 出向透传参数位(标记 'outstr'/'outbytes',清单 6):write_file/append_file 内容、
+  //     write_bytes/append_bytes 数据——污值合法写盘(存储不是边界穿越,§2.5);
+  //     路径参数保持净槽(sink):污路径必须先过 std.unstr.sanitize_path / sanitize_cli_path。
+  //   · sink 槽位登记(污值流入 → M3049):fs 全部 path 参数(本模块 #1 与 copy/rename 的 #1#2)。
   fs: {
     fns: [
-      mF('read_file', [T_STR], mkRes(T_STR, T_STR), { effect: 'fs' }),
-      mF('write_file', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
-      mF('append_file', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('read_file', [T_STR], mkRes(mkUntrusted(T_STR), T_STR), { effect: 'fs' }),
+      mF('write_file', [T_STR, 'outstr'], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('append_file', [T_STR, 'outstr'], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('exists', [T_STR], T_BOOL, { effect: 'fs' }),
       mF('is_dir', [T_STR], T_BOOL, { effect: 'fs' }),
-      mF('list_dir', [T_STR], mkRes(mkVec(T_STR), T_STR), { effect: 'fs' }),
+      mF('list_dir', [T_STR], mkRes(mkVec(mkUntrusted(T_STR)), T_STR), { effect: 'fs' }),
       mF('make_dir', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_file', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('metadata', [T_STR], mkRes({ k: 'json' }, T_STR), { effect: 'fs' }),
@@ -396,9 +410,9 @@ export const STD_MODULES = {
       mF('rename', [T_STR, T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_dir', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_dir_recursive', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
-      mF('read_bytes', [T_STR], mkRes(mkVec(INT_TYPES.u8), T_STR), { effect: 'fs' }),
-      mF('write_bytes', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
-      mF('append_bytes', [T_STR, mkVec(INT_TYPES.u8)], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('read_bytes', [T_STR], mkRes(mkUntrusted(mkVec(INT_TYPES.u8)), T_STR), { effect: 'fs' }),
+      mF('write_bytes', [T_STR, 'outbytes'], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
+      mF('append_bytes', [T_STR, 'outbytes'], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
     ],
   },
   // 正则(JS RegExp 桥接;pattern 非法 = 程序员错误 → panic;纯函数,wasm 内自动回落)
@@ -460,11 +474,14 @@ export const STD_MODULES = {
     ],
   },
   // HTTP 客户端(capability:必须声明 net 效果;同步实现:worker + Atomics)
+  // v0.77(ADR-007 清单 8):响应 body → Untrusted[str](外部内容源);请求侧全部净槽
+  // (sink):url/method/headers/body 污值流入 → M3049(headers 污值 = 头注入面,
+  // body 污值 = 数据外传面——出向透传仅限本地存储(清单 6),网络出向保持 sink)。
   net: {
     fns: [
-      mF('http_get', [T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net' }),
-      mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, T_STR]), T_STR), { effect: 'net', min: 3, max: 4 }),
-      mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR, INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkMap(T_STR, T_STR), T_STR]), T_STR), { effect: 'net' }),
+      mF('http_get', [T_STR], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(T_STR)]), T_STR), { effect: 'net' }),
+      mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(T_STR)]), T_STR), { effect: 'net', min: 3, max: 4 }),
+      mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR, INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkMap(T_STR, T_STR), mkUntrusted(T_STR)]), T_STR), { effect: 'net' }),
       // v0.62(ADR-001 §5.2 任务 1):TCP 服务端 v1——固定绑 127.0.0.1(清单 15:签名无
       // host 参数 = 隐式回环);handler 为命名模块函数引用(fn(Untrusted[Json]) -> Json,
       // v0.68 ADR-004 §2.1 候选 A:请求载荷不可信,整树以 Untrusted[Json] 进入 handler,
@@ -496,9 +513,12 @@ export const STD_MODULES = {
     ],
   },
   // 操作系统进程(能力:proc;worker 同步化)
+  // v0.77(ADR-007 清单 7,唯一双向函数):cmd/args 是命令注入 sink(污值流入 → M3049,
+  // #1/#2 槽位);stdout/stderr 是 source(返回 Untrusted[str])。sync.spawn 的对应口径 =
+  // 任务参数污值经形参载体位合法流入(既有 unify),任务返回白名单扩入污载体(checkStdCall)。
   proc: {
     fns: [
-      mF('exec', [T_STR, mkVec(T_STR)], mkRes(mkTuple([INT_TYPES.i64, T_STR, T_STR]), T_STR), { effect: 'proc' }),
+      mF('exec', [T_STR, mkVec(T_STR)], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(T_STR), mkUntrusted(T_STR)]), T_STR), { effect: 'proc' }),
     ],
   },
   // 环境变量(能力:env)
@@ -553,9 +573,14 @@ export const STD_MODULES = {
     ],
   },
   // 字符串工具(纯函数,无效果;v0.58:join 单次 O(n) 拼接——Builder 方案的最小替代,plan §4.3.5 调整)
+  // v0.77(ADR-007 清单 4):index_of 补齐污值代数最小集(定位唯一匹配——mingkit/edit
+  // 迁移面实测缺口;返回字符下标,与 .slice_chars 同口径,与 Vec[i64].index_of 一致用
+  // Option 承载"未找到")。hay 是载体感知参数位('outstr'):污 str 合法流入纯函数计算,
+  // 输出 = 位置(标量净,污点在计数上终结);needle 保持净槽(sink)。
   str: {
     fns: [
       mF('join', [mkVec(T_STR)], T_STR),
+      mF('index_of', ['outstr', T_STR], mkOpt(INT_TYPES.i64)),
     ],
   },
   // v0.54:原生存取(能力 unsafe;C 后端兑现,tree/VM 运行时 M4016 诚实拒绝)
@@ -594,14 +619,59 @@ export const TYPE_LEVEL_FNS = {
 
 // v0.61(ADR-002 §3.2):Untrusted 载体方法白名单(checker 内置表,可审计);v0.68
 // (ADR-004 §3.2)改载体键控——str → 5 方法(只产出非污点载体(纯值)的方法,污点在
-// 数值/长度/布尔上终结;"产出同污点载体"的方法 v1 不设,get(i) 会开 char 重组旁路);
-// json → §3.2 投影表(污进污出、载体随投影收窄;返回类型由 untrustedJsonMethod 分派)。
-// 其它载体无键 = 全拒。运行时零改动:Untrusted 值擦除为载体值,方法按载体实现走
-// (白名单校验只在 checker;投影表测试锁定,ADR-004 清单 8 口径)。
+// 数值/长度/布尔上终结);json → §3.2 投影表(污进污出、载体随投影收窄;返回类型由
+// untrustedJsonMethod 分派)。其它载体无键 = 全拒。运行时零改动:Untrusted 值擦除为
+// 载体值,方法按载体实现走(白名单校验只在 checker;投影表测试锁定,ADR-004 清单 8 口径)。
+// v0.77(ADR-007 清单 4)污值代数:str 键从 5 方法扩为"白名单 + 保污纯函数集"——
+// 规则 = 无效果 str 纯函数在污接收者上输出保污(str→str 输出 Untrusted[str];标量/布尔
+// 输出净——位置与计数不携带内容,parse_i64/char_len 先例);vec 键 = 第三载体
+// Untrusted[Vec[u8]] 的操作面(len/is_empty,清单 3:"既有白名单在 Vec[u8] 上的对应物")。
+// 逐函数豁免裁决表(UNTRUSTED_STR_ALGEBRA,下方)——每函数一行理由,可审计。
 export const UNTRUSTED_METHODS = {
-  str: ['parse_i64', 'parse_f64', 'char_len', 'byte_len', 'is_empty'],
+  str: ['parse_i64', 'parse_f64', 'char_len', 'byte_len', 'is_empty',
+    'starts_with', 'ends_with', 'contains', 'is_alpha', 'is_digit', 'is_space', 'is_upper', 'is_lower',
+    'trim', 'trim_start', 'trim_end', 'to_upper', 'to_lower', 'replace', 'repeat', 'slice_chars',
+    'pad_left', 'pad_right', 'chars', 'split', 'get', 'bytes', 'to_bytes'],
   json: ['get', 'at', 'as_str', 'as_num', 'as_bool', 'as_arr', 'as_obj',
     'is_null', 'is_bool', 'is_num', 'is_str', 'is_arr', 'is_obj', 'eq'],
+  vec: ['len', 'is_empty'],
+};
+
+// v0.77(ADR-007 清单 4)污值代数逐函数裁决表——Untrusted[str] 接收者方法的输出类别。
+// kind:'clean'  = 标量/布尔/计数输出,污点终结(不携带内容——v0.61 先例的推广);
+//       'keep'   = str→str 纯函数,输出保污 Untrusted[str];
+//       'keepVec'= 内容衍生子串序列,输出 Vec[Untrusted[str]](载荷精确保污);
+//       'keepOpt'= 内容衍生子串,输出 Option[Untrusted[str]];
+//       'keepBytes'= 内容衍生字节,输出 Untrusted[Vec[u8]](第三载体,与 read_bytes 对称)。
+// 裁决依据:效果系统对"纯"已有机械定义(无效果即纯),本表复用它,不发明新判定;
+// 所有内建 str 方法逐个过表,无函数落在表外(白名单 = 本表键集,UNTRUSTED_METHODS.str)。
+// 洗白禁面不受代数影响:print/debug/插值/as/stringify/eval 全部维持 v0.61/v0.68 拒绝。
+//   parse_i64  keepResErr  Result[i64, Untrusted[str]]——Ok 净 i64;**Err 载荷保污**:
+//                     非数字内容 = 攻击者可控触发,Err 文本回显原串(v0.61"Err 是解析器
+//                     消息非内容"系事实性错误依据——实测 Err 就是内容;审查 B1 修正)
+//   parse_f64  keepResErr  Result[f64, Untrusted[str]]——同上
+//   char_len   clean  i64 计数(位置/计数不携带内容)
+//   byte_len   clean  i64 计数
+//   is_empty   clean  bool
+//   starts_with/ends_with/contains        clean bool(谓词)
+//   is_alpha/is_digit/is_space/is_upper/is_lower  clean bool(谓词)
+//   trim/trim_start/trim_end/to_upper/to_lower  keep——内容子集/变换,逐字符衍生 → 保污
+//   replace    keep——污内容重写(repl 参数是净槽:污模式 → M3049)
+//   repeat     keep——污内容的重复展开
+//   slice_chars keep——内容切片(edit 行级切片迁移面)
+//   pad_left/pad_right keep——污内容补齐
+//   chars      keepVec——逐字符衍生(Vec[Untrusted[str]];v1 字符重组旁路裁决由"载荷保污"关闭)
+//   split      keepVec——逐行/逐段衍生(log_analyzer 分行迁移面)
+//   get        keepOpt——内容衍生子串(Option[Untrusted[str]])
+//   bytes/to_bytes keepBytes——内容字节化(污点跟随字节,与 read_bytes 第三载体对称;
+//                     re.*/bin.unpack/crypto 消费面维持净槽 → M3049,无字节洗白旁路)
+export const UNTRUSTED_STR_ALGEBRA = {
+  parse_i64: 'keepResErr', parse_f64: 'keepResErr', char_len: 'clean', byte_len: 'clean', is_empty: 'clean',
+  starts_with: 'clean', ends_with: 'clean', contains: 'clean',
+  is_alpha: 'clean', is_digit: 'clean', is_space: 'clean', is_upper: 'clean', is_lower: 'clean',
+  trim: 'keep', trim_start: 'keep', trim_end: 'keep', to_upper: 'keep', to_lower: 'keep',
+  replace: 'keep', repeat: 'keep', slice_chars: 'keep', pad_left: 'keep', pad_right: 'keep',
+  chars: 'keepVec', split: 'keepVec', get: 'keepOpt', bytes: 'keepBytes', to_bytes: 'keepBytes',
 };
 
 // ===================== 模块 =====================
@@ -825,17 +895,20 @@ export class Checker {
           // v0.61(ADR-002):Untrusted[T] 污点标签;v0.68(ADR-004 §2.4/清单 3)载体白名单
           // 扩为 {str, Json}——Untrusted[Json] 复用同一构造器(泛型标注,不做别名),
           // unify/typeStr/doc/LSP 渲染全部自动覆盖(清单 15 口径)。其余载体仍拒
-          // (M3050,扩载体不得静默):剩余待解锁清单 = u8/argv/容器等,v1.2+ 另裁决
-          // (ADR-004 §6.1);Untrusted[Untrusted[...]] 嵌套仍拒。
+          // (M3050,扩载体不得静默);Untrusted[Untrusted[...]] 嵌套仍拒。
+          // v0.77(ADR-007 清单 3):白名单扩入 Vec[u8](第三载体)——read_bytes/bytes()
+          // 衍生字节流的标污载体;操作面 = UNTRUSTED_METHODS.vec(len/is_empty)。
+          // 剩余待解锁清单 = u8 原始载体/argv/其他容器,v1.2+ 另裁决(ADR-004 §6.1)。
           if (parts.length === 1 && t.name === 'Untrusted') {
             if (t.args.length !== 1) {
               self.diagT(t.span, `Untrusted 需要 1 个类型参数,得到 ${t.args.length}`);
               return mkUntrusted(T_STR);
             }
             const el = go(t.args[0]);
-            if (el?.k !== 'str' && el?.k !== 'json') {
+            const isVecU8 = el?.k === 'vec' && el.el?.k === 'int' && el.el.bits === 8 && el.el.signed === false;
+            if (el?.k !== 'str' && el?.k !== 'json' && !isVecU8) {
               self.diags.push(err('M3050',
-                `Untrusted 的载体类型只支持 str/Json,得到 ${typeStr(el)}(其余载体待解锁清单:u8/argv/容器等,v1.2+ 按净化器授权矩阵另裁决,ADR-004 §6.1)`,
+                `Untrusted 的载体类型只支持 str/Json/Vec[u8],得到 ${typeStr(el)}(其余载体待解锁清单:u8 原始载体/argv/其他容器等,v1.2+ 按净化器授权矩阵另裁决,ADR-004 §6.1)`,
                 t.span, CODE_HINTS.M3050));
               return mkUntrusted(T_STR);
             }
@@ -1481,6 +1554,23 @@ export class Checker {
       infoForDef.set(traitDef.name, { tparams: item.tparams.slice(), bounds: implBounds.slice() });
       this.implInfo.set(def, infoForDef);
     }
+  }
+
+  // v0.77(ADR-007 清单 7):spawn/spawn_all 任务返回的可跨线类型白名单——既有
+  // int/float/bool/str/Json/Vec/Map/unit 之外,扩入污载体 Untrusted[载体](第三载体纪律:
+  // 载体 = str/Json/Vec[u8],与 resolveTypeAst 白名单一致)。运行时擦除:子任务返回值
+  // 就是载体值,vToWire/wireToV 按值序列化零改动;"sync.spawn 同口径"的实现位。
+  wireableRetType(ret) {
+    const r = resolveT(ret, new Map());
+    if (!r) return false;
+    if (r.k === 'int' || r.k === 'float' || r.k === 'bool' || r.k === 'str' || r.k === 'json' ||
+        r.k === 'vec' || r.k === 'map' || r.k === 'unit') return true;
+    if (r.k === 'untrusted') {
+      const c = resolveT(r.el, new Map());
+      return c?.k === 'str' || c?.k === 'json' ||
+        (c?.k === 'vec' && c.el?.k === 'int' && c.el.bits === 8 && c.el.signed === false);
+    }
+    return false;
   }
 
   // Join[T] 是线性资源:不能存入集合/元组/struct 字段/enum 载荷/Option/Result(v0.15)
@@ -2166,7 +2256,10 @@ export class Checker {
     const binds = new Map();
     if (s.op !== '=') {
       // 复合赋值:要求支持对应算术
-      this.checkBinaryOp(s.op[0], targetT, valueT, s.span, binds);
+      const binT = this.checkBinaryOp(s.op[0], targetT, valueT, s.span, binds);
+      // v0.77(污值代数配套):复合赋值结果回写目标位同受 sink 门禁——净目标 += 污值
+      // → 结果污,赋回净目标 = 洗白旁路,M3049 拦截;污目标累计净值合法(污点只增不减)。
+      if (binT && targetT) this.untrustedMismatchDiag(binT, targetT, s.span, '复合赋值类型不匹配');
     } else if (targetT && !this.untrustedMismatchDiag(valueT, targetT, s.span, '赋值类型不匹配')
       && !unify(targetT, valueT, binds)) {
       this.diags.push(err('M3002', `赋值类型不匹配:目标是 ${typeStr(targetT, binds)},值是 ${typeStr(valueT, binds)}`, s.span));
@@ -4281,6 +4374,24 @@ export class Checker {
         } else if (rt?.k === 'untrusted') {
           this.untrustedMismatchDiag(argTs[i], T_STR, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`);
         }
+      } else if (p === 'outdisplay') {
+        // v0.77(架构师裁决):print 家族出向透传位——接受既有显示基元(int/float/bool/
+        // str)外,另接受 Untrusted[str](污值合法流出存储面);Untrusted[Json] 等其他
+        // 载体维持 M3049(先投影)。never 兼容性沿 v0.59 P2 口径(底类型)。
+        // 审查 m5:嵌套污形态(Vec[Untrusted[str]] 等)走 untrustedMismatchDiag(M3049
+        // 复合 remedy,对齐 v0.71 嵌套位纪律)——不再落 M3002+误导 hint(走 debug 撞 M3050)。
+        const rt = resolveT(argTs[i], binds);
+        if (rt?.k === 'untrusted') {
+          if (resolveT(rt.el, new Map())?.k !== 'str') {
+            this.untrustedMismatchDiag(argTs[i], T_STR, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`);
+          }
+          // Untrusted[str]:透传放行(存储面,污值写出)
+        } else if (typeContainsUntrusted(argTs[i], binds)) {
+          this.untrustedMismatchDiag(argTs[i], T_STR, e.args[i].span, `${name} 的参数 #${i + 1} 类型不匹配`);
+        } else if (rt?.k !== 'never' && !isPrimitiveDisplay(argTs[i], binds)) {
+          this.diags.push(err('M3002', `${name} 的参数 #${i + 1} 必须是 int/float/bool/str,实际是 ${typeStr(argTs[i], binds)}`, e.args[i].span,
+            '其他类型用 debug(x)。'));
+        }
       } else if (p === 'any') {
         const r = resolveT(argTs[i], binds);
         if (spec.noFn && r?.k === 'fn') this.diags.push(err('M3002', 'debug 不能用于函数值', e.args[i].span));
@@ -4390,9 +4501,8 @@ export class Checker {
       // Join 检查优先于通用跨任务白名单(更具体的错误码 M3034)
       this.checkJoinNotStored(ret, new Map(), e.span, '作为 spawn 的返回类型(子任务句柄不能跨任务)');
       if (fnR.ps.length === 1) this.checkJoinNotStored(fnR.ps[0], new Map(), e.span, '作为 spawn 的参数类型(子任务句柄不能跨任务)');
-      if (ret.k !== 'int' && ret.k !== 'float' && ret.k !== 'bool' && ret.k !== 'str' && ret.k !== 'json' &&
-          !(ret.k === 'vec') && !(ret.k === 'map') && !(ret.k === 'unit')) {
-        this.diags.push(err('M3002', `spawn 的返回类型 ${typeStr(ret)} 不能跨任务传递(支持:int/u64/float/bool/str/Json/Vec/Map)`, e.span));
+      if (!this.wireableRetType(ret)) {
+        this.diags.push(err('M3002', `spawn 的返回类型 ${typeStr(ret)} 不能跨任务传递(支持:int/u64/float/bool/str/Json/Vec/Map/Untrusted[载体])`, e.span));
         return null;
       }
       return mkJoin(ret);
@@ -4421,8 +4531,7 @@ export class Checker {
       }
       const ret = fnR.ret;
       this.checkJoinNotStored(ret, new Map(), e.span, '作为 spawn_all 的任务返回类型');
-      if (ret.k !== 'int' && ret.k !== 'float' && ret.k !== 'bool' && ret.k !== 'str' && ret.k !== 'json' &&
-          !(ret.k === 'vec') && !(ret.k === 'map') && !(ret.k === 'unit')) {
+      if (!this.wireableRetType(ret)) {
         this.diags.push(err('M3002', `spawn_all 的任务返回类型 ${typeStr(ret)} 不能跨任务传递`, e.span));
         return null;
       }
@@ -4586,6 +4695,23 @@ export class Checker {
     }
     const binds = new Map();
     const argTs = [];
+    // v0.77(ADR-007 清单 5):json.parse 两域接缝——按实参载体分派(机制先例 =
+    // v0.68 投影表"按接收者载体分派"):污 str 实参 → Result[Untrusted[Json], str]
+    // (投影表 v0.68 全套消费面直接适用);净 str → 净 Json 逐字不变(回归红线)。
+    // 污值但载体非 str(如 Untrusted[Json])经 untrustedMismatchDiag 发 M3049;
+    // 与 stringify 拒绝对称——读侧污进污出、写侧整体出口闭合。
+    if (f.mod === 'json' && f.fn.name === 'parse' && e.args.length === 1) {
+      const t = this.checkExpr(e.args[0], ctx, T_STR, true);
+      const r = resolveT(t, new Map());
+      if (r?.k === 'untrusted' && resolveT(r.el, new Map())?.k === 'str') {
+        return mkRes(mkUntrusted({ k: 'json' }), T_STR);
+      }
+      if (!this.untrustedMismatchDiag(t, T_STR, e.args[0].span, '参数 #1 类型不匹配')
+        && !unify(t, T_STR, binds)) {
+        this.diags.push(err('M3002', `参数 #1 类型不匹配:期望 str,实际 ${typeStr(t, binds)}`, e.args[0].span));
+      }
+      return f.fn.ret;
+    }
     e.args.forEach((a, i) => {
       const p = f.fn.params[i];
       if (typeof p === 'string' && p === 'jsonval') {
@@ -4597,6 +4723,25 @@ export class Checker {
         // 已发专用码则跳过通用 JSON 兼容检查(避免双报);含污容器维持既有 M3033 口径。
         if (this.untrustedMismatchDiag(t, { k: 'json' }, a.span, `参数 #${i + 1} 类型不匹配`)) return;
         this.checkJsonCompatible(t, binds, a.span);
+        return;
+      }
+      // v0.77(ADR-007 清单 6):出向透传参数位('outstr'/'outbytes')——污值合法流入
+      // 的存储/纯计算槽(污实参不 M3049),与 21 sink 槽机制同源(净槽默认 M3049)。
+      // 接受载体或其污标签形态;标签载体错配(如 Untrusted[Json] 进 outstr)仍 M3049。
+      if (typeof p === 'string' && (p === 'outstr' || p === 'outbytes')) {
+        const base = p === 'outstr' ? T_STR : mkVec(INT_TYPES.u8);
+        const t = this.checkExpr(a, ctx, base, true);
+        argTs.push(t);
+        const r = resolveT(t, new Map());
+        // 审查 m7:never 豁免与 outdisplay 分支对齐(v0.59 P2 底类型口径——never 兼容一切)。
+        if (r?.k === 'never') { argTs.push(t); return; }
+        const okCarrier = !!r && r.k === base.k && unify(r, base, new Map());
+        const okTainted = r?.k === 'untrusted' && unify(r.el, base, new Map());
+        if (!okCarrier && !okTainted) {
+          if (!this.untrustedMismatchDiag(t, base, a.span, `参数 #${i + 1} 类型不匹配`)) {
+            this.diags.push(err('M3002', `参数 #${i + 1} 类型不匹配:期望 ${typeStr(base)},实际 ${typeStr(t, binds)}`, a.span));
+          }
+        }
         return;
       }
       const t = this.checkExpr(a, ctx, p ?? undefined);
@@ -4659,11 +4804,16 @@ export class Checker {
       return this.checkStdCall(f, callNode, ctx);
     }
 
+    const mutNeeded = MUT_METHODS.has(name);
+
     // v0.61(ADR-002 §3.2):Untrusted 接收者——白名单方法按载体分派(运行时擦除:
     // 值就是载体值,方法实现按载体走,interp 无需新方法;白名单校验只在 checker)。
-    // v0.68(ADR-004 §3.2):载体键控——json 载体走投影表 untrustedJsonMethod(整树保污);
-    // str 载体维持白名单 5 方法;白名单外(trim/slice/replace/contains/…)一律
-    // M3050[untrusted-method-forbidden]。
+    // v0.68(ADR-004 §3.2):载体键控——json 载体走投影表 untrustedJsonMethod(整树保污)。
+    // v0.77(ADR-007 清单 3/4):载体键控扩第三载体 Vec[u8](len/is_empty);
+    // str 载体走污值代数(UNTRUSTED_STR_ALGEBRA 逐函数裁决表)——先按净值签名做
+    // arity/参数检查(strMethod,污实参自然 M3049),再按输出类别包装返回类型:
+    // clean 原样(污点在标量/布尔上终结),keep/keepVec/keepOpt/keepBytes 保污。
+    // 白名单外一律 M3050[untrusted-method-forbidden]。
     if (r.k === 'untrusted') {
       const carrier = resolveT(r.el, new Map());
       if (carrier?.k === 'json') {
@@ -4671,15 +4821,32 @@ export class Checker {
       }
       const wl = UNTRUSTED_METHODS[carrier?.k] ?? [];
       if (!wl.includes(name)) {
+        const surface = carrier?.k === 'vec'
+          ? `Untrusted[Vec[u8]] 只能用 ${wl.join(' / ')}(操作面 = 载体计数;元素消费面 re/bin/crypto 维持净槽)`
+          : `Untrusted[str] 只能用污值代数面 ${wl.join(' / ')}(逐函数裁决见 UNTRUSTED_STR_ALGEBRA);要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path`;
         this.diags.push(err('M3050',
-          `${typeStr(r)} 没有方法 ".${name}"(白名单外:Untrusted[str] 只能用 ${wl.join(' / ')};要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path)`,
+          `${typeStr(r)} 没有方法 ".${name}"(白名单外:${surface})`,
           fieldCallee.span, CODE_HINTS.M3050));
         return null;
       }
-      return this.strMethod(T_STR, name, args, ctx, callNode, expected, fieldCallee);
+      if (carrier?.k === 'vec') {
+        // Untrusted[Vec[u8]] 接收者:按载体 vec 类型走既有 vec 方法(len/is_empty
+        // 不触元素,无洗白面;to_str 等在白名单外已拒)。
+        return this.vecMethod(carrier, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
+      }
+      // str 载体:污值代数分派
+      const kind = UNTRUSTED_STR_ALGEBRA[name];
+      const ret = this.strMethod(T_STR, name, args, ctx, callNode, expected, fieldCallee);
+      if (!ret || kind === 'clean') return ret;
+      switch (kind) {
+        case 'keep': return mkUntrusted(T_STR);
+        case 'keepVec': return mkVec(mkUntrusted(T_STR));
+        case 'keepOpt': return mkOpt(mkUntrusted(T_STR));
+        case 'keepBytes': return mkUntrusted(mkVec(INT_TYPES.u8));
+        case 'keepResErr': return mkRes(ret.ok, mkUntrusted(ret.err));
+        default: return ret;
+      }
     }
-
-    const mutNeeded = MUT_METHODS.has(name);
 
     // Ptr 方法(v0.54):load/store/offset 需 unsafe 上下文;is_null 块外允许
     if (r.k === 'ptr') return this.ptrMethod(r, name, args, ctx, callNode, expected, fieldCallee);
@@ -5344,6 +5511,15 @@ export class Checker {
     switch (op) {
       case '+': case '-': case '*': case '/': {
         if (op === '+' && l?.k === 'str' && r?.k === 'str') return T_STR;
+        // v0.77(ADR-007 清单 4)污值代数:拼接是内容处理的基本组合子(纯函数)——
+        // 污值参与拼接,输出保污(污点只增不减;结果仍被全部 sink 拒绝,无洗白面)。
+        // v0.61 的 "a"+u → M3008 拦截面据此收窄:拒绝位后移到消费 sink(M3049)。
+        if (op === '+') {
+          const isStrish = (t) => t?.k === 'str' || (t?.k === 'untrusted' && resolveT(t.el, new Map())?.k === 'str');
+          if (isStrish(l) && isStrish(r) && (l.k === 'untrusted' || r.k === 'untrusted')) {
+            return mkUntrusted(T_STR);
+          }
+        }
         if (both(t => t.k === 'int')) {
           if (!same()) {
             if (l.signed === r.signed) this.diags.push(err('M3013', `整数宽度不同:${typeStr(l)} 与 ${typeStr(r)} 不能直接运算`, span, CODE_HINTS.M3013));

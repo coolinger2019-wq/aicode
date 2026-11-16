@@ -1640,6 +1640,18 @@ export class Interp {
         this.chargeAllocBytes(out.length, span);
         return V.str(out);
       }
+      // v0.77(ADR-007 清单 4):str.index_of(hay, needle) -> Option[i64]——污值代数最小集
+      // 补齐(定位唯一匹配;mingkit/edit 迁移面缺口)。返回**字符**(码点)下标,与
+      // .char_len/.slice_chars 同口径(非 UTF-16 码元,含增补平面字符时两口径才会分歧);
+      // 未找到 → None(与 Vec[u8].index_of 的 Option 承载一致,无 -1 哨兵)。纯扫描,
+      // 不产生新内容,不计费。wasm/cc:std 调用非直接消费 → 既有的具名回落路径(零新机制)。
+      case 'str.index_of': {
+        const hay = args[0].v, needle = args[1].v;
+        const idx = hay.indexOf(needle);
+        if (idx < 0) return V.enumv('builtin-opt', 'None', []);
+        const cp = [...hay.slice(0, idx)].length;
+        return V.enumv('builtin-opt', 'Some', [V.int(BigInt(cp), 64, true)]);
+      }
       // ---- std.json(纯函数)----
       case 'json.stringify': {
         // 检查器已保证 JSON 兼容类型;这里把 Ming 值转为 Json 值再输出

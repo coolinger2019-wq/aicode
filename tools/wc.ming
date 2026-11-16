@@ -4,11 +4,32 @@
 // 单文件保持旧行数不附加)+ 错误纪律(读不了的文件走 stderr 并计入失败,
 // 退出码 1,不中断其余文件)。单文件输出格式与 v0.45.1 完全一致。
 //
+// v0.77 污点迁移(ADR-007):read_file → Untrusted[str];行/字节计数走污值代数
+// clean 面(split/ends_with/byte_len,输出计数净值);词计数由 re.split("\\s+")
+// 改为等价的保污扫描(count_words——re 的 pattern/内容槽是净槽,污内容不可入;
+// 词 = 极大非空白连续段数,is_space 与 \\s 同为 JS \s 口径,语义逐字节等价)。
+//
 // 用法:node bin/ming.js run tools/wc.ming -- <file...>
 //   输出:行 词 字节 <路径>(多文件时追加:行 词 字节 total)
 use std.fs;
 
-use std.re;
+// 词计数:非空白字符段的个数(与 re.split("\\s+") 的段数等价;
+// 空白判定 is_space = JS \s,与 \\s+ 同口径;纯函数,输出计数净)
+fn count_words(s: Untrusted[str]) -> i64 {
+    let mut words = 0;
+    let mut in_word = false;
+    for ch in s.chars() {
+        if ch.is_space() {
+            in_word = false;} else {
+
+            if !in_word {
+                words += 1;
+            }
+            in_word = true;
+        }
+    }
+    return words;
+}
 
 // 返回 (行, 词, 字节) 或 Err(消息)
 fn count_file(path: str) -> Result[(i64, i64, i64), str] with fs {
@@ -24,9 +45,8 @@ fn count_file(path: str) -> Result[(i64, i64, i64), str] with fs {
             }
             let trimmed = content.trim();
             let mut word_count = 0;
-            if trimmed != "" {
-                let parts = std.re.split("\\s+", trimmed);
-                word_count = parts.len();
+            if !trimmed.is_empty() {
+                word_count = count_words(trimmed);
             }
             return Ok((line_count, word_count, content.byte_len()));
         },
