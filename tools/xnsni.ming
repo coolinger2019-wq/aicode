@@ -1,0 +1,103 @@
+// tools/xnsni.ming — URL → xn-- 十六进制改写(SNI 改写测试助手)
+//
+// 依据:gfw.report CCS 2026 "CircumVolve"论文 §4.3 SNI Manipulation(表 3):
+// 把 SNI 中的明文域名改成 xn-- + ASCII 字节十六进制串(形似 IDN,并非合法
+// Punycode),绕过依赖原始字符串匹配的域名黑名单;配合 --connect-to 映射真实
+// 主机 + Host 头把请求路由到源站(论文明言 functionally similar to domain fronting)。
+// 示例:cloudflare.com → xn--636c6f7564666c6172652e636f6d
+//
+// 用法:node bin/ming.js tools xnsni <url>
+//   或:node bin/ming.js run tools/xnsni.ming -- <url>
+//   输出:sni/改写后 url/可直接粘贴的 curl 测试命令。
+//   限制:服务器宽容性依赖(论文限制 1);仅对关键字匹配型过滤有意义;
+//   IPv6/userinfo 形态不支持(显式报错)。
+use std.str;
+
+fn hex_digit(d: i64) -> str {
+    let table = "0123456789abcdef";
+    return table.slice_chars(d, d + 1);
+}
+
+fn hex_encode(s: str) -> str {
+    let mut out = "";
+    for b in s.to_bytes() {
+        let v = b.to_i64().unwrap_or(0);
+        out = out + hex_digit(v / 16) + hex_digit(v % 16);
+    }
+    return out;
+}
+
+fn usage() with io {
+    eprint("用法: node bin/ming.js tools xnsni <url>\n  例: node bin/ming.js tools xnsni https://cloudflare.com/ping\n");
+}
+
+fn main(args: Vec[str]) -> i64 with io {
+    if args.is_empty() {
+        usage();
+        return 1;
+    }
+    let url = args[0];
+    let mut scheme = "https";
+    let mut rest = url;
+    match str.index_of(url, "://") {
+        Some(i) => {
+            scheme = url.slice_chars(0, i);
+            rest = url.slice_chars(i + 3, url.char_len());
+        },
+        None => {
+        },
+    }
+    let segs = rest.split("/");
+    let hostport = segs.get(0).unwrap_or("");
+    if hostport.is_empty() {
+        eprint("error: 无法解析主机名(空主机名)\n");
+        return 1;
+    }
+    if hostport.contains("@") {
+        eprint("error: 暂不支持 userinfo(user@host) 形态\n");
+        return 1;
+    }
+    let hp = hostport.split(":");
+    if hp.len() > 2 {
+        eprint("error: IPv6 形态暂不支持(主机名含多个冒号)\n");
+        return 1;
+    }
+    let mut host = hostport;
+    let mut port = "443";
+    if scheme == "http" {
+        port = "80";
+    }
+    if hp.len() == 2 {
+        host = hp.get(0).unwrap_or("");
+        port = hp.get(1).unwrap_or("443");
+    }
+    if host.is_empty() {
+        eprint("error: 主机名为空\n");
+        return 1;
+    }
+    let mut tail: Vec[str] = [];
+    let mut i = 1;
+    while i < segs.len() {
+        match segs.get(i) {
+            Some(p) => {
+                tail.push(p);
+            },
+            None => {
+            },
+        }
+        i += 1;
+    }
+    let mut path = "/";
+    if tail.len() > 0 {
+        path = "/" + tail.join("/");
+    }
+    let sni = "xn--" + hex_encode(host);
+    print("scheme: " + scheme);
+    print("host:   " + host);
+    print("port:   " + port);
+    print("sni:    " + sni);
+    print("url:    " + scheme + "://" + sni + path);
+    print("curl:   curl --connect-to '" + sni + ":" + port + ":" + host + ":" + port + "' -H 'Host: " + host + "' '" + scheme + "://" + sni + path + "'");
+    print("note:   论文 CCS 2026 §4.3——SNI 改写 + --connect-to 映射真实主机 + Host 头;服务器宽容性依赖,失败请对照原 URL 行为");
+    return 0;
+}

@@ -33,10 +33,10 @@ tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿�
 tests/proof_fuzz.mjs 静态证明模糊器（边界证明 1/2 + summaries + v0.57 loops 模式；反例独立求值器）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc；v0.57 基线对比 --write-baseline）
 tests/coverage.mjs   覆盖率观测（NODE_V8_COVERAGE；信息性不设门槛；基线见 docs/coverage-baseline.md）
-tools/               自举工具（12 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
+tools/               自举工具（14 个，Ming 自写）：mingkit 文件补丁（read/write/replace 恰好 1 处/insert/del/count）·
                      edit 行级编辑（按行号，与 mingkit 按模式互补）· engdiff 三引擎差分 · diaghot 诊断热力图（目录展开 + --top）·
                      wc 行词字节（多文件 + total）· tree 目录树（深度可选）· find_files 按名查找 · json_query JSON 点路径（a.b.0.c）·
-                     todo_scan 待办扫描 · log_analyzer 日志计数 · batch_rename 批量改名（幂等）· file_organizer 按扩展名归档。
+                     todo_scan 待办扫描 · log_analyzer 日志计数 · batch_rename 批量改名（幂等）· file_organizer 按扩展名归档 · xnsni URL→xn-- 十六进制 SNI 改写助手 · xnopen 改写+自动探测+Chrome 启动（CCS 2026 §4.3；探测对比原/改写响应码；Chrome 无法改 Host 头的硬限制如实内置）。
                      纪律：错误走 stderr、失败退出码 1；破坏性操作目录必须显式给出；全部 `ming fmt --check` 规范
 examples/            可运行示例
 docs/                design.md 设计 · diagnostics.md 诊断码 · capabilities.md 能力矩阵 · plan.md 计划

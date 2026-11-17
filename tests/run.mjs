@@ -16014,10 +16014,10 @@ fn main() with io, fs {
       `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
   }
 
-  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(32 文件冒烟)----
+  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(34 文件冒烟;v0.79 工具 12→14)----
   {
     // 合法程序各域嵌套深度个位数~低两位,守卫阈值 450/950/1450/2000 远离;改前基线同。
-    // 本条同时锁"examples(20)+ 自举工具(12)= 32 文件"两个面。
+    // 本条同时锁"examples(20)+ 自举工具(14)= 34 文件"两个面。
     const dirs = ['examples', 'tools'];
     const files = [];
     for (const d of dirs) {
@@ -16030,8 +16030,8 @@ fn main() with io, fs {
       const r = runMing(['check', f]);
       if (r.code !== 0 || crash78({ out: r.stdout + r.stderr })) bad.push(`${path.basename(path.dirname(f))}/${path.basename(f)}(exit=${r.code})`);
     }
-    check('v78.6:合法面不误伤——examples+tools 共 32 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
-      files.length === 32 && bad.length === 0,
+    check('v78.6:合法面不误伤——examples+tools 共 34 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
+      files.length === 34 && bad.length === 0,
       `n=${files.length} bad=${bad.join(',') || '无'}`);
   }
 
@@ -17870,6 +17870,41 @@ fn main() with io, fs {
       chk.code === 0 && same82(runs, 'ok\n'), `chk=${chk.code} ${fmtRuns82(runs)}`);
   }
 
+  // ---- 83. v0.79 工具追加:xnsni(URL → xn-- 十六进制 SNI 改写,CCS 2026 §4.3 CircumVolve 方法)----
+  // 工具本体 tools/xnsni.ming + TOOL_CMDS 注册;本分节锁十六进制向量与错误纪律。
+  {
+    // v83.1 论文示例向量逐字:cloudflare.com → xn--636c6f7564666c6172652e636f6d
+    const r1 = runMing(['tools', 'xnsni', 'https://cloudflare.com/ping']);
+    check('v83.1:xnsni 论文示例向量——cloudflare.com → xn--636c6f7564666c6172652e636f6d(sni/url/curl 三行含)+ exit 0',
+      r1.code === 0 && r1.stdout.includes("sni:    xn--636c6f7564666c6172652e636f6d")
+        && r1.stdout.includes("https://xn--636c6f7564666c6172652e636f6d/ping")
+        && r1.stdout.includes("--connect-to") && r1.stdout.includes(":443:cloudflare.com:443"),
+      `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0,160))}`);
+    // v83.2 http+端口+路径形态:example.com:8080 → xn--6578616d706c652e636f6d,端口 8080 透传
+    const r2 = runMing(['tools', 'xnsni', 'http://example.com:8080/a/b?x=1']);
+    check('v83.2:http+端口形态——sni=xn--6578616d706c652e636f6d / port 8080 / 路径与查询串保留 / exit 0',
+      r2.code === 0 && r2.stdout.includes("sni:    xn--6578616d706c652e636f6d")
+        && r2.stdout.includes("port:   8080")
+        && r2.stdout.includes("http://xn--6578616d706c652e636f6d/a/b?x=1"),
+      `code=${r2.code} out=${JSON.stringify(r2.stdout.slice(0,160))}`);
+    // v83.3 错误纪律:空参 → usage 走 stderr + exit 1(不静默成功)
+    const r3 = runMing(['tools', 'xnsni']);
+    check('v83.3:xnsni 错误纪律——空参 usage 走 stderr + exit 1',
+      r3.code === 1 && (r3.stderr || '').includes("用法:") && r3.stdout === '',
+      `code=${r3.code} stderr=${JSON.stringify((r3.stderr||'').slice(0,80))} stdout=${JSON.stringify(r3.stdout)}`);
+  }
+
+    // v83.4 xnopen:用法纪律(空参 → exit 1 + stderr 用法)
+    const r4 = runMing(['tools', 'xnopen']);
+    check('v83.4:xnopen 错误纪律——空参 usage 走 stderr + exit 1',
+      r4.code === 1 && (r4.stderr || '').includes('用法:') && r4.stdout === '',
+      `code=${r4.code} stderr=${JSON.stringify((r4.stderr||'').slice(0,80))}`);
+    // v83.5 xnopen:离线探测三段判定确定性——127.0.0.1:1 两端都不可达 → 改写不可达判定
+    const r5 = runMing(['tools', 'xnopen', 'http://127.0.0.1:1/', '--', '--no-chrome']);
+    check('v83.5:xnopen 离线探测判定——127.0.0.1:1 原/改写均 0 + 改写不可达判定行 + exit 0',
+      r5.code === 0 && r5.stdout.includes('原 URL:  0') && r5.stdout.includes('改写后:  0')
+        && r5.stdout.includes('改写不可达'),
+      `code=${r5.code} out=${JSON.stringify(r5.stdout.slice(0,200))}`);
   // ---- §82-END
 }
 

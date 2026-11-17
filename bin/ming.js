@@ -916,6 +916,8 @@ const TOOL_CMDS = {
   edit: { file: 'edit.ming', prefix: [] },
   diff: { file: 'engdiff.ming', prefix: [] },
   diag: { file: 'diaghot.ming', prefix: [] },
+  xnopen: { file: 'xnopen.ming', prefix: [] },
+  xnsni: { file: 'xnsni.ming', prefix: [] },
   wc: { file: 'wc.ming', prefix: [] },
   tree: { file: 'tree.ming', prefix: [] },
   find: { file: 'find_files.ming', prefix: [] },
