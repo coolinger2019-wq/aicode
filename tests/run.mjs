@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { computeSummaries } from '../src/prover.js';
 import { completionFor, definitionFor, documentSymbolsFor } from '../src/lsp.js';
 import { VMInterp } from '../src/vm.js';
+import { Checker } from '../src/checker.js';
+import { compile, CompileError } from '../src/compiler.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
@@ -17642,6 +17644,233 @@ fn main() with io, fs {
   }
 
   // ---- §81-END
+}
+
+// 文件所有权:§82 = 本区全部用例。缺陷 #71(P1,v0.79):循环内 lambda 体裸 continue/break
+// 过 check(checkLambda 的 ctx2 = {...ctx} 保留外层 inLoop → M3010/M3011 不发射),且块尾
+// never 使 g 可传 HOF——调用时三态分歧:tree 引擎 ContSig/BrkSig 穿透 lambda 调用帧被
+// 外层循环捕获(吞迭代,exit 0);VM compileLambda 子状态无 breakCtx 走防御分支发射裸
+// POP(无 JUMP 落点)弹穿全帧共享操作数栈(内部错误 TypeError,exit 2)。语料 .zcode/v78/
+// t_l6.ming(v0.78 实现 agent 同族发现,独立可复现)。修复(语义定案:lambda 体是新函数
+// 边界,continue/break 不穿透——与本地函数/普通函数一致,v0.59 #44 先例):
+//   ① checker(checkLambda):ctx2 重置 inLoop: false——lambda 内裸 continue/break 发
+//     M3011/M3010(消息与既有文案逐字);lambda 体自己的 for/while/loop 正常置位,
+//     其内部 continue/break 合法且只作用于 lambda 内的循环。
+//   ② compiler:compileLambda 子状态不携带 breakCtx(既有事实,注释显式化)+ compileStmt
+//     Break/Continue 防御分支由裸 POP 改具名 CompileError(纵深防御;修复后不可达,
+//     审查 MINOR-3 同点)。
+// 零校准锚点:§81 全形态(match 臂 continue/break 三引擎逐字)在全量回归中逐字复跑;
+// git archive HEAD 对照:v0.78 语料仅 t_l6/t_lambda 两文件新增 M3011(均为本缺陷家族,
+// 修复目标),其余语料诊断逐字不变。
+{
+  const dir82 = path.join(TMP, 'v82');
+  fs.mkdirSync(dir82, { recursive: true });
+  const m82 = (name, src) => { const f = path.join(dir82, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const j82 = (p) => { const r = runMing(['check', p, '--json']); try { return { r, j: JSON.parse(r.stdout) }; } catch { return { r, j: null }; } };
+  const codes82 = (j) => (j?.diagnostics ?? []).map(d => d.code);
+  const flags82 = ['', '--no-wasm', '--tree'];
+  const runAll82 = (p) => flags82.map(fl => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const same82 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns82 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}`).join(' | ');
+
+  // v82.1 基线形态(#71 语料 t_l6 原样):for 内 lambda 体裸 continue + 传 map。
+  // 修复前三态:check exit 0 / tree exit 0 吞迭代 / VM exit 2 内部错误。
+  {
+    const f = m82('v82_1_corpus.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        let g = (a: i64) => { continue; };',
+      '        let w = v.map(g);',
+      '        print(str(x));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const { r: chk, j } = j82(f);
+    const m3011 = (j?.diagnostics ?? []).find(d => d.code === 'M3011');
+    check('v82.1:for 内 lambda 体裸 continue(#71 语料)——check 拒绝 M3011"continue 只能出现在循环内"(错误位=continue 自身)',
+      chk.code === 1 && j?.ok === false && m3011 != null
+      && m3011.message === 'continue 只能出现在循环内' && m3011.severity === 'error'
+      && m3011.line === 4,
+      `chk=${chk.code} ok=${j?.ok} codes=${JSON.stringify(codes82(j))} m3011=${JSON.stringify(m3011)}`);
+    const runs = runAll82(f).map(x => ({ code: x.code, stdout: x.stdout }));
+    check('v82.1b:同语料三引擎均不执行(check 层拦截后无运行形态)——exit 1 且 stdout 空',
+      runs.every(x => x.code === 1 && x.stdout === ''), fmtRuns82(runs));
+  }
+
+  // v82.2 对偶形态:for 内 lambda 体裸 break → M3010(消息与既有文案逐字)。
+  {
+    const f = m82('v82_2_break.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        let g = (a: i64) => { break; };',
+      '        let _ = v.map(g);',
+      '        print(str(x));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const { r: chk, j } = j82(f);
+    const m3010 = (j?.diagnostics ?? []).find(d => d.code === 'M3010');
+    check('v82.2:for 内 lambda 体裸 break——check 拒绝 M3010"break 只能出现在循环内"',
+      chk.code === 1 && m3010 != null && m3010.message === 'break 只能出现在循环内'
+      && m3010.severity === 'error' && m3010.line === 4,
+      `chk=${chk.code} codes=${JSON.stringify(codes82(j))} m3010=${JSON.stringify(m3010)}`);
+  }
+
+  // v82.3 语义定案正例:lambda 体自己的 for + continue 合法——continue 只作用于
+  // lambda 内的循环,外层循环不受影响(三引擎逐字;修复前该形态本就合法,零校准)。
+  {
+    const f = m82('v82_3_own_loop.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let g = (n: i64) => {',
+      '        let mut acc = 0;',
+      '        for i in 0..n {',
+      '            if i % 2 == 0 { continue; }',
+      '            acc += i;',
+      '        }',
+      '        return acc;',
+      '    };',
+      '    for x in v {',
+      '        let w = v.map(g);',
+      '        print(str(x) + ":" + str(w.get(0).unwrap_or(-1)));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const { r: chk, j } = j82(f);
+    const runs = runAll82(f);
+    check('v82.3:lambda 体自带 for + continue 合法(外层每迭代照常打印)——check 0 + 三引擎逐字 1:0\\n2:0\\n3:0\\n',
+      chk.code === 0 && codes82(j).every(c => !c.startsWith('M')) && same82(runs, '1:0\n2:0\n3:0\n'),
+      `chk=${chk.code} codes=${JSON.stringify(codes82(j))} ${fmtRuns82(runs)}`);
+  }
+
+  // v82.4 lambda 体自带 while + break 合法(对偶形态)——break 只作用于 lambda 内循环。
+  {
+    const f = m82('v82_4_own_while.ming', [
+      'fn main() -> i64 with io {',
+      '    let find = (n: i64) => {',
+      '        let mut i = 0;',
+      '        while i < n {',
+      '            if i * i >= n { break; }',
+      '            i += 1;',
+      '        }',
+      '        return i;',
+      '    };',
+      '    print(str(find(10)));',
+      '    print(str(find(1)));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const { r: chk } = j82(f);
+    const runs = runAll82(f);
+    check('v82.4:lambda 体自带 while + break 合法——check 0 + 三引擎逐字 4\\n1\\n',
+      chk.code === 0 && same82(runs, '4\n1\n'), `chk=${chk.code} ${fmtRuns82(runs)}`);
+  }
+
+  // v82.5 HOF 场景(缺陷报告的"块尾 never 使 g 可传 HOF"通道):循环内 lambda 传 map——
+  // 合法 lambda(无裸 continue/break)行为不变;非法形态已在 v82.1 于 check 层拦截,
+  // 不存在"never 尾 lambda 进入 map"的运行形态。
+  {
+    const f = m82('v82_5_hof.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        let g = (a: i64) => a * 2;',
+      '        let w = v.map(g);',
+      '        print(str(x) + "->" + str(w.get(0).unwrap_or(-1)));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const { r: chk } = j82(f);
+    const runs = runAll82(f);
+    check('v82.5:循环内 lambda 传 map(HOF 通道正例)——check 0 + 三引擎逐字 1->2\\n2->2\\n3->2\\n',
+      chk.code === 0 && same82(runs, '1->2\n2->2\n3->2\n'), `chk=${chk.code} ${fmtRuns82(runs)}`);
+  }
+
+  // v82.6 边界归属:嵌套 lambda 的裸 continue 归属内层边界(恰 1 条 M3011);
+  // 顶层裸 continue(无 lambda、无循环)维持既有口径 M3011(零校准)。
+  {
+    const f1 = m82('v82_6_nested.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2];',
+      '    for x in v {',
+      '        let outer = (a: i64) => {',
+      '            let inner = (b: i64) => { continue; };',
+      '            return inner(a);',
+      '        };',
+      '        let _ = v.map(outer);',
+      '        print(str(x));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const r1 = j82(f1);
+    const m1 = (r1.j?.diagnostics ?? []).filter(d => d.code === 'M3011');
+    const f2 = m82('v82_6_toplevel.ming', [
+      'fn main() -> i64 with io {',
+      '    continue;',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const r2 = j82(f2);
+    const m2 = (r2.j?.diagnostics ?? []).filter(d => d.code === 'M3011');
+    check('v82.6:嵌套 lambda 裸 continue 恰 1 条 M3011 归属内层(line 5) + 顶层裸 continue 维持 M3011(零校准)',
+      r1.r.code === 1 && m1.length === 1 && m1[0].line === 5
+      && r2.r.code === 1 && m2.length === 1 && m2[0].line === 2,
+      `nested=${r1.r.code} m=${JSON.stringify(m1)} | top=${r2.r.code} m=${JSON.stringify(m2)}`);
+  }
+
+  // v82.7 compiler 纵深防御断言(白盒):剥掉 M3010/M3011 模拟 checker/编译器边界不一致,
+  // compile 必须以具名 CompileError 失败(修复前:裸 POP 静默发射 → VM 弹穿共享操作数栈
+  // 内部错误崩溃)。修复后正常管线不可达;此处仅锁定"防御分支具名、不裸 POP"。
+  {
+    const f = m82('v82_7_defense.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    for x in v {',
+      '        let g = (a: i64) => { continue; };',
+      '        let _ = v.map(g);',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    let thrown = null;
+    try {
+      const c = new Checker(f);
+      const result = c.run();
+      result.diags = result.diags.filter(d => !/M3010|M3011/.test(d.code));
+      compile(result);
+    } catch (e) {
+      thrown = e;
+    }
+    check('v82.7:防御分支(白盒)——剥 M3011 后 compile 具名 CompileError"lambda/本地函数体内的 break/continue 缺少循环上下文"(不再裸 POP)',
+      thrown instanceof CompileError && thrown.message.includes('lambda/本地函数体内的 break/continue 缺少循环上下文'),
+      `thrown=${thrown ? thrown.name + ': ' + thrown.message : 'null(未抛——裸 POP 静默)'}`);
+  }
+
+  // v82.8 既有合法形态零校准:lambda 体内的 loop{break}(loop 是 lambda 自己的循环)
+  // 仍合法——v60.48 形态在函数边界语义下的行为不变。
+  {
+    const f = m82('v82_8_loop_break.ming', [
+      'fn main() with io {',
+      '  let f = () => { loop { break; } };',
+      '  f();',
+      '  print("ok");',
+      '}',
+      '',
+    ].join('\n'));
+    const { r: chk } = j82(f);
+    const runs = runAll82(f);
+    check('v82.8:lambda 体自带 loop{break} 仍合法(v60.48 形态零校准)——check 0 + 三引擎逐字 ok',
+      chk.code === 0 && same82(runs, 'ok\n'), `chk=${chk.code} ${fmtRuns82(runs)}`);
+  }
+
+  // ---- §82-END
 }
 
 

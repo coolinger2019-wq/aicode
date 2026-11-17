@@ -6007,7 +6007,13 @@ export class Checker {
     const scope = new Scope(ctx.scope, ctx.mod);
     for (const p of ps) scope.bind(p.name, p.type, false, p.span, true);
     const sink = new Set();
-    const ctx2 = { ...ctx, scope, effectSink: sink };
+    // v0.79(#71):lambda 体是新函数边界——不继承外层 inLoop。lambda 内裸 continue/break
+    // 由 M3011/M3010 拒绝;lambda 体自己的 for/while/loop 正常置位(checkStmt/checkExpr
+    // 循环分支),其内部 continue 合法且只作用于 lambda 内的循环。此前 {...ctx} 保留外层
+    // 循环的 inLoop,循环内 lambda 的裸 continue 过 check 后:tree 引擎 ContSig 穿透
+    // lambda 到外层循环吞迭代,VM 编译子状态无 breakCtx 走防御分支裸 POP 弹穿共享
+    // 操作数栈(内部错误崩溃)——与本地函数/普通函数的边界口径一致(v0.59 #44 先例)。
+    const ctx2 = { ...ctx, scope, effectSink: sink, inLoop: false };
     let retT;
     const retExpected = fnExpected ? fnExpected.ret : (expected && resolveT(expected, new Map())?.k !== 'fn' ? expected : undefined);
     if (e.body.nt === 'BlockExpr') retT = this.checkBlock(e.body.block, ctx2, retExpected ?? undefined);

@@ -612,7 +612,14 @@ class BytecodeCompiler {
       case 'Break': case 'Continue': {
         // 由循环上下文回填(编译时通过 breakCtx 栈)
         const bctx = st.breakCtx?.[st.breakCtx.length - 1];
-        if (!bctx) { this.emit(st, OP.POP, 0, 0, s.span); return; } // 检查器已拦截;防御
+        // v0.79(#71):lambda/本地函数体是新函数边界——compileLambda/compileLocalFn 子状态
+        // 不含 breakCtx(不继承外层循环上下文),裸 continue/break 已由 checker 在函数边界
+        // 拒绝(M3010/M3011;checkLambda 自 v0.79 起重置 inLoop)。此处为纵深防御断言:
+        // 此前发射裸 POP(无 JUMP 落点)会弹穿全帧共享的操作数栈,静默破坏栈平衡直至
+        // 内部错误崩溃——改为具名 CompileError(经 reportCompileError 以
+        // "内部错误(字节码编译器):" 诊断形态输出),修复后不可达;若到达即为
+        // checker 与编译器边界不一致的工具链 bug,请附最小复现报告。
+        if (!bctx) throw new CompileError('lambda/本地函数体内的 break/continue 缺少循环上下文(checker 已拦截,不应到达)', s.span);
         // v0.78 #70:match 臂内的 break/continue 跳出时,先弹掉本循环内仍活着的
         // match 宗量临时值。match 编译把宗量留在操作数栈上跨越整个臂体——continue
         // 直跳循环头会让 for 的 ITERNEXT 把栈顶宗量误当迭代器(iter.next 崩溃,
@@ -1356,6 +1363,10 @@ class BytecodeCompiler {
     this.functions.push(null);
     const savedCur = this.curFnIdx;
     this.curFnIdx = idx;
+    // v0.79(#71):子状态刻意不含 breakCtx/matchTemps——lambda 体是新函数边界,
+    // 裸 break/continue 由 checker M3010/M3011 拦截;编译层防御断言见 compileStmt
+    // Break/Continue(此前裸 POP 会弹穿共享操作数栈)。外层循环的 breakCtx 留在
+    // st 上不被子状态携带,continue/break 不穿透 lambda。
     const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry, resultSlot: null, fnBinds }; // v0.56(C2):闭包是独立帧,不得执行外层 ensures
     for (const p of e.params) sub.scopes[0].set(p.name, sub.nLocals++);
     if (e.body.nt === 'BlockExpr') this.compileBlock(e.body.block, sub, true);
