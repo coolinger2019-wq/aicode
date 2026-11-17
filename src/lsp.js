@@ -1,10 +1,14 @@
 // lsp.js — Ming 语言服务器(v0.5,stdio JSON-RPC)。
 // 能力:诊断推送(didOpen/didChange → publishDiagnostics)、hover(签名 + /// 文档)、
-//       completion(标识符/字段方法/关键字)、definition(模块项/局部变量/跨文件 use)、
+//       completion(标识符/字段方法/关键字 + use 上下文/本地模块成员)、definition(模块项/局部变量/跨文件 use)、
 //       documentSymbol(模块级 fn/struct/trait/const/enum + impl 层级)。
 // 简洁优先:每次变更全量重查文件(含其本地导入),对几十 KB 源文件足够快。
 // v0.58-A 约定:三个新查询纯解析(不跑 Checker),保守策略——类型推不出 → 空列表,
 // 语法错误/未知符号 → null;宁可少补不可错补;现有 hover/诊断路径逐字未动。
+// v0.80(多文件符号补全第一切片):use 关键字上下文不再回落通用列表(关键字/内置在
+// use 行是错补)——只给 std.X 全名(STD_MODULES)与本地同目录 .ming 模块名(checker.load
+// 同口径;目录不可枚举 → 仅 std 面)。本地模块成员补全与跨文件解析 machinery 沿用
+// v0.58(parseModuleFile/useImportsOf),不另起炉灶;既有单文件补全路径逐字未动(§85 锚)。
 
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
@@ -443,6 +447,40 @@ function stdFns(modName) {
   return names.map(n => ({ name: n, kind: 3, detail: `std.${modName}.${n}` }));
 }
 
+// v0.80(多文件符号补全第一切片,切片②):use 关键字上下文的候选面。
+// 与 checker.load 的 use 分支同口径(checker.js:779-803):use std.X → std 模块;
+// use X → 当前文件同目录 X.ming;use a.b → a/b.ming。保守边界(宁可少补不可错补):
+//  - std 模块以 'std.X' 全名形式候选。裸 'std' 不给(`use std;` 是 checker M3022:段数≠2);
+//    裸模块名也不给(单段按本地文件解析,`use str;` 会去找 str.ming → M3022)——两种裸
+//    形态都是错补;'std.X' 插入即合法代码,`use std.` 的成员路径(既有)仍给裸模块名。
+//  - 本地候选仅在当前文件目录可枚举时给出(readdir 失败 → 只给 std 面——"确定不了位置
+//    → 只给 std 模块名"的落点);子目录首段不列(下一跳 `D.` 无成员补全支撑,列了即误导;
+//    登记 v0.80+ 候选不预支)。
+//  - 文件名必须是合法 use 段(标识符口径,解析器 expectId);当前文件自身不候选(自导入
+//    = M3025 循环导入,永不成立)。只要求文件存在,不预解析(use 行合法性由 checker 验证)。
+function useCandidates(absFile) {
+  const out = [];
+  for (const name of Object.keys(STD_MODULES)) {
+    out.push({ name: `std.${name}`, kind: 9, detail: `std.${name}` });
+  }
+  let entries = null;
+  try { entries = nodeFs.readdirSync(nodePath.dirname(absFile), { withFileTypes: true }); } catch { entries = null; }
+  if (entries) {
+    const selfBase = nodePath.basename(absFile).replace(/\.ming$/i, '');
+    const locals = [];
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.ming')) continue;
+      const base = e.name.slice(0, -'.ming'.length);
+      if (base === selfBase || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(base)) continue;
+      locals.push({ name: base, kind: 9, detail: `本地模块 ${e.name}` });
+    }
+    // readdir 枚举序由文件系统决定(NTFS/ext4 不同)——按名排序保证跨平台补全顺序确定。
+    locals.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const c of locals) out.push(c);
+  }
+  return out;
+}
+
 // ---- 上下文构造 ----
 
 function makeContext(file, src, program) {
@@ -579,9 +617,19 @@ function completionFor(file, src, line0, col0) {
   attachDocs(parsed.program.items, parsed.comments ?? []);
   const ctx = makeContext(file, src, parsed.program);
 
+  // v0.80(切片②):use 关键字上下文(use 之后、路径首段或其前缀)——此前该上下文回落
+  // 通用列表,关键字/内置/局部绑定在 use 行都是错补;现只给模块入口面(std.X 全名 +
+  // 本地同目录模块名)。memberM 优先:`use std.s` 类以成员路径走既有 std 模块成员补全,
+  // 不受本分支影响;解析仍经 parseForCompletion 门(占位修复把 `use st` 补成 `use st;`),
+  // 不可修复 → null(与既有保守口径一致)。别名段(`use geom as `)不匹配本形态 → 保持
+  // 通用列表(别名补全不在本切片范围)。
+  const useCtxM = memberM ? null : /^[ \t]*use[ \t]+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before);
+
   let list;
   if (memberM) {
     list = membersOfBase(memberM[1], ctx, line0, col0);
+  } else if (useCtxM) {
+    list = useCandidates(ctx.absFile);
   } else {
     list = [];
     // 局部绑定(Variable;self 略过——上下文里很少需要,且容易与关键字混淆)

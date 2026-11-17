@@ -13239,11 +13239,18 @@ fn main() with io, fs {
   // 对 M3001 维持零 fix 逐字锁定;e14 的 fix 字段仅允许出现且必须出现在 M3002 let 标注位
   // (replacement 恰 "str = ",硬锚点)。e13/e16/e06/e04 无 let/const 标注位真实根因,
   // 全诊断零 fix 口径不变。
-  check('v70.8:f01–f05 探针回归——五形态 M3001/毒化级联零 fix 字段(旧误导处方无应用面);e14 另允许且仅允许 M3002 let 标注位处方(replacement 恰 "str = ",v0.76 扩面重校准)',
+  // v0.80 重校准(v0.76 同型理由化):e14 语料 `let c = 1; c = 2;` 是**真实根因**非 mut
+  // 赋值位(声明与赋值同函数的简单 let,非形参/捕获/解构),v0.80 M3004 fix 扩面在其上
+  // 发射"声明处补 mut"处方(zero-width 插入 'mut ',应用后该根因消除——v44 纪律同判;
+  // §84.5 形状/§84.11 f-probe 机器证明)。M3001 零 fix 维持;e14 的 fix 字段允许 M3002
+  // let 标注位('str = ')与 M3004 mut 插入位('mut ')各恰一处。e13/e16/e06/e04 无此两类
+  // 真实根因(e06 的 lenth 与 str 方法表无 ≤2 近名),全诊断零 fix 口径不变。
+  check('v70.8:f01–f05 探针回归——五形态 M3001/毒化级联零 fix 字段(旧误导处方无应用面);e14 另允许 M3002 let 标注位(replacement 恰 "str = ")与 M3004 mut 插入位(replacement 恰 "mut ",v0.80 扩面重校准)两处方',
     noFix70(r13) && noFix70(r16) && noFix70(r06) && noFix70(r04)
       && !!r14.j && r14.j.diagnostics.every((d) => d.code !== 'M3001' || d.fix === undefined)
-      && r14.j.diagnostics.filter((d) => d.fix).every((d) => d.code === 'M3002' && d.fix.replacement === 'str = ')
-      && r14.j.diagnostics.some((d) => d.code === 'M3002' && d.fix),
+      && r14.j.diagnostics.filter((d) => d.fix).every((d) => (d.code === 'M3002' && d.fix.replacement === 'str = ') || (d.code === 'M3004' && d.fix.replacement === 'mut '))
+      && r14.j.diagnostics.some((d) => d.code === 'M3002' && d.fix)
+      && r14.j.diagnostics.some((d) => d.code === 'M3004' && d.fix),
     `e13=${codes70(r13)} e16=${codes70(r16)} e06=${codes70(r06)} e14=${codes70(r14)} e04=${codes70(r04)}`);
 
   // v70.9 REPL #60(方案 a,plan §4.6.4/§4.7.2 定案):let 行执行成功后回显"仅当前输入生效"
@@ -17906,6 +17913,488 @@ fn main() with io, fs {
         && r5.stdout.includes('改写不可达'),
       `code=${r5.code} out=${JSON.stringify(r5.stdout.slice(0,200))}`);
   // ---- §82-END
+}
+
+// ===================== 84. v0.80:fix 结构化处方扩面(AI 协作面第二波)=====================
+// 文件所有权:§84 = 本区全部用例。v0.80 fix 结构化处方扩面(AI 协作面第二波,plan §4.12.5):
+// 既有 4 族(M2002/M3029/M3001/M3002)之外,按快照(docs/ai-loop-snapshot.md)数据驱动新增
+// 5 个高频 fix 族——M3015(方法名 nearest 改写,v0.67 切口 3 消息建议的结构化同源)/
+// M3006(Json 点字段 → x.get("f"),快照 e15 serve 载荷高频缺口)/M3004(声明处补 mut,
+// 快照 e09)/M3008(str 拼接标量包 str(...))/M3012(插值包 debug(...),快照 e19 hint 的
+// 机械形态)。纪律(v44 先例):应用处方后必消除该错误——每族带 f-probe(程序化应用 →
+// 复检 0 error,快照 §0.6 方法学);守卫排除面负例宁缺毋滥(v0.76 两 MAJOR 先例——误伤面
+// 是最大风险);既有 4 族 fix 形状逐字零回归锚点;无 fix 诊断席位不变。协议 additive:
+// fix 对象 schema 与 v0.44 完全同形({start,end,replacement}),零新诊断码,零消息文案改动。
+{
+  const dir84 = path.join(TMP, 'v84');
+  fs.mkdirSync(dir84, { recursive: true });
+  const m84 = (name, src) => { const f = path.join(dir84, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const j84 = (p) => { const r = runMing(['check', p, '--json']); try { return { r, j: JSON.parse(r.stdout) }; } catch { return { r, j: null }; } };
+  const find84 = (j, code) => (j?.diagnostics ?? []).find(d => d.code === code);
+  // fix 形状规范化(键序归一后逐字比较)——shape84 与既有 toJson 序列化键序一致
+  const shape84 = (d) => d && d.fix ? JSON.stringify({ start: d.fix.start, end: d.fix.end, replacement: d.fix.replacement }) : 'null';
+  // f-probe(快照 §0.6 方法学):fix 处方程序化应用到语料(机械改写,不手抄)→ 复检,
+  // 断言 0 error——"应用处方后必消除该错误"的机器证明。
+  const applyFix84 = (src, fix) => {
+    const lines = src.split('\n');
+    const off = (p) => { let o = 0; for (let i = 0; i < p.line - 1; i++) o += lines[i].length + 1; return o + p.col - 1; };
+    return src.slice(0, off(fix.start)) + fix.replacement + src.slice(off(fix.end));
+  };
+  const probe84 = (key, code, src) => {
+    const f = m84(key + '.ming', src);
+    const { j } = j84(f);
+    const d = (j?.diagnostics ?? []).find(x => x.code === code && x.fix);
+    if (!d) return { ok: false, why: '未找到带 fix 的 ' + code + ' codes=' + JSON.stringify((j?.diagnostics ?? []).map(x => x.code)) };
+    const f2 = m84(key + '-fixed.ming', applyFix84(src, d.fix));
+    const { j: j2 } = j84(f2);
+    const errs = (j2?.diagnostics ?? []).filter(x => x.severity === 'error');
+    return { ok: j2?.ok === true && errs.length === 0, why: `recheck ok=${j2?.ok} errs=${errs.map(e => e.code + '@' + e.line).join(',') || 'CLEAN'}` };
+  };
+
+  // 语料(五族正例)
+  const c8415 = ['fn main() -> i64 with io {', '    let v: Vec[i64] = [1, 2];', '    let n = v.lenx();', '    print(str(n));', '    return 0;', '}', ''].join('\n');
+  const c8415s = ['fn main() -> i64 with io {', '    let s = "abc";', '    let _ = s.to_uppr();', '    return 0;', '}', ''].join('\n');
+  const c84imp = ['struct Greet { name: str }', 'trait Desc { fn describe(self) -> str; }', 'impl Desc for Greet { fn describe(self) -> str { return self.name; } }', 'fn main() -> i64 {', '    let g = Greet { name: "a" };', '    let _ = g.describ();', '    return 0;', '}', ''].join('\n');
+  const c8406 = ['fn main() -> i64 {', '    let r = std.json.parse("{}");', '    let p = r.unwrap();', '    let v = p.name;', '    if v.is_some() { return 1; }', '    return 0;', '}', ''].join('\n');
+  const c8404 = ['fn main() -> i64 {', '    let x = 1;', '    x = 2;', '    return x;', '}', ''].join('\n');
+  const c8408 = ['fn main() -> i64 with io {', '    let n = 42;', '    print("n=" + n);', '    return 0;', '}', ''].join('\n');
+  const c84lit = ['fn main() -> i64 with io {', '    let a = "a" + 42;', '    let b = "b" + true;', '    let c = "c" + 1.5;', '    return 0;', '}', ''].join('\n');
+  const c8412 = ['fn main() -> i64 with io {', '    let items: Vec[i64] = [1, 2];', '    print("items=\\{items}");', '    return 0;', '}', ''].join('\n');
+
+  // ---- v84.1–v84.3 M3015 nearest fix(候选取自接收者真实方法集;消息 suffix 与 fix 同源)----
+  {
+    const { j } = j84(m84('v84_15vec.ming', c8415));
+    const d = find84(j, 'M3015');
+    check('v84.1:M3015 Vec nearest fix——lenx→len(替换域=方法名 token;消息含同源 suffix";最接近的方法是 \"len\"")',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":3,"col":15},"end":{"line":3,"col":19},"replacement":"len"}'
+        && d.message.endsWith(';最接近的方法是 "len"'),
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const { j } = j84(m84('v84_15str.ming', c8415s));
+    const d = find84(j, 'M3015');
+    check('v84.2:M3015 str nearest fix——to_uppr→to_upper(替换域=方法名 token,col 15–22)',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":3,"col":15},"end":{"line":3,"col":22},"replacement":"to_upper"}',
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const { j } = j84(m84('v84_15impl.ming', c84imp));
+    const d = find84(j, 'M3015');
+    check('v84.3:M3015 用户类型 nearest fix——候选取自 impl 方法集(describ→describe),非全局名字表(内置构造器不在方法表,结构性不可能命中)',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":6,"col":15},"end":{"line":6,"col":22},"replacement":"describe"}'
+        && d.message.endsWith(';最接近的方法是 "describe"'),
+      `diag=${JSON.stringify(d)}`);
+  }
+
+  // ---- v84.4–v84.8 M3006/M3004/M3008/M3012 正例(fix 形状)----
+  {
+    const { j } = j84(m84('v84_06json.ming', c8406));
+    const d = find84(j, 'M3006');
+    check('v84.4:M3006 Json 点字段 fix——p.name → p.get("name")(替换域=字段名 token;接收者 Json + 字段名简单标识符)',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":4,"col":15},"end":{"line":4,"col":19},"replacement":"get(\\"name\\")"}',
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const { j } = j84(m84('v84_04mut.ming', c8404));
+    const d = find84(j, 'M3004');
+    check('v84.5:M3004 mut 插入 fix——零宽插入(start==end=声明绑定名 2:9),替换域不吞原文',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":2,"col":9},"end":{"line":2,"col":9},"replacement":"mut "}',
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const { j } = j84(m84('v84_08id.ming', c8408));
+    const d = find84(j, 'M3008');
+    check('v84.6:M3008 str 拼接 fix——非 str 标量(标识符 i64)包 str(n)(替换域=操作数 3:18–19)',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":3,"col":18},"end":{"line":3,"col":19},"replacement":"str(n)"}',
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const f = m84('v84_08lit.ming', c84lit);
+    const { j } = j84(f);
+    const ds = (j?.diagnostics ?? []).filter(d => d.code === 'M3008');
+    check('v84.7:M3008 str 拼接字面量 fix——整型/布尔/浮点三形态各包 str(42)/str(true)/str(1.5)',
+      ds.length === 3 && ds.every(d => d.fix != null)
+        && ds[0].fix.replacement === 'str(42)' && ds[0].fix.start.line === 2
+        && ds[1].fix.replacement === 'str(true)' && ds[1].fix.start.line === 3
+        && ds[2].fix.replacement === 'str(1.5)' && ds[2].fix.start.line === 4,
+      `diags=${JSON.stringify(ds.map(d => ({ line: d.line, fix: d.fix })))}`);
+  }
+  {
+    const { j } = j84(m84('v84_12dbg.ming', c8412));
+    const d = find84(j, 'M3012');
+    check('v84.8:M3012 插值 debug 包装 fix——items → debug(items)(替换域=插值表达式 3:20–25)',
+      !!d && d.fix != null && shape84(d) === '{"start":{"line":3,"col":20},"end":{"line":3,"col":25},"replacement":"debug(items)"}',
+      `diag=${JSON.stringify(d)}`);
+  }
+
+  // ---- v84.9–v84.13 f-probe(应用处方后必消除——五族各 1 条机器证明)----
+  {
+    const p = probe84('v84p15', 'M3015', c8415);
+    check('v84.9:f-probe M3015——lenx→len 应用后复检 0 error', p.ok, p.why);
+  }
+  {
+    const p = probe84('v84p06', 'M3006', c8406);
+    check('v84.10:f-probe M3006——p.name→p.get("name") 应用后复检 0 error(毒化级联一并消除)', p.ok, p.why);
+  }
+  {
+    const p = probe84('v84p04', 'M3004', c8404);
+    check('v84.11:f-probe M3004——声明处补 mut 应用后复检 0 error', p.ok, p.why);
+  }
+  {
+    const p = probe84('v84p08', 'M3008', c8408);
+    check('v84.12:f-probe M3008——"n="+n → "n="+str(n) 应用后复检 0 error', p.ok, p.why);
+  }
+  {
+    const p = probe84('v84p12', 'M3012', c8412);
+    check('v84.13:f-probe M3012——\\{items} → \\{debug(items)} 应用后复检 0 error', p.ok, p.why);
+  }
+
+  // ---- v84.14–v84.19 守卫排除面负例(宁缺毋滥——误伤面是最大风险)----
+  {
+    const { j: jv } = j84(m84('v84n_vec.ming', ['fn main() -> i64 with io {', '    let v: Vec[i64] = [1];', '    let _ = "a" + v;', '    return 0;', '}', ''].join('\n')));
+    const { j: jj } = j84(m84('v84n_json.ming', ['fn main() -> i64 {', '    let j = std.json.parse("{}").unwrap();', '    let _ = "a" + j;', '    return 0;', '}', ''].join('\n')));
+    const dv = find84(jv, 'M3008'), dj = find84(jj, 'M3008');
+    check('v84.14:M3008 负例——非 ToStr 类型(Vec/Json)不发 fix(包 str(...) 必产生新 M3002,违反"应用后必消除")',
+      !!dv && dv.fix == null && !!dj && dj.fix == null,
+      `vec=${JSON.stringify(dv?.fix)} json=${JSON.stringify(dj?.fix)}`);
+  }
+  {
+    const { j } = j84(m84('v84n_untr.ming', ['fn main() -> i64 with io {', '    let u = std.io.read_line();', '    let _ = u + 42;', '    return 0;', '}', ''].join('\n')));
+    const d = find84(j, 'M3008');
+    check('v84.15:M3008 负例——任一侧含 Untrusted 不发 fix(str(u) 是洗白通道 M3049,污值禁入)',
+      !!d && d.fix == null && !find84(j, 'M3029'),
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const { j: jp } = j84(m84('v84n_param.ming', ['fn f(x: i64) -> i64 {', '    x = 2;', '    return x;', '}', 'fn main() -> i64 { return f(1); }', ''].join('\n')));
+    const { j: jl } = j84(m84('v84n_lcap.ming', ['fn main() -> i64 {', '    let x = 1;', '    let g = () => { x = 2; return x; };', '    return g();', '}', ''].join('\n')));
+    const dp = find84(jp, 'M3004'), dl = find84(jl, 'M3004');
+    check('v84.16:M3004 负例——形参赋值/lambda 捕获外层变量不发 fix(声明与赋值跨函数边界,fnId 判定)',
+      !!dp && dp.fix == null && !!dl && dl.fix == null,
+      `param=${JSON.stringify(dp?.fix)} lambda=${JSON.stringify(dl?.fix)}`);
+  }
+  {
+    const { j } = j84(m84('v84n_near.ming', ['fn main() -> i64 {', '    let v: Vec[i64] = [1];', '    let _ = v.zzzzzz();', '    return 0;', '}', ''].join('\n')));
+    const d = find84(j, 'M3015');
+    check('v84.17:M3015 负例——nearest 距离 >2 无建议:消息无";最接近的方法是"后缀且不发 fix(方法表候选不含内置构造器,结构性排除)',
+      !!d && d.fix == null && !d.message.includes(';最接近的方法是'),
+      `diag=${JSON.stringify(d)}`);
+  }
+  {
+    const { j: js } = j84(m84('v84n_struct.ming', ['struct Point { x: i64, y: i64 }', 'fn main() -> i64 {', '    let p = Point { x: 1, y: 2 };', '    let _ = p.z;', '    return 0;', '}', ''].join('\n')));
+    const { j: jt } = j84(m84('v84n_str.ming', ['fn main() -> i64 {', '    let s = "abc";', '    let _ = s.foo;', '    return 0;', '}', ''].join('\n')));
+    const ds = find84(js, 'M3006'), dt = find84(jt, 'M3006');
+    check('v84.18:M3006 负例——接收者非 Json(结构体缺字段无机械改名/str 无字段)不发 fix',
+      !!ds && ds.fix == null && !!dt && dt.fix == null,
+      `struct=${JSON.stringify(ds?.fix)} str=${JSON.stringify(dt?.fix)}`);
+  }
+  {
+    const { j: jf } = j84(m84('v84n_fn.ming', ['fn main() -> i64 with io {', '    let f = (a: i64) => a + 1;', '    print("\\{f}");', '    return 0;', '}', ''].join('\n')));
+    const { j: ju } = j84(m84('v84n_unres.ming', ['fn main() -> i64 with io {', '    print("\\{nope}");', '    return 0;', '}', ''].join('\n')));
+    const df = find84(jf, 'M3012'), du = find84(ju, 'M3012');
+    check('v84.19:M3012 负例——函数值插值(debug 拒绝 fn)与根因未解析名(debug(同名) 仍错)不发 fix',
+      !!df && df.fix == null && !!du && du.fix == null && !!find84(ju, 'M3001'),
+      `fn=${JSON.stringify(df?.fix)} unres=${JSON.stringify(du?.fix)}`);
+  }
+
+  // ---- v84.20–v84.22 零回归锚点(既有 4 族 fix 形状逐字不变 + 无 fix 席位不变)----
+  {
+    const f1 = m84('v84r_2002.ming', ['fn main() with io {', '    let x = 1', '    print(str(x));', '}', ''].join('\n'));
+    const f2 = m84('v84r_3029.ming', ['fn f() {', '    print("hi");', '}', 'fn main() with io { f(); }', ''].join('\n'));
+    const f3 = m84('v84r_3001.ming', ['fn main() with io {', '    let total = 1;', '    print(str(totl));', '}', ''].join('\n'));
+    const f4 = m84('v84r_3002.ming', ['fn main() {', '    let x: i64 = "s";', '}', ''].join('\n'));
+    const j1 = j84(f1).j, j2 = j84(f2).j, j3 = j84(f3).j, j4 = j84(f4).j;
+    const d2002 = find84(j1, 'M2002'), d3029 = find84(j2, 'M3029'), d3001 = find84(j3, 'M3001'), d3002 = find84(j4, 'M3002');
+    const w3101 = find84(j4, 'W3101');
+    check('v84.20:零回归锚点——既有 4 族 fix 形状逐字不变(M2002 插入";"/M3029 补" with io "/M3001 名字替换/M3002 标注改写)',
+      d2002 != null && d2002.fix != null && shape84(d2002) === '{"start":{"line":3,"col":5},"end":{"line":3,"col":5},"replacement":";"}'
+        && d3029 != null && d3029.fix != null && shape84(d3029) === '{"start":{"line":1,"col":8},"end":{"line":1,"col":8},"replacement":" with io "}'
+        && d3001 != null && d3001.fix != null && shape84(d3001) === '{"start":{"line":3,"col":15},"end":{"line":3,"col":19},"replacement":"total"}'
+        && d3002 != null && d3002.fix != null && shape84(d3002) === '{"start":{"line":2,"col":12},"end":{"line":2,"col":18},"replacement":"str = "}',
+      `M2002=${shape84(d2002)} M3029=${shape84(d3029)} M3001=${shape84(d3001)} M3002=${shape84(d3002)}`);
+    check('v84.21:零回归锚点——无 fix 旗标诊断席位不变(W3101 未使用变量无 fix 键)',
+      w3101 != null && w3101.fix == null,
+      `W3101=${JSON.stringify(w3101?.fix)}`);
+  }
+  {
+    const { j } = j84(m84('v84n_3013.ming', ['fn main() -> i64 {', '    let a: i32 = 1;', '    let b: i64 = 2;', '    let _c = a + b;', '    return 0;', '}', ''].join('\n')));
+    const d = find84(j, 'M3013');
+    check('v84.22:零回归锚点——M3013(新 5 族守卫域之外)维持无 fix',
+      !!d && d.fix == null,
+      `diag=${JSON.stringify(d?.fix)}`);
+  }
+  // ---- v84.23–v84.25 守卫排除面负例补全(独立审查 MINOR-2:循环绑定、Json 赋值位、
+  //      Ptr 插值——合同禁面的测试锚定;while-let 与 for 绑定同走 checkPattern 默认参
+  //      letFix=false,取语法确定的 for 形态锚定)----
+  {
+    const { j } = j84(m84('v84n_forbind.ming', ['fn main() -> i64 {', '    let v: Vec[i64] = [1, 2];', '    for x in v {', '        x = 5;', '    }', '    return 0;', '}', ''].join('\n')));
+    const d = find84(j, 'M3004');
+    check('v84.23:M3004 负例——for-in 循环变量重赋值不发 fix(循环绑定非 let 声明,mut 关键字无处可插)',
+      !!d && d.fix == null,
+      `diag=${JSON.stringify(d?.fix)}`);
+  }
+  {
+    const { j } = j84(m84('v84n_jassign.ming', ['fn main() -> i64 {', '    let j = std.json.parse("{}").unwrap();', '    j.name = 1;', '    return 0;', '}', ''].join('\n')));
+    const d = find84(j, 'M3006');
+    check('v84.24:M3006 负例——Json 字段赋值位(独立消息路径)不发 fix(get("f") 是读投影,对赋值位不成立)',
+      !!d && d.fix == null,
+      `diag=${JSON.stringify(d?.fix)}`);
+  }
+  {
+    const { j } = j84(m84('v84n_ptr.ming', ['fn f(p: Ptr[u8]) -> i64 with unsafe {', '    let s = "x\\{p}";', '    return 0;', '}', 'fn main() -> i64 { return 0; }', ''].join('\n')));
+    const d = find84(j, 'M3012');
+    check('v84.25:M3012 负例——Ptr 插值不发 fix(debug 拒绝 Ptr,包 debug(...) 必产生新错误)',
+      !!d && d.fix == null,
+      `diag=${JSON.stringify(d?.fix)}`);
+  }
+  {
+    // v0.80 审查 MAJOR-1 锁定:整值浮点 String() 渲染无小数点,替换文本必须补 ".0"——
+    // 否则 str(100) 输出 "100" 与源程序 "100.0" 值不等价。替换文本 + 应用后复检双锚定。
+    const src = ['fn main() -> i64 with io {', '    let _ = "c" + 100.0;', '    return 0;', '}', ''].join('\n');
+    const f = m84('v84f_intfloat.ming', src);
+    const { j } = j84(f);
+    const d = find84(j, 'M3008');
+    const f2 = m84('v84f_intfloat-fixed.ming', applyFix84(src, d.fix));
+    const { j: j2 } = j84(f2);
+    check('v84.26:M3008 整值浮点——替换文本 str(100.0) 值忠实(非 str(100))+f-probe 应用后 0 error',
+      !!d && d.fix != null && d.fix.replacement === 'str(100.0)' && j2?.ok === true,
+      `fix=${JSON.stringify(d?.fix)} re_ok=${j2?.ok} re_diag=${JSON.stringify((j2?.diagnostics ?? []).map((x) => x.code))}`);
+  }
+  // ---- §84-END
+}
+
+// ===================== 85. v0.80:LSP 多文件符号补全第一切片 =====================
+// 文件所有权:§85 = 本区全部用例。实现面仅 src/lsp.js(补全面 additive,既有单文件路径逐字未动)。
+// 切片三件(架构师合同 plan §4.12.5;保守原则:宁可空列表不可错补;check-ID 前缀 v85.*——
+// §83 号与 v83 前缀已被 xnsni/xnopen 工具提交占用,避让):
+//   ① 本地 use 导入成员补全(v0.58 既有 machinery:membersOfBase/useImportsOf/parseModuleFile
+//     ——本切片补测 as 别名正例 + 保守负例锚定)——`use geom as g;` 后 `g.` 列目标文件顶层
+//     pub 项(fn/struct/enum/const + 签名摘要);trait 不能 pub(语法面:`pub` 后只允许
+//     fn/struct/enum/const,M2002)→ 与 checker 口径一致不出现在跨模块成员列表(如实锁定);
+//     目标缺失/解析失败 → 空列表不崩(不 null、不猜)。
+//   ② `use ` 关键字上下文(本版新收口)——此前该上下文回落通用列表(关键字/内置在 use 行是
+//     错补);现只给 std.X 全名(STD_MODULES)+ 本地同目录 .ming 模块名(checker.load 同口径)。
+//     裸 'std' 不给(`use std;` = M3022)、裸模块名不给(单段按本地文件解析);目录不可枚举
+//     → 仅 std 面;自文件名不候选(自导入 = M3025 循环);子目录首段不列(下一跳 `D.` 无成员
+//     支撑,登记不预支)。
+//   ③ std 模块成员补全 as 别名走通(v0.58 既有面补测):`use std.str as s;` → `s.` =
+//     std.str 函数集;裸 bind 形态 `use std.str;` → `str.` 同列表。
+//   另:§62 既有补全形态四类各抽 1 条重断言(单文件零回归锚)+ 管道协议抽查(UTF-8 字节分帧)。
+{
+  const dir85 = path.join(TMP, 'v85');
+  fs.mkdirSync(dir85, { recursive: true });
+  const mk85 = (name, src) => { const f = path.join(dir85, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const labels85 = (r) => (r === null || r === undefined ? null : r.items.map((i) => i.label));
+  const kinds85 = (r) => (r === null ? null : r.items.map((i) => i.kind));
+  const details85 = (r) => (r === null ? null : r.items.map((i) => i.detail));
+  const uri85 = (p) => 'file:///' + p.split(path.sep).join('/');
+  // 管道会话(§62 同款字节分帧,本区自持副本:§62 助手在其块作用域内)
+  const frame85 = (m) => { const b = JSON.stringify(m); return `Content-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`; };
+  const parse85 = (out) => {
+    const responses = [];
+    let buf = Buffer.from(out, 'utf8');
+    for (;;) {
+      const sep = buf.indexOf('\r\n\r\n');
+      if (sep === -1) break;
+      const head = buf.slice(0, sep).toString('utf8');
+      const m = head.match(/Content-Length:\s*(\d+)/i);
+      if (!m) { buf = buf.slice(sep + 4); continue; }
+      const len = Number(m[1]);
+      if (buf.length < sep + 4 + len) break;
+      try { responses.push(JSON.parse(buf.slice(sep + 4, sep + 4 + len).toString('utf8'))); } catch { /* 坏体不计数 */ }
+      buf = buf.slice(sep + 4 + len);
+    }
+    return responses;
+  };
+
+  // 公用夹具:被 use 的目标模块(pub fn/struct/enum/const + 非 pub trait 与 fn)
+  mk85('geom.ming', [
+    'pub fn add(a: i64, b: i64) -> i64 { return a + b; }',
+    'pub struct Pt { x: i64, y: i64 }',
+    'pub enum Shape { Circle, Square }',
+    'pub const MAX: i64 = 100;',
+    'trait Drawable { fn draw(self) -> i64; }',
+    'fn hidden() -> i64 { return 0; }',
+    '',
+  ].join('\n'));
+  mk85('brokenmod.ming', 'fn f( {\n'); // 解析失败的目标(切片①负例)
+
+  // ---- v85.1(切片① 正例):`use geom as g;` 后 `g.` → 目标文件顶层 pub 项全列(签名摘要)----
+  {
+    const p = mk85('a85_alias.ming', 'use geom as g;\nfn main() {\n  let x = g.\n}\n');
+    const r = completionFor(p, fs.readFileSync(p, 'utf8'), 2, 12);
+    check('v85.1:mf_alias_members —— `g.`(as 别名)→ add/Pt/Shape/MAX 恰四项(kinds 3/22/13/21 + 签名摘要);非 pub 的 hidden 与 trait Drawable 不列,局部变量不混入',
+      r !== null && JSON.stringify(labels85(r)) === JSON.stringify(['add', 'Pt', 'Shape', 'MAX'])
+      && JSON.stringify(kinds85(r)) === JSON.stringify([3, 22, 13, 21])
+      && JSON.stringify(details85(r)) === JSON.stringify([
+        'fn add(a: i64, b: i64) -> i64', 'struct Pt { x: i64, y: i64 }',
+        'enum Shape { Circle, Square }', 'const MAX: i64',
+      ]),
+      `r=${JSON.stringify(r)}`);
+  }
+
+  // ---- v85.2(切片① 前缀过滤):`g.a` → [add](穿透 as 别名)----
+  {
+    const p = mk85('a85_prefix.ming', 'use geom as g;\nfn main() {\n  let y = g.a\n}\n');
+    const r = completionFor(p, fs.readFileSync(p, 'utf8'), 2, 13);
+    check('v85.2:mf_alias_prefix —— `g.a` → [add](前缀过滤穿透 as 别名)',
+      r !== null && JSON.stringify(labels85(r)) === JSON.stringify(['add']),
+      `r=${JSON.stringify(r)}`);
+  }
+
+  // ---- v85.3(切片① 负例):目标解析失败 / 不存在 → 空列表不崩(不 null、不猜)----
+  {
+    const p1 = mk85('a85_neg1.ming', 'use brokenmod as bm;\nfn main() {\n  let a = bm.\n}\n');
+    const r1 = completionFor(p1, fs.readFileSync(p1, 'utf8'), 2, 14);
+    const p2 = mk85('a85_neg2.ming', 'use nothere as m2;\nfn main() {\n  let b = m2.\n}\n');
+    const r2 = completionFor(p2, fs.readFileSync(p2, 'utf8'), 2, 15);
+    check('v85.3:mf_neg_broken_missing —— brokenmod(语法坏)→ [];nothere(不存在)→ [];均 isIncomplete:false 空列表不崩',
+      r1 !== null && r1.isIncomplete === false && Array.isArray(r1.items) && r1.items.length === 0
+      && r2 !== null && r2.isIncomplete === false && Array.isArray(r2.items) && r2.items.length === 0,
+      `broken=${JSON.stringify(r1)} missing=${JSON.stringify(r2)}`);
+  }
+
+  // ---- v85.4(切片① 失效绑定):目标文件删除前可补、删除后 → [];通用列表不含失效绑定 ----
+  {
+    mk85('gone.ming', 'pub fn ghost() -> i64 { return 0; }\n');
+    const p = mk85('a85_gone.ming', 'use gone;\nfn main() {\n  gone.\n}\n');
+    const src = fs.readFileSync(p, 'utf8');
+    const rActive = completionFor(p, src, 2, 7);
+    fs.unlinkSync(path.join(dir85, 'gone.ming'));
+    const rStale = completionFor(p, src, 2, 7);
+    // 通用空前缀用完整可解析源(失效绑定断言不依赖占位修复)
+    const pGen = mk85('a85_gonegen.ming', 'use gone;\nfn main() {\n  \n}\n');
+    const rGeneric = completionFor(pGen, fs.readFileSync(pGen, 'utf8'), 2, 2);
+    check('v85.4:mf_stale_binding —— gone.ming 在盘 → [ghost];删除后 → [];通用列表不含 gone(无失效绑定)',
+      rActive !== null && JSON.stringify(labels85(rActive)) === JSON.stringify(['ghost'])
+      && rStale !== null && rStale.isIncomplete === false && rStale.items.length === 0
+      && rGeneric !== null && !labels85(rGeneric).includes('gone'),
+      `active=${JSON.stringify(labels85(rActive))} stale=${JSON.stringify(rStale)} generic=${JSON.stringify(rGeneric && labels85(rGeneric).includes('gone'))}`);
+  }
+
+  // ---- v85.5(切片② 正例):`use ` → std.X 全名 + 本地同目录模块名;错补面收口 ----
+  {
+    const up = path.join(dir85, 'useproj');
+    fs.mkdirSync(path.join(up, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(up, 'geom.ming'), [
+      'pub fn add(a: i64, b: i64) -> i64 { return a + b; }',
+      'pub struct Pt { x: i64, y: i64 }',
+      'pub enum Shape { Circle, Square }',
+      'pub const MAX: i64 = 100;',
+      'trait Drawable { fn draw(self) -> i64; }',
+      'fn hidden() -> i64 { return 0; }',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(up, 'sub', 'inner.ming'), 'pub fn deep() -> i64 { return 1; }\n', 'utf8');
+    const pUse = path.join(up, 'main.ming');
+    fs.writeFileSync(pUse, 'use \nuse geom as g;\nfn main() {\n}\n', 'utf8');
+    const r = completionFor(pUse, fs.readFileSync(pUse, 'utf8'), 0, 4);
+    check('v85.5:mf_use_context —— `use ` → std.X 全名 + 本地 geom(kind 全 9);无裸 std/自文件 main/子目录 sub/关键字/内置(错补面收口)',
+      r !== null
+      && labels85(r).includes('std.str') && labels85(r).includes('std.math') && labels85(r).includes('geom')
+      && kinds85(r).every((k) => k === 9)
+      && !labels85(r).includes('std') && !labels85(r).includes('main') && !labels85(r).includes('sub')
+      && !labels85(r).includes('let') && !labels85(r).includes('fn') && !labels85(r).includes('print'),
+      `n=${r && r.items.length} labels=${JSON.stringify(labels85(r))}`);
+  }
+
+  // ---- v85.6(切片② 前缀 + 保守回退):`use ge` → [geom];目录不可枚举 → 仅 std 面 ----
+  {
+    const up = path.join(dir85, 'useproj');
+    const pUse = path.join(up, 'main.ming');
+    const rGe = completionFor(pUse, 'use ge\nfn main() {\n}\n', 0, 6);
+    const pGhost = path.join(dir85, 'no-such-dir', 'ghost.ming'); // 目录不存在 → readdir 失败
+    const rGhost = completionFor(pGhost, 'use \nfn main() {\n}\n', 0, 4);
+    check('v85.6:mf_use_prefix_and_nodir —— `use ge` → [geom] 恰一项;目录不可枚举 → 仅 std 面(全 std.* 前缀,含 std.str,无本地/关键字)',
+      rGe !== null && JSON.stringify(labels85(rGe)) === JSON.stringify(['geom'])
+      && rGhost !== null && rGhost.items.length >= 15 && labels85(rGhost).every((l) => l.startsWith('std.'))
+      && labels85(rGhost).includes('std.str'),
+      `ge=${JSON.stringify(labels85(rGe))} ghost=${JSON.stringify(labels85(rGhost))}`);
+  }
+
+  // ---- v85.7(切片③):std 模块 as 别名成员补全走通;裸 bind 形态同列表 ----
+  {
+    const p1 = mk85('a85_stdalias.ming', 'use std.str as s;\nfn main() {\n  let j = s.\n}\n');
+    const r1 = completionFor(p1, fs.readFileSync(p1, 'utf8'), 2, 12);
+    const p2 = mk85('a85_stdbare.ming', 'use std.str;\nfn main() {\n  let k = str.\n}\n');
+    const r2 = completionFor(p2, fs.readFileSync(p2, 'utf8'), 2, 14);
+    check('v85.7:mf_std_alias —— `s.`(std.str as s)→ join/index_of(kind 3,detail std.str.*);`str.`(裸 bind)同列表',
+      r1 !== null && labels85(r1).includes('join') && labels85(r1).includes('index_of')
+      && kinds85(r1).every((k) => k === 3) && details85(r1).every((d) => typeof d === 'string' && d.startsWith('std.str.'))
+      && r2 !== null && JSON.stringify(labels85(r2)) === JSON.stringify(labels85(r1))
+      && JSON.stringify(kinds85(r2)) === JSON.stringify(kinds85(r1)),
+      `alias=${JSON.stringify(r1)} bare=${JSON.stringify(r2)}`);
+  }
+
+  // ---- v85.8(单文件零回归锚):§62 既有补全形态四类各抽 1 条逐字重断言 ----
+  {
+    mk85('helper.ming', [
+      'pub fn shout(s: str) -> str { return s + "!"; }',
+      'fn hidden() -> i64 { return 1; }',
+      'pub const LIMIT: i64 = 3;',
+      '',
+    ].join('\n'));
+    const pF = mk85('a85_reg_field.ming', [
+      'struct Point { x: i64, y: i64, }',
+      'trait Geo { fn len2(self) -> i64; }',
+      'impl Geo for Point { fn len2(self) -> i64 { return self.x * self.x + self.y * self.y; } }',
+      'fn main() with io {',
+      '  let p = Point { x: 1, y: 2 };',
+      '  p.',
+      '}',
+      '',
+    ].join('\n'));
+    const rF = completionFor(pF, fs.readFileSync(pF, 'utf8'), 5, 4);
+    const pH = mk85('a85_reg_helper.ming', ['use helper;', 'fn main() with io {', '  helper.', '}', ''].join('\n'));
+    const rH = completionFor(pH, fs.readFileSync(pH, 'utf8'), 2, 9);
+    const pO = mk85('a85_reg_prefix.ming', [
+      'struct Opt { v: i64, }',
+      'fn main() with io {',
+      '  let o2 = 1;',
+      '  o',
+      '}',
+      '',
+    ].join('\n'));
+    const rO = completionFor(pO, fs.readFileSync(pO, 'utf8'), 3, 3);
+    const pE = mk85('a85_reg_empty.ming', ['fn main() with io {', '  ', '}', ''].join('\n'));
+    const rE = completionFor(pE, fs.readFileSync(pE, 'utf8'), 1, 2);
+    check('v85.8:mf_singlefile_zero_reg —— 字段方法 `p.` = [x,y,len2](5/5/2);模块成员 `helper.` = [shout,LIMIT];标识符前缀 `o` = [o2];空前缀含 let/print/std',
+      rF !== null && JSON.stringify(labels85(rF)) === JSON.stringify(['x', 'y', 'len2']) && JSON.stringify(kinds85(rF)) === JSON.stringify([5, 5, 2])
+      && rH !== null && JSON.stringify(labels85(rH)) === JSON.stringify(['shout', 'LIMIT'])
+      && rO !== null && JSON.stringify(labels85(rO)) === JSON.stringify(['o2'])
+      && rE !== null && labels85(rE).includes('let') && labels85(rE).includes('print') && labels85(rE).includes('std'),
+      `field=${JSON.stringify(labels85(rF))} helper=${JSON.stringify(labels85(rH))} o=${JSON.stringify(labels85(rO))} empty=${rE && rE.items.length}`);
+  }
+
+  // ---- v85.9(管道协议抽查):多文件 stdio JSON-RPC 会话(Content-Length 按 UTF-8 字节分帧)----
+  {
+    const up = path.join(dir85, 'useproj');
+    const uriA = uri85(path.join(up, 'main.ming'));
+    const textA = '// 多文件补全(中文注释练 UTF-8 字节分帧)\nuse \nfn main() {\n}\n';
+    const uriB = uri85(path.join(up, 'b_alias.ming')); // 主文件本体不必在盘:成员补全只依赖目标 geom.ming 在盘
+    const textB = 'use geom as g;\nfn main() {\n  g.\n}\n';
+    const msgs = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri: uriA, languageId: 'ming', version: 1, text: textA } } },
+      { jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: { textDocument: { uri: uriA }, position: { line: 1, character: 4 } } },
+      { jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri: uriB, languageId: 'ming', version: 1, text: textB } } },
+      { jsonrpc: '2.0', id: 3, method: 'textDocument/completion', params: { textDocument: { uri: uriB }, position: { line: 2, character: 4 } } },
+      { jsonrpc: '2.0', id: 4, method: 'shutdown', params: null },
+      { jsonrpc: '2.0', method: 'exit', params: null },
+    ];
+    const r = runMing(['lsp'], { stdin: msgs.map(frame85).join('') });
+    const rs = parse85(r.stdout);
+    const byId = (i) => rs.find((x) => x.id === i);
+    const useLabels = (byId(2)?.result?.items ?? []).map((i) => i.label);
+    const gLabels = (byId(3)?.result?.items ?? []).map((i) => i.label);
+    check('v85.9:mf_pipe_session —— stdio 会话:`use ` 位置补全含 geom/std.str(无自文件 main);`g.` 位置补全含 add/Pt/Shape/MAX(无 hidden);exit 0',
+      r.code === 0
+      && useLabels.includes('geom') && useLabels.includes('std.str') && !useLabels.includes('main')
+      && gLabels.includes('add') && gLabels.includes('Pt') && gLabels.includes('Shape') && gLabels.includes('MAX')
+      && !gLabels.includes('hidden'),
+      `code=${r.code} ids=${JSON.stringify(rs.map((x) => x.id))} use=${JSON.stringify(useLabels)} g=${JSON.stringify(gLabels)}`);
+  }
+  // ---- §85-END
 }
 
 

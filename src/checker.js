@@ -238,6 +238,51 @@ function exprFirstSpan(e) {
   return e && e.span;
 }
 
+// v0.80(fix 结构化处方扩面):span 全域替换的 fix 构造——与既有 4 族(M2002/M3029/
+// M3001/M3002)的 fix 对象 schema 完全同形({start,end,replacement},additive 不改协议);
+// span 无效(无行号)返回 null,调用点放弃发射(宁缺毋滥)。end 退回口径与 M3001
+// cannotFindValue 的既有构造逐字一致。
+function spanFix(span, replacement) {
+  if (!span?.line) return null;
+  return {
+    start: { line: span.line, col: span.col },
+    end: { line: span.endLine ?? span.line, col: span.endCol ?? span.col },
+    replacement,
+  };
+}
+
+// v0.80:零宽插入的 fix 构造(start = end = span 起点,M2002/M3029 既有插入型处方同形:
+// 替换域不吞任何原文,只在锚点前插入文本)。M3004 的 "mut " 补声明用此形态——
+// 绑定名本身必须保留。
+function insertFix(span, replacement) {
+  if (!span?.line) return null;
+  const p = { line: span.line, col: span.col };
+  return { start: p, end: { ...p }, replacement };
+}
+
+// v0.80(M3008 str 拼接 fix):操作数文本的机械重建——仅值等价且必然合法的形态:
+// 标识符(逐字)/整数字面量(BigInt 十进制渲染,原为 0x 等进位时替换文本值不变)/
+// bool 字面量/浮点字面量(仅纯十进制形态——1e21 等指数渲染形态不确定词法可读性,
+// 一律放弃)。复杂表达式(二元/调用/字段链等)返回 null:包一层 str(...) 需"前后各一处
+// 插入",单连续替换域无法在不知源文本的前提下表达——宁缺毋滥。
+function simpleOperandText(node) {
+  if (!node) return null;
+  switch (node.nt) {
+    case 'Ident': return /^[A-Za-z_][A-Za-z0-9_]*$/.test(node.name) ? node.name : null;
+    case 'IntLit': return String(node.v);
+    case 'BoolLit': return node.v ? 'true' : 'false';
+    case 'FloatLit': {
+      const t = String(node.v);
+      if (!/^\d+(\.\d+)?$/.test(t)) return null;
+      // 整值浮点 String() 渲染无小数点(100.0 → "100")——替换文本必须补 ".0",否则
+      // 成为整型字面量,str() 按类型分派输出 "100",与源程序输出 "100.0" 值不等价
+      // (v0.80 审查 MAJOR-1)。
+      return t.includes('.') ? t : `${t}.0`;
+    }
+    default: return null;
+  }
+}
+
 // 判断类型是否可安全做 == (运行时结构相等)
 export function isComparable(t, binds) {
   t = resolveT(t, binds);
@@ -747,6 +792,10 @@ export class Checker {
     // 只读 AST 的静态遍历(摘要收集/契约静态证明/索引边界/测试字面量/serve 扫描/
     // const 交叉引用)跳过这些声明,防止根因报告后的二次裸崩(遍历器帧更轻但深度同量级)。
     this.depthBailed = new Set();
+    // v0.80(fix 结构化处方扩面):函数边界序号——ctx.fnId 在四个函数入口(checkFnBody/
+    // checkLocalFnBody/checkTest/checkLambda)各自递增,绑定记录随声明时 fnId 标记;
+    // M3004 的 mut 插入处方据此判定"声明与赋值同函数"(跨函数/lambda 捕获不发射)。
+    this.fnSeq = 0;
   }
 
   // v0.75:函数体级深度守卫网——从语句网(checkBlock/checkLet)逃逸的 M4005 bail
@@ -1682,6 +1731,7 @@ export class Checker {
       genericNames: new Set(entry.sig.tparams),
       effects: entry.sig.effects,
       genericBounds: new Map((entry.sig.bounds ?? []).map(b => [b.name, b.trait])),
+      fnId: ++this.fnSeq, // v0.80:M3004 mut 插入处方的同函数判定
     };
     // 契约检查(v0.45):纯表达式 + bool;ensures 中 result 绑定返回值
     if (d.requires) {
@@ -1761,6 +1811,7 @@ export class Checker {
       genericNames: new Set(d.tparams),
       effects: sig.effects,
       genericBounds: new Map(),
+      fnId: ++this.fnSeq, // v0.80:M3004 mut 插入处方的同函数判定(本地函数本就不捕获外层)
     };
     // 契约检查(v0.45 口径):纯表达式 + bool;ensures 中 result 绑定返回值
     if (d.requires) {
@@ -1800,7 +1851,7 @@ export class Checker {
   checkTest(entry, mod) {
     const scope = new Scope(null, mod);
     // 测试块允许全部效果(它们是验证脚手架;print 输出会被捕获)
-    const ctx = { mod, scope, fnRet: T_UNIT, inLoop: false, fnName: 'test ' + entry.decl.name, warnings: this.diags, genericNames: new Set(), effects: new Set(KNOWN_EFFECTS) };
+    const ctx = { mod, scope, fnRet: T_UNIT, inLoop: false, fnName: 'test ' + entry.decl.name, warnings: this.diags, genericNames: new Set(), effects: new Set(KNOWN_EFFECTS), fnId: ++this.fnSeq };
     this.checkBlock(entry.decl.body, ctx, null);
     scope.reportUnused(this.diags);
   }
@@ -2184,10 +2235,13 @@ export class Checker {
     // M3001-nearest 假 fix(r→str,f01 应用后更糟);毒化后真实根因唯一优先。
     const poison = initFailed && !declared;
     const patT = declared ?? initT ?? (poison ? T_NEVER : null);
-    this.checkPattern(s.pat, patT, ctx, s.span, false, s.mutable, poison);
+    this.checkPattern(s.pat, patT, ctx, s.span, false, s.mutable, poison, true);
   }
 
-  checkPattern(pat, t, ctx, span, refutableOk, forceMut = false, poison = false) {
+  // letFix:v0.80(M3004 mut 插入处方)——仅 checkLet 直连的简单 PIdent 绑定标记为
+  // "可机械补 mut"(绑定名前插 "mut ")。解构元素(PTuple 递归)/while-let/match/for
+  // 绑定不传——mut 是 let 级关键字,插进解构括号内是非法语法,while let 无 mut 子句。
+  checkPattern(pat, t, ctx, span, refutableOk, forceMut = false, poison = false, letFix = false) {
     // 把模式绑定写入 ctx.scope / ctx.bindings
     t = t ?? null;
     switch (pat.nt) {
@@ -2211,6 +2265,12 @@ export class Checker {
           if (poison && !bound.dup) {
             const rec = ctx.scope.lookupLocal(pat.name);
             if (rec) rec.poisoned = true;
+          }
+          // v0.80:M3004 mut 插入处方标记——绑定名 span + 声明时函数序号(赋值点以
+          // letFnId === ctx.fnId 判定同函数;形参 isParam / 捕获 / 跨函数天然不标记)。
+          if (letFix && !bound.dup && ctx.fnId != null) {
+            const rec = ctx.scope.lookupLocal(pat.name);
+            if (rec) { rec.letFixSpan = pat.span; rec.letFnId = ctx.fnId; }
           }
         }
         if (ctx.bindings) ctx.bindings.set(pat.name, t);
@@ -2304,7 +2364,21 @@ export class Checker {
           return mkFn(found.sig.params.map(p => p.type), found.sig.ret, new Set(found.sig.effects ?? []));
         }
         const v = found.v;
-        if (!v.mut) this.diags.push(err('M3004', `"${e.name}" 不是 mut,不能赋值`, e.span, '声明时写 let mut x = ...'));
+        if (!v.mut) {
+          const d = err('M3004', `"${e.name}" 不是 mut,不能赋值`, e.span, '声明时写 let mut x = ...');
+          // v0.80(fix 扩面):在声明的绑定名前插 "mut "。发射守卫(应用后必消除):
+          //   * letFixSpan 存在 = 简单 let 绑定(checkLet 直连 PIdent 才标记;解构元素/
+          //     while-let/match/for 绑定不标记——mut 是 let 级关键字,插进解构括号内是
+          //     非法语法,while let 无 mut 子句);
+          //   * letFnId === ctx.fnId = 声明与赋值同函数——形参(isParam,无标记)/lambda
+          //     捕获外层变量(lambda 体 fnId 已重置)/跨函数一律不给;
+          //   * 复合赋值(x += 1)同经 checkPlace,fix 同样适用。
+          if (v.letFixSpan?.line && v.letFnId === ctx.fnId) {
+            const fx = insertFix(v.letFixSpan, 'mut ');
+            if (fx) d.fix = fx;
+          }
+          this.diags.push(d);
+        }
         v.used = true;
         return v.type;
       }
@@ -2445,9 +2519,21 @@ export class Checker {
               // (根因未修时 debug(同名) 仍错,快照 e19/e16;:1957 污点分支先例同款
               // 抑制模式)——改发中性 hint。真类型错(名字已解析)保留现 hint。
               const rootName = probe.name || probe.poison;
-              this.diags.push(err('M3012', `插值 \\{...} 只支持 int/float/bool/str,实际是 ${typeStr(r)}`, p.expr.span,
+              const d = err('M3012', `插值 \\{...} 只支持 int/float/bool/str,实际是 ${typeStr(r)}`, p.expr.span,
                 rootName ? '请先修正该值的名称/类型错误(根因见同表达式的更早诊断)。'
-                         : '其他类型用 debug(x) 生成调试字符串,或为该类型实现 ToStr trait(fn to_str(self) -> str,见 GUIDE 泛型 impl 节)。'));
+                         : '其他类型用 debug(x) 生成调试字符串,或为该类型实现 ToStr trait(fn to_str(self) -> str,见 GUIDE 泛型 impl 节)。');
+              // v0.80(fix 扩面):包一层 debug(...)——既有 hint 的机械形态。守卫(应用后
+              // 必消除):根因非名字错(rootName 置位时 debug(同名) 仍错,与 hint 抑制同判);
+              // 表达式可机械重建(仅简单标识符——替换域 = 插值表达式 span,重建文本恰为
+              // 绑定名);debug 的 'any' 位拒绝面排除(fn 值/Ptr/含 Untrusted——后者是
+              // 洗白禁面 M3050;never/var 无法承诺消除);null 类型(子表达式已报根因)不给。
+              if (!rootName && r && p.expr.nt === 'Ident'
+                && r.k !== 'fn' && r.k !== 'ptr' && r.k !== 'never' && r.k !== 'var'
+                && !typeContainsUntrusted(r)) {
+                const fx = spanFix(p.expr.span, `debug(${p.expr.name})`);
+                if (fx) d.fix = fx;
+              }
+              this.diags.push(d);
             }
           }
         }
@@ -2710,7 +2796,17 @@ export class Checker {
       this.diags.push(err('M3018', `泛型参数 ${r.name} 上没有字段访问(v0.1 泛型是参数化的)`, e.span));
       return null;
     }
-    this.diags.push(err('M3006', `${typeStr(r)} 没有字段 "${e.name}"`, e.span));
+    const d = err('M3006', `${typeStr(r)} 没有字段 "${e.name}"`, e.span);
+    // v0.80(fix 扩面,快照 e15 高频缺口):Json 点字段访问 → x.get("f")。守卫(应用后
+    // 必消除):接收者静态类型 Json;字段名简单标识符(Json 键字面量无需转义);替换域 =
+    // 字段名 token(nameSpan)——".f" 变 ".get(\"f\")" 对任意接收者形态(链式/调用结果)
+    // 均成立。应用后为 Option[Json] 投影(Json.get 签名)。结构体缺字段(无机械改名)/
+    // 枚举(match 解构)/赋值位(checkPlace——Json 无字段写方法)不给。
+    if (r?.k === 'json' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(e.name)) {
+      const fx = spanFix(e.nameSpan, `get("${e.name}")`);
+      if (fx) d.fix = fx;
+    }
+    this.diags.push(d);
     return null;
   }
 
@@ -4914,8 +5010,17 @@ export class Checker {
         return sig.ret;
       }
       // v0.67(切口 3):用户类型在已 impl 的方法集内给 nearest 建议(无 impl → 无表,维持现状)
-      this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"${methodNearSuffix(name, impls ? [...impls.keys()] : null)}`, fieldCallee.span,
-        '用户类型的方法必须通过 trait impl 定义:trait T { fn m(self, ...) -> ...; } impl T for ' + r.name + ' { fn m(self, ...) -> ... { ... } }'));
+      // v0.80(fix 扩面):同一 nearest 结果结构化为 fix(替换方法名 token);候选取自
+      // 接收者真实 impl 方法集,非全局名字表——内置构造器 Ok/Err/Some/None 不在方法表
+      // 中,结构性不可能命中(v0.67 M3001 排除先例的同型保障)。
+      const mfU = methodNearFix(name, impls ? [...impls.keys()] : null);
+      const dU = err('M3015', `${typeStr(r)} 没有方法 ".${name}"${mfU.suffix}`, fieldCallee.span,
+        '用户类型的方法必须通过 trait impl 定义:trait T { fn m(self, ...) -> ...; } impl T for ' + r.name + ' { fn m(self, ...) -> ... { ... } }');
+      if (mfU.near) {
+        const fx = spanFix(fieldCallee.nameSpan, mfU.near);
+        if (fx) dU.fix = fx;
+      }
+      this.diags.push(dU);
       return null;
     }
     if (r.k === 'param') {
@@ -4945,7 +5050,14 @@ export class Checker {
     // v0.67(切口 3):通用接收者兜底——可达接收者(bool/tuple/range/json/never 等)在专用分发处
     // 已被拦截,兜底可达集无 METHOD_NAMES 对应键(审查 NOTE-2 口径修正),
     // nearest 结构性接线但当前恒为空表 → 消息不变(未来加表自动获得建议)。
-    this.diags.push(err('M3015', `${typeStr(r)} 没有方法 ".${name}"${methodNearSuffix(name, METHOD_NAMES[r.k])}`, fieldCallee.span));
+    // v0.80(fix 扩面):同款 methodNearFix——表空即无 near,fix 自然缺席(v0.67 现状不变)。
+    const mfG = methodNearFix(name, METHOD_NAMES[r.k]);
+    const dG = err('M3015', `${typeStr(r)} 没有方法 ".${name}"${mfG.suffix}`, fieldCallee.span);
+    if (mfG.near) {
+      const fx = spanFix(fieldCallee.nameSpan, mfG.near);
+      if (fx) dG.fix = fx;
+    }
+    this.diags.push(dG);
     return null;
   }
 
@@ -5182,8 +5294,17 @@ export class Checker {
         return mkOpt(T);
       }
       default:
-        // v0.67(切口 3):全表之外给 nearest 建议(如 setx → set)
-        this.diags.push(err('M3015', `Vec[${typeStr(T)}] 没有方法 ".${name}"(有:${METHOD_NAMES.vec.join(', ')})${methodNearSuffix(name, METHOD_NAMES.vec)}`, span));
+        // v0.67(切口 3):全表之外给 nearest 建议(如 setx → set)。v0.80(fix 扩面):
+        // 同一 nearest 结果结构化为 fix(替换方法名 token;消息与 fix 单一来源)。
+        {
+          const mfV = methodNearFix(name, METHOD_NAMES.vec);
+          const dV = err('M3015', `Vec[${typeStr(T)}] 没有方法 ".${name}"(有:${METHOD_NAMES.vec.join(', ')})${mfV.suffix}`, span);
+          if (mfV.near) {
+            const fx = spanFix(fieldCallee.nameSpan, mfV.near);
+            if (fx) dV.fix = fx;
+          }
+          this.diags.push(dV);
+        }
         return null;
     }
   }
@@ -5235,8 +5356,17 @@ export class Checker {
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
         return mkMap(K, V);
       default:
-        // v0.67(切口 3):全表之外给 nearest 建议
-        this.diags.push(err('M3015', `Map[${typeStr(K)}, ${typeStr(V)}] 没有方法 ".${name}"(有:${METHOD_NAMES.map.join(', ')})${methodNearSuffix(name, METHOD_NAMES.map)}`, span));
+        // v0.67(切口 3):全表之外给 nearest 建议。v0.80(fix 扩面):同一 nearest
+        // 结果结构化为 fix(替换方法名 token;消息与 fix 单一来源)。
+        {
+          const mfM = methodNearFix(name, METHOD_NAMES.map);
+          const dM = err('M3015', `Map[${typeStr(K)}, ${typeStr(V)}] 没有方法 ".${name}"(有:${METHOD_NAMES.map.join(', ')})${mfM.suffix}`, span);
+          if (mfM.near) {
+            const fx = spanFix(fieldCallee.nameSpan, mfM.near);
+            if (fx) dM.fix = fx;
+          }
+          this.diags.push(dM);
+        }
         return null;
     }
   }
@@ -5284,8 +5414,17 @@ export class Checker {
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
         return mkVec(INT_TYPES.u8);
       default:
-        // v0.67(切口 3):全表之外给 nearest 建议
-        this.diags.push(err('M3015', `str 没有方法 ".${name}"(有:${METHOD_NAMES.str.join(', ')})${methodNearSuffix(name, METHOD_NAMES.str)}`, span));
+        // v0.67(切口 3):全表之外给 nearest 建议。v0.80(fix 扩面):同一 nearest
+        // 结果结构化为 fix(替换方法名 token;消息与 fix 单一来源)。
+        {
+          const mfS = methodNearFix(name, METHOD_NAMES.str);
+          const dS = err('M3015', `str 没有方法 ".${name}"(有:${METHOD_NAMES.str.join(', ')})${mfS.suffix}`, span);
+          if (mfS.near) {
+            const fx = spanFix(fieldCallee.nameSpan, mfS.near);
+            if (fx) dS.fix = fx;
+          }
+          this.diags.push(dS);
+        }
         return null;
     }
   }
@@ -5532,8 +5671,28 @@ export class Checker {
           if (!same()) this.diags.push(err('M3013', `浮点宽度不同:${typeStr(l)} 与 ${typeStr(r)}`, span));
           return l;
         }
-        this.diags.push(err('M3008', `运算符 "${op}" 不支持 ${typeStr(l)} 与 ${typeStr(r)}`, span,
-          (l?.k === 'str' || r?.k === 'str') && op !== '+' ? '字符串只支持 "+";其他比较用对应方法' : null));
+        const d = err('M3008', `运算符 "${op}" 不支持 ${typeStr(l)} 与 ${typeStr(r)}`, span,
+          (l?.k === 'str' || r?.k === 'str') && op !== '+' ? '字符串只支持 "+";其他比较用对应方法' : null);
+        // v0.80(fix 扩面):str 拼接的标量实参包 str(...)。守卫(应用后必消除):
+        //   * 仅 "+" 且恰一侧为净 str(另一侧 i64/f64/bool——BUILTIN_TOSTR_TYPES 标量,
+        //     str() 的 display 位只收 int/float/bool/str;Json/Vec/struct/fn 包了必产生
+        //     新 M3002,违反"应用后必消除");
+        //   * 任一侧含 Untrusted 不给(str(u) 是洗白通道 M3049/ADR-002——污值禁入);
+        //   * 非 str 操作数可机械重建(标识符/整数字面量/浮点十进制字面量/bool 字面量;
+        //     复杂表达式文本不可重建,包一层需二处插入,单域 fix 无法表达——放弃);
+        //   * 仅 checkBinary 调用点(lNode/rNode 已传)——常量表达式/复合赋值路径无节点。
+        if (op === '+' && lNode && rNode) {
+          const noTaint = !typeContainsUntrusted(l) && !typeContainsUntrusted(r);
+          let wrapNode = null;
+          if (noTaint && l?.k === 'str' && (r?.k === 'int' || r?.k === 'float' || r?.k === 'bool')) wrapNode = rNode;
+          else if (noTaint && r?.k === 'str' && (l?.k === 'int' || l?.k === 'float' || l?.k === 'bool')) wrapNode = lNode;
+          const text = simpleOperandText(wrapNode);
+          if (text !== null) {
+            const fx = spanFix(wrapNode.span, `str(${text})`);
+            if (fx) d.fix = fx;
+          }
+        }
+        this.diags.push(d);
         return l ?? null;
       }
       case '%': {
@@ -6013,7 +6172,9 @@ export class Checker {
     // 循环的 inLoop,循环内 lambda 的裸 continue 过 check 后:tree 引擎 ContSig 穿透
     // lambda 到外层循环吞迭代,VM 编译子状态无 breakCtx 走防御分支裸 POP 弹穿共享
     // 操作数栈(内部错误崩溃)——与本地函数/普通函数的边界口径一致(v0.59 #44 先例)。
-    const ctx2 = { ...ctx, scope, effectSink: sink, inLoop: false };
+    // v0.80:lambda 体是新函数边界(M3010/M3011 同判)——fnId 重置,lambda 内对捕获的
+    // 外层变量赋值不获得 mut 插入处方(声明在彼函数,机械改彼处声明跨边界)。
+    const ctx2 = { ...ctx, scope, effectSink: sink, inLoop: false, fnId: ++this.fnSeq };
     let retT;
     const retExpected = fnExpected ? fnExpected.ret : (expected && resolveT(expected, new Map())?.k !== 'fn' ? expected : undefined);
     if (e.body.nt === 'BlockExpr') retT = this.checkBlock(e.body.block, ctx2, retExpected ?? undefined);
@@ -6337,9 +6498,14 @@ function nearest(name, candidates) {
 // 时追加"最接近的方法是"(措辞/阈值与 M3001 的 nearest 口径同源:同款 nearest(),
 // bestD 起点 3 即 ≤2;快照 e06/走查 setx:全表列齐但不说"最接近的是 set")。
 // 无近名返回空串,维持全表现状;opt/res/ptr 等小方法集后置不动(§4.7.2 范围界定)。
-function methodNearSuffix(name, table) {
+// v0.80(fix 扩面):nearest 结果单一来源化——suffix(消息)与 near(fix 处方)由同一
+// methodNearFix 产出,消息建议与结构化 fix 恒一致(快照 f03 教训:二者必须同源)。
+function methodNearFix(name, table) {
   const near = table && table.length ? nearest(name, table) : null;
-  return near ? `;最接近的方法是 "${near}"` : '';
+  return { near, suffix: near ? `;最接近的方法是 "${near}"` : '' };
+}
+function methodNearSuffix(name, table) {
+  return methodNearFix(name, table).suffix;
 }
 
 function levenshtein(a, b) {
