@@ -2,7 +2,8 @@
 
 > 本文件是唯一的计划落盘位置。已完成项在版本提交后移到「已完成」；新想法先进「Backlog」，
 > 只有进入版本范围才细化到任务级。当前版本：**v0.82.0**（**v0.82 污点 v1.3 窗口已交付(2026-11-18)**：ADR-008 清单 12 项全落地——argv = `Vec[Untrusted[str]]`（元素级，main 签名一次翻转不留 clean 旁路：净声明 → M3049，extern 返回强制先例；REPL/test 空参）/ 响应头 = `Untrusted[Map[str,str]]` **第四载体**（键值同污——键净方案否决归档；投影表 len/is_empty/get(净键)/has(净键)/keys/values，mut 面 M3050 只读；**实现偏差登记：ADR 写 contains_key，语言内净值谓词名为 has——同槽同名先例**）/ fs.metadata = `Result[Untrusted[Json], str]`；引擎面零新机制（Untrusted[Map] 形参 v0.61 顶层解包已覆盖；Vec[Untrusted[str]] 形参维持 vi64 句柄槽 = v80.17(a) 形态，元素级解包实测会翻 strict 语义已回滚——compiler.js 定案注释）；管线核验全过（serve worker 无 argv/spawn 构造净值/eval 内层空参/test 不调 main）；迁移实测 **20 位**（ADR 计 16 过时——xnsni/xnopen v0.81 落地 +2、net_e2e 2 位 ADR 漏计）：14 工具签名翻转 + args 消费面逐位处置（路径位 sanitize_cli_path/数值位 parse_i64/内容位保污透传）+ tests 4 位 + net_e2e parse_i64 端口惯用法（架构师裁决：URL 含 // 内部空段不可 sanitize，污点在数值校验上终结）；**edit.ming 内容位迁移缺陷实测修复**（审查后套件暴露：文本位误 sanitize 拒真实换行 → esc 改污进污出 + starts_with 净 bool 分类，v45.1 黄金恢复逐字）；M3049 remedy 载体感知扩 Map（审查 MINOR-1）+ CODE_HINTS.M3050 第四载体（审查 MINOR-2）；**独立审查 APPROVE-with-minor（0 BLOCKER/0 MAJOR/2 MINOR 全落实/8 项架构师登记全收口）**；**1373 项全绿**(§88 17 check + §89 23 check)；fuzz 双种子 ×40 0 分歧、proof_fuzz 0 误报。原 v0.81 行：**v0.81 引擎一致性小项清账已交付(2026-11-18)**：M4002 消息四引擎统一——N-65.4 分支 a：wasm 溢出检查经 panic_m4002_op(TI+17 尾部追加，泛化导入保留旧 AOT 逐字兼容)携带操作数，宿主按 tree/VM 同款模板组消息（6 kind 对齐 intBinSlow/negSlow，u64 asUintN 重解释）+ 架构师顺带收口 cc eligible 泛化残留（cbackend ctx.specific 门拆除）+ 修正 cc main 除法溢出预存偏差（tree 专属模板 `整数除法溢出:a / b`）——四引擎首行逐字（18 形态矩阵）；tree ContSig/BrkSig 纵深防御（v0.79 NOTE-1：brkContGuard → 具名 M4001，纯防御不可达）；json_query C0 序列化收敛（27 条 replace 与引擎逐字节对齐，良性路径零回归；孤立代理对分歧登记）；校准理由化 v63.37/v39 fn-ovf/v58.11 C 指纹（c62b5c0d…→c18cc21f…）；登记不预支 M4004 eligible 泛化分叉（含取模零）/取负 tree 位置缺口/Vec 复合赋值 VM 1 列差；**独立审查 APPROVE-with-minor（0 BLOCKER/0 MAJOR，4 MINOR 全落实）**；**1333 项全绿**(§86 11 条 + §87 22 条)；fuzz 双种子 ×40 0 分歧、proof_fuzz 0 误报。原 v0.80 行：**v0.80 AI 协作面第二波已交付(2026-11-18)**：fix 结构化处方扩面——发射族 4→9（M3015 nearest 改写·与消息后缀单一来源 methodNearFix/M3006 Json 点字段 → x.get("f")/M3004 声明处补 mut/M3008 str 拼接标量包 str(...)·整值浮点补 .0 保值等价——审查 MAJOR-1/M3012 插值包 debug(...)）；守卫面 = Untrusted 一律拒发（洗白禁令）+ 每族替换域与排除面锚定 + f-probe「应用后必消除」机器证明（快照 §0.6 方法学）；LSP 多文件补全第一切片——本地 use 导入成员补全/`use ` 行上下文补全（此前回落通用列表系错补，现仅 std.<mod> 全名 + 本地同目录模块名，按名排序）/std as 别名成员验证——保守原则不变；v70.8 重校准 = e14 语料 M3004 新 fix 为真实根因合法处方（v0.76 先例同型，审查 NOTE-1 复核诚实）；**独立审查 REQUEST_CHANGES（1 MAJOR + 3 MINOR）修复后通过**；**1300 项全绿**(§84 26 条 + §85 9 条)；fuzz seed 44044×40 0 分歧（C 腿 6，wasm 真实执行 20）、proof_fuzz 100 例 0 误报（反例 18/18）。原 v0.79 行：**v0.79 健壮性补刀第三刀已交付(2026-11-17)**：缺陷 #71 修复——lambda 体内 continue/break checker 漏洞（checkLambda 重置 inLoop + compiler 防御分支裸 POP 改具名 CompileError）；1260 项全绿(§82 8 条目)。原 v0.78 行：**v0.78 健壮性补刀第二刀已交付(2026-11-17)**：缺陷 #70 修复——VM for 内 match 臂 continue 双引擎分歧崩溃；根因 = match 宗量贯穿臂体留栈、Break/Continue JUMP 不清理活临时（for 崩溃/while 泄漏/break 静默泄漏三形态）；修复 = 纯编译器层 matchTemps 计数 + breakCtx 快照 + 前置 POP；无 match 形态字节码逐字节不变；**1251 项全绿**(§81 16 条目 18 check);fuzz 双种子 0 分歧。原 v0.77 行：**v0.77 内容源扩面已交付(2026-11-17)**：ADR-007 清单 14 项全落地——fs/net/proc 源翻转（read_file/read_bytes/list_dir/proc.stdout+stderr/http body）/污值代数 28 方法/json.parse 两域接缝闭合/write·print 出向透传/exec 双向（cmd sink）/第三载体 Untrusted[Vec[u8]]；审查 REQUEST_CHANGES（1 BLOCKER + 2 MAJOR）修复后通过——B1 parse_* Err 载荷 keepResErr 保污/M1 read_to_end 补裁翻转/M2 响应头登记不预支；**1225 项全绿**(§80 21 条 37 check);fuzz 双种子 0 分歧。原 v0.76 行：**v0.76 健壮性补刀 + fix 处方扩面已交付(2026-11-17)**：第五崩面 call-arg 嵌套收口（parsePostfix 三重入点计入 exprDepth，崩点实测 253）+ M3002 fix 族（3→4）+ M2002 eof 发射点；审查 REQUEST_CHANGES（2 MAJOR：M3002 Set.effects 死检查 / 六操作符起始 span 右界）修复后通过；**1186 项全绿**(§79 16 条);fuzz 双种子 0 分歧。原 v0.75 行：**v0.75 健壮性收尾已交付(2026-11-16)**：四残留裸栈崩溃面全面清零（checker 450/lexer 950/type 1450/pattern 2000/const 1200——阈值二分实测校准）+ 顺带 asm 表达式位 hint；独立审查通过+独立验证四判定全 PASS+RED FLAG 第五面登记 v0.76；**1173 项全绿**(§78 9 条);fuzz 双种子 0 分歧。**v0.74 内联汇编已交付(2026-11-16)**：with asm 第 13 效果门禁面（ADR-006 12/12 go，cc 独占+M4017 具名回落，fmt/lsp 配套，§77 28 位点）。**v0.73 技术债与观测收口已交付(2026-11-15)**：解析深嵌套守卫（裸栈 RangeError → 稳定 M2001,四挂点 try/finally,阈值二分实测校准 120——NOTE 收口）/coverage 复测刷新 94.8% 行·89.7% 函数（vm.js 74.2% 短板分析 + 补测 3 项）/GUIDE 交叉引用 15 行 29 引用 + 3 处漂移修正；checker 拆分维持 defer、ADR-006 不做（§4.9.2）；**1141 项全绿**(§76 9 条);fuzz 三种子 0 分歧。原 v0.72 行：**v0.72 诊断质量补刀已交付(2026-11-15)**：v0.71 审查 2 MINOR 收口——if 分支混型 M3049 对称化（checkIf 仿 match 双向接入,无双报经短路守卫实测）/M3049 remedy 复合载体精确化（直传位逐字不变,复合位中性措辞;struct 复合 actual 可产生经独立验证活反例证实）+ hint 位置中性化（审查 MINOR-1 就地修）;**独立审查通过（0 BLOCKER/0 MAJOR;2 NOTE 落实）+ 独立验证 5 项判定零 RED FLAG**;**1132 项全绿**(§75 8 项);fuzz 0 分歧;proof_fuzz 0 误报。原 v0.71 行：**v0.71 诊断残留收口已交付(2026-11-15)**：§4.8 五任务全兑现——salvage 精化（深度 0 `id(` 启发式，probe_anchor 真实 M3001 复活 1→2）/valBrace 块入口快照所有权（p21/p05/p06 伪诊断→真实诊断,s1 伪 M2002 清零）/嵌套污点 M3049 化五形态（m2b 等 M3002→M3049 统一净化 hint,直传与双侧污逐字不变）/#61 test 栈位置接线（undefined → file:line:col 三引擎逐字 + 预存 tree/VM 帧名前缀分歧一并修复）+ DX 顺带（N-68 fmt 回执/N-67 元组行/N-64 unstr_demo）；**独立审查通过（0 BLOCKER/0 MAJOR；2 MINOR 登记级）+ 独立验证 7 项判定全达成零 RED FLAG**；**1124 项全绿**(§74 17 项)；fuzz 双种子 0 分歧。原 v0.70 行：**v0.70 诊断校准二期已交付(2026-11-15)**：#63 parser 级联雪崩抑制——recover(false) 深度感知 panic-mode（`{}` 深度跟踪/停机表移除 test/强进路径修复）+ valBrace 污染钳制（独立审查 1 MAJOR 修复后通过）；独立验证 10 语料 44 条 4.4x → 18 条 1.8x，根因 10/10 逐字保留、干净形态逐字节不变、既有测试零校准；YELLOW 裁决（被吞区域不报 = panic-mode 固有代价）+ 残留 2 项登记 v0.71；**1103 项全绿**(§73 12 项)；fuzz 双种子 0 分歧。**v0.69 eval 已交付(2026-11-15)**：第 12 效果门禁面（ADR-005 §9 12/12 go——裸 builtin `eval(src) -> Result[str, str]`/内层恒 tree 裁决微调/Err 化 --json 同构载荷/M3049 sink 无净化器/配额按调用重置/build 具名回退/64 层嵌套守卫 + RangeError 兜底；独立审查 2 MAJOR 修复后通过；§72 20 项）+ #65 文档化处置（GUIDE 惯用法 + examples/serve_demo.ming 兑现 N-64 serve 示例）。**v0.68 Untrusted[Json]**（投影表/stringify 拒绝/as_obj 顺带修复）、**v0.67 诊断协议校准**（快照三判据 7→1/4→0/3.8→1.4）已交付——**诊断校准弧线收口**（v0.67 checker 层毒化收敛 + v0.70 parser 层级联抑制）；GUIDE 修订记录整段重复截断（2766→2002 行，审查 n1，v0.68 预存）。
-> **下一步规划见 §4.12（第十轮评估，2026-11-17：能力缺口全面立项——P1 v0.80/v0.81 已交付（AI 协作面第二波 + 引擎一致性小项清账）/ P2 v0.82 候选（污点 v1.3 窗口：argv + 响应头·metadata——**ADR-008 已裁决落盘（2026-11-17，清单 12 项，响应头 = Untrusted[Map] 第四载体）**，待实现）/ P3 条件驱动（流式·Slice 设计簇 ADR-008 / serve TLS / C ABI 扩展 / asm 多架构）/ P4 远期（async-greenthread ADR-001 阶段 2 / 流敏感污点 / 证明面扩大）；v0.79 已交付——§4.11/§4.10）**。
+> **下一步规划见 §4.13（第十一轮评估，2026-11-18，基线 v0.82.0/1373 项全绿：§4.12 P1/P2 清空后全面复扫——P1 v0.83 引擎一致性收尾（M4004 同族/取负 span/#58/LSP 占位符/卫生件）+ v0.84 观测与诚实性复批（coverage/bench/AI 快照/口径重算/文档审计）/ P2 v0.85 AI 协作面第三波（数据驱动）+ v0.86 流式第一片（ADR-009 + rossum 数据在案）+ 污点微窗（read_to_end）/ P3 条件驱动（TLS/C ABI/asm 多架构/泛型缓存/证明扩大/serve 扩展族）/ P4 远期（async 确定性语义 ADR/流敏感污点/形式化）；前轮 §4.12 记录保留**。
+> **前轮规划见 §4.12（第十轮评估，2026-11-17：能力缺口全面立项——P1 v0.80/v0.81 已交付（AI 协作面第二波 + 引擎一致性小项清账）/ P2 v0.82 候选（污点 v1.3 窗口：argv + 响应头·metadata——**ADR-008 已裁决落盘（2026-11-17，清单 12 项，响应头 = Untrusted[Map] 第四载体）**，待实现）/ P3 条件驱动（流式·Slice 设计簇 ADR-008 / serve TLS / C ABI 扩展 / asm 多架构）/ P4 远期（async-greenthread ADR-001 阶段 2 / 流敏感污点 / 证明面扩大）；v0.79 已交付——§4.11/§4.10）**。
 > **§4.3 全部任务已清空（2026-11-13）**：v0.60 起以 ADR 条件交付——ADR-001（并发/服务端,方案 a 条件承诺实施,原型 190 req/s@40 连接）、ADR-002（污点采纳类型级 Untrusted[T],实现推迟）、ADR-003（mask 永久否决）；实现条件见各 ADR 评审清单与 §4.3.9。**三方评估后 serve 从 v0.60 移至 v0.62（独立条件版），v0.60 改为资源门禁一致性修复——理由与实测证据见 §4.4.10。**
 
 ---
@@ -18,7 +19,7 @@
 | 自举工具 | 12 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（12 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
 | 质量护栏 | 回归全绿（v0.82.0 起 **1373 项**；§88 为 v0.82 污点 v1.3 **17 check** + §89 为 v0.82 迁移纪律 **23 check**；v0.81.0 时为 **1333 项**（§86 **11 条** + §87 **22 条**）；v0.80.0 时为 **1300 项**（§84 fix 处方 **26 条** + §85 LSP 切片 **9 条**）；v0.73.0 时为 **1141 项**，§76 为 v0.73 深嵌套守卫与覆盖补测 **9 条**，§75 为 v0.72 补刀 **8 项**，§74 为 v0.71 残留收口 **17 项**，§73 为 v0.70 parser 级联抑制 **12 项**，§72 为 v0.69 eval **20 项**，§71 为 v0.68 Untrusted[Json] **18 项**，§70 为 v0.67 诊断协议校准 **14 项**，§69 为 v0.65 wasm slice 3 **19 项**，§68 为 v0.64 信任边界 **21 项**；§67 为 v0.63 wasm 守护收口 slice 2 **28 项**；§66 为 v0.62 服务端 v1 **22 项**，§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表 + v0.73 复测刷新**（tests/coverage.mjs；**94.8% 行 / 89.7% 函数**，vm.js 74.2%；2026-11-15 快照,信息性不设门槛） |
 | 能力矩阵 | 55 行口径 ≈85%（docs/capabilities.md；v0.69 eval 行 ❌→🟡(ADR-005 12/12 go + 随版交付):42✅ 9🟡 4❌，(42+9×0.5)/55=84.5%≈85%；历史：v0.61 新增"数据流安全(污点标注)"行(✅,窄源 v1)、v0.62"TCP/UDP/服务端"行 ❌→🟡(serve v1)、v0.68 污点行载体扩面(保持 ✅)；"运行时资源熔断"经 2026-11-13 评估改判 🟡 后于 v0.60 修复恢复 ✅） |
-| 下一步 | **§4.12 第十轮规划（2026-11-17）：能力缺口全面立项**——P1 v0.80 **已交付**（AI 协作面第二波：fix 处方扩面发射族 4→9 + LSP 多文件补全第一切片；审查 REQUEST_CHANGES（1 MAJOR + 3 MINOR）修复后通过）/ v0.81 **已交付**（引擎一致性小项清账）+ v0.82 **已交付**（污点 v1.3 窗口——ADR-008 落地；迁移 20 位；审查 APPROVE-with-minor）；P3 条件驱动（流式·Slice 簇 ADR-008 / serve TLS 部署证据 / C ABI / asm 多架构 / 泛型缓存 / 证明扩大）；P4 远期（async/green-thread ADR-001 阶段 2 / 流敏感污点 / 形式化）。**v0.67–v0.79 十三版连发（2026-11-15–17）全部交付**：诊断校准弧线/技术债/北星支柱 2/eval/v1.2 污点弧线/#70·#71 双引擎崩溃——**1373 项全绿，本地=GitHub 同步** |
+| 下一步 | **§4.13 第十一轮规划（2026-11-18，基线 v0.82.0）：能力缺口全面复扫**——P1 v0.83 引擎一致性收尾（M4004 同族统一/取负 span/#58 cc 残留/LSP 占位符/N-60.1·N-61.2 卫生件）+ v0.84 观测与诚实性复批（coverage·bench·AI 快照复测 + capabilities 口径重算 + references/moltbook 审计 + N-66 裁决——纯测量零语义）/ P2 v0.85 AI 协作面第三波（fix 第三波 + LSP 第二切片，前置 = v0.84 快照数据）+ v0.86 流式第一片（ADR-009 落盘 + 维护者复核；rossum 数据在案）+ 污点微窗（read_to_end）/ P3 条件驱动（TLS/C FFI ABI（#55 NUL 前置）/交叉编译/asm 多架构/泛型缓存/证明扩大/serve 扩展族）/ P4 远期（async 确定性并发语义 ADR/流敏感污点/形式化/mask 重开三门槛）。**§4.12 十轮 P1/P2 已全部交付**（v0.80/v0.81/v0.82 三版连发 2026-11-18）；**1373 项全绿，本地=GitHub 同步** |
 
 
 ## 1. 已完成的规划项（v0.39–v0.44）
@@ -1174,6 +1175,8 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 
 ### 4.12.4 版本路线（v0.80+ 候选；一版一主题）
 
+> **注（2026-11-18）**：本表 v0.83+ 候选行已被第十一轮 §4.13.5 重排取代（流式·Slice → v0.86、TLS → P3 条件驱动、新增 v0.83 引擎一致性收尾/v0.84 观测复批/v0.85 AI 第三波）——本表保留作历史记录。
+
 | 版本 | 主题 | 门槛/规模 |
 |------|------|-----------|
 | v0.80 | ✅ 已交付（2026-11-18）：AI 协作面第二波（fix 扩面发射族 4→9 + LSP 切片；审查 REQUEST_CHANGES（1 MAJOR + 3 MINOR）修复后通过） | 无新语言面；快照数据驱动；§84 26 条 + §85 9 条 |
@@ -1213,6 +1216,109 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | stringify_untrusted / C ABI / asm 多架构 / 泛型缓存 / 证明扩大 | **P3 条件驱动** | 各自门槛未满足 |
 | async/green-thread / 流敏感污点 / 形式化证明 | **P4 远期** | 需独立 ADR 或语义定义先行 |
 | 热重载 / 攻击面 / assume_clean / checker 拆分 | **不做（维持）** | 既有否决/不排期决定 |
+
+## 4.13 第十一轮规划：能力缺口立项（2026-11-18，software-architect，基线 6b2aed6 v0.82.0，1373 项全绿）
+
+> 立场声明（沿 §4.12）：架构师裁决先行落盘，维护者事后复核。**缺口全景逐项引用既有登记点**（capabilities 未覆盖清单 / plan §5.1 与 §4.12.6 / ADR-001–008 范围边界 / 历轮审查 NOTE·MINOR / moltbook 真实用例 / serve-observation no-go / coverage-baseline / ai-loop-snapshot），无一处新实测声明；规模为规划口径非承诺。前置纪律不变：**每项必须先满足其门槛再开工**（真实用例/部署证据/使用数据/维护者复核/ADR 落盘），不猜测性投入。
+> 本轮起点 = **§4.12 P1/P2 全部清空**（v0.80 AI 协作面第二波 / v0.81 引擎一致性小项清账 / v0.82 污点 v1.3 窗口——三版连发 2026-11-18，审查全部通过后提交）。侦察由两个只读 agent 扫全登记点完成（能力面 25 条 + 未决登记 40 余条，含本轮新发现：capabilities 头注版本错位〔本会话编辑遗留，已就地修正〕、references.md 5 处过时行文、bench WARN 混合成因消退复测 WARN 0）。
+
+### 4.13.1 基线（2026-11-18 实测）
+
+| 项 | 状态 |
+|----|------|
+| 版本/测试 | v0.82.0（6b2aed6）；**1373 项全绿**（§88 17 check + §89 23 check）；fuzz 双种子 ×40 0 分歧；proof_fuzz 0 误报 |
+| 能力矩阵 | 55 行 ≈85%（42✅ 10🟡 3❌，最后一次重算 v0.74 口径——**v0.80–v0.82 扩面后待重算**，入 v0.84 观测批） |
+| 覆盖率 | 94.8% 行 / 89.7% 函数（2026-11-15 v0.72 快照——**v0.81/v0.82 大改 checker/wasm/cbackend 后待复测**，入 v0.84） |
+| bench | 2026-11-18 复测 **WARN 0**（五项对比；开发期 WARN 混合成因消退；invariant 项 vm 0.25µs/次 占 24.0%；**字段遍历形态未测**——moltbook:147，入 v0.84 测量项） |
+| 诊断 | 78 码；fix 发射族 9/79 ≈11%（v0.80 后）；M4002 四引擎逐字（v0.81），M4004 eligible 泛化分叉为剩余同族 |
+
+### 4.13.2 缺口全景（按域，逐项引用登记点）
+
+| 域 | 缺口 | 登记出处 | 现状/门槛 |
+|----|------|---------|----------|
+| panic 消息面 | **M4004 同族**（除零/取模零 eligible 泛化分叉——取模零为 tree 专属模板 `整数取模零:<a> % 0`，cc main 已同口径，eligible 连措辞都不同） | §4.12.6 登记行（v0.81 审查 MINOR-3）；capabilities:74 | 无门槛；panic_m4004_op 复用 v0.81 模式 |
+| panic 消息面 | 取负溢出 tree 位置缺口（negSlow 无 span → `<unknown>:0:0`） | §4.12.6 登记行；§87 neg 形态"将来修复零校准"承诺 | 无门槛；一行级 |
+| panic 消息面 | #58 cc 侧残留（cbackend.js:986 语句列差 1 + ming_vec_set 消息带读后缀） | plan §5.1 #58 | 无门槛；cc panic 面顺带 |
+| 工具链 | LSP 通用列表 mingLspPlaceholder 占位符泄漏（`use x as ` 回落上下文） | §4.12.6 登记行（v0.80 审查 NOTE-2） | 无门槛；一行级 |
+| 卫生 | N-60.1 M4012 先于 worker.terminate（库场景泄漏）；N-61.2 tryWasm 原地改 sig（卫生债） | plan §5.1 N-60.1/N-61.2 | 无门槛；评估后随 v0.83 |
+| 数据面 | **流式/零拷贝**：read_bytes_range 最小流式；Slice 只读视图；带长度 Ptr；8MB 单文件上限；HTTP 体 8MB 无流式/取消 | capabilities:16/22/71；moltbook:74/75/137（**rossum 真实用例在案**：6.3MB 单帧可、30 帧缓冲不可——流式"不做"改判的真实反例） | **ADR-009 落盘 + 维护者复核** |
+| 污点面 | `io.read_to_end` 维持净 str（同源 read_line 已标——口径差异）；stringify_untrusted；`Untrusted[u8]` 原始字节载体 | capabilities:72；plan:1127；ADR-004:131/244 | read_to_end = 破坏性微窗（维护者裁决）；后两项 = 真实用例 |
+| 诊断面 | e05 越界写/e24 无 requires 越界读**静态静默**（check 通过 + 运行时 M4003 兜底） | ai-loop-snapshot:70/71（仍开放） | warn 化需误报率数据（P3）；维持静默属文档化口径 |
+| 诊断面 | json_query 孤立代理对分歧（`\ud800`：引擎 ASCII 转义 vs 工具 U+FFFD 替换字节） | §4.12.6 登记行 | 需语言面 bytes 级能力（另裁） |
+| AI 协作面 | fix 处方 9/79 ≈11%——第三波（数据选族）；LSP 第二切片（别名位/子目录首段 use/泛型推洞/语义 token/重命名/incremental sync） | capabilities:59；§4.12.5 方法论 | **前置 = AI 快照复测数据**（v0.84） |
+| 观测面 | coverage v0.82 复测；vm.js 74.2% 短板（2 补测 + 3 死导入 + 18 资格面挡住）；repl.js 89.7% 回落；AI 快照复测；bench 字段遍历测量；capabilities 口径重算 | coverage-baseline:139-145；moltbook:147；capabilities:1/82 | 无门槛（纯测量） |
+| 文档诚实性 | references.md 5 处过时行文（mask"实现待定"→实为永久否决、契约/污点/缓存行文）；moltbook 注记过时（v0.82 已兑现三项）；N-66 AOT 含 test 块回退源码模式与"无明文源"表述不一致 | references:36/37/77/80/118；moltbook:54；plan §5.1 N-66 | 无门槛（v0.84 文档批） |
+| 服务端 | TLS/UDP/WS/keep-alive/优雅停机/自定义 host/访问日志/自省 API（PID·RSS）；handler 内 spawn scoped 语义 | capabilities:23；ADR-001:208-217/77/113；serve-observation:54 | TLS = 部署证据；其余 = 需求证据/各自另裁；v1.1 no-go 维持 |
+| 并发面 | async/green-thread（10 万级连接）；AOT worker 快路径；协作取消/子任务自检 | capabilities:64/77；ADR-001:204-205 | 语义 ADR 先行（P4）；取消面另裁 |
+| C 后端 | 插值串；struct/array FFI ABI；交叉编译 | capabilities:75/80；§4.12.1 | FFI = 真实需求 + **#55 NUL 策略前置义务**（plan:682）；其余 = 用例 |
+| asm | 多架构模板；asm 作表达式有值形态 | capabilities:76；ADR-006:44 | 使用数据 |
+| wasm | 数值 VecLit 容器表示未统一（#40 残留）；match 不支持；剩余守护具名（is_some/is_none 等）；直调 +18%（N-65.2）；Result 句柄池无回收（N-65.1）；N-60.3 wasmWriteVecNum mut 旗标丢弃 | plan §5.1；capabilities:74 | 各自具名；扩面属语义工作 |
+| 证明面 | while/loop/分支敏感/递归/高阶；SMT 成本 | capabilities:60 | 维持保守放弃（有意设计）；扩大需 SMT 成本评估 |
+| 密码学 | RSA/国密/字节流接口"随后"悬置 | capabilities:66 | 悬置（无需求登记） |
+| 生态面 | N-64 examples 覆盖不足残项（serve_demo/unstr_demo 已兑现部分） | plan §5.1 N-64 | 小项随版 |
+| 远期参考 | Blood 代际引用/线性类型跨效应挂起；get(i)→Option[char] 载体建模 | references:78/79；ADR-002:140 | 远期参考（研究构想口径） |
+
+### 4.13.3 设计耦合簇（更新）
+
+- **簇 A 零拷贝与证明联动（ADR-009）**：Slice 只读视图 ↔ 带长度 Ptr ↔ unsafe(cond) 证明携带 ↔ read_bytes_range——四件同一设计簇一次到位。**rossum 数据在案**（moltbook:74/75/137）为簇 A 提供首个真实用例锚点；Slice 无证明携带 = 新 unsafe 逃逸口，证明无 Slice = 无对象可证。
+- **簇 B 污点窗口**——**v0.82 已关闭**（argv/响应头/metadata 三族落地）。残项各自门槛：read_to_end 翻转（破坏性微窗）、stringify_untrusted/Untrusted[u8]（真实用例）、流敏感/形式化（远期）。
+- **簇 C 并发与传输**：TLS 可独立于并发模型（传输层）；keep-alive/优雅停机/自省 API 耦合连接生命周期设计；UDP/WS 各自另裁；async 挂"确定性并发"语义 ADR（ADR-001:204 原判维持）。**禁止混合形态**。
+- **簇 D 后端 ABI**：C FFI struct/array + 交叉编译 + asm 多架构——用例驱动；FFI 扩面**必须先裁决 #55 NUL 策略**（plan:682 前置义务）。
+- **簇 E AI 协作面数据链**：AI 快照复测（v0.84）→ fix 第三波 + LSP 第二切片（v0.85）——**数据先行，无数据不开工**（§4.12.5 方法论延续）。
+- **簇 F（新）panic/诊断面剩余**：M4004 同族 + 取负 span + #58 cc 残留 + LSP 占位符——全无门槛、同构模式已验证（v0.81 panic_m4002_op），一次清账。
+- **簇 G（新）观测-文档诚实性**：coverage/bench/AI 快照/capabilities 口径/references/moltbook——纯测量批，产出同时为簇 E 供数据。
+
+### 4.13.4 优先级裁决（架构师立场）
+
+**P1——无外部门槛（v0.83/v0.84 候选）**
+1. **引擎一致性收尾三件 + 卫生件**（v0.83）：M4004 同族统一（panic_m4004_op 复用模式；除零/取模零两模板 + cc main/eligible 同模板）+ 取负 tree span 一行（解锁 §87 neg 位置断言）+ #58 cc 残留（列差 + ming_vec_set 消息后缀）+ LSP 占位符过滤一行 + N-60.1/N-61.2 卫生件（评估后随版）。无新语言面，零新增 M 码。
+2. **观测与诚实性复批**（v0.84，纯测量/文档，零语义改动——v0.66 纯测量先例）：coverage v0.82 复测刷新 + vm.js 短板处置（2 补测 + 3 死导入清理裁决）+ bench 字段遍历新测量项 + **AI 修正回路快照复测**（fix 9 族后的误导/级联/fix 覆盖率重测——为 v0.85 供数据）+ capabilities 口径重算 + references.md 审计 + moltbook 注记 + N-66 口径裁决。
+
+**P2——需 ADR 落盘/维护者复核/前置数据**
+3. **AI 协作面第三波**（v0.85 候选）：fix 处方第三波 + LSP 第二切片——**前置 = v0.84 快照数据**，宁缺毋滥纪律不变。
+4. **流式·Slice 第一片**（v0.86 候选）：**ADR-009 落盘**（簇 A 一次设计）+ 维护者复核 → read_bytes_range 最小流式（独立价值，不依赖 Slice；与 8MB 上限关系裁决）。
+5. **污点破坏性微窗**（下一窗口，需维护者裁决）：read_to_end 翻转（对齐 read_line 同源纪律）；stringify_untrusted 若真实用例出现则并窗。
+
+**P3——外部条件（各自门槛原文）**：serve TLS（部署证据——v1.1 no-go 先例）；C FFI ABI（真实需求 + #55 NUL 前置）；交叉编译（用例）；asm 多架构/表达式位（使用数据）；泛型单态化缓存（bench 证据）；证明面扩大/while（SMT 成本评估）；WS/UDP/keep-alive/优雅停机/自定义 host/自省 API（需求证据 + 各自另裁，ADR-001 §4.5 清单）；N-65.1 Result 句柄回收（长驻进程数据）；N-60.3 mut 旗标（容量语义评估）；ADR-002 get(i) char 载体（设计）；密码学 RSA/国密（悬置——需求出现前不排期）；e05/e24 越界静态 warn 化（误报率数据）；孤立代理对（bytes 级能力设计）；HTTP 客户端流式/取消（用例）。
+
+**P4——远期/另议**：async/green-thread **"确定性并发"语义定义 ADR**（语义先于实现——调度点确定性/结果确定性/四引擎差分口径三选一或组合；ADR-001:204"当前无解"维持）；流敏感/跨函数污点推断；净化形式化证明；mask 重开（ADR-003 三门槛）；Blood 远期参考（代际引用/线性跨效应——研究构想口径）；L2/L3 原始包（原生后端之后）。
+
+**不做（维持否决/不排期）**：热重载（ADR-005 §2.4）、可执行内存/ROP/块外跳转（ADR-006 §5）、assume_clean/净化器族扩张（ADR-007 §6）、checker 拆分（§4.3.8 defer）、read_line/RegExp 进程内抢占（具名登记）、键级混合载体（ADR-008 §6）、响应位授权（ADR-004:136）、eval 沙箱承诺、跨 OS 位级一致构建、格式化本地化（宿主委托策略）。
+
+### 4.13.5 版本路线（v0.83+；一版一主题）
+
+| 版本 | 主题 | 门槛/规模 |
+|------|------|-----------|
+| v0.83 | 引擎一致性收尾（M4004 同族统一 + 取负 span + #58 cc 残留 + LSP 占位符 + 卫生件） | 无新语言面；strict 可见面；§90+ 矩阵测试 |
+| v0.84 | 观测与诚实性复批（coverage/bench/AI 快照复测 + capabilities 口径 + references/moltbook 审计 + N-66 裁决） | 纯测量/文档，零语义改动 |
+| v0.85 | AI 协作面第三波（fix 第三波 + LSP 第二切片） | **前置 = v0.84 快照数据**；宁缺毋滥 |
+| v0.86 | 流式第一片（read_bytes_range 最小流式） | **前置 = ADR-009 落盘 + 维护者复核**；rossum 数据在案 |
+| v0.87+ | Slice/带长度 Ptr/unsafe(cond) 联动（簇 A 续）；污点微窗（read_to_end）；条件驱动簇（TLS/C ABI/asm 多架构/泛型缓存） | 各自门槛 |
+| 远期 | async 语义 ADR；流敏感污点；形式化；mask 重开三门槛 | 独立 ADR |
+| 随时 | bench WARN 复测（本轮回测 WARN 0 已登记）；S11 stderr 提示一行（serve-observation Backlog 级） | — |
+
+### 4.13.6 重点立项的问题定义（每项：问题/前置/规模/验收/风险）
+
+- **v0.83 M4004 同族统一**：问题 = 除零/取模零在 wasm/cc eligible 泛化（"整数除零"连措辞都与 tree 的"整数取模零"不同），与 v0.81 M4002 统一前的形态同构。前置 = 无（panic_m4002_op 模式/导入纪律/矩阵测试方法学全部现成）。规模 = 导入尾部追加 1 条（panic_m4004_op）+ 宿主模板 + 全部调用点同款切换 + cc 同模板 + §90 矩阵。验收 = 四引擎首行逐字（除零/取模零 × i64/u64 × main/eligible）+ fuzz 双种子 0 分歧 + 既有 M4004 断言逐字存活（除理由化校准）。风险 = 低（模式已验证；旧 AOT 兼容按 panic_m4002 保留先例）。
+- **v0.83 取负 span + #58**：问题 = tree 取负报 `<unknown>:0:0`、cc 语句列差 1/消息带读后缀——panic 面最后的位置残差。前置 = 无。规模 = 各一行级 + §87 neg 断言解锁 + #58 校准。验收 = 取负四腿位置逐字；#58 三引擎逐字。风险 = 无（位置补齐单向收紧）。
+- **v0.83 LSP 占位符过滤**：问题 = `use x as ` 回落通用列表泄漏内部占位符 mingLspPlaceholder0（kind 9）——补全面唯一已知错补残留。前置 = 无。规模 = lsp.js 过滤一行 + §89 补断言。验收 = 回落列表不含占位符前缀；既有补全零回归。风险 = 无。
+- **v0.84 观测复批**：问题 = v0.80–v0.82 三版大改 checker/wasm/cbackend/lsp 后，coverage/bench/AI 快照/capabilities 口径全部停在旧时点；references.md 5 处过时行文与 N-66 口径漂移损害"文档=实现"承诺。前置 = 无（纯测量）。规模 = coverage 复测 1 次插桩全量 + bench 1 次 + 快照语料重跑（v0.66 方法学复用）+ 文档批。验收 = 全部数字来自可复现命令并回填文档；零 src 语义改动（补测 3 条除外）。风险 = coverage 数字回落（大改后正常波动——如实登记不设门槛）。
+- **v0.85 fix 第三波 + LSP 第二切片**：问题 = fix 9/79 ≈11%、LSP 别名位/子目录 use 仍断供——但**选族与选件必须由新快照数据驱动**（v0.66 数据已被 v0.67–v0.80 消化完毕）。前置 = v0.84 快照复测。规模 = 每族 30–60 行 + f-probe（fix）/每件保守切片（LSP）。验收 = 应用后必消除（fix）/宁可空列表不可错补（LSP）+ 既有锚点零校准。风险 = 误伤面（v0.80 MAJOR-1 先例——每族锚定替换域与守卫）；数据不足则如实缩项。
+- **ADR-009 流式·Slice 簇**：问题 = 8MB 上限 + 无零拷贝（rossum：30 帧缓冲不可）——read_bytes_range 最小流式有独立价值，但 Slice/带长度 Ptr/unsafe(cond) 是同一设计簇（单做任一件都是半成品）。前置 = rossum 数据在案（moltbook:74/75/137）；**ADR-009 落盘 + 维护者复核**。规模 = ADR 设计（Slice 表示/生命周期逃逸分析/证明携带联动/与 8MB 上限关系）→ 实现 read_bytes_range 先行（黄金逐字节 + 大文件分段）。验收 = 大文件分段处理黄金逐字节 + 四引擎一致。风险 = 证明系统复杂度（证明携带不达则 Slice 缓行——read_bytes_range 独立交付不受阻）。
+- **污点微窗（read_to_end）**：问题 = io.read_to_end 维持净 str——同源 read_line 已标，口径差异是 v0.77 登记的诚实边界。前置 = 维护者裁决窗口（破坏性小面——消费方需改污值代数处理）。规模 = 签名翻转 1 处 + 消费面迁移。验收 = 同源同污纪律闭合；良性路径逐字节。风险 = 低（消费面小）；与 stringify_untrusted 并窗裁决。
+
+### 4.13.7 Backlog 处置表增补（沿 §4.12.6 编制）
+
+| 项 | 处置 | 理由 |
+|----|------|------|
+| M4004 同族 / 取负 span / #58 cc / LSP 占位符 / N-60.1 / N-61.2 | **v0.83 候选（P1）** | 无门槛；同构模式已验证（v0.81 先例） |
+| coverage/bench/AI 快照复测 + capabilities 口径 + references/moltbook 审计 + N-66 | **v0.84 候选（P1）** | 纯测量/文档；为 v0.85 供数据 |
+| fix 第三波 / LSP 第二切片 | **v0.85 候选（P2）** | 数据驱动；前置 = v0.84 快照 |
+| 流式·Slice 簇（ADR-009） | **v0.86 候选（P2）** | rossum 数据在案；ADR 落盘 + 复核 |
+| read_to_end 翻转 / stringify_untrusted | **下一污点微窗（P2，维护者裁决）** | 破坏性窗口制；同源纪律闭合 |
+| serve TLS / C FFI ABI / 交叉编译 / asm 多架构 / 泛型缓存 / 证明扩大 / WS·UDP·keep-alive·自省 API / N-65.1 / N-60.3 / get(i) 载体 / 密码学 / e05·e24 warn 化 / 孤立代理对 / HTTP 流式 | **P3 条件驱动** | 各自门槛未满足（证据/用例/数据/设计） |
+| async 语义 ADR / 流敏感污点 / 形式化 / mask 重开 / Blood 远期参考 / L2-L3 | **P4 远期** | 语义定义或研究构想先行 |
+| 热重载 / 可执行内存·ROP / assume_clean / 净化器族扩张 / checker 拆分 / read_line·RegExp 抢占 / 键级混合载体 / 响应位授权 / eval 沙箱 / 本地化格式化 | **不做（维持）** | 既有否决/策略不排期 |
 
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
 
