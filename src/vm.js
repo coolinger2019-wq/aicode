@@ -87,10 +87,39 @@ export class VMInterp extends Interp {
               if ((this.steps & 16383) < 50) this.checkTimeQuota(null); // v0.32 墙钟熔断
             },
             panic_m4002: (spanIdx) => {
+              // v0.81(N-65.4):泛化文案导入保留——旧 AOT 产物(dist 内容寻址缓存)按名解析
+              // 导入,仍需宿主提供;新生成的模块一律改走 panic_m4002_op(携带操作数)。
               throw new Panic('M4002', '整数运算溢出/移位越界', spans[spanIdx] ?? null);
             },
             panic_m4004: (spanIdx) => {
               throw new Panic('M4004', '整数除零', spans[spanIdx] ?? null);
+            },
+            // v0.81(N-65.4):M4002 消息口径统一——wasm 溢出检查携带操作数穿越导入边界,
+            // 宿主按 tree/VM 同款模板组消息(interp.js panicOverflow/intBinSlow/negSlow
+            // 单一事实参考);统一后 tree/VM/wasm 三引擎 M4002 消息文本逐字一致。
+            // 签名:panic_m4002_op(a:i64, b:i64, op:i32, kind:i32, spanIdx:i32)
+            //   a/b = 操作数(wasm i64 位型 BigInt;u64 形态按无符号重解释,与 tree 的
+            //         u64 display 一致——tree 存 u64 为非负值)
+            //   op  = 运算符首字符 ASCII 码(42 *、43 +、45 -、47 /、60 <<、62 >>;kind 0/1/2 使用)
+            //   kind = 0 有符号双目溢出(整数${op}溢出:a op b 超出 i64 范围)
+            //          1 无符号双目溢出(同模板,i64u 范围 + 无符号重解释)
+            //          2 除法溢出(i64.min / -1;整数除法溢出:a / b——interp.js intBinSlow
+            //            除法分支口径,无"超出范围"后缀)
+            //          3 有符号移位位数越界(移位位数 b 越界(必须在 0..63)——intBinSlow
+            //            移位分支口径,wasm 资格恒 bits=64)
+            //          4 无符号移位位数越界(同模板,b 无符号重解释)
+            //          5 取负溢出(整数取负溢出:-a 超出范围——interp.js negSlow 口径;不读 b)
+            panic_m4002_op: (a, b, op, kind, spanIdx) => {
+              const opStr = { 42: '*', 43: '+', 45: '-', 47: '/', 60: '<<', 62: '>>' }[op] ?? '?';
+              const u = (x) => BigInt.asUintN(64, x);
+              let msg;
+              if (kind === 0) msg = `整数${opStr}溢出:${a} ${opStr} ${b} 超出 i64 范围`;
+              else if (kind === 1) msg = `整数${opStr}溢出:${u(a)} ${opStr} ${u(b)} 超出 i64u 范围`;
+              else if (kind === 2) msg = `整数除法溢出:${a} / ${b}`;
+              else if (kind === 3) msg = `移位位数 ${b} 越界(必须在 0..63)`;
+              else if (kind === 4) msg = `移位位数 ${u(b)} 越界(必须在 0..63)`;
+              else msg = `整数取负溢出:-${a} 超出范围`;
+              throw new Panic('M4002', msg, spans[spanIdx] ?? null);
             },
             str_const: (off) => {
               const h = strTable.length;

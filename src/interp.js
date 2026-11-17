@@ -650,6 +650,20 @@ export class Interp {
     }
   }
 
+  // v0.81(plan §4.12.5 NOTE-1):tree 侧纵深防御——lambda/本地函数体是新函数边界
+  // (v0.79 #71 语义定案),continue/break 不穿透函数调用帧。checker 已在函数边界拒绝
+  // 裸 continue/break(M3010/M3011,checkLambda 自 v0.79 起重置 inLoop);循环内的合法
+  // 信号由循环自身的 execStmt catch 就地消化,永不跨函数边界——此分支修复后不可达。
+  // 若到达即为 checker 与引擎边界不一致的工具链 bug(修复前历史行为:信号穿透 lambda
+  // 调用帧被外层循环捕获,吞迭代 exit 0)。与 compiler.js compileStmt Break/Continue
+  // 防御分支(v0.79 ② 具名 CompileError)同模式同口径;M4001 = 既有内部不变量码。
+  brkContGuard(e, span) {
+    if (e instanceof BrkSig || e instanceof ContSig) {
+      throw new Panic('M4001', '内部错误(树引擎):lambda/本地函数体内的 break/continue 穿透了函数调用帧(checker 已拦截,不应到达)', span);
+    }
+    return e;
+  }
+
   callClosure(clo, args, callSpan) {
     if (clo.t === 'fnref') {
       return this.callUser(clo.mod, clo.entry, null, args, callSpan);
@@ -686,6 +700,8 @@ export class Interp {
       this.callStack.pop();
       this.ensuresStack.pop();
       if (e instanceof RetSig) return e.value;
+      // v0.81 纵深防御:BrkSig/ContSig 不得穿透 lambda 调用帧(见 brkContGuard 注)
+      this.brkContGuard(e, callSpan);
       throw e;
     }
   }
@@ -1312,6 +1328,8 @@ export class Interp {
       this.ensuresStack.pop();
       this.contractEnvStack.pop();
       if (ex instanceof RetSig) return ex.value;
+      // v0.81 纵深防御:BrkSig/ContSig 不得穿透本地函数调用帧(见 brkContGuard 注)
+      this.brkContGuard(ex, e.span);
       throw ex;
     }
   }

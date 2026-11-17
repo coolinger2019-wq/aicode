@@ -7,8 +7,10 @@
 //   panic → ming_panic(发射期嵌入的完整诊断首行)+ exit(101)
 //
 // panic 消息逐点对齐:
-//   eligible 函数内 = wasm 层通用消息(vm.js panic_m4002/m4004:"整数运算溢出/移位越界")
-//   main 内         = binopValues 具体消息(含操作数值,如 "整数+溢出:a + b 超出 i64 范围")
+//   M4002(溢出/移位) = 四引擎统一(v0.81 N-65.4 架构师收口:main 与 eligible 函数同模板,
+//     与 tree/VM/wasm 逐字,含操作数值,如 "整数+溢出:a + b 超出 i64 范围";除法溢出为
+//     tree 专属模板 "整数除法溢出:a / b")
+//   M4004(除零/取模零) = main 内具体消息(含操作数)/ eligible 函数内泛化(同族登记不预支)
 // 诊断首行格式 = formatDiag 非TTY:"file:line:col: error CODE[name]: message"
 //
 // C1 明确不做(C2):str/Vec/Map 传参、容器 for-in、float→int 截断、f64 的
@@ -550,14 +552,16 @@ class CEmit {
     return t;
   }
 
-  // checked 运算发射。ctx.specific=true → main(binopValues 具体消息含操作数值)
-  // ctx.specific=false → eligible 函数内(对齐 wasm 层通用消息 vm.js panic_m4002/m4004)
+  // checked 运算发射。v0.81(N-65.4 架构师收口):M4002 消息四引擎统一——main 与 eligible
+  // 函数同模板同逐字(tree/VM/wasm 单一事实 interp.js panicOverflow/intBinSlow);除法溢出
+  // 用 tree 专属模板 `整数除法溢出:a / b`(无"超出范围"后缀,interp.js intBinSlow 除法
+  // 分支口径——顺带修正 cc
+  // main 的预存偏差)。M4004(除零/取模零)维持 main-specific/eligible-泛化分叉(同族登记
+  // 不预支,见 v63.40 注)。
   emitCheckedS(op, a, b, dst, span, ctx) {
     const P = (msg) => this.emitPanicStmt('M4002', 'integer-overflow', msg, span, ctx);
     const PZ = (msg) => this.emitPanicStmt('M4004', 'division-by-zero', msg, span, ctx);
-    const ovfMsg = ctx.specific
-      ? { fmt: `整数${op}溢出:${FMT.i64} ${op} ${FMT.i64} 超出 i64 范围\\n`, args: `, ${a}, ${b}` }
-      : null;
+    const ovfMsg = { fmt: `整数${op}溢出:${FMT.i64} ${op} ${FMT.i64} 超出 i64 范围\\n`, args: `, ${a}, ${b}` };
     switch (op) {
       case '+':
         ctx.open(`if (__builtin_add_overflow(${a}, ${b}, &${dst})) {`); P(ovfMsg); ctx.close('}');
@@ -572,7 +576,11 @@ class CEmit {
         ctx.open(`if (${b} == 0LL) {`);
         PZ(ctx.specific ? { fmt: `整数除零:${FMT.i64} / 0\\n`, args: `, ${a}` } : null);
         ctx.close('}');
-        ctx.open(`if (${b} == -1LL && ${a} == LLONG_MIN) {`); P(ovfMsg); ctx.close('}');
+        ctx.open(`if (${b} == -1LL && ${a} == LLONG_MIN) {`);
+        // v0.81 N-65.4:除法溢出与 tree 同模板(整数除法溢出:a / b,无"超出范围"后缀)——
+        // 旧实现走 ovfMsg 渲染为"整数/溢出:…超出 i64 范围",与 tree 预存分歧,此处一并修正
+        P({ fmt: `整数除法溢出:${FMT.i64} / ${FMT.i64}\\n`, args: `, ${a}, ${b}` });
+        ctx.close('}');
         ctx.line(`${dst} = ${a} / ${b};`);
         return;
       case '%':
@@ -589,19 +597,18 @@ class CEmit {
         return;
       case '<<': case '>>':
         ctx.open(`if (${b} < 0 || ${b} >= 64) {`);
-        P(ctx.specific ? { fmt: `移位位数 ${FMT.i64} 越界(必须在 0..63)\\n`, args: `, ${b}` } : null);
+        P({ fmt: `移位位数 ${FMT.i64} 越界(必须在 0..63)\\n`, args: `, ${b}` });
         ctx.close('}');
         if (op === '<<') {
           // v0.59 P1 审查阻塞 1:C 的 `unsigned long long << b` 丢位静默回绕
           // (3LL << 62 → LLONG_MIN),tree/VM 报 M4002。操作数先落临时量
           // (单次求值),移位后算术右移回检 (r >> b) != a → M4002。
-          // 消息口径沿用既有约定:main 内具体消息(与 tree 逐字)/ eligible 函数内
-          // 通用消息(与 wasm panic_m4002 一致)。
+          // 消息口径 v0.81 N-65.4:main 与 eligible 同模板,与 tree 逐字。
           const av = this.newTmp(ctx, 'i64', a);
           const bv = this.newTmp(ctx, 'i64', b);
           ctx.line(`${dst} = (long long)((unsigned long long)${av} << ${bv});`);
           ctx.open(`if ((${dst} >> ${bv}) != ${av}) {`);
-          P(ctx.specific ? { fmt: `整数<<溢出:${FMT.i64} << ${FMT.i64} 超出 i64 范围\\n`, args: `, ${av}, ${bv}` } : null);
+          P({ fmt: `整数<<溢出:${FMT.i64} << ${FMT.i64} 超出 i64 范围\\n`, args: `, ${av}, ${bv}` });
           ctx.close('}');
           return;
         }
@@ -615,9 +622,8 @@ class CEmit {
   emitCheckedU(op, a, b, dst, span, ctx) {
     const P = (msg) => this.emitPanicStmt('M4002', 'integer-overflow', msg, span, ctx);
     const PZ = (msg) => this.emitPanicStmt('M4004', 'division-by-zero', msg, span, ctx);
-    const ovfMsg = ctx.specific
-      ? { fmt: `整数${op}溢出:${FMT.u64} ${op} ${FMT.u64} 超出 i64u 范围\\n`, args: `, ${a}, ${b}` }
-      : null;
+    // v0.81 N-65.4:M4002 四引擎统一(main/eligible 同模板;见 emitCheckedS 头注)
+    const ovfMsg = { fmt: `整数${op}溢出:${FMT.u64} ${op} ${FMT.u64} 超出 i64u 范围\\n`, args: `, ${a}, ${b}` };
     switch (op) {
       case '+':
         ctx.open(`if (__builtin_add_overflow(${a}, ${b}, &${dst})) {`); P(ovfMsg); ctx.close('}');
@@ -642,16 +648,16 @@ class CEmit {
         return;
       case '<<': case '>>':
         ctx.open(`if (${b} >= 64) {`);
-        P(ctx.specific ? { fmt: `移位位数 ${FMT.u64} 越界(必须在 0..63)\\n`, args: `, ${b}` } : null);
+        P({ fmt: `移位位数 ${FMT.u64} 越界(必须在 0..63)\\n`, args: `, ${b}` });
         ctx.close('}');
         if (op === '<<') {
           // v0.59 P1 审查阻塞 1(u64):丢位回绕静默错值;逻辑右移回检
-          // (r >>u b) != a → M4002(同 signed 口径:main 具体 / eligible 通用)。
+          // (r >>u b) != a → M4002(v0.81 N-65.4:main/eligible 同模板,与 tree 逐字)。
           const av = this.newTmp(ctx, 'u64', a);
           const bv = this.newTmp(ctx, 'u64', b);
           ctx.line(`${dst} = ${av} << ${bv};`);
           ctx.open(`if ((${dst} >> ${bv}) != ${av}) {`);
-          P(ctx.specific ? { fmt: `整数<<溢出:${FMT.u64} << ${FMT.u64} 超出 i64u 范围\\n`, args: `, ${av}, ${bv}` } : null);
+          P({ fmt: `整数<<溢出:${FMT.u64} << ${FMT.u64} 超出 i64u 范围\\n`, args: `, ${av}, ${bv}` });
           ctx.close('}');
           return;
         }
@@ -664,7 +670,9 @@ class CEmit {
 
   // panic 语句。msg:{fmt, args}(fprintf 动态值)或 null(静态文本 = wasm 层通用消息)
   emitPanicStmt(code, name, msg, span, ctx) {
-    if (ctx.specific && msg) {
+    // v0.81 N-65.4:M4002 消息携带 msg 即动态发射(main/eligible 同口径);M4004 的
+    // eligible 调用以 msg=null 走泛化静态路径(分叉登记见 v63.40)
+    if (msg) {
       const head = `${span?.file ?? '<unknown>'}:${span?.line ?? 0}:${span?.col ?? 0}: error ${code}[${name}]: `;
       ctx.line(`fprintf(stderr, "%s${msg.fmt}", "${cstr(head)}"${msg.args});`);
     } else {
@@ -1904,7 +1912,7 @@ class CEmit {
     const ctx = {
       modFile,
       isMain,
-      specific: isMain, // main 用 binopValues 具体消息;函数内用 wasm 层通用消息
+      specific: isMain, // v0.81 N-65.4 后仅 M4004(除零/取模零)维持此分叉;M4002 已四引擎统一
       scopes: [new Map()],
       retTy,
       lines: [],

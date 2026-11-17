@@ -5,10 +5,14 @@
 //
 // 语义等价要点(与 JS 引擎逐点对照):
 //   * i64 加/减/乘在 wasm 中静默回绕 → 每次运算做溢出检查,溢出调导入 panic(M4002)
+//     v0.81(N-65.4):检查经 panic_m4002_op(a,b,op,kind,spanIdx) 携带操作数——宿主按
+//     tree/VM 同款模板组消息(整数+溢出:a + b 超出 i64 范围 等),三引擎消息逐字一致;
+//     泛化文案导入 panic_m4002 保留(旧 AOT 产物按名解析仍需宿主提供,新生成模块不再调用)
 //   * 除零显式检查(M4004);i64 min / -1 的除法(div_s 会 trap)先查(M4002)
 //   * 移位位数越界显式检查(M4002);wasm 移位自动按 64 取模,必须先拦
 //   * 循环回边与函数入口注入 ming_tick,保持 --max-steps 语义
-//   * 仅签名 i64;浮点/无符号/字符串/集合/闭包/效果函数不 eligible → 自动回落
+//   * i64/u64 数值 eligible(v0.15 起;u64 位型 i64);浮点复合/字符串/集合/闭包/效果函数
+//     不 eligible → 自动回落(头注原文"仅签名 i64"系 v0.15 前漂移,v0.81 更正)
 //   * eligible 函数的调用在 wasm 内直接 call(递归安全,无 JS 栈增长)
 
 export class Unsupported extends Error { }
@@ -132,8 +136,12 @@ const TOTAL_IMPORTS = 3 + MATH_IMPORTS.length + STR_IMPORTS.length + VECMAP_IMPO
 //   res_unwrap_f64(同型)->f64                       TI+13
 //   res_unwrap_str(同型)->i32                       TI+14
 //   frame_push(fnIdx,spanIdx) / frame_pop()         TI+15/16  #59 wasm→wasm 直调调用点帧透传
+// v0.81(N-65.4):panic_m4002_op(a,b,op,kind,spanIdx)                 TI+17  M4002 携带操作数
+//   (宿主按 tree/VM 同款模板组消息,见 vm.js 同名条目;kind 0–5 语义见该处注释)。
+//   泛化文案导入 panic_m4002(索引 1)保留不删——旧 AOT 产物按名解析仍需宿主提供,
+//   新生成模块不再调用它;删除会使 tick/panic×2 的既有索引布局与全部算式漂移。
 // 新增导入一律追加在尾部,既有索引不变——v0.59 ming_alloc 错位/v0.63 G1 off-by-one 教训。
-const DEFINED_BASE = TOTAL_IMPORTS + 17;
+const DEFINED_BASE = TOTAL_IMPORTS + 18;
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
@@ -598,6 +606,16 @@ export class WasmCompiler {
         const rt = results.map(x => x === 'i32' ? I32 : x === 'f64' ? F64 : I64);
         return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, rt))];
       }),
+      // v0.81(N-65.4):panic_m4002_op(TI+17)尾部追加——M4002 溢出 panic 携带操作数,
+      // 宿主按 tree/VM 同款模板组消息(见 vm.js 同名条目)。签名:
+      //   panic_m4002_op(a:i64, b:i64, op:i32, kind:i32, spanIdx:i32)
+      // 泛化文案导入 panic_m4002(索引 1)保留:旧 AOT 产物(dist 内容寻址缓存)按名解析
+      // 导入仍需宿主提供;新生成模块不再调用它,但保留在表内使既有索引布局零漂移
+      // (v0.63 G1 教训:导入表只追加不插删,panic_m4003/alloc 等算式全部依赖既有序)。
+      ...[['panic_m4002_op', ['i64', 'i64', 'i32', 'i32', 'i32'], []]].map(([n, params, results]) => {
+        const pt = params.map(x => x === 'i32' ? I32 : I64);
+        return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, []))];
+      }),
     ];
     // (N_IMPORTS 曾被引用但从未定义——整模块 ReferenceError 的元凶之一;参数已废弃)
 
@@ -732,8 +750,26 @@ export class WasmCompiler {
   }
   emitPanic(ctx, code, span) {
     // wasm 内永不返回:JS 导入函数直接 throw Ming Panic
+    // v0.81(N-65.4):M4002 不再走此泛化路径——一律经 emitPanicOp 携带操作数;
+    // 本函数余 M4004(除零)仍用(消息与操作数无关,tree/VM 的 `整数除零:<a> / 0`
+    // 操作数口径属 N-65.4 同族,另行登记不预支)。
     this.pushI32(ctx, this.spanId(span));
     this.callImport(ctx, code === 'M4004' ? 2 : 1, []);
+  }
+
+  // v0.81(N-65.4):M4002 携带操作数的 panic 发射(经 panic_m4002_op 导入,宿主组消息)。
+  // 前置条件(槽位合同):操作数 a 在 scratch0、b 在 scratch1——emitCheckedOp/emitCheckedOpU
+  // 的全部 M4002 检查点都满足(两函数头注的合同;检查点处 scratch0/1 未被冲掉——+/-/*
+  // 先落回绕值到 scratch2 再检查,除法/移位检查先于结果写入);取负(Unary)操作数在
+  // scratch0,scratch1 为陈旧值——kind 5
+  // 宿主不读 b,无影响。opCode = 运算符首字符 ASCII;kind 语义见 vm.js panic_m4002_op 注释。
+  emitPanicOp(ctx, opCode, kind, span) {
+    this.localGet(ctx, ctx.scratch0);
+    this.localGet(ctx, ctx.scratch1);
+    this.pushI32(ctx, opCode);
+    this.pushI32(ctx, kind);
+    this.pushI32(ctx, this.spanId(span));
+    this.callImport(ctx, this.panicOpIdx(), []);
   }
 
   // math 调用识别:math.sqrt(x) 与 std.math.sqrt(x) 两种形式 → math 名或 null
@@ -760,7 +796,7 @@ export class WasmCompiler {
         b.push(0x83);
         this.pushI64(ctx, 0n); b.push(0x53);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 43, 0, span); // N-65.4:M4002 携带操作数(下同)
         b.push(0x0b);
         return;
       }
@@ -774,7 +810,7 @@ export class WasmCompiler {
         b.push(0x83);
         this.pushI64(ctx, 0n); b.push(0x53);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 45, 0, span);
         b.push(0x0b);
         return;
       }
@@ -789,13 +825,13 @@ export class WasmCompiler {
         b.push(0x04); b.push(0x40);
         this.localGet(ctx, s0); this.pushI64(ctx, I64_MIN); b.push(0x51);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 42, 0, span); // b==-1 && a==i64.min
         b.push(0x0b);                    // end if
         b.push(0x05);                    // else(b != -1)
         this.localGet(ctx, s2); this.localGet(ctx, s1); b.push(0x7f); // div_s(r, b)
         this.localGet(ctx, s0); b.push(0x52);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 42, 0, span); // r/b != a(乘法溢出)
         b.push(0x0b);                    // end if D(else 分支内的除法检查)
         b.push(0x0b);                    // end if B(b == -1 检查,if/else)
         b.push(0x0b);                    // end block A(v0.39 修复:缺此 end——自 v0.23 起
@@ -816,7 +852,7 @@ export class WasmCompiler {
                                          // ("not enough arguments on the stack")→ 含 / 的
                                          // eligible 函数全部静默回落 JS VM)
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 47, 2, span); // 整数除法溢出(intBinSlow 除法分支口径,无"超出范围"后缀)
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x7f); // div_s
         this.localSet(ctx, s2);
@@ -838,7 +874,7 @@ export class WasmCompiler {
         this.localGet(ctx, s1); this.pushI64(ctx, 64n); b.push(0x59);
         b.push(0x72);                    // i32.or
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, op === '<<' ? 60 : 62, 3, span); // 移位位数越界(kind 3)
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1);
         b.push(op === '<<' ? 0x86 : 0x87);
@@ -850,7 +886,7 @@ export class WasmCompiler {
           this.localGet(ctx, s2); this.localGet(ctx, s1); b.push(0x87); // shr_s
           this.localGet(ctx, s0); b.push(0x52);                          // i64.ne
           b.push(0x04); b.push(0x40);
-          this.emitPanic(ctx, 'M4002', span);
+          this.emitPanicOp(ctx, 60, 0, span); // 整数<<溢出(kind 0)
           b.push(0x0b);
         }
         return;
@@ -1509,7 +1545,10 @@ export class WasmCompiler {
         this.pushI64(ctx, I64_MIN);
         b.push(0x51);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', e.span);
+        // N-65.4:取负溢出 kind 5(操作数在 scratch0;scratch1 为陈旧值,kind 5 宿主不读 b)。
+        // 消息与 tree/VM 的 negSlow 口径逐字(函数名锚,防行号漂移);span 取一元表达式(与 VM 一致;
+        // tree 的 negSlow 不带 span 报 <unknown>:0:0 属预存 tree 位缺口,不在本项范围)。
+        this.emitPanicOp(ctx, 45, 5, e.span);
         b.push(0x0b);
         // v0.56 W1 修复:同上——i64.sub 需要 [0, x] 才是 0 - x;此前栈序反了
         // (实测 `return -a;` 经 wasm 返回 a,负字面量比较同样失真)。
@@ -1787,7 +1826,7 @@ export class WasmCompiler {
         // u64 add 溢出 iff r < a(无符号)
         this.localGet(ctx, s2); this.localGet(ctx, s0); b.push(0x54); // lt_u
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 43, 1, span); // N-65.4:u64 溢出 kind 1(宿主无符号重解释)
         b.push(0x0b);
         return;
       }
@@ -1798,7 +1837,7 @@ export class WasmCompiler {
         // u64 sub 溢出 iff r > a(无符号)
         this.localGet(ctx, s2); this.localGet(ctx, s0); b.push(0x56); // gt_u
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 45, 1, span);
         b.push(0x0b);
         return;
       }
@@ -1812,7 +1851,7 @@ export class WasmCompiler {
         this.localGet(ctx, s2); this.localGet(ctx, s1); b.push(0x80); // div_u
         this.localGet(ctx, s0); b.push(0x52); // ne
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, 42, 1, span);
         b.push(0x0b);                    // end if
         b.push(0x0b);                    // end block
         return;
@@ -1843,7 +1882,7 @@ export class WasmCompiler {
         this.localGet(ctx, s1); this.pushI64(ctx, 64n); b.push(0x5a);
         b.push(0x72);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4002', span);
+        this.emitPanicOp(ctx, op === '<<' ? 60 : 62, 4, span); // 移位位数越界(kind 4,b 无符号重解释)
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1);
         b.push(op === '<<' ? 0x86 : 0x88); // shl / shr_u
@@ -1855,7 +1894,7 @@ export class WasmCompiler {
           this.localGet(ctx, s2); this.localGet(ctx, s1); b.push(0x88); // shr_u
           this.localGet(ctx, s0); b.push(0x52);                          // i64.ne
           b.push(0x04); b.push(0x40);
-          this.emitPanic(ctx, 'M4002', span);
+          this.emitPanicOp(ctx, 60, 1, span); // 整数<<溢出 u64(kind 1)
           b.push(0x0b);
         }
         return;
@@ -2135,6 +2174,12 @@ export class WasmCompiler {
   framePopIdx() {
     return TOTAL_IMPORTS + 16; // frame_pop() —— #59
   }
+
+  // v0.81(N-65.4):panic_m4002_op 导入索引(TI+17,与 emitModule 尾部追加序逐项对齐)
+  panicOpIdx() {
+    return TOTAL_IMPORTS + 17;
+  }
+
 
   // v0.63 §4.4.6b slice 2:数值 Vec 槽型判定(线性内存 ptr 表示,[len@0][cap@8][elems@16])。
   // vi64/vf64 = VecLit 局部;*ptr/*ptrm = 数值 Vec 形参(非 mut/mut)。

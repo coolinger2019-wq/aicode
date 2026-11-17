@@ -15,6 +15,13 @@
 // 形态重建(污载体无 debug/stringify 净出口——两者都是洗白禁面,序列化器用投影 +
 // 保污拼接复刻:键走净槽转义,值载荷保污,数值经 parse/stringify 往返取 JSON
 // 数值口径)。良性路径行为与迁移前逐字节一致。
+//
+// v0.81 C0 收敛(plan §4.12.5):重建路径的控制字符转义补齐。引擎 jsonWrite(即
+// debug(Json),黄金锚实测)对 U+0000–U+001F 逐字符转义——\b \t \n \f \r 用短形态,
+// 其余 27 个 C0 用 \uXXXX 小写补零;DEL U+007F 引擎不转义,工具同口径原样透出。
+// v0.77"语言面无码点数值途径"的登记结论据此修正:无需码点算术——replace 纯函数
+// 逐字面量枚举即可逐字节复刻(JSON.stringify 同款覆盖面)。字符串叶子 print 裸
+// 输出是设计内行为(出向透传,CLI 存储面),不在本收敛范围。
 use std.json;
 
 use std.fs;
@@ -57,8 +64,9 @@ fn lookup(j: Untrusted[Json], path: str) -> Result[Untrusted[Json], str] {
 }
 
 // JSON 字符串转义(净串形态,用于对象键):复刻 jsonWrite 的 JSON.stringify 口径
-// (\ " \n \r \t \b \f;其余 C0 控制字符的 \uXXXX 形态无法在语言面按码点识别,
-// 原样透出——良性文件不含此类字符,plan.md §5.1(2026-11-17 登记) 如实登记)
+// (\ " \n \r \t \b \f 短形态;其余 C0(U+0000–U+001F)以 \uXXXX 小写补零转义;
+// DEL U+007F 与引擎同口径原样透出——JSON.stringify 不转义 DEL,黄金锚实测逐字节)。
+// v0.81:27 条 C0 replace 补齐(v0.77"语言面无码点途径"登记以字面量枚举收敛)
 fn json_escape(s: str) -> str {
     let mut out = s;
     out = out.replace("\\", "\\\\");
@@ -68,10 +76,39 @@ fn json_escape(s: str) -> str {
     out = out.replace("\t", "\\t");
     out = out.replace("\u{8}", "\\b");
     out = out.replace("\u{c}", "\\f");
+    out = out.replace("\0", "\\u0000");
+    out = out.replace("\u{1}", "\\u0001");
+    out = out.replace("\u{2}", "\\u0002");
+    out = out.replace("\u{3}", "\\u0003");
+    out = out.replace("\u{4}", "\\u0004");
+    out = out.replace("\u{5}", "\\u0005");
+    out = out.replace("\u{6}", "\\u0006");
+    out = out.replace("\u{7}", "\\u0007");
+    out = out.replace("\u{b}", "\\u000b");
+    out = out.replace("\u{e}", "\\u000e");
+    out = out.replace("\u{f}", "\\u000f");
+    out = out.replace("\u{10}", "\\u0010");
+    out = out.replace("\u{11}", "\\u0011");
+    out = out.replace("\u{12}", "\\u0012");
+    out = out.replace("\u{13}", "\\u0013");
+    out = out.replace("\u{14}", "\\u0014");
+    out = out.replace("\u{15}", "\\u0015");
+    out = out.replace("\u{16}", "\\u0016");
+    out = out.replace("\u{17}", "\\u0017");
+    out = out.replace("\u{18}", "\\u0018");
+    out = out.replace("\u{19}", "\\u0019");
+    out = out.replace("\u{1a}", "\\u001a");
+    out = out.replace("\u{1b}", "\\u001b");
+    out = out.replace("\u{1c}", "\\u001c");
+    out = out.replace("\u{1d}", "\\u001d");
+    out = out.replace("\u{1e}", "\\u001e");
+    out = out.replace("\u{1f}", "\\u001f");
     return "\"" + out + "\"";
 }
 
-// 污字符串版转义(值载荷):replace 的 pattern/replacement 都是净槽常量,输出保污
+// 污字符串版转义(值载荷):replace 的 pattern/replacement 都是净槽常量,输出保污。
+// C0 集合与 json_escape 逐条相同(27 条 replace + 5 短形态;两函数不共享实现——
+// 污载体禁入净槽形参,M3049,复制是污值代数下的最小形态)
 fn json_escape_u(s: Untrusted[str]) -> Untrusted[str] {
     let mut out = s;
     out = out.replace("\\", "\\\\");
@@ -81,6 +118,33 @@ fn json_escape_u(s: Untrusted[str]) -> Untrusted[str] {
     out = out.replace("\t", "\\t");
     out = out.replace("\u{8}", "\\b");
     out = out.replace("\u{c}", "\\f");
+    out = out.replace("\0", "\\u0000");
+    out = out.replace("\u{1}", "\\u0001");
+    out = out.replace("\u{2}", "\\u0002");
+    out = out.replace("\u{3}", "\\u0003");
+    out = out.replace("\u{4}", "\\u0004");
+    out = out.replace("\u{5}", "\\u0005");
+    out = out.replace("\u{6}", "\\u0006");
+    out = out.replace("\u{7}", "\\u0007");
+    out = out.replace("\u{b}", "\\u000b");
+    out = out.replace("\u{e}", "\\u000e");
+    out = out.replace("\u{f}", "\\u000f");
+    out = out.replace("\u{10}", "\\u0010");
+    out = out.replace("\u{11}", "\\u0011");
+    out = out.replace("\u{12}", "\\u0012");
+    out = out.replace("\u{13}", "\\u0013");
+    out = out.replace("\u{14}", "\\u0014");
+    out = out.replace("\u{15}", "\\u0015");
+    out = out.replace("\u{16}", "\\u0016");
+    out = out.replace("\u{17}", "\\u0017");
+    out = out.replace("\u{18}", "\\u0018");
+    out = out.replace("\u{19}", "\\u0019");
+    out = out.replace("\u{1a}", "\\u001a");
+    out = out.replace("\u{1b}", "\\u001b");
+    out = out.replace("\u{1c}", "\\u001c");
+    out = out.replace("\u{1d}", "\\u001d");
+    out = out.replace("\u{1e}", "\\u001e");
+    out = out.replace("\u{1f}", "\\u001f");
     return "\"" + out + "\"";
 }
 

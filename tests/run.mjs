@@ -1627,21 +1627,27 @@ fn main() with io, fs {
     check('v39:cc 四方一致(fib+循环)', build.status === 0 && rcc.status === 0 && rcc.stdout === rvm.stdout && rvm.stdout === rtree.stdout && rvm.stdout === rnow.stdout,
       'build=' + build.status + ' cc=' + JSON.stringify(rcc.stdout) + ' vm=' + JSON.stringify(rvm.stdout) + ' tree=' + JSON.stringify(rtree.stdout));
 
-    // panic 对齐:main 内具体消息(binopValues)与 fn 内 wasm 通用消息,首行 + 退出码 101
+    // panic 对齐:main 内具体消息(binopValues)与 fn 内消息,首行 + 退出码 101
+    // v0.81(N-65.4):wasm 腿统一为操作数逐字口径后,架构师已收口 cc 侧残留
+    // (cbackend.js ctx.specific 门拆除——M4002 四引擎逐字),fullLine 全部恢复 true
+    // = 首行全等硬门槛(三形态均是);M4004(除零)eligible 泛化分叉另行登记不预支。
     const panicSrcs = [
-      ['main-ovf', 'main 内溢出', 'fn main() with io { let x = 9223372036854775807; let y = x + 1; print(str(y)); }'],
-      ['fn-ovf', 'fn 内溢出', 'fn boom(a: i64, b: i64) -> i64 { return a * b; } fn main() with io { print(str(boom(3037000500, 3037000500))); }'],
-      ['div-zero', '除零', 'fn main() with io { print(str(10 / 0)); }'],
+      ['main-ovf', 'main 内溢出', 'fn main() with io { let x = 9223372036854775807; let y = x + 1; print(str(y)); }', true],
+      ['fn-ovf', 'fn 内溢出', 'fn boom(a: i64, b: i64) -> i64 { return a * b; } fn main() with io { print(str(boom(3037000500, 3037000500))); }', true],
+      ['div-zero', '除零', 'fn main() with io { print(str(10 / 0)); }', true],
     ];
-    for (const [fileKey, desc, src] of panicSrcs) {
+    for (const [fileKey, desc, src, fullLine] of panicSrcs) {
       const pf = path.join(cdir, 'panic-' + fileKey + '.ming');
       fs.writeFileSync(pf, src);
       const rj = runMing(['run', pf]);
       spawnSync(process.execPath, [MING, 'cc', pf, '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
       const pexe = path.join(cdir, 'out', 'panic-' + fileKey + (process.platform === 'win32' ? '.exe' : ''));
       const rc2 = fs.existsSync(pexe) ? spawnSync(pexe, [], { encoding: 'utf8', timeout: 60000 }) : { status: -1, stderr: '' };
-      check('v39:panic 首行对齐(' + desc + ')', rj.code === 101 && rc2.status === 101 && firstLine(rj.stderr) === firstLine(rc2.stderr),
-        'js=' + JSON.stringify(firstLine(rj.stderr)) + ' cc=' + JSON.stringify(firstLine(rc2.stderr)) + ' codes=' + rj.code + '/' + rc2.status);
+      const ok = fullLine
+        ? rj.code === 101 && rc2.status === 101 && firstLine(rj.stderr) === firstLine(rc2.stderr)
+        : rj.code === 101 && rc2.status === 101;
+      check('v39:panic 首行对齐(' + desc + ')',
+        ok, 'js=' + JSON.stringify(firstLine(rj.stderr)) + ' cc=' + JSON.stringify(firstLine(rc2.stderr)) + ' codes=' + rj.code + '/' + rc2.status);
     }
 
     // u64/类型级/as 截断 全字节一致
@@ -4216,7 +4222,12 @@ fn main() with io, fs {
   const baseAbsEsc = baseU.split('\\').join('\\\\');
   const baseNorm = baseSrc.split(baseAbsEsc).join('<file>').split(baseU).join('<file>');
   const baseSha = createHash('sha256').update(baseNorm, 'utf8').digest('hex');
-  const BASE_C_SHA = 'c62b5c0d13435318b676258ce2885a356c0ce763523e88c03c64bd68daf162ab';
+  // v0.81 N-65.4 架构师收口理由化重校准:eligible 函数内 M4002 溢出检查的 panic 发射从
+  // 静态 ming_panic("整数运算溢出/移位越界") 改为携带操作数的动态 fprintf(四引擎消息
+  // 逐字统一)——本夹具 fn add(a,b) 是 eligible 函数,渲染 C 指纹随之合法变化
+  // (c62b5c0d… → c18cc21f…)。非 unsafe 程序不发射 ming_mem_alloc/std.mem 与
+  // cc 输出 === VM 输出两项断言不受影响,指纹仍逐字节锁定(防回归面不减)。
+  const BASE_C_SHA = 'c18cc21fe967975db6e8706cb1e207b11e1d289694831f5608a5f324bd2d59f6';
   if (hasCC58) {
     const baseC = ccRun58(baseU, path.join(dir, 'c5-baseline-run'));
     check('v58.11:既有 C 输出不变抽查(非 unsafe 程序不发射 ming_mem_alloc/std.mem;cc 输出与 VM 逐字一致;渲染 C 指纹逐字节不变)',
@@ -8740,10 +8751,11 @@ fn main() with io, fs {
     const st = strict63(p);
     const ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4002'))
       && st.code === 101 && (st.stderr ?? '').includes('M4002')
-      // wasm 层通用文案(既有口径)与 tree/VM 具体文案的差异如实锁定:码/退出码/位置一致
-      && (st.stderr ?? '').includes('整数运算溢出/移位越界') && (st.stderr ?? '').includes(`${p}:2:14:`)
+      // v0.81(N-65.4):wasm 消息统一为操作数逐字口径——原"通用文案"锁定行翻转,
+      // strict 腿与 tree 腿同文案同位置(cc eligible 泛化残留已于 v0.81 架构师收口,见 v63.40)
+      && (st.stderr ?? '').includes('整数<<溢出:3 << 62 超出 i64 范围') && (st.stderr ?? '').includes(`${p}:2:14:`)
       && (runs[2].stderr ?? '').includes('整数<<溢出:3 << 62 超出 i64 范围');
-    check('v63.37(阻塞1):i64 `<<` 结果溢出三引擎 M4002 exit 101;strict wasm 不再 ok(wasm 通用文案+同位置,tree 具体文案)',
+    check('v63.37(阻塞1):i64 `<<` 结果溢出三引擎 M4002 exit 101;strict wasm 不再 ok(N-65.4 后 wasm/tree 消息逐字一致)',
       ok, `runs=${fmtRuns63(runs)} strict=${st.code}:${JSON.stringify((st.stderr ?? '').split('\n')[0])}`);
   }
 
@@ -8801,9 +8813,9 @@ fn main() with io, fs {
     ].join('\n'));
     const r1 = ccAvail63 ? runMing(['cc', pf]) : null;
     const r2 = ccAvail63 ? runMing(['cc', pm]) : null;
-    check('v63.40(阻塞1/C):C 腿左移溢出 exit 101 M4002——eligible 函数通用文案、main 具体文案(与 tree 逐字);无编译器自动跳过',
+    check('v63.40(阻塞1/C):C 腿左移溢出 exit 101 M4002——eligible 与 main 均具体文案(与 tree 逐字;v0.81 N-65.4 架构师收口 ctx.specific 门拆除);无编译器自动跳过',
       (!r1 && !r2) || (r1 && r2 && r1.code === 101 && r2.code === 101
-        && (r1.stderr ?? '').includes('M4002') && (r1.stderr ?? '').includes('整数运算溢出/移位越界')
+        && (r1.stderr ?? '').includes('M4002') && (r1.stderr ?? '').includes('整数<<溢出:3 << 62 超出 i64 范围')
         && (r2.stderr ?? '').includes('整数<<溢出:3 << 62 超出 i64 范围')),
       `fn=${r1 ? r1.code + ':' + JSON.stringify((r1.stderr ?? '').split('\n')[0]) : 'skip'} `
       + `main=${r2 ? r2.code + ':' + JSON.stringify((r2.stderr ?? '').split('\n')[0]) : 'skip'}`);
@@ -18397,6 +18409,354 @@ fn main() with io, fs {
   // ---- §85-END
 }
 
+// ===================== 86. v0.81:tree ContSig 硬化 + json_query C0 序列化收敛 =====================
+// 文件所有权:§86 = 本区全部用例。两项引擎一致性清账(plan §4.12.5):
+//   ① tree 引擎 ContSig/BrkSig 纵深防御(v0.79 独立审查 NOTE-1)——src/interp.js 新增
+//     brkContGuard:callClosure(闭包分支)/callLocalFn 的 catch 在 RetSig 之后检查
+//     BrkSig/ContSig,到达函数边界即抛具名 Panic M4001(与 compiler.js compileStmt
+//     Break/Continue 防御分支 v0.79 ② 同模式同口径;M4001 = 既有内部不变量码,零新增
+//     M 码)。checker 已在函数边界拒绝裸 continue/break(M3010/M3011),循环内合法信号
+//     由循环 execStmt catch 就地消化——守卫正常程序不可达,白盒经合成闭包/本地函数
+//     直连内部方法验证(v82.7 同做法;信号由 body AST {nt:'Continue'/'Break'} 经
+//     execStmt 抛出真实 BrkSig/ContSig,不经导出面)。
+//   ② json_query C0 序列化收敛(v0.77 迁移期登记 → 本版修复)——tools/json_query.ming
+//     重建路径 json_escape/json_escape_u 补 27 条 C0 replace(0x00–0x07/0x0B/0x0E–0x1F;
+//     \b \t \n \f \r 短形态既有),与引擎 jsonWrite(debug(Json))逐字节一致。黄金锚
+//     实测:\u0001 → \u0001(小写四位补零),DEL U+007F 引擎不转义 → 工具同口径原样
+//     透出(v0.77"语言面无码点数值途径"登记以 replace 字面量枚举修正收敛——无需码点
+//     算术)。良性路径(不含 C0)输出与 HEAD 版本逐字节不变(黄金期望锁定)。
+{
+  const dir86 = path.join(TMP, 'v86');
+  fs.mkdirSync(dir86, { recursive: true });
+  const m86 = (name, src) => { const f = path.join(dir86, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags86 = ['', '--no-wasm', '--tree'];
+  const runAll86 = (p) => flags86.map(fl => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const same86 = (runs, want) => runs.every(r => r.code === 0 && r.stdout === want);
+  const fmtRuns86 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout)}`).join(' | ');
+  const GUARD_MSG_86 = '内部错误(树引擎):lambda/本地函数体内的 break/continue 穿透了函数调用帧(checker 已拦截,不应到达)';
+
+  // 白盒助手:真实 Checker 管线取 checkResult;VMInterp tree 模式 = 纯树引擎实例
+  // (callClosure/callLocalFn 走 Interp 原型链,不含 VM 编译路径)
+  const wb86 = () => {
+    const f = m86('v86_wb.ming', 'fn main() -> i64 with io { let g = (a: i64) => a + 1; print(g(1)); return 0; }\n');
+    return new VMInterp(new Checker(f).run(), { capture: true, tree: true });
+  };
+  const callClo86 = (bodyNode) => {
+    const interp = wb86();
+    const clo = {
+      t: 'closure', params: [{ name: 'a' }],
+      body: { nt: 'BlockExpr', block: { stmts: [bodyNode] } },
+      env: { vars: new Map(), parent: null, mod: null }, fnType: null,
+    };
+    try { interp.callClosure(clo, [{ t: 'int', v: 1n }], null); return null; } catch (e) { return e; }
+  };
+  const callLocalFn86 = (bodyNode) => {
+    const interp = wb86();
+    const sig = { decl: { params: [], body: { stmts: [bodyNode] }, ensures: null, requires: null, name: 'lf' }, env: null, mod: null, name: 'lf' };
+    try { interp.callLocalFn(sig, [], { span: null }); return null; } catch (e) { return e; }
+  };
+
+  // v86.1–v86.3 ContSig/BrkSig 白盒:守卫具名 M4001,消息逐字
+  {
+    const eC = callClo86({ nt: 'Continue', span: { file: 'wb', line: 1, col: 1 } });
+    check('v86.1:ContSig 白盒(callClosure·tree)——合成闭包体裸 continue 具名 Panic M4001 消息逐字(不再穿透)',
+      eC != null && eC.code === 'M4001' && eC.message === GUARD_MSG_86,
+      `e=${eC ? eC.constructor.name + ':' + eC.code + ':' + eC.message : 'null(信号穿透——守卫缺失)'}`);
+    const eB = callClo86({ nt: 'Break', span: { file: 'wb', line: 1, col: 1 } });
+    check('v86.2:BrkSig 白盒(callClosure·tree)——合成闭包体裸 break 同消息逐字',
+      eB != null && eB.code === 'M4001' && eB.message === GUARD_MSG_86,
+      `e=${eB ? eB.constructor.name + ':' + eB.code + ':' + eB.message : 'null(信号穿透——守卫缺失)'}`);
+    const eL = callLocalFn86({ nt: 'Continue', span: { file: 'wb', line: 1, col: 1 } });
+    check('v86.3:ContSig 白盒(callLocalFn·tree)——本地函数体裸 continue 同消息逐字',
+      eL != null && eL.code === 'M4001' && eL.message === GUARD_MSG_86,
+      `e=${eL ? eL.constructor.name + ':' + eL.code + ':' + eL.message : 'null(信号穿透——守卫缺失)'}`);
+  }
+
+  // v86.4/v86.5 正常形态零回归(§82 v82.3/v82.4 同款语料,三引擎逐字):
+  // lambda 自带 for+continue / while+break 仍合法——守卫只拦信号跨帧,不碰合法循环。
+  {
+    const f = m86('v86_4_own_loop.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let g = (n: i64) => {',
+      '        let mut acc = 0;',
+      '        for i in 0..n {',
+      '            if i % 2 == 0 { continue; }',
+      '            acc += i;',
+      '        }',
+      '        return acc;',
+      '    };',
+      '    for x in v {',
+      '        let w = v.map(g);',
+      '        print(str(x) + ":" + str(w.get(0).unwrap_or(-1)));',
+      '    }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll86(f);
+    check('v86.4:lambda 自带 for+continue + 外层 map(HOF 通道)三引擎逐字 1:0\\n2:0\\n3:0\\n',
+      same86(runs, '1:0\n2:0\n3:0\n'), fmtRuns86(runs));
+    const f2 = m86('v86_5_own_while.ming', [
+      'fn main() -> i64 with io {',
+      '    let find = (n: i64) => {',
+      '        let mut i = 0;',
+      '        while i < n {',
+      '            if i * i >= n { break; }',
+      '            i += 1;',
+      '        }',
+      '        return i;',
+      '    };',
+      '    print(str(find(10)));',
+      '    print(str(find(1)));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs2 = runAll86(f2);
+    check('v86.5:lambda 自带 while+break 合法三引擎逐字 4\\n1\\n',
+      same86(runs2, '4\n1\n'), fmtRuns86(runs2));
+  }
+
+  // v86.6–v86.11 json_query C0 收敛:夹具含 \u0000/\u0001/\u0007/\u000b/\u001f/DEL
+  // (引擎不转义,原样透出)/多字节(emoji/中文)+ C0 键;引擎黄金 = 真实 Ming 管线
+  // debug(Json)(--tree),另以 JSON.stringify(jsonWrite 的单一事实来源)双锚逐字节。
+  {
+    const c0obj = {
+      name: 'x\u0001y', tab: 'a\tb', bell: '\u0007', del: '\u007f',
+      nl: 'g\nh', cr: 'i\rj', bs: 'c\\d', esc: 'e"f',
+      nul: '\u0000', vt: '\u000b', us: '\u001f',
+      emoji: '😀', zh: '中文',
+      arr: ['p\u0007q', 'plain', 'tab\there'],
+      deep: { 'k\u0002v': 'x\u0001y', bell: '\u0007', vt: '\u000b', us: '\u001f', del: 'a\u007fb', inner: ['p\u0007q'] },
+      empty: {}, emptyarr: [], num: 3.5, boolv: true, nullv: null,
+    };
+    const c0json = JSON.stringify(c0obj);
+    const c0file = path.join(dir86, 'v86_c0.json');
+    fs.writeFileSync(c0file, c0json, 'utf8');
+    const paths86 = ['arr', 'deep', 'empty', 'emptyarr', 'num', 'boolv', 'nullv'];
+    // 引擎黄金程序:同一 JSON 文本作净字面量(Ming 转义 = 先反斜杠后引号,逐字复原)
+    const esc86 = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const goldSrc = [
+      'use std.json;',
+      'fn main() -> i64 with io {',
+      '    let s = "' + esc86(c0json) + '";',
+      '    let doc = match std.json.parse(s) { Ok(j) => j, Err(e) => { eprint(e); return 1; } };',
+      ...paths86.map(q => '    print(debug(doc.get("' + q + '").unwrap()));'),
+      '    return 0;',
+      '}',
+    ].join('\n');
+    const goldFile = m86('v86_gold.ming', goldSrc);
+    const gold = runMing(['run', goldFile, '--tree']);
+    check('v86.6:引擎 debug(Json) 黄金锚(--tree)——C0 语料 7 子树逐行解析输出 exit 0 且 stderr 空',
+      gold.code === 0 && gold.stdout.length > 0 && gold.stderr === '',
+      `code=${gold.code} out=${JSON.stringify(gold.stdout.slice(0, 120))} err=${JSON.stringify(gold.stderr.slice(0, 120))}`);
+    const jsGold = paths86.map(q => JSON.stringify(c0obj[q]) + '\n').join('');
+    check('v86.7:黄金锚出处(jsonWrite = JSON.stringify 单一事实)——引擎输出与 JS 重构逐字节一致',
+      gold.stdout === jsGold,
+      `got=${JSON.stringify(gold.stdout.slice(0, 120))} want=${JSON.stringify(jsGold.slice(0, 120))}`);
+    // 工具输出 vs 引擎黄金:重建路径(非字符串叶子)逐字节一致(C0 已收敛)
+    const tool = runMing(['tools', 'json', c0file, ...paths86]);
+    check('v86.8:json_query C0 收敛——工具多路径输出与引擎 debug(Json) 逐字节一致(含 \\u0001/\\u0007/\\u000b/\\u001f/\\u0000 与 C0 键 \\u0002)',
+      tool.code === 0 && tool.stdout === gold.stdout && tool.stderr === '',
+      `code=${tool.code} out=${JSON.stringify(tool.stdout.slice(0, 120))} want=${JSON.stringify(gold.stdout.slice(0, 120))} err=${JSON.stringify(tool.stderr.slice(0, 80))}`);
+    // 良性路径零回归:8 条常规查询黄金期望(与 HEAD 版本行为逐字节——对照实测锁定)
+    const benign = ['zh', 'emoji', 'arr.1', 'num', 'boolv', 'nullv', 'empty', 'emptyarr'];
+    const toolB = runMing(['tools', 'json', c0file, ...benign]);
+    const benignGold = '中文\n😀\nplain\n3.5\ntrue\nnull\n{}\n[]\n';
+    check('v86.9:良性路径零回归——不含 C0 的 8 条常规查询输出逐字节不变(HEAD 黄金期望)',
+      toolB.code === 0 && toolB.stdout === benignGold && toolB.stderr === '',
+      `code=${toolB.code} out=${JSON.stringify(toolB.stdout)} want=${JSON.stringify(benignGold)}`);
+    // 工具三引擎一致:C0 deep 查询 tree/default/no-wasm 输出逐字节相同
+    const deepLine = JSON.stringify(c0obj.deep) + '\n';
+    const rT = runMing(['run', '--tree', 'tools/json_query.ming', '--', c0file, 'deep']);
+    const rD = runMing(['run', 'tools/json_query.ming', '--', c0file, 'deep']);
+    const rN = runMing(['run', '--no-wasm', 'tools/json_query.ming', '--', c0file, 'deep']);
+    check('v86.10:工具三引擎一致(tree/default/no-wasm)——C0 deep 查询输出逐字节相同',
+      rT.code === 0 && rD.code === 0 && rN.code === 0
+      && rT.stdout === deepLine && rD.stdout === deepLine && rN.stdout === deepLine,
+      `tree=${rT.code}:${JSON.stringify(rT.stdout.slice(0, 80))} def=${rD.code}:${JSON.stringify(rD.stdout.slice(0, 80))} nowasm=${rN.code}:${JSON.stringify(rN.stdout.slice(0, 80))}`);
+    // 工具纪律:缺文件/键不存在/缺参一律 exit 1 + stderr 具名 + stdout 空
+    const e1 = runMing(['tools', 'json', path.join(dir86, 'v86_missing.json'), 'a']);
+    const e2 = runMing(['tools', 'json', c0file, 'nope']);
+    const e3 = runMing(['tools', 'json']);
+    check('v86.11:工具纪律——缺文件/键不存在/缺参一律 exit 1 + stderr 具名 + stdout 空',
+      e1.code === 1 && (e1.stderr || '').includes('无法读取文件') && e1.stdout === ''
+      && e2.code === 1 && (e2.stderr || '').includes('键不存在') && e2.stdout === ''
+      && e3.code === 1 && (e3.stderr || '').includes('用法') && e3.stdout === '',
+      `e1=${e1.code}:${JSON.stringify((e1.stderr || '').slice(0, 60))} e2=${e2.code}:${JSON.stringify((e2.stderr || '').slice(0, 60))} e3=${e3.code}:${JSON.stringify((e3.stderr || '').slice(0, 60))}`);
+  }
+
+  // ---- §86-END
+}
+
+// ===================== 87. v0.81:wasm M4002 消息口径统一(N-65.4) =====================
+// 文件所有权:§87 = 本区全部用例。实现面仅 src/vm.js(宿主导入 panic_m4002_op)+ src/wasm.js
+// (导入表尾部追加 TI+17;emitCheckedOp/emitCheckedOpU/Unary 共 13 个 M4002 调用点切换);
+// tree/VM(interp.js/compiler.js)零改动——消息模板单一事实参考在 interp.js
+// (panicOverflow/intBinSlow/negSlow),tree/VM 消息逐字不变,既有测试除 v63.37 的
+// wasm 泛化文案锁定行(分支 a 统一后必然翻转)外零校准。
+// 分支裁决(架构师合同 plan §4.12.5):**分支 a**。成本评估证据:每个 M4002 检查点的
+// 操作数都已在 scratch0(a)/scratch1(b) 槽(emitCheckedOp/emitCheckedOpU 头注槽位合同;
+// 检查点处 s0/s1 未被冲掉——+/-/* 先落回绕值到 scratch2 再检查,除法/移位检查先于结果写入)
+// ——携带穿越导入边界 = 尾部追加 1 条导入 + 实参压栈,
+// 零二进制布局改动、零计费改动、零资格语义改动(§v87.20 锁定),不触碰 wasm 签名/槽位/
+// locals(未触发 plan §4.3.8/§5.1 前置条件)。旧 AOT 产物(dist 内容寻址缓存)按名解析导入,
+// 泛化导入 panic_m4002 保留(索引 1 不删,新生成模块不再调用)——v87.22 白盒锁定。
+// 残留(如实登记,不预支):① N-65.4 同族 **cc eligible 函数**泛化口径——**已于本版
+// 架构师收口**(cbackend.js ctx.specific 门拆除,M4002 四引擎逐字;v39 fullLine 翻回
+// true + v63.40 断言翻转同步落盘);② **M4004 除零/取模零**同族分歧(tree/VM
+// `整数除零:<a> / 0` 与 `整数取模零:<a> % 0` 两形态——取模零为 tree 专属模板,cc main
+// 已同口径,eligible 泛化输出"整数除零"连措辞都不同——未来统一时两模板都要做,
+// 同一 import 扩面形态可复用本项做法);③ 取负溢出 tree 位置 <unknown>:0:0
+// (interp.js negSlow 不带 span,VM/wasm/cc 带位置)。
+// fuzz 实测:norm 只比对诊断码不含消息文本(fuzz.mjs:373),双种子(44044/777)×25 全绿。
+{
+  const dir87 = path.join(TMP, 'v81');
+  fs.mkdirSync(dir87, { recursive: true });
+  const m87 = (name, src) => { const f = path.join(dir87, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags87 = ['', '--no-wasm', '--tree'];
+  const runAll87 = (p) => flags87.map(f => runMing(f ? ['run', p, f] : ['run', p]));
+  const fl87 = (r) => {
+    // panic 首行 = 含 ": error M4002" 的第一行(stderr 首行在 MING_WASM_DEBUG=1 下是 [wasm] 探测行)
+    const ls = (r.stderr ?? '').split('\n');
+    return ls.find(l => l.includes(': error M4002')) ?? ls[0] ?? '';
+  };
+  // 消息文本 = 首行去掉 "<file>:<line>:<col>: error M4002[integer-overflow]: " 头
+  const msg87 = (r) => {
+    const m = /^(.*? error M4002\[integer-overflow\]: )(.*)$/.exec(fl87(r));
+    return m ? m[2] : '(no-m4002:' + fl87(r).slice(0, 90) + ')';
+  };
+  const fmt87 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(fl87(r))}`).join(' | ');
+  const strict87 = (p) => runMing(['run', p, '--strict-wasm'], { env: { MING_WASM_DEBUG: '1' } });
+  const cc87 = (p) => runMing(['cc', p]);
+  const ccAvail87 = (() => {
+    if (process.env.MING_CC && fs.existsSync(process.env.MING_CC)) return true;
+    for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(c)) return true;
+    }
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+  })();
+
+  // ---- 溢出形态矩阵 × 引擎腿(v87.1–v87.18) ----
+  // 每形态:tree/--no-wasm/默认(wasm) 三腿 exit 101 + M4002 + 消息文本逐字一致;
+  // posKind='std' 断言三腿**首行**(位置+消息)逐字一致;'neg'/'vec' 位置有预存缺口
+  // (见头注残留③与 vec 的 VM 1 列差)只锁消息文本,位置不锁(将来修复零校准)。
+  // cc 腿(有编译器时):v0.81 N-65.4 架构师收口后 M4002 四引擎逐字——std 形态首行全等,
+  // neg 形态消息同锁(位置与 tree 同源缺口)。
+  const forms87 = [
+    // -- 有符号 i64(emitCheckedOp;eligible 函数内溢出,wasm 腿经 panic_m4002_op)--
+    ['f87_add_p.ming', ['fn f(a: i64, b: i64) -> i64 { return a + b; }', 'fn main() with io { print(str(f(9223372036854775807, 1))); }'], '整数+溢出:9223372036854775807 + 1 超出 i64 范围', 'std'],
+    ['f87_add_n.ming', ['fn f(a: i64, b: i64) -> i64 { return a + b; }', 'fn main() with io { print(str(f(-9223372036854775807, -2))); }'], '整数+溢出:-9223372036854775807 + -2 超出 i64 范围', 'std'],
+    ['f87_sub.ming', ['fn f(a: i64, b: i64) -> i64 { return a - b; }', 'fn main() with io { print(str(f(-9223372036854775807, 2))); }'], '整数-溢出:-9223372036854775807 - 2 超出 i64 范围', 'std'],
+    ['f87_mul.ming', ['fn f(a: i64, b: i64) -> i64 { return a * b; }', 'fn main() with io { print(str(f(9223372036854775807, 2))); }'], '整数*溢出:9223372036854775807 * 2 超出 i64 范围', 'std'],
+    ['f87_mul_min.ming', ['fn f(a: i64, b: i64) -> i64 { return a * b; }', 'fn main() with io { print(str(f(-9223372036854775808, -1))); }'], '整数*溢出:-9223372036854775808 * -1 超出 i64 范围', 'std'],
+    ['f87_div.ming', ['fn f(a: i64, b: i64) -> i64 { return a / b; }', 'fn main() with io { print(str(f(-9223372036854775808, -1))); }'], '整数除法溢出:-9223372036854775808 / -1', 'std'],
+    ['f87_shl_rng.ming', ['fn f(a: i64, b: i64) -> i64 { return a << b; }', 'fn main() with io { print(str(f(1, 64))); }'], '移位位数 64 越界(必须在 0..63)', 'std'],
+    ['f87_shl_ng.ming', ['fn f(a: i64, b: i64) -> i64 { return a << b; }', 'fn main() with io { print(str(f(1, -1))); }'], '移位位数 -1 越界(必须在 0..63)', 'std'],
+    ['f87_shr_rng.ming', ['fn f(a: i64, b: i64) -> i64 { return a >> b; }', 'fn main() with io { print(str(f(1, 64))); }'], '移位位数 64 越界(必须在 0..63)', 'std'],
+    ['f87_shl_bits.ming', ['fn f(a: i64, b: i64) -> i64 { return a << b; }', 'fn main() with io { print(str(f(3, 62))); }'], '整数<<溢出:3 << 62 超出 i64 范围', 'std'],
+    // 取负 i64::MIN(kind 5)。tree 位置 <unknown>:0:0 预存(negSlow 无 span),位置不锁。
+    ['f87_neg.ming', ['fn f(a: i64) -> i64 { return -a; }', 'fn main() with io { print(str(f(-9223372036854775808))); }'], '整数取负溢出:--9223372036854775808 超出范围', 'neg'],
+    // eligible 函数内复合赋值 x += 1(Assign → emitCheckedOp 路径,VM ADDI 同消息模板)
+    ['f87_incr.ming', ['fn g(a: i64) -> i64 { let mut x = a; x += 1; return x; }', 'fn main() with io { print(str(g(9223372036854775807))); }'], '整数+溢出:9223372036854775807 + 1 超出 i64 范围', 'std'],
+    // -- u64(emitCheckedOpU;宿主 BigInt.asUintN 重解释,与 tree 的 u64 display 一致)--
+    ['f87_uadd.ming', ['fn f(a: u64, b: u64) -> u64 { return a + b; }', 'fn main() with io { print(str(f(18446744073709551615u64, 1u64))); }'], '整数+溢出:18446744073709551615 + 1 超出 i64u 范围', 'std'],
+    ['f87_usub.ming', ['fn f(a: u64, b: u64) -> u64 { return a - b; }', 'fn main() with io { print(str(f(0u64, 1u64))); }'], '整数-溢出:0 - 1 超出 i64u 范围', 'std'],
+    ['f87_umul.ming', ['fn f(a: u64, b: u64) -> u64 { return a * b; }', 'fn main() with io { print(str(f(9223372036854775808u64, 2u64))); }'], '整数*溢出:9223372036854775808 * 2 超出 i64u 范围', 'std'],
+    ['f87_ushl.ming', ['fn f(a: u64, b: u64) -> u64 { return a << b; }', 'fn main() with io { print(str(f(3u64, 63u64))); }'], '整数<<溢出:3 << 63 超出 i64u 范围', 'std'],
+    ['f87_ushr.ming', ['fn f(a: u64, b: u64) -> u64 { return a >> b; }', 'fn main() with io { print(str(f(1u64, 64u64))); }'], '移位位数 64 越界(必须在 0..63)', 'std'],
+    // -- Vec 下标复合赋值 v[0] += 1(Assign Index 复合路径内联 emitCheckedOp,span = target.span;
+    //    tree 与 wasm 同位,VM 直译路径预存 1 列差——只锁消息文本与 tree/wasm 首行相等)--
+    ['f87_veccomp.ming', ['fn h(mut v: Vec[i64]) -> i64 { v[0] = 9223372036854775807; v[0] += 1; return v[0]; }', 'fn main() with io { let w: Vec[i64] = [0]; print(str(h(w))); }'], '整数+溢出:9223372036854775807 + 1 超出 i64 范围', 'vec'],
+  ];
+  forms87.forEach(([name, lines, want, posKind], fi) => {
+    const p = m87(name, lines.join('\n') + '\n');
+    const runs = runAll87(p);
+    // cc 腿:vec 下标复合赋值形态 cc C1 发射期拒绝(exit 1,登记形态)→ 不进 cc 断言
+    const ccR = ccAvail87 && posKind !== 'vec' ? cc87(p) : null;
+    let ok = runs.every(r => r.code === 101 && (r.stderr ?? '').includes('M4002') && msg87(r) === want);
+    if (posKind === 'std') {
+      // 首行逐字一致(位置 + 消息;三腿 span 同源:tree e.span / VM 指令 span / wasm spanId)
+      // 腿序 runs[0]=默认(wasm) runs[1]=--no-wasm(VM) runs[2]=--tree
+      ok = ok && fl87(runs[0]) === fl87(runs[1]) && fl87(runs[0]) === fl87(runs[2])
+        && fl87(runs[0]).startsWith(p + ':1:');
+    } else if (posKind === 'neg') {
+      // 消息已统一;位置:wasm/VM 带 span 且相等(预存),tree <unknown>(预存,不锁)
+      ok = ok && fl87(runs[0]) === fl87(runs[1]) && fl87(runs[0]).startsWith(p + ':1:30:');
+    } else if (posKind === 'vec') {
+      // 消息已统一;tree 与 wasm 首行相等(同 target.span),VM 1 列差预存不锁
+      ok = ok && fl87(runs[0]) === fl87(runs[2]) && fl87(runs[0]).startsWith(p + ':1:');
+    }
+    // cc 腿(v0.81 N-65.4 架构师收口 cbackend 后):M4002 四引擎消息逐字——std 形态
+    // 首行(位置+消息)与 js 腿全等,neg 形态消息同锁(位置预存缺口与 tree 同源不锁)
+    ok = ok && (!ccR || (ccR.code === 101 && (ccR.stderr ?? '').includes('M4002')));
+    if (ccR) {
+      if (posKind === 'std') ok = ok && fl87(ccR) === fl87(runs[0]);
+      else ok = ok && msg87(ccR) === want;
+    }
+    check(`v87.${fi + 1}:M4002 消息三引擎逐字一致(${name.replace(/^f87_/, '').replace(/\.ming$/, '')}${posKind === 'std' ? ',首行含位置' : ',消息文本'})` + (posKind === 'vec' ? '(cc C1 拒绝该形态,跳过)' : ' + cc 腿 101'),
+      ok, `runs=${fmt87(runs)} cc=${ccR ? ccR.code + ':' + JSON.stringify(fl87(ccR)) : 'skip'}`);
+  });
+
+  // ---- v87.19:main 内联溢出——四腿(tree/VM/wasm-main 兜底/cc main)首行逐字一致 ----
+  // main 带 io 不 eligible → 默认腿走 VM 兜底(本就具体口径);cc main = specific(specific=true)。
+  {
+    const p = m87('f87_main_inline.ming', 'fn main() with io { let m = i64.max_value(); print(str(m + 1)); }\n');
+    const runs = runAll87(p);
+    const ccR = ccAvail87 ? cc87(p) : null;
+    const want = '整数+溢出:9223372036854775807 + 1 超出 i64 范围';
+    const ok = runs.every(r => r.code === 101 && msg87(r) === want)
+      && fl87(runs[0]) === fl87(runs[1]) && fl87(runs[0]) === fl87(runs[2])
+      && (!ccR || (ccR.code === 101 && msg87(ccR) === want && fl87(ccR) === fl87(runs[0])));
+    check('v87.19:main 内联 +1 溢出——三腿首行逐字 + cc main 具体口径同位同文(四腿一致)',
+      ok, `runs=${fmt87(runs)} cc=${ccR ? ccR.code + ':' + JSON.stringify(fl87(ccR)) : 'skip'}`);
+  }
+
+  // ---- v87.20/v87.21:strict-wasm 语义零回归(资格/实例化不受新导入影响) ----
+  {
+    const pok = m87('f87_strict_ok.ming', 'fn f(a: i64, b: i64) -> i64 { return a * 2 + (b << 1); }\nfn main() with io { print(str(f(3, 4))); }\n');
+    const sok = strict87(pok);
+    check('v87.20:strict wasm 资格零回归——算术 fn 仍 eligible([wasm] fn f OK,无 REJECT/实例化失败),exit 0 输出 14',
+      sok.code === 0 && sok.stdout === '14\n' && (sok.stderr ?? '').includes('[wasm] fn f OK')
+      && !(sok.stderr ?? '').includes('REJECT') && !(sok.stderr ?? '').includes('实例化失败'),
+      `code=${sok.code} out=${JSON.stringify(sok.stdout)} err=${JSON.stringify((sok.stderr ?? '').split('\n').filter(l => l.includes('wasm')).join(' | ').slice(0, 160))}`);
+    const povf = m87('f87_strict_ovf.ming', 'fn f(a: i64) -> i64 { return a + 1; }\nfn main() with io { print(str(f(9223372036854775807))); }\n');
+    const sovf = strict87(povf);
+    // strict 下 eligible>0 且模块健康 → 程序真实执行 panic exit 101;若导入扩展破坏
+    // 编码/实例化 → wasm 回落 → exit 2(本断言同时证明溢出检查仍在 wasm 腿内执行)
+    check('v87.21:strict wasm 溢出 fn 仍 eligible 真实执行(exit 101 + 具体文案;非 exit 2 回落)',
+      sovf.code === 101 && (sovf.stderr ?? '').includes('M4002') && msg87(sovf) === '整数+溢出:9223372036854775807 + 1 超出 i64 范围',
+      `code=${sovf.code}:${JSON.stringify(fl87(sovf))}`);
+  }
+
+  // ---- v87.22(白盒):导入表尾部追加正确(TI+17)+ 旧导入保留(AOT 兼容) ----
+  // §32 同款单次编译白盒:Checker → compile → compiled.wasm.bytes → WebAssembly.Module.imports
+  // (按导入节序返回)。尾部追加 = 末位导入 panic_m4002_op;panic_m4002 仍在索引 1
+  // (v0.63 G1 教训:只追加不插删,tick/panic×2/math 基址算式零漂移);panic_m4002* 恰 2 个。
+  // 旧 AOT 产物兼容 = 泛化导入保留 + 宿主 vm.js 同名条目保留(按名解析,新产物多 1 条导入
+  // 对旧宿主不可见;旧产物在新宿主实例化所需的 panic_m4002 仍提供)。
+  {
+    const { Checker } = await import('../src/checker.js');
+    const { compile } = await import('../src/compiler.js');
+    const src = 'fn f(a: i64, b: i64) -> i64 { return a + b; }\nfn main() with io { print(str(f(1, 2))); }\n';
+    const p = m87('f87_imports.ming', src);
+    const c = new Checker(p, () => src);
+    const result = c.run();
+    const compiled = compile(result);
+    const bytes = compiled?.wasm?.bytes ?? null;
+    let imports = null;
+    if (bytes) {
+      const mod = new WebAssembly.Module(bytes); // 构造成功 = 模块校验通过(新导入签名合法)
+      imports = WebAssembly.Module.imports(mod);
+    }
+    const last = imports ? imports[imports.length - 1] : null;
+    check('v87.22(白盒):导入表尾部追加——末位 = ming/panic_m4002_op;panic_m4002 保留索引 1;panic_m4002* 恰 2 个;模块校验通过',
+      !!bytes && !!imports && last?.module === 'ming' && last?.name === 'panic_m4002_op'
+      && imports[1]?.module === 'ming' && imports[1]?.name === 'panic_m4002'
+      && imports.filter(i => i.name.startsWith('panic_m4002')).length === 2,
+      `nImport=${imports ? imports.length : 'null'} last=${JSON.stringify(last ?? null)} idx1=${imports ? JSON.stringify(imports[1] ?? null) : 'null'}`);
+  }
+  // ---- §87-END
+}
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
