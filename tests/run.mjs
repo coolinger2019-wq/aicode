@@ -167,7 +167,9 @@ DIAG_CASES.forEach(([desc, src, code, runtime, expectedOut], idx) => {
   check('main 返回 i64 作为退出码', r.code === 7, `code=${r.code}`);
 }
 {
-  const p = mingFile('args.ming', 'fn main(args: Vec[str]) with io { print(str(args.len())); print(args[0]); }');
+  // v0.82(ADR-008):main args 翻转为 Vec[Untrusted[str]](元素级污点);print 出向
+  // 透传(回显合法),期望 stdout 逐字不变
+  const p = mingFile('args.ming', 'fn main(args: Vec[Untrusted[str]]) with io { print(str(args.len())); print(args[0]); }');
   const r = runMing(['run', p, '--', 'hello', 'world']);
   check('main 接收 argv', r.code === 0 && r.stdout === '2\nhello\n', `stdout=${JSON.stringify(r.stdout)}`);
 }
@@ -1519,8 +1521,13 @@ fn main() with io, fs {
     '    return "hi, " + name;',
     '}',
     '',
-    'fn main(args: Vec[str]) with io {',
-    '    let who = if args.len() > 0 { args[0] } else { "ming" };',
+    // v0.82(ADR-008):args[0] 是污值,与净字面量 "ming" 的 if 分支混型是 M3049——
+    // 迁移形态:sanitize_cli_path 校验取净(Ok 原样)后进 greet(净 str);
+    // launcher 期望 stdout 逐字不变(hi, alice/ming/bob/carol)
+    'use std.unstr;',
+    'fn main(args: Vec[Untrusted[str]]) with io {',
+    '    let mut who = "ming";',
+    '    if args.len() > 0 { match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => { who = p; }, Err(_) => { who = who; } } }',
     '    print(greet(who));',
     '    print(str(args.len()));',
     '}',
@@ -2875,7 +2882,8 @@ fn main() with io, fs {
   fs.writeFileSync(path.join(dir, 'ming.toml'), '[project]\nname = "cli"\nversion = "0.1.0"\nentry = "app.ming"\n');
   const app = path.join(dir, 'app.ming');
   fs.writeFileSync(app, [
-    'fn main(args: Vec[str]) -> i64 with io {',
+    // v0.82(ADR-008):签名翻转(print 出向透传,期望 stdout 逐字不变)
+    'fn main(args: Vec[Untrusted[str]]) -> i64 with io {',
     '    print(str(args.len()));',
     '    for a in args { print(a); }',
     '    return 0;',
@@ -3639,7 +3647,8 @@ fn main() with io, fs {
   // 断言 stdout/退出码与正常(继承)环境逐字一致,参数按字节透传。
   const penv = mkProj53('v53-env-i');
   write53(penv, 'app.ming', [
-    'fn main(args: Vec[str]) with io {',
+    // v0.82(ADR-008):签名翻转(print 出向透传,期望 stdout 逐字不变)
+    'fn main(args: Vec[Untrusted[str]]) with io {',
     '    print("dist-ok");',
     '    print(str(args.len()));',
     '    if args.len() > 0 { print(args[0]); }',
@@ -18756,6 +18765,613 @@ fn main() with io, fs {
       `nImport=${imports ? imports.length : 'null'} last=${JSON.stringify(last ?? null)} idx1=${imports ? JSON.stringify(imports[1] ?? null) : 'null'}`);
   }
   // ---- §87-END
+}
+
+// ===================== 88. v0.82:污点 v1.3 窗口(argv 载体 + 响应头第四载体 + metadata;ADR-008)=====================
+// 文件所有权:§88 = 本区全部用例。实现面:src/checker.js(载体白名单扩 Map[str,str] 第四载体 +
+// untrustedMapMethod 投影表 + main args 编译期 M3049 + fs.metadata / net.http_request_opts 签名翻转
+// + M3050 待解锁清单文案更新)+ src/interp.js 与 src/vm.js(M3023 消息随 main 合法带参形态翻转,
+// 运行时值交付路径零改动)+ src/compiler.js(tryWasm 核验定案,零代码改动)。
+// 引擎面零新机制(v88.11 白盒锁定):Untrusted[Map] 形参经 v0.61 顶层解包 → Map 形参('mstr' 槽,
+// v0.59 #41);Vec[Untrusted[str]] 形参(argv 元素级)顶层是 Vec 不解包 → typeToNumTy 对 untrusted
+// 元素返回 null → paramSlotTy 回落 'vi64' 句柄槽(v80.17(a) 自 v0.80 锁定的资格形态)——实现期
+// 实测:若做元素级解包,槽型翻成 'vstr' 会翻转 v80.17(a) 的 vs.len() 资格(非直接调用回落),
+// 故解包维持顶层(ADR-008 §2.6/清单 7 "零新机制"的实测依据,已写入 compiler.js 注释)。
+// 迁移完成记录(2026-11-18,Agent F):14 个 tools/*.ming(含 v0.80 后新增 xnsni/xnopen)+
+// 本文件 4 处 `fn main(args: Vec[str])` + tests/net_e2e.mjs 2 处已全部翻转 Vec[Untrusted[str]];
+// 工具 main 头部逐元素过 std.unstr.sanitize_cli_path 取净值(路径位/CLI 匹配比较串;空串参数
+// 原样保留迁移前语义——env 回退/解析失败路径),parse_i64 位沿污值代数,回显位走出向透传;
+// 良性路径与迁移前 HEAD 工具基线逐字节一致(43 例对照;唯一差异例 = todo_scan 无参自扫描
+// 仓库本体的语料行号漂移,非工具行为)。§89 锁定迁移面。GUIDE/docs/package.json 由架构师集成。
+{
+  const dir88 = path.join(TMP, 'v82');
+  fs.mkdirSync(dir88, { recursive: true });
+  const m88 = (name, src) => { const f = path.join(dir88, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags88 = ['', '--no-wasm', '--tree'];
+  const runAll88 = (p, args = []) => flags88.map(f => runMing(f ? ['run', p, ...args, f] : ['run', p, ...args]));
+  const same88 = (runs, want, code = 0) => runs.every(r => r.code === code && r.stdout === want);
+  const fmtRuns88 = (runs) => runs.map(r => `${r.code}:${JSON.stringify(r.stdout.slice(0, 60))}`).join(' | ');
+  const chk88 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const codes88 = (res) => (res.j ? res.j.diagnostics.map((d) => d.code).join(',') : '(no-json:exit ' + res.code + ')');
+  const errsOf88 = (res, code) => (res.j ? res.j.diagnostics.filter(d => d.code === code) : []);
+
+  // ---- v88.1:main 正例——Vec[Untrusted[str]] + sanitize_cli_path 逐元素消费,三引擎逐字 ----
+  {
+    const p = m88('v88_main_ok.ming', [
+      'use std.unstr;',
+      'fn main(args: Vec[Untrusted[str]]) -> i64 with io {',
+      '    let mut n: i64 = 0;',
+      '    for a in args {',
+      '        match std.unstr.sanitize_cli_path(a) {',
+      '            Ok(p) => { print(p); n += 1; },',
+      '            Err(_) => { print("BAD"); },',
+      '        }',
+      '    }',
+      '    return n;',
+      '}',
+    ].join('\n'));
+    const runs = runAll88(p, ['aa/bb', 'x;y']);
+    check('v88.1:main(args: Vec[Untrusted[str]]) 正例——argv 逐元素 sanitize_cli_path 后三引擎输出逐字(exit 2)',
+      same88(runs, 'aa/bb\nx;y\n', 2), `runs=${fmtRuns88(runs)}`);
+  }
+
+  // ---- v88.2:main 负例——净 Vec[str] 声明 → M3049 恰一条(extern 裸 str 返回先例,零新码) ----
+  {
+    const p = m88('v88_main_neg.ming', [
+      'fn main(args: Vec[str]) -> i64 with io {',
+      '    print(args.len());',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const r = chk88(p);
+    const m3049 = errsOf88(r, 'M3049');
+    check('v88.2:main(args: Vec[str]) → 编译期 M3049 恰一条,消息点名 Vec[Untrusted[str]] + sanitize_cli_path 处方',
+      r.code === 1 && r.j && r.j.diagnostics.length === 1 && m3049.length === 1
+      && m3049[0].message.includes('必须声明为 Vec[Untrusted[str]]')
+      && m3049[0].message.includes('std.unstr.sanitize_cli_path'),
+      `code=${r.code} ${codes88(r)} msg=${JSON.stringify(m3049[0]?.message?.slice(0, 120) ?? '')}`);
+  }
+
+  // ---- v88.3:REPL/test 空参口径 + M3023 消息翻转锁定 ----
+  {
+    const p = m88('v88_test_empty.ming', [
+      'fn main(args: Vec[Untrusted[str]]) -> i64 with io {',
+      '    return args.len();',
+      '}',
+      'test t1 { assert_eq(1 + 1, 2); }',
+    ].join('\n'));
+    const t = runMing(['test', p]);
+    check('v88.3a:ming test 对带参 main 文件——test 块照常运行(main 不被调用,空参口径)',
+      t.code === 0 && t.stdout.includes('1 通过,0 失败'), `code=${t.code} out=${JSON.stringify(t.stdout.slice(0, 80))} err=${JSON.stringify(t.stderr.slice(0, 120))}`);
+    const runs = runAll88(p, []);
+    check('v88.3b:ming run 无参——空 Vec[Untrusted[str]] 交付(len 0 → exit 0),三引擎一致',
+      same88(runs, '', 0), `runs=${fmtRuns88(runs)}`);
+    const pm = m88('v88_m3023.ming', 'fn main(a: i64, b: i64) with io { }\n');
+    const legs = ['', '--tree'].map(f => runMing(f ? ['run', pm, f] : ['run', pm]));
+    check('v88.3c:M3023 消息随合法带参形态翻转——双形参 main exit 101,消息逐字 Vec[Untrusted[str]](tree/VM 同文)',
+      legs.every(r => r.code === 101 && (r.stderr ?? '').includes('M3023')
+        && (r.stderr ?? '').includes('main 最多接受一个参数:args: Vec[Untrusted[str]]')),
+      `legs=${legs.map(r => `${r.code}:${JSON.stringify((r.stderr ?? '').split('\n')[0].slice(0, 110))}`).join(' | ')}`);
+  }
+
+  // ---- v88.4:响应头第四载体投影表正例——六方法类型面全过(check exit 0) ----
+  {
+    const p = m88('v88_hdr_pos.ming', [
+      'fn probe(h: Untrusted[Map[str, str]]) -> i64 {',
+      '    let n = h.len();',
+      '    let e = h.is_empty();',
+      '    let v = h.get("content-type");',
+      '    let b = h.has("x-ming-echo");',
+      '    let ks = h.keys();',
+      '    let vs = h.values();',
+      '    return n + ks.len() + vs.len() + (if b { 1 } else { 0 }) + (if e { 1 } else { 0 }) + (if v.is_some() { 1 } else { 0 });',
+      '}',
+      'fn main() -> i64 with io { print(0); return 0; }',
+    ].join('\n'));
+    const r = chk88(p);
+    check('v88.4:Untrusted[Map] 投影表正例——len/is_empty/get(净键)/has(净键)/keys/values 六方法 check exit 0',
+      r.code === 0 && r.j && r.j.ok === true && r.j.diagnostics.length === 0,
+      `code=${r.code} ${codes88(r)}`);
+  }
+
+  // ---- v88.5:mut 面 M3050(只读 v1.3)——set/delete/clear 各一发,消息锁定 ----
+  {
+    const p = m88('v88_hdr_mut.ming', [
+      'fn s(h: Untrusted[Map[str, str]]) -> i64 { h.set("k", "v"); return 0; }',
+      'fn d(h: Untrusted[Map[str, str]]) -> i64 { h.delete("k"); return 0; }',
+      'fn c(h: Untrusted[Map[str, str]]) -> i64 { h.clear(); return 0; }',
+      'fn main() -> i64 with io { print(0); return 0; }',
+    ].join('\n'));
+    const r = chk88(p);
+    const m3050 = errsOf88(r, 'M3050');
+    check('v88.5:Untrusted[Map] mut 面 set/delete/clear → M3050 恰三条,消息含"v1.3 只读"与投影表全列举',
+      r.code === 1 && m3050.length === 3
+      && m3050.every(d => d.message.includes('v1.3 只读'))
+      && m3050.every(d => d.message.includes('len / is_empty / get / has / keys / values')),
+      `code=${r.code} n3050=${m3050.length} msg0=${JSON.stringify(m3050[0]?.message?.slice(0, 140) ?? '')}`);
+  }
+
+  // ---- v88.6:污值禁面——污键进 get 净键槽 M3049;keys() 污序列进净 Vec 槽 M3049(嵌套) ----
+  {
+    const pk = m88('v88_hdr_dirtykey.ming', [
+      'use std.unstr;',
+      'fn probe(h: Untrusted[Map[str, str]]) -> i64 {',
+      '    let _ = h.get(std.unstr.mark("k"));',
+      '    return 0;',
+      '}',
+      'fn main() -> i64 with io { print(0); return 0; }',
+    ].join('\n'));
+    const rk = chk88(pk);
+    const mk = errsOf88(rk, 'M3049');
+    const pv = m88('v88_hdr_keyssink.ming', [
+      'fn probe(h: Untrusted[Map[str, str]]) -> i64 {',
+      '    let a: Vec[str] = h.keys();',
+      '    return 0;',
+      '}',
+      'fn main() -> i64 with io { print(0); return 0; }',
+    ].join('\n'));
+    const rv = chk88(pv);
+    const mv = errsOf88(rv, 'M3049');
+    check('v88.6:污键 h.get(mark) → M3049(键是净槽);keys() → Vec[Untrusted[str]] 进净 Vec[str] 槽 → M3049(嵌套复合)',
+      rk.code === 1 && mk.length === 1 && mk[0].message.includes('.get() 的键必须是 str')
+      && rv.code === 1 && mv.length === 1 && mv[0].message.includes('Vec[Untrusted[str]]'),
+      `key=${codes88(rk)} ${JSON.stringify(mk[0]?.message?.slice(0, 90) ?? '')} | keys=${codes88(rv)} ${JSON.stringify(mv[0]?.message?.slice(0, 90) ?? '')}`);
+  }
+
+  // ---- v88.7:第四载体运行时端到端——本地 echo server,投影六方法真实值黄金 ----
+  {
+    const echoServer = spawn(process.execPath, ['-e', [
+      'const http = require("http");',
+      'const server = http.createServer((req, res) => {',
+      '    req.on("data", () => {});',
+      '    req.on("end", () => { res.writeHead(200, { "content-type": "text/plain", "x-ming-echo": "yes" }); res.end("ok"); });',
+      '});',
+      'server.listen(0, "127.0.0.1", () => console.log("PORT:" + server.address().port));',
+      'setTimeout(() => process.exit(0), 20000);',
+    ].join('\n')], { stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+      const echoPort = await new Promise((resolve, reject) => {
+        let buf = '';
+        const onData = (c) => { buf += c; const m = buf.match(/PORT:(\d+)/); if (m) { echoServer.stdout.off('data', onData); resolve(Number(m[1])); } };
+        echoServer.stdout.on('data', onData);
+        echoServer.on('exit', () => reject(new Error('echo exited')));
+        setTimeout(() => reject(new Error('echo timeout')), 10000);
+      });
+      const p = m88('v88_http_rt.ming', [
+        'use std.net;',
+        'fn main() with io, net {',
+        '    match std.net.http_request_opts("GET", "http://127.0.0.1:' + echoPort + '/", [:], "", 5000) {',
+        '        Ok((status, headers, body)) => {',
+        '            print(str(status));',
+        '            print(str(headers.get("content-type").unwrap().contains("text")));',
+        '            print(str(headers.has("x-ming-echo")));',
+        '            let kn = headers.keys().len();',
+        '            let vn = headers.values().len();',
+        '            print(str(kn == vn));',
+        '            let mut kk: i64 = 0;',
+        '            for k in headers.keys() { kk += 1; }',
+        '            print(str(kk == kn));',
+        '            print(str(headers.is_empty()));',
+        '            print(str(headers.len() == kn));',
+        '        }',
+        '        Err(e) => { print("ERR: " + e); }',
+        '    }',
+        '}',
+      ].join('\n'));
+      const r = runMing(['run', p]);
+      check('v88.7:http_request_opts 响应头第四载体端到端——真实响应头经投影表消费(get/has/keys/values/len/is_empty 全污面可用,键值同污)',
+        r.code === 0 && r.stdout === '200\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\n',
+        `code=${r.code} out=${JSON.stringify(r.stdout.slice(0, 120))} err=${JSON.stringify(r.stderr.slice(0, 160))}`);
+    } finally {
+      echoServer.kill();
+    }
+  }
+
+  // ---- v88.8:sink 面不变——请求侧 headers 污值 M3049;响应头 bleach(净 Map 标注)M3049 ----
+  {
+    const pr = m88('v88_req_sink.ming', [
+      'use std.net;',
+      'fn main() with io, net {',
+      '    let h = { "k": std.unstr.mark("v") };',
+      '    let r = std.net.http_request_opts("GET", "http://127.0.0.1:1/", h, "", 1000);',
+      '    return;',
+      '}',
+    ].join('\n'));
+    const rr = chk88(pr);
+    const mr = errsOf88(rr, 'M3049');
+    const pb = m88('v88_resp_bleach.ming', [
+      'use std.net;',
+      'fn main() with io, net {',
+      '    match std.net.http_request_opts("GET", "http://127.0.0.1:1/", [:], "", 1000) {',
+      '        Ok((status, headers, body)) => {',
+      '            let clean: Map[str, str] = headers;',
+      '            print(str(status));',
+      '        },',
+      '        Err(_) => { print("err"); },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const rb = chk88(pb);
+    const mb = errsOf88(rb, 'M3049');
+    check('v88.8:请求侧 headers sink 不变(污值 → M3049 参数 #3)+ 响应头 bleach 关闭(污表 → 净 Map 槽 M3049)',
+      rr.code === 1 && mr.length === 1 && mr[0].message.includes('参数 #3')
+      && rb.code === 1 && mb.length === 1 && mb[0].message.includes('Untrusted[Map[str, str]]'),
+      `req=${codes88(rr)} ${JSON.stringify(mr[0]?.message?.slice(0, 80) ?? '')} | bleach=${codes88(rb)} ${JSON.stringify(mb[0]?.message?.slice(0, 80) ?? '')}`);
+  }
+
+  // ---- v88.9:fs.metadata 载体翻转——污 Json 投影消费正例(run)+ 净槽 sink 负例(M3049) ----
+  {
+    const pp = m88('v88_meta_ok.ming', [
+      'use std.fs;',
+      'fn main() -> i64 with io, fs {',
+      '    match fs.metadata(".") {',
+      '        Ok(m) => {',
+      '            let d = m.get("is_dir").unwrap().as_bool().unwrap();',
+      '            let f = m.get("is_file").unwrap().as_bool().unwrap();',
+      '            let nm = m.get("name").unwrap().as_str().unwrap();',
+      '            print(str(d));',
+      '            print(str(f));',
+      '            print(nm.char_len());',
+      '            return 0;',
+      '        },',
+      '        Err(_) => { return 1; },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll88(pp, []);
+    check('v88.9a:fs.metadata → Result[Untrusted[Json], str] 投影消费正例——is_dir/is_file/名称长度三引擎逐字(当前目录)',
+      same88(runs, 'true\nfalse\n1\n', 0), `runs=${fmtRuns88(runs)}`);
+    const pn = m88('v88_meta_sink.ming', [
+      'use std.fs;',
+      'fn main() -> i64 with io, fs {',
+      '    match fs.metadata(".") {',
+      '        Ok(m) => {',
+      '            let nm: str = m.get("name").unwrap().as_str().unwrap();',
+      '            print(nm);',
+      '            return 0;',
+      '        },',
+      '        Err(_) => { return 1; },',
+      '    }',
+      '}',
+    ].join('\n'));
+    const rn = chk88(pn);
+    const mn = errsOf88(rn, 'M3049');
+    check('v88.9b:metadata 污 Json 投影出 Untrusted[str] 进净 str 槽 → M3049(载体收窄后仍污,洗白关闭)',
+      rn.code === 1 && mn.length === 1 && mn[0].message.includes('Untrusted[str]'),
+      `code=${rn.code} ${codes88(rn)} ${JSON.stringify(mn[0]?.message?.slice(0, 90) ?? '')}`);
+  }
+
+  // ---- v88.10:载体白名单 M3050 文案更新锁定——Map[str,str] 入列;argv 销项;非 str 键/值载体仍拒 ----
+  {
+    const pm = m88('v88_carrier_map.ming', [
+      'fn bad(m: Untrusted[Map[str, i64]]) -> i64 { return 0; }',
+      'fn main() -> i64 with io { print(0); return 0; }',
+    ].join('\n'));
+    const rm = chk88(pm);
+    const mm = errsOf88(rm, 'M3050');
+    const pv = m88('v88_carrier_vecstr.ming', [
+      'fn bad(v: Untrusted[Vec[str]]) -> i64 { return 0; }',
+      'fn main() -> i64 with io { print(0); return 0; }',
+    ].join('\n'));
+    const rv = chk88(pv);
+    const mv = errsOf88(rv, 'M3050');
+    check('v88.10:M3050 载体文案 = str/Json/Vec[u8]/Map[str,str] 且不再列 argv(v0.82 销项);Untrusted[Vec[str]] 整容器仍拒(元素级口径)',
+      rm.code === 1 && mm.length === 1 && mm[0].message.includes('str/Json/Vec[u8]/Map[str,str]') && !mm[0].message.includes('argv')
+      && rv.code === 1 && mv.length === 1 && mv[0].message.includes('得到 Vec[str]'),
+      `map=${codes88(rm)} ${JSON.stringify(mm[0]?.message?.slice(0, 100) ?? '')} | vec=${codes88(rv)} ${JSON.stringify(mv[0]?.message?.slice(0, 100) ?? '')}`);
+  }
+
+  // ---- v88.11:引擎面零新机制(白盒)——顶层解包后 sig 形状 + v80.17(a) 形态 strict 资格保持 ----
+  {
+    const sig88 = (name, src) => {
+      const f = m88(name, src);
+      const c = new Checker(f, () => src);
+      const result = c.run();
+      const errs = result.diags.filter(d => d.severity === 'error');
+      if (errs.length) return { err: errs[0].code + ':' + errs[0].message.slice(0, 60) };
+      const compiled = compile(result);
+      const fnEntry = compiled.functions.find(fn => fn.name === 'probe');
+      return { sig: JSON.stringify(fnEntry?.entry?.sig?.params?.[0]?.type ?? null) };
+    };
+    const mapSig = sig88('v88_wb_map.ming', 'fn probe(m: Untrusted[Map[str, str]]) -> i64 { return m.len(); }\nfn main() -> i64 with io { print(0); return 0; }\n');
+    const vecSig = sig88('v88_wb_vec.ming', 'fn probe(v: Vec[Untrusted[str]]) -> i64 { return v.len(); }\nfn main() -> i64 with io { print(0); return 0; }\n');
+    check('v88.11a(白盒):tryWasm 顶层解包——Untrusted[Map] 形参 → 裸 Map 形状(= 净 Map 形参同形);Vec[Untrusted[str]] 保持 vec<untrusted>(vi64 句柄槽,v80.17(a) 口径)',
+      mapSig.sig === '{"k":"map","kt":{"k":"str"},"vt":{"k":"str"}}'
+      && vecSig.sig === '{"k":"vec","el":{"k":"untrusted","el":{"k":"str"}}}',
+      `map=${mapSig.sig ?? mapSig.err} vec=${vecSig.sig ?? vecSig.err}`);
+    const p80 = m88('v88_v8017a.ming', [
+      'use std.unstr;',
+      'use std.io;',
+      'fn count(vs: Vec[Untrusted[str]]) -> i64 {',
+      '    return vs.len();',
+      '}',
+      'fn has(u: Untrusted[str]) -> bool {',
+      '    return u.contains("b");',
+      '}',
+      'fn main() with io {',
+      '    let v: Vec[Untrusted[str]] = [std.unstr.mark("a"), std.unstr.mark("bb")];',
+      '    print(str(count(v)));',
+      '    print(str(has(std.unstr.mark("abc"))));',
+      '}',
+    ].join('\n'));
+    const rs = runMing(['run', p80, '--strict-wasm']);
+    const runs = runAll88(p80, []);
+    check('v88.11b:v80.17(a) 形态保持——Vec[Untrusted[str]]/Untrusted[str] 形参 strict-wasm exit 0,三引擎逐字(2/true)',
+      rs.code === 0 && rs.stdout === '2\ntrue\n' && same88(runs, '2\ntrue\n'),
+      `strict=${rs.code} ${JSON.stringify(rs.stderr.slice(0, 120))} ${fmtRuns88(runs)}`);
+  }
+
+  // ---- v88.12:既有污点回归锚点重断言(§65/§71 代表形态,零校准证明) ----
+  {
+    // §65 v65.1 形态:env.get().unwrap → write_file 路径位 sink(M3049 + sanitize 处方)
+    const f65 = m88('v88_anchor_envsink.ming', [
+      'use std.env;',
+      'use std.fs;',
+      'fn main() with env, fs {',
+      '    let p = std.env.get("V88_ANY").unwrap();',
+      '    std.fs.write_file(p, "data");',
+      '}',
+    ].join('\n'));
+    const r65 = chk88(f65);
+    const m6588 = errsOf88(r65, 'M3049');
+    // §71 v71.10 形态:Untrusted[Json] debug 洗白禁面(M3050)
+    const f71 = m88('v88_anchor_jsondebug.ming', [
+      'use std.json;',
+      'use std.unstr;',
+      'fn main() with io {',
+      '    let u: Untrusted[Json] = std.unstr.mark_json(std.json.parse("{}").unwrap());',
+      '    debug(u);',
+      '}',
+    ].join('\n'));
+    const r71 = chk88(f71);
+    const m7188 = errsOf88(r71, 'M3050');
+    check('v88.12:既有污点锚点重断言——env.get→write_file sink M3049(§65 v65.1 形态)+ Untrusted[Json] debug 禁面 M3050(§71 v71.10 形态)逐字保持',
+      r65.code === 1 && m6588.length === 1 && (m6588[0].message + ' ' + (m6588[0].hint ?? '')).includes('sanitize')
+      && r71.code === 1 && m7188.length === 1 && m7188[0].message.includes('debug 的参数含 Untrusted[Json]'),
+      `env=${codes88(r65)} ${JSON.stringify(m6588[0]?.message?.slice(0, 80) ?? '')} | json=${codes88(r71)} ${JSON.stringify(m7188[0]?.message?.slice(0, 80) ?? '')}`);
+  }
+  // ---- v88.13:M3049 remedy 载体感知第四载体(审查 MINOR-1)——Untrusted[Map] 进净槽,
+  //      处方必须是 Map 投影表口径(非 str 措辞"净化/Untrusted[str]";零新码,复用 sink 探针)
+  {
+    const f13 = m88('v88_map_remedy.ming', [
+      'fn take(m: Map[str, str]) -> i64 { return m.len(); }',
+      'fn main() -> i64 with io, net {',
+      '    let r = std.net.http_request_opts("GET", "http://127.0.0.1:1/", {}, "", 1);',
+      '    let (_st, hs, _body) = r.unwrap();',
+      '    return take(hs);',
+      '}',
+    ].join('\n'));
+    const r13 = chk88(f13);
+    const m13 = errsOf88(r13, 'M3049');
+    check('v88.13:M3049 remedy 载体感知——Untrusted[Map] sink 处方含 Map 投影表口径与 Untrusted[Map[str, str]] 改声明(非 str 措辞)',
+      r13.code === 1 && m13.length >= 1 && m13.some((d) => (d.message + ' ' + (d.hint ?? '')).includes('Untrusted[Map[str, str]]')
+        && (d.message + ' ' + (d.hint ?? '')).includes('投影表')),
+      `codes=${codes88(r13)} msg=${JSON.stringify(m13[0]?.message?.slice(0, 120) ?? '')} hint=${JSON.stringify(m13[0]?.hint?.slice(0, 120) ?? '')}`);
+  }
+  // ---- §88-END
+}
+
+// ===================== 89. v0.82:污点 v1.3 迁移面锁定(tools/*.ming ×14 + 迁移语料 + net_e2e;ADR-008)=====================
+// 文件所有权:§89 = 本区全部用例。迁移形态(Agent F,§88 迁移完成记录):14 个工具 main
+// 签名 Vec[str] → Vec[Untrusted[str]],args 头部逐元素过 std.unstr.sanitize_cli_path
+// (校验不改写:拒控制字符,Ok 原样)取净值——路径位/CLI 匹配比较串统一净化,空串参数
+// 原样保留(迁移前语义:env 回退/解析失败路径);parse_i64 位沿污值代数标量终结;回显/
+// 打印位走出向透传。本分节黄金期望逐字节来自迁移前 HEAD 工具基线实测(43 例对照,
+// 42 例逐字节一致;唯一差异例 = todo_scan 无参自扫描仓库本体的语料行号漂移,非工具行为)。
+{
+  const dir89 = path.join(TMP, 'v89');
+  fs.mkdirSync(dir89, { recursive: true });
+  const tool89 = (n) => path.join(ROOT, 'tools', n);
+  const run89 = (argv, opts = {}) => runMing(argv, opts);
+
+  // ---- v89.1:wc 冒烟逐字节(单文件 + 多文件 total;HEAD 黄金) ----
+  {
+    const p1 = path.join(dir89, 'wc1.txt');
+    const p2 = path.join(dir89, 'wc2.log');
+    fs.writeFileSync(p1, 'alpha\nbeta\n', 'utf8');
+    fs.writeFileSync(p2, 'one two\nthree\n', 'utf8');
+    const r1 = run89(['run', tool89('wc.ming'), '--', p1]);
+    const r2 = run89(['run', tool89('wc.ming'), '--', p1, p2]);
+    check('v89.1:wc 冒烟逐字节——单文件(2 2 11)+ 多文件 total(4 5 25),与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === `2 2 11 ${p1}\n`
+      && r2.code === 0 && r2.stdout === `2 2 11 ${p1}\n2 3 14 ${p2}\n4 5 25 total\n`,
+      `r1=${r1.code}:${JSON.stringify(r1.stdout.slice(0, 80))} r2=${r2.code}:${JSON.stringify(r2.stdout.slice(0, 100))}`);
+  }
+
+  // ---- v89.2:tree 冒烟逐字节(全列/深度 1/空 arg → env 回退语义保持) ----
+  {
+    const td = path.join(dir89, 'treeD');
+    fs.mkdirSync(path.join(td, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(td, 'a.txt'), 'a', 'utf8');
+    fs.writeFileSync(path.join(td, 'sub', 'b.txt'), 'b', 'utf8');
+    const full = `${td}\n├── a.txt\n└── sub\n    └── b.txt\n\n共 3 个条目\n`;
+    const d1 = `${td}\n├── a.txt\n└── sub\n\n共 2 个条目\n`;
+    const r1 = run89(['run', tool89('tree.ming'), '--', td]);
+    // v65.19 先例:空串参数原样保留 → root="" → TREE_ROOT 回退(迁移前语义逐字节)
+    const r2 = run89(['run', tool89('tree.ming'), '--', ''], { env: { TREE_ROOT: td } });
+    const r3 = run89(['run', tool89('tree.ming'), '--', td, '1']);
+    check('v89.2a:tree 冒烟逐字节——目录树全列(3 条目)与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === full, `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0, 120))}`);
+    check('v89.2b:tree 空 arg 语义保持——空串原样保留 → TREE_ROOT 回退,输出与显式目录逐字一致',
+      r2.code === 0 && r2.stdout === full && r2.stderr === '', `code=${r2.code} out=${JSON.stringify(r2.stdout.slice(0, 80))}`);
+    check('v89.2c:tree 深度 1 逐字节(2 条目,不下钻)', r3.code === 0 && r3.stdout === d1, `code=${r3.code} out=${JSON.stringify(r3.stdout.slice(0, 80))}`);
+  }
+
+  // ---- v89.3:todo_scan + find_files 冒烟逐字节 ----
+  {
+    const sd = path.join(dir89, 'scanD');
+    fs.mkdirSync(sd, { recursive: true });
+    fs.writeFileSync(path.join(sd, 'code.ming'), '// TODO: 实现缓存\nfn f() { return 1; }\n// FIXME: 边界\n', 'utf8');
+    const codeP = path.join(sd, 'code.ming');
+    const r1 = run89(['run', tool89('todo_scan.ming'), '--', sd]);
+    check('v89.3a:todo_scan 冒烟逐字节——命中行带行号回显(2 处,整行 trim 原样含 // 前缀)与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === `扫描目录: ${sd}\n${codeP}:1: // TODO: 实现缓存\n${codeP}:3: // FIXME: 边界\n共发现 2 处待办标记\n`,
+      `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0, 160))}`);
+    const fd = path.join(dir89, 'findD');
+    fs.mkdirSync(path.join(fd, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(fd, 'a.txt'), 'a', 'utf8');
+    fs.writeFileSync(path.join(fd, 'sub', 'b.txt'), 'b', 'utf8');
+    const r2 = run89(['run', tool89('find_files.ming'), '--', fd, 'txt']);
+    check('v89.3b:find_files 冒烟逐字节——递归命中 2 个(名称匹配串过净化不改写)',
+      r2.code === 0 && r2.stdout === `在 ${fd} 中查找包含 "txt" 的文件名:\n${path.join(fd, 'a.txt')}\n${path.join(fd, 'sub', 'b.txt')}\n共找到 2 个\n`,
+      `code=${r2.code} out=${JSON.stringify(r2.stdout.slice(0, 160))}`);
+  }
+
+  // ---- v89.4:batch_rename + file_organizer 冒烟逐字节(破坏性,独立夹具) ----
+  {
+    const rd = path.join(dir89, 'ren89');
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, '1.txt'), 'a', 'utf8');
+    fs.writeFileSync(path.join(rd, '2.log'), 'b', 'utf8');
+    const r1 = run89(['run', tool89('batch_rename.ming'), '--', rd, 'pre_']);
+    check('v89.4a:batch_rename 冒烟逐字节——加前缀输出与磁盘效应,与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === `目录: ${rd}, 前缀: pre_, 扩展名过滤: \n重命名: 1.txt -> pre_1.txt\n重命名: 2.log -> pre_2.log\n共重命名 2 个文件\n`
+      && fs.existsSync(path.join(rd, 'pre_1.txt')) && fs.existsSync(path.join(rd, 'pre_2.log')) && !fs.existsSync(path.join(rd, '1.txt')),
+      `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0, 160))}`);
+    const od = path.join(dir89, 'org89');
+    fs.mkdirSync(od, { recursive: true });
+    fs.writeFileSync(path.join(od, 'x.txt'), 'a', 'utf8');
+    fs.writeFileSync(path.join(od, 'y.md'), 'b', 'utf8');
+    const r2 = run89(['run', tool89('file_organizer.ming'), '--', od]);
+    check('v89.4b:file_organizer 冒烟逐字节——按扩展名归档输出与磁盘效应',
+      r2.code === 0 && r2.stdout === `整理目录: ${od}\n移动: ${path.join(od, 'x.txt')} -> ${path.join(od, 'txt', 'x.txt')}\n移动: ${path.join(od, 'y.md')} -> ${path.join(od, 'md', 'y.md')}\n共移动 2 个文件\n`
+      && fs.existsSync(path.join(od, 'txt', 'x.txt')) && fs.existsSync(path.join(od, 'md', 'y.md')),
+      `code=${r2.code} out=${JSON.stringify(r2.stdout.slice(0, 160))}`);
+  }
+
+  // ---- v89.5:log_analyzer + json_query 冒烟逐字节 ----
+  {
+    const la = path.join(dir89, 'a.log');
+    fs.writeFileSync(la, 'line1\nline2 ERROR x\nline3 WARN y\nline4 INFO z\n', 'utf8');
+    const r1 = run89(['run', tool89('log_analyzer.ming'), '--', la]);
+    check('v89.5a:log_analyzer 冒烟逐字节——分类计数 6 行与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === `文件: ${la}\n总行数: 4\nERROR: 1\nWARN:  1\nINFO:  1\n其他:  1\n`,
+      `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0, 140))}`);
+    const jf = path.join(dir89, 'cfg.json');
+    fs.writeFileSync(jf, '{"name": "ming", "v": 44, "servers": [{"host": "h1"}]}', 'utf8');
+    const r2 = run89(['run', tool89('json_query.ming'), '--', jf, 'name']);
+    const r3 = run89(['run', tool89('json_query.ming'), '--', jf, 'servers.0.host']);
+    check('v89.5b:json_query 冒烟逐字节——裸字符串叶子 + 点路径下钻,与迁移前 HEAD 基线逐字一致',
+      r2.code === 0 && r2.stdout === 'ming\n' && r3.code === 0 && r3.stdout === 'h1\n',
+      `r2=${r2.code}:${JSON.stringify(r2.stdout)} r3=${r3.code}:${JSON.stringify(r3.stdout)}`);
+  }
+
+  // ---- v89.6:mingkit + edit 冒烟逐字节 ----
+  {
+    const kf = path.join(dir89, 'kit89.txt');
+    const w = run89(['run', tool89('mingkit.ming'), '--', 'write', kf], { stdin: 'alpha\nbeta\ngamma\n' });
+    const r1 = run89(['run', tool89('mingkit.ming'), '--', 'read', kf]);
+    const r2 = run89(['run', tool89('mingkit.ming'), '--', 'count', kf]);
+    check('v89.6a:mingkit 冒烟逐字节——write/read 往返 + count 行/字符/字节,与迁移前 HEAD 基线逐字一致',
+      w.code === 0 && r1.code === 0 && r1.stdout === 'alpha\nbeta\ngamma\n'
+      && r2.code === 0 && r2.stdout === '行 3\n字符 17\n字节 17\n',
+      `w=${w.code} r1=${r1.code}:${JSON.stringify(r1.stdout.slice(0, 60))} r2=${r2.code}:${JSON.stringify(r2.stdout)}`);
+    const ef = path.join(dir89, 'edit89.txt');
+    fs.writeFileSync(ef, 'alpha\nbeta\ngamma\n', 'utf8');
+    const r3 = run89(['run', tool89('edit.ming'), '--', 'show', ef, '1', '3']);
+    const r4 = run89(['run', tool89('edit.ming'), '--', 'count', ef]);
+    check('v89.6b:edit 冒烟逐字节——show 带行号区间 + count,与迁移前 HEAD 基线逐字一致',
+      r3.code === 0 && r3.stdout === '1|alpha\n2|beta\n3|gamma\n' && r4.code === 0 && r4.stdout === '3\n',
+      `r3=${r3.code}:${JSON.stringify(r3.stdout)} r4=${r4.code}:${JSON.stringify(r4.stdout)}`);
+  }
+
+  // ---- v89.7:diaghot + engdiff 冒烟逐字节 ----
+  {
+    const dh = path.join(dir89, 'code89.ming');
+    fs.writeFileSync(dh, 'fn main() with io { print(str(nope)); }\n', 'utf8');
+    const r1 = run89(['run', tool89('diaghot.ming'), '--', dh, '--top', '3']);
+    check('v89.7a:diaghot 冒烟逐字节——聚合 2 条诊断(M3001/M3002)含首条消息回显,与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === '诊断热力图:1 个文件,2 条诊断,2 种码\n  1. M3001  x1  (1 个文件)\n     找不到值 "nope"\n  2. M3002  x1  (1 个文件)\n     str 的参数 #1 必须是 int/float/bool/str,实际是 ?\n',
+      `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0, 200))}`);
+    const r2 = run89(['run', tool89('engdiff.ming'), '--', path.join(ROOT, 'examples', 'fib.ming')]);
+    check('v89.7b:engdiff 冒烟逐字节——三引擎一致 + fib 全输出,与迁移前 HEAD 基线逐字一致',
+      r2.code === 0 && r2.stdout === 'engdiff: 一致(退出码 0)\nfib(0) = 0\nfib(1) = 1\nfib(2) = 1\nfib(3) = 2\nfib(4) = 3\nfib(5) = 5\nfib(6) = 8\nfib(7) = 13\nfib(8) = 21\nfib(9) = 34\nfib(10) = 55\n\n',
+      `code=${r2.code} out=${JSON.stringify(r2.stdout.slice(0, 160))}`);
+  }
+
+  // ---- v89.8:xnsni + xnopen 冒烟逐字节(论文向量/http 形态/离线探测) ----
+  {
+    const r1 = run89(['tools', 'xnsni', 'https://cloudflare.com/ping']);
+    const note = 'note:   论文 CCS 2026 §4.3——SNI 改写 + --connect-to 映射真实主机 + Host 头;服务器宽容性依赖,失败请对照原 URL 行为\n';
+    check('v89.8a:xnsni 冒烟逐字节——论文示例向量(cloudflare.com → xn--636c…)7 行与迁移前 HEAD 基线逐字一致',
+      r1.code === 0 && r1.stdout === 'scheme: https\nhost:   cloudflare.com\nport:   443\nsni:    xn--636c6f7564666c6172652e636f6d\nurl:    https://xn--636c6f7564666c6172652e636f6d/ping\ncurl:   curl --connect-to \'xn--636c6f7564666c6172652e636f6d:443:cloudflare.com:443\' -H \'Host: cloudflare.com\' \'https://xn--636c6f7564666c6172652e636f6d/ping\'\n' + note,
+      `code=${r1.code} out=${JSON.stringify(r1.stdout.slice(0, 160))}`);
+    const r2 = run89(['tools', 'xnsni', 'http://example.com:8080/a/b?x=1']);
+    check('v89.8b:xnsni http+端口形态逐字节(端口透传/路径与查询串保留)',
+      r2.code === 0 && r2.stdout === 'scheme: http\nhost:   example.com\nport:   8080\nsni:    xn--6578616d706c652e636f6d\nurl:    http://xn--6578616d706c652e636f6d/a/b?x=1\ncurl:   curl --connect-to \'xn--6578616d706c652e636f6d:8080:example.com:8080\' -H \'Host: example.com\' \'http://xn--6578616d706c652e636f6d/a/b?x=1\'\n' + note,
+      `code=${r2.code} out=${JSON.stringify(r2.stdout.slice(0, 160))}`);
+    const r3 = run89(['tools', 'xnopen', 'http://127.0.0.1:1/', '--', '--no-chrome']);
+    check('v89.8c:xnopen 离线探测逐字节——原/改写均 0 + 改写不可达判定 + --no-chrome skipped',
+      r3.code === 0 && r3.stdout === '== 改写 ==\nsni:  xn--3132372e302e302e31\nurl:  http://xn--3132372e302e302e31/\n== 探测(curl 全配方) ==\n原 URL:  0\n改写后:  0\n判定: 改写不可达——服务器不宽容伪 IDN SNI,或站点属 DNS/IP 层封锁(本方法无效)\n== Chrome ==\nskipped(--no-chrome)\n',
+      `code=${r3.code} out=${JSON.stringify(r3.stdout.slice(0, 200))}`);
+  }
+
+  // ---- v89.9:工具错误纪律(stderr + exit 1;错误文本经迁移逐字保持) ----
+  {
+    const r1 = run89(['run', tool89('wc.ming'), '--', path.join(dir89, 'nope89.txt')]);
+    check('v89.9a:wc 缺文件纪律——exit 1 + stderr 具名(wc: 无法读取)+ stdout 空',
+      r1.code === 1 && (r1.stderr ?? '').includes('wc: 无法读取') && (r1.stderr ?? '').includes('nope89.txt') && r1.stdout === '',
+      `code=${r1.code} err=${JSON.stringify((r1.stderr ?? '').slice(0, 100))}`);
+    const r2 = run89(['run', tool89('wc.ming'), '--', 'a\tb']);
+    check('v89.9b:wc argv 控制字符 → sanitize_cli_path 拒绝(exit 1;v65.19 env 侧同款纪律的 argv 侧)',
+      r2.code === 1 && (r2.stderr ?? '').includes('sanitize_cli_path') && r2.stdout === '',
+      `code=${r2.code} err=${JSON.stringify((r2.stderr ?? '').slice(0, 110))}`);
+    const td = path.join(dir89, 'treeD');
+    const r3 = run89(['run', tool89('tree.ming'), '--', td, 'x']);
+    const r4 = run89(['run', tool89('tree.ming'), '--', td, '0']);
+    check('v89.9c:tree 深度错误文本逐字——"深度不是整数: x"/"深度必须是正整数,得到 0"(嵌参回显经净化不改写)',
+      r3.code === 1 && r3.stderr === 'tree: 深度不是整数: x\n'
+      && r4.code === 1 && r4.stderr === 'tree: 深度必须是正整数,得到 0\n',
+      `r3=${r3.code}:${JSON.stringify(r3.stderr)} r4=${r4.code}:${JSON.stringify(r4.stderr)}`);
+    const jf = path.join(dir89, 'cfg.json');
+    const r5 = run89(['run', tool89('json_query.ming'), '--', jf, 'nope']);
+    const kf = path.join(dir89, 'kit89.txt');
+    const r6 = run89(['run', tool89('mingkit.ming'), '--', 'replace', kf, 'nope', 'X']);
+    const ef = path.join(dir89, 'edit89.txt');
+    const r7 = run89(['run', tool89('edit.ming'), '--', 'set', ef, '99', 'x']);
+    check('v89.9d:json_query/mingkit/edit 错误文本逐字——键不存在/未找到目标串(0 处)/行号超出范围(嵌参回显)',
+      r5.code === 1 && r5.stderr === 'json_query: 键不存在: nope(路径 nope)\n'
+      && r6.code === 1 && r6.stderr === 'mingkit: 未找到目标串(0 处): nope\n'
+      && r7.code === 1 && r7.stderr === 'edit: 行号超出范围(99,实际 3 行)\n',
+      `r5=${r5.code}:${JSON.stringify(r5.stderr)} r6=${r6.code}:${JSON.stringify(r6.stderr)} r7=${r7.code}:${JSON.stringify(r7.stderr)}`);
+  }
+
+  // ---- v89.10:迁移语料代理位(v38 build 形态逐字 + net_e2e.mjs 实跑) ----
+  {
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v89-dist-'));
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v89dist"\nversion = "0.1.0"\nentry = "main.ming"\n');
+    fs.writeFileSync(path.join(proj, 'main.ming'), [
+      'fn greet(name: str) -> str {',
+      '    return "hi, " + name;',
+      '}',
+      '',
+      'use std.unstr;',
+      'fn main(args: Vec[Untrusted[str]]) with io {',
+      '    let mut who = "ming";',
+      '    if args.len() > 0 { match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => { who = p; }, Err(_) => { who = who; } } }',
+      '    print(greet(who));',
+      '    print(str(args.len()));',
+      '}',
+    ].join('\n'));
+    const build = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const run = (a) => spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs'), ...a], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    const r1 = run(['--', 'alice']);
+    const r2 = run([]);
+    check('v89.10a:v38 形态迁移语料——Vec[Untrusted[str]] main 经 sanitize_cli_path 进 greet(净 str),AOT build + launcher stdout 逐字(hi, alice/ming)',
+      build.status === 0 && r1.status === 0 && r1.stdout === 'hi, alice\n1\n' && r2.status === 0 && r2.stdout === 'hi, ming\n0\n',
+      `build=${build.status} r1=${r1.status}:${JSON.stringify(r1.stdout)} r2=${r2.status}:${JSON.stringify(r2.stdout)} err=${(r1.stderr ?? '').slice(0, 120)}`);
+    fs.rmSync(proj, { recursive: true, force: true });
+    const e2e = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'net_e2e.mjs')], { encoding: 'utf8', cwd: ROOT, timeout: 180000 });
+    check('v89.10b:net_e2e.mjs 实跑——parse_i64 端口惯用法(URL 净部件重组)双引擎 4 通过 0 失败',
+      e2e.status === 0 && (e2e.stderr ?? '').includes('4 通过,0 失败'),
+      `code=${e2e.status} err=${JSON.stringify((e2e.stderr ?? '').slice(0, 200))} out=${JSON.stringify((e2e.stdout ?? '').slice(0, 200))}`);
+  }
+  // ---- §89-END
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

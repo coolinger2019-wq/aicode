@@ -206,6 +206,12 @@ class BytecodeCompiler {
     // v0.61(ADR-002 清单 14):污点资格按载体判定——喂入 wasm.js analyze()(单一事实
     // 来源,不改动)前,把 sig 中的 Untrusted[T] 形参/返回解包为载体 T。编译期标签运行时
     // 擦除:此时全部函数体已编译完毕,就地解包不影响已生成字节码;wasm/C 按载体发射,无感知。
+    // v0.82(ADR-008 清单 7 核验,零改动定案):顶层解包已覆盖本窗口全部形态——
+    //   · Untrusted[Map[str,str]] 形参:顶层 Untrusted → Map[str,str]('mstr' 句柄槽,v0.59 #41);
+    //   · Vec[Untrusted[str]] 形参(argv 元素级):顶层是 Vec 不解包 → typeToNumTy 对 untrusted
+    //     元素返回 null → paramSlotTy 回落 'vi64' 句柄槽(v0.80 v80.17(a) 锁定的资格形态)。
+    //     实测不可改为元素级解包:解出 'vstr' 槽会改变 objTable 操作面资格(vs.len() 非直接
+    //     调用回落),翻转 v80.17(a) 的锁定行为——元素级保持 vi64 句柄口径即"零新机制"。
     for (const f of this.functions) {
       if (!f?.entry?.sig) continue;
       const carrier = (t) => (t && t.k === 'untrusted') ? t.el : t;

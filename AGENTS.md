@@ -117,7 +117,7 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 | 改 C 后端 | `src/cbackend.js`（资格经 wasm.js）；跑 `ming cc --emit-c` 快照 + 四方一致 + panic 首行对齐测试 |
 | 改 wasm | `MING_WASM_DEBUG=1` 验证编译/实例化存活（§32 门禁）；保持三引擎差分绿 |
 | 修语义 bug | 先写最小复现 → `tests/run.mjs` 回归（双引擎/四后端）→ 再改实现 |
-| 加自举工具 | `tools/<name>.ming`，入口 `fn main(args: Vec[str]) -> i64 with io, ...`；**错误走 stderr、失败退出 1**；`ming fmt <文件> --write` 到规范（可能需两遍到定点）；`bin/ming.js` TOOL_CMDS 登记路由 + GUIDE 工具链表 + 测试 |
+| 加自举工具 | `tools/<name>.ming`，入口 `fn main(args: Vec[Untrusted[str]]) -> i64 with io, ...`（v0.82 ADR-008：argv 元素级污点——路径位过 `std.unstr.sanitize_cli_path`、数值位 `parse_i64`、内容位保污透传；净声明 `Vec[str]` → M3049）；**错误走 stderr、失败退出 1**；`ming fmt <文件> --write` 到规范（可能需两遍到定点）；`bin/ming.js` TOOL_CMDS 登记路由 + GUIDE 工具链表 + 测试 |
 
 ## 9. 已知陷阱
 

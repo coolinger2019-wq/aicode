@@ -544,7 +544,9 @@ export class Interp {
       args.push(V.vec(argv.map(a => V.str(a))));
     }
     if (sig.params.length > 1) {
-      throw new Panic('M3023', 'main 最多接受一个参数:args: Vec[str]');
+      // v0.82(ADR-008):消息随 main 合法带参形态翻转(args: Vec[Untrusted[str]],元素级污点);
+      // 本码只在形参个数 >1 时发射,污点载体是编译期标签,运行时值交付路径不变。
+      throw new Panic('M3023', 'main 最多接受一个参数:args: Vec[Untrusted[str]]');
     }
     const retV = this.callUser(entry, mainEntry, null, args, mainEntry.decl?.span ?? null);
     let code = 0;

@@ -19,23 +19,26 @@
 //
 // v0.77 污点迁移(ADR-007):read_file → Untrusted[str]——行载荷保污
 // (Vec[Untrusted[str]]);show/get 回显走 print 出向透传;落盘走 write_file
-// 出向透传位;净侧新行文本(set/ins/sub/append 的实参,来自命令行)经
-// std.unstr.mark 显式标注后进入污行向量。良性路径行为与迁移前逐字节一致。
+// 出向透传位;**v0.82(ADR-008)**:argv 文本位(set/ins/sub/append 的实参,来自命令行)
+// 保污经 esc(污进污出)后直接进污行向量——真实换行内容合法(v0.77 的 mark 标注随
+// esc 签名污化取消)。良性路径行为与迁移前逐字节一致。
 use std.fs;
 
-// 转义解释:与 mingkit 完全一致(实参来自命令行——净值,esc 保持净签名)
-fn esc(s: str) -> str {
-    let mut out = "";
+// 转义解释:与 mingkit 完全一致。v0.82(ADR-008):实参来自 argv 文本位(污值,可含真实
+// 换行)——污进污出:遍历 chars() 保污载荷,分类用 starts_with(净 bool,== 对污值禁),
+// 初始空串经 mark 显式标注,拼接沿 v0.77 传播规则保污;落盘走 write_file 出向透传。
+fn esc(s: Untrusted[str]) -> Untrusted[str] {
+    let mut out: Untrusted[str] = std.unstr.mark("");
     let mut bs = false;
     for c in s.chars() {
         if bs {
-            if c == "n" {
-                out = out + "\n";} else if c == "t" {
-                out = out + "\t";} else if c == "\\" {
+            if c.starts_with("n") {
+                out = out + "\n";} else if c.starts_with("t") {
+                out = out + "\t";} else if c.starts_with("\\") {
                 out = out + "\\";} else {
                 out = out + "\\" + c;
             }
-            bs = false;} else if c == "\\" {
+            bs = false;} else if c.starts_with("\\") {
 
             bs = true;} else {
 
@@ -144,11 +147,38 @@ fn parse_range(a: str, b: str, limit: i64) -> Result[(i64, i64), str] {
     return Ok((s, e));
 }
 
-fn main(args: Vec[str]) -> i64 with io, fs {
-    if args.len() < 1 {
+// v0.82 污点迁移(ADR-008):argv 元素级污点(main 参数 Vec[Untrusted[str]])。处置按位:
+// 子命令/文件路径/行号位过 std.unstr.sanitize_cli_path(校验不改写,Ok 原样)取净值;
+// **文本位(set/ins=3、sub=4、append=2)不净化**——替换/追加内容可含真实换行(C0),
+// sanitize_cli_path 会拒,原样保污交 esc(污进污出)后走 write_file 出向透传落盘。
+// 空串参数原样保留(迁移前语义)。良性路径行为与迁移前逐字节一致。
+fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if raw_args.len() < 1 {
         return usage();
     }
-    let cmd = args[0];
+    let cmd = match std.unstr.sanitize_cli_path(raw_args[0]) { Ok(p) => p, Err(e) => { return fail(e); } };
+    let textIdx: i64 = if cmd == "set" || cmd == "ins" { 3 } else if cmd == "sub" { 4 } else if cmd == "append" { 2 } else { -1 };
+    let mut args: Vec[str] = [];
+    let mut ai: i64 = 0;
+    while ai < raw_args.len() {
+        if ai == textIdx {
+            args.push("");} else {
+
+            let a = raw_args[ai];
+            if a.is_empty() {
+                args.push("");} else {
+                match std.unstr.sanitize_cli_path(a) {
+                    Ok(p) => {
+                        args.push(p);
+                    },
+                    Err(e) => {
+                        return fail(e);
+                    },
+                }
+            }
+        }
+        ai = ai + 1;
+    }
 
     // ---- show:带行号输出 ----
     if cmd == "show" {
@@ -194,8 +224,8 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             return fail("行号超出范围(" + str(n) + ",实际 " + str(rc) + " 行)");
         }
 
-        // v0.77:净文本进污行向量,mark 显式标注
-        lines[n - 1] = std.unstr.mark(esc(args[3]));
+        // v0.82:文本位污值(可能含真实换行)esc 后直接进污行向量(write_file 透传落盘)
+        lines[n - 1] = esc(raw_args[3]);
         return save(args[1], lines);
     }
 
@@ -210,13 +240,13 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         if n < 1 || n > rc + 1 {
             return fail("行号超出范围(允许 1.." + str(rc + 1) + ")");
         }
-        let text = esc(args[3]);
+        let text = esc(raw_args[3]);
         let mut out: Vec[Untrusted[str]] = [];
         let mut done = false;
         let mut i = 0;
         while i < lines.len() {
             if i == n - 1 {
-                out.push(std.unstr.mark(text));
+                out.push(text);
                 done = true;
             }
             out.push(lines[i]);
@@ -225,7 +255,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
 
         // 插入位置在末尾之后(含无换行标记的文件)
         if !done {
-            out.push(std.unstr.mark(text));
+            out.push(text);
         }
         return save(args[1], out);
     }
@@ -244,10 +274,10 @@ fn main(args: Vec[str]) -> i64 with io, fs {
         let (s, e) = se;
         let mut repl: Vec[Untrusted[str]] = [];
         if cmd == "sub" {
-            let text = esc(args[4]);
-            if text != "" {
+            let text = esc(raw_args[4]);
+            if !text.is_empty() {
                 for ln in text.split("\n") {
-                    repl.push(std.unstr.mark(ln));
+                    repl.push(ln);
                 }
             }
         }
@@ -272,7 +302,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             return fail("append 需要 <file> <text>");
         }
         let lines = match load(args[1]) { Ok(v) => v, Err(m) => { return fail(m); } };
-        let text = esc(args[2]);
+        let text = esc(raw_args[2]);
         let n = lines.len();
         let hadMarker = n > 0 && lines[n - 1].is_empty();
         let bodyEnd = if hadMarker { n - 1 } else { n };
@@ -283,7 +313,7 @@ fn main(args: Vec[str]) -> i64 with io, fs {
             i = i + 1;
         }
         for ln in text.split("\n") {
-            out.push(std.unstr.mark(ln));
+            out.push(ln);
         }
         if hadMarker {
             out.push(std.unstr.mark(""));

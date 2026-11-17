@@ -54,7 +54,26 @@ fn analyze(path: str) -> i64 with io, fs {
     }
 }
 
-fn main(args: Vec[str]) -> i64 with io, fs, env {
+// v0.82 污点迁移(ADR-008):argv 元素级污点(main 参数 Vec[Untrusted[str]])——逐元素
+// 过 std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)取净值作路径;
+// 空串参数原样保留(迁移前语义:空 path → LOG_FILE 回退)。良性路径行为与
+// 迁移前逐字节一致。
+fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs, env {
+    let mut args: Vec[str] = [];
+    for a in raw_args {
+        if a.is_empty() {
+            args.push("");} else {
+            match std.unstr.sanitize_cli_path(a) {
+                Ok(p) => {
+                    args.push(p);
+                },
+                Err(e) => {
+                    eprint("log_analyzer: " + e);
+                    return 1;
+                },
+            }
+        }
+    }
     let mut path = "";
     if args.len() >= 1 {
         path = args[0];

@@ -388,7 +388,8 @@ export class VMInterp extends Interp {
     const args = [];
     if (mainFn.nParams >= 1) args.push(V.vec(argv.map(a => V.str(a))));
     if (mainFn.nParams > 1) {
-      throw new Panic('M3023', 'main 最多接受一个参数:args: Vec[str]');
+      // v0.82(ADR-008):消息随 main 合法带参形态翻转,与 interp.js runMain 逐字一致。
+      throw new Panic('M3023', 'main 最多接受一个参数:args: Vec[Untrusted[str]]');
     }
     const retV = this.callCompiled(bc.mainFnIdx, args, mainFn.entry?.decl?.span ?? null, false);
     let code = 0;

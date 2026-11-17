@@ -1,6 +1,10 @@
 // tests/net_e2e.mjs — std.net 端到端测试(独立子进程 HTTP 服务器,避免与阻塞的主线程死锁)
 // v0.77 校准(ADR-007 清单 8):http_get/http_request 响应 body 翻转 → Untrusted[str];插值
 // \{body} 是 M3050 洗白禁面 → 改拼接传播 + print 出向透传(ADR-007 §8.1)。期望 stdout 逐字不变。
+// v0.82 校准(ADR-008):main args 翻转为 Vec[Untrusted[str]];URL 载荷不可经
+// sanitize_cli_path(URL 含 "//" 内部空段被拒)——采 parse_i64 端口惯用法:argv 位置 0
+// 为端口号,污点在数值校验上终结得净 i64,URL 由净部件重组(127.0.0.1 固定回环 +
+// str(port) + 净路径)。期望 stdout 逐字不变。
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -13,12 +17,19 @@ const prog = path.join(TMP, 'nettest.ming');
 
 const src = [
   'use std.net;',
+  'use std.unstr;',
   '',
-  'fn main(args: Vec[str]) with io, net {',
-  '    let url = args[0];',
-  '    match std.net.http_get(url) {',
-  '        Ok((status, body)) => print(str(status) + " " + body),',
-  '        Err(e)             => print("请求失败: " + e),',
+  // v0.82(ADR-008):argv[0] = 端口号(parse_i64 数值校验终结污点);URL 净部件重组
+  'fn main(args: Vec[Untrusted[str]]) with io, net {',
+  '    match args[0].parse_i64() {',
+  '        Ok(port) => {',
+  '            let url = "http://127.0.0.1:" + str(port) + "/hello";',
+  '            match std.net.http_get(url) {',
+  '                Ok((status, body)) => print(str(status) + " " + body),',
+  '                Err(e)             => print("请求失败: " + e),',
+  '            }',
+  '        },',
+  '        Err(_) => { print("请求失败: port"); },',
   '    }',
   '}',
   '',
@@ -71,7 +82,7 @@ try {
   for (const engine of ['vm', 'tree']) {
     const args = [path.join(ROOT, 'bin', 'ming.js'), 'run', prog];
     if (engine === 'tree') args.push('--tree');
-    args.push('--', `http://127.0.0.1:${port}/hello`);
+    args.push('--', String(port));
     const r = spawnSync(process.execPath, args, { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
     check(`net:http_get 端到端(${engine})`, r.status === 0 && r.stdout === '200 ming-net-ok\n',
       `code=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${(r.stderr ?? '').slice(0, 300)}`);
@@ -81,10 +92,15 @@ try {
   const postProg = path.join(TMP, 'netpost.ming');
   fs.writeFileSync(postProg, [
     'use std.net;',
+    'use std.unstr;',
     '',
-    'fn main(args: Vec[str]) with io, net {',
+    // v0.82(ADR-008):argv[0] = 端口号(parse_i64 数值校验终结污点);URL 净部件重组
+    'fn main(args: Vec[Untrusted[str]]) with io, net {',
+    '    let mut port = 0;',
+    '    match args[0].parse_i64() { Ok(p) => { port = p; }, Err(_) => {} }',
+    '    let url = "http://127.0.0.1:" + str(port) + "/echo";',
     '    let headers = {"x-ming": "v07"};',
-    '    match std.net.http_request("POST", args[0], headers, "ming-body") {',
+    '    match std.net.http_request("POST", url, headers, "ming-body") {',
     '        Ok((status, body)) => print(str(status) + " " + body),',
     '        Err(e)             => print("请求失败: " + e),',
     '    }',
@@ -94,7 +110,7 @@ try {
   for (const engine of ['vm', 'tree']) {
     const args = [path.join(ROOT, 'bin', 'ming.js'), 'run', postProg];
     if (engine === 'tree') args.push('--tree');
-    args.push('--', `http://127.0.0.1:${echoPort}/echo`);
+    args.push('--', String(echoPort));
     const r = spawnSync(process.execPath, args, { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
     check(`net:http_request POST(${engine})`, r.status === 0 && r.stdout === '200 POST|v07|ming-body\n',
       `code=${r.status} stdout=${JSON.stringify(r.stdout)} stderr=${(r.stderr ?? '').slice(0, 300)}`);

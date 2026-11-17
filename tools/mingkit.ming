@@ -76,7 +76,25 @@ fn fail(msg: str) -> i64 with io {
     return 1;
 }
 
-fn main(args: Vec[str]) -> i64 with io, fs {
+// v0.82 污点迁移(ADR-008):argv 元素级污点(main 参数 Vec[Untrusted[str]])——逐元素
+// 过 std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)取净值(文件路径位 +
+// 子命令/old/new/text 比较与匹配串);空串参数原样保留(迁移前语义)。良性路径
+// 行为与迁移前逐字节一致。
+fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    let mut args: Vec[str] = [];
+    for a in raw_args {
+        if a.is_empty() {
+            args.push("");} else {
+            match std.unstr.sanitize_cli_path(a) {
+                Ok(p) => {
+                    args.push(p);
+                },
+                Err(e) => {
+                    return fail(e);
+                },
+            }
+        }
+    }
     if args.len() < 1 {
         return usage();
     }
