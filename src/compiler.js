@@ -215,8 +215,20 @@ class BytecodeCompiler {
     for (const f of this.functions) {
       if (!f?.entry?.sig) continue;
       const carrier = (t) => (t && t.k === 'untrusted') ? t.el : t;
-      for (const p of f.entry.sig.params ?? []) p.type = carrier(p.type);
-      f.entry.sig.ret = carrier(f.entry.sig.ret);
+      // N-61.2(v0.83 卫生件):解包前 clone entry/sig——checker 的原始 entry.sig 结构
+      // 不再被原地改写(compile 之后再读 checker 签名的功能不会踩到解包后形状;原 sig
+      // 对象原样保留)。compiled.functions[].entry 指向浅拷贝 clone(其 sig 已解包),
+      // AOT 序列化/v88.11a 白盒/wasm 编组读的都是 clone——形状与 v0.61–v0.82 的
+      // 原地解包结果逐字相同,行为零变化。entryFnIdx 仍以 checker 原始 entry 对象为键
+      // (resolveMingFn/vm indexOfEntry 按原始 entry 查找,不受 clone 影响)。
+      f.entry = {
+        ...f.entry,
+        sig: {
+          ...f.entry.sig,
+          params: (f.entry.sig.params ?? []).map((p) => ({ ...p, type: carrier(p.type) })),
+          ret: carrier(f.entry.sig.ret),
+        },
+      };
     }
     try {
       return tryCompileWasm(this.check, {

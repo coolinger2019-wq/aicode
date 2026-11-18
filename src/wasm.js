@@ -8,7 +8,8 @@
 //     v0.81(N-65.4):检查经 panic_m4002_op(a,b,op,kind,spanIdx) 携带操作数——宿主按
 //     tree/VM 同款模板组消息(整数+溢出:a + b 超出 i64 范围 等),三引擎消息逐字一致;
 //     泛化文案导入 panic_m4002 保留(旧 AOT 产物按名解析仍需宿主提供,新生成模块不再调用)
-//   * 除零显式检查(M4004);i64 min / -1 的除法(div_s 会 trap)先查(M4002)
+//   * 除零显式检查(M4004;v0.83 起经 panic_m4004_op 携带操作数);i64 min / -1 的除法
+//     (div_s 会 trap)先查(M4002)
 //   * 移位位数越界显式检查(M4002);wasm 移位自动按 64 取模,必须先拦
 //   * 循环回边与函数入口注入 ming_tick,保持 --max-steps 语义
 //   * i64/u64 数值 eligible(v0.15 起;u64 位型 i64);浮点复合/字符串/集合/闭包/效果函数
@@ -140,8 +141,12 @@ const TOTAL_IMPORTS = 3 + MATH_IMPORTS.length + STR_IMPORTS.length + VECMAP_IMPO
 //   (宿主按 tree/VM 同款模板组消息,见 vm.js 同名条目;kind 0–5 语义见该处注释)。
 //   泛化文案导入 panic_m4002(索引 1)保留不删——旧 AOT 产物按名解析仍需宿主提供,
 //   新生成模块不再调用它;删除会使 tick/panic×2 的既有索引布局与全部算式漂移。
+// v0.83(§4.13.4 P1.1):panic_m4004_op(a,kind,spanIdx)                TI+18  M4004 携带操作数
+//   (kind 0/1 = i64 除零/取模零,2/3 = u64 同款;宿主模板见 vm.js 同名条目)。
+//   泛化文案导入 panic_m4004(索引 2)保留不删——旧 AOT 产物按名解析仍需宿主提供,
+//   新生成模块不再调用它(v0.81 panic_m4002 保留先例同款)。
 // 新增导入一律追加在尾部,既有索引不变——v0.59 ming_alloc 错位/v0.63 G1 off-by-one 教训。
-const DEFINED_BASE = TOTAL_IMPORTS + 18;
+const DEFINED_BASE = TOTAL_IMPORTS + 19;
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 const U64_MAX = 2n ** 64n - 1n;
@@ -616,6 +621,16 @@ export class WasmCompiler {
         const pt = params.map(x => x === 'i32' ? I32 : I64);
         return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, []))];
       }),
+      // v0.83(§4.13.4 P1.1):panic_m4004_op(TI+18)尾部追加——M4004 除零/取模零 panic 携带
+      // 操作数,宿主按 tree/VM 同款模板组消息(见 vm.js 同名条目)。签名:
+      //   panic_m4004_op(a:i64, kind:i32, spanIdx:i32)
+      // 泛化文案导入 panic_m4004(索引 2)保留:旧 AOT 产物(dist 内容寻址缓存)按名解析
+      // 导入仍需宿主提供;新生成模块不再调用它,但保留在表内使既有索引布局零漂移
+      // (v0.81 panic_m4002 保留先例;v0.63 G1 教训:导入表只追加不插删)。
+      ...[['panic_m4004_op', ['i64', 'i32', 'i32'], []]].map(([n, params, results]) => {
+        const pt = params.map(x => x === 'i32' ? I32 : I64);
+        return [...nameBytes('ming'), ...nameBytes(n), 0x00, ...ulebBytes(typeOf(pt, []))];
+      }),
     ];
     // (N_IMPORTS 曾被引用但从未定义——整模块 ReferenceError 的元凶之一;参数已废弃)
 
@@ -748,13 +763,17 @@ export class WasmCompiler {
     if (typeof ty === 'string' && (ty === 'str' || ty.startsWith('v') || ty.startsWith('m') || ty.startsWith('r') || ty.endsWith('ptr'))) return I32;
     return I64;
   }
-  emitPanic(ctx, code, span) {
-    // wasm 内永不返回:JS 导入函数直接 throw Ming Panic
-    // v0.81(N-65.4):M4002 不再走此泛化路径——一律经 emitPanicOp 携带操作数;
-    // 本函数余 M4004(除零)仍用(消息与操作数无关,tree/VM 的 `整数除零:<a> / 0`
-    // 操作数口径属 N-65.4 同族,另行登记不预支)。
+  // v0.83(§4.13.4 P1.1):M4004 携带操作数的 panic 发射(经 panic_m4004_op 导入,宿主组消息)。
+  // 前置条件(槽位合同):操作数 a 在 scratch0——emitCheckedOp/emitCheckedOpU 的全部 M4004
+  // 检查点(除零/取模零的 b==0 前置检查只读 scratch1)与下标复合赋值路径(cur 落 scratch0 后
+  // 才调 emitCheckedOp)都满足:检查点处 scratch0 未被冲掉。
+  // kind 0/1 = i64 除零/取模零;2/3 = u64 同款(宿主 BigInt.asUintN 无符号重解释,见 vm.js
+  // panic_m4004_op 注释)。泛化导入 panic_m4004(索引 2)不再被新模块调用(旧 AOT 兼容保留)。
+  emitPanicM4004Op(ctx, kind, span) {
+    this.localGet(ctx, ctx.scratch0);
+    this.pushI32(ctx, kind);
     this.pushI32(ctx, this.spanId(span));
-    this.callImport(ctx, code === 'M4004' ? 2 : 1, []);
+    this.callImport(ctx, this.panicM4004OpIdx(), []);
   }
 
   // v0.81(N-65.4):M4002 携带操作数的 panic 发射(经 panic_m4002_op 导入,宿主组消息)。
@@ -842,7 +861,7 @@ export class WasmCompiler {
       case '/': {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4004', span);
+        this.emitPanicM4004Op(ctx, 0, span); // v0.83:整数除零:<a> / 0(kind 0 i64,携带操作数)
         b.push(0x0b);
         this.localGet(ctx, s1); this.pushI64(ctx, -1n); b.push(0x51); // b == -1
         this.localGet(ctx, s0); this.pushI64(ctx, I64_MIN); b.push(0x51); // a == i64.min
@@ -861,7 +880,7 @@ export class WasmCompiler {
       case '%': {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4004', span);
+        this.emitPanicM4004Op(ctx, 1, span); // v0.83:整数取模零:<a> % 0(kind 1 i64,措辞修正)
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x81); // rem_s
         this.localSet(ctx, s2);
@@ -1860,7 +1879,7 @@ export class WasmCompiler {
         // u64 除法:仅除零(div_u 无溢出 trap)
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4004', span);
+        this.emitPanicM4004Op(ctx, 2, span); // v0.83:整数除零:<a> / 0(kind 2 u64,宿主无符号重解释)
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x80); // div_u
         this.localSet(ctx, s2);
@@ -1869,7 +1888,7 @@ export class WasmCompiler {
       case '%': {
         this.localGet(ctx, s1); this.pushI64(ctx, 0n); b.push(0x51);
         b.push(0x04); b.push(0x40);
-        this.emitPanic(ctx, 'M4004', span);
+        this.emitPanicM4004Op(ctx, 3, span); // v0.83:整数取模零:<a> % 0(kind 3 u64,宿主无符号重解释)
         b.push(0x0b);
         this.localGet(ctx, s0); this.localGet(ctx, s1); b.push(0x82); // rem_u
         this.localSet(ctx, s2);
@@ -2178,6 +2197,11 @@ export class WasmCompiler {
   // v0.81(N-65.4):panic_m4002_op 导入索引(TI+17,与 emitModule 尾部追加序逐项对齐)
   panicOpIdx() {
     return TOTAL_IMPORTS + 17;
+  }
+
+  // v0.83(§4.13.4 P1.1):panic_m4004_op 导入索引(TI+18,与 emitModule 尾部追加序逐项对齐)
+  panicM4004OpIdx() {
+    return TOTAL_IMPORTS + 18;
   }
 
 

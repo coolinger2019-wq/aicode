@@ -556,8 +556,8 @@ class CEmit {
   // 函数同模板同逐字(tree/VM/wasm 单一事实 interp.js panicOverflow/intBinSlow);除法溢出
   // 用 tree 专属模板 `整数除法溢出:a / b`(无"超出范围"后缀,interp.js intBinSlow 除法
   // 分支口径——顺带修正 cc
-  // main 的预存偏差)。M4004(除零/取模零)维持 main-specific/eligible-泛化分叉(同族登记
-  // 不预支,见 v63.40 注)。
+  // main 的预存偏差)。v0.83(§4.13.4 P1.1):M4004(除零/取模零)同款收口——除零/取模零
+  // 消息四引擎同模板(interp.js:386/392/423/429 口径),ctx.specific 门拆除(旗标废除)。
   emitCheckedS(op, a, b, dst, span, ctx) {
     const P = (msg) => this.emitPanicStmt('M4002', 'integer-overflow', msg, span, ctx);
     const PZ = (msg) => this.emitPanicStmt('M4004', 'division-by-zero', msg, span, ctx);
@@ -574,7 +574,9 @@ class CEmit {
         return;
       case '/':
         ctx.open(`if (${b} == 0LL) {`);
-        PZ(ctx.specific ? { fmt: `整数除零:${FMT.i64} / 0\\n`, args: `, ${a}` } : null);
+        // v0.83(§4.13.4 P1.1):M4004 四引擎统一——除零/取模零消息 main/eligible 同模板
+        // (原 ctx.specific 门拆除;与 tree/VM/wasm 逐字,interp.js:386/423 口径)
+        PZ({ fmt: `整数除零:${FMT.i64} / 0\\n`, args: `, ${a}` });
         ctx.close('}');
         ctx.open(`if (${b} == -1LL && ${a} == LLONG_MIN) {`);
         // v0.81 N-65.4:除法溢出与 tree 同模板(整数除法溢出:a / b,无"超出范围"后缀)——
@@ -585,7 +587,9 @@ class CEmit {
         return;
       case '%':
         ctx.open(`if (${b} == 0LL) {`);
-        PZ(ctx.specific ? { fmt: `整数取模零:${FMT.i64} %% 0\\n`, args: `, ${a}` } : null);
+        // v0.83(§4.13.4 P1.1):取模零措辞修正为 tree 模板(interp.js:392/429 口径)——
+        // eligible 侧原泛化输出"整数除零",连措辞都不同
+        PZ({ fmt: `整数取模零:${FMT.i64} %% 0\\n`, args: `, ${a}` });
         ctx.close('}');
         // C 的 LLONG_MIN % -1 是 UB;Ming rem 语义 = 0
         ctx.open(`if (${b} == -1LL) {`);
@@ -636,13 +640,16 @@ class CEmit {
         return;
       case '/':
         ctx.open(`if (${b} == 0ULL) {`);
-        PZ(ctx.specific ? { fmt: `整数除零:${FMT.u64} / 0\\n`, args: `, ${a}` } : null);
+        // v0.83(§4.13.4 P1.1):u64 除零同模板(main/eligible 同口径,无符号 display 与
+        // tree 的 u64 display 一致)
+        PZ({ fmt: `整数除零:${FMT.u64} / 0\\n`, args: `, ${a}` });
         ctx.close('}');
         ctx.line(`${dst} = ${a} / ${b};`);
         return;
       case '%':
         ctx.open(`if (${b} == 0ULL) {`);
-        PZ(ctx.specific ? { fmt: `整数取模零:${FMT.u64} %% 0\\n`, args: `, ${a}` } : null);
+        // v0.83(§4.13.4 P1.1):u64 取模零同模板(main/eligible 同口径)
+        PZ({ fmt: `整数取模零:${FMT.u64} %% 0\\n`, args: `, ${a}` });
         ctx.close('}');
         ctx.line(`${dst} = ${a} % ${b};`);
         return;
@@ -670,8 +677,9 @@ class CEmit {
 
   // panic 语句。msg:{fmt, args}(fprintf 动态值)或 null(静态文本 = wasm 层通用消息)
   emitPanicStmt(code, name, msg, span, ctx) {
-    // v0.81 N-65.4:M4002 消息携带 msg 即动态发射(main/eligible 同口径);M4004 的
-    // eligible 调用以 msg=null 走泛化静态路径(分叉登记见 v63.40)
+    // v0.81 N-65.4:M4002 消息携带 msg 即动态发射(main/eligible 同口径);
+    // v0.83 §4.13.4 P1.1:M4004 同款收口——除零/取模零全部调用点传 msg(四引擎逐字),
+    // msg=null 静态路径现仅 M4002 兜底位可用(现行调用面已无 M4004 null 调用者)
     if (msg) {
       const head = `${span?.file ?? '<unknown>'}:${span?.line ?? 0}:${span?.col ?? 0}: error ${code}[${name}]: `;
       ctx.line(`fprintf(stderr, "%s${msg.fmt}", "${cstr(head)}"${msg.args});`);
@@ -991,7 +999,10 @@ class CEmit {
             const base = ctx.nameOf(s.target.base.name);
             const idx = this.emitExpr(s.target.index, 'i64', ctx);
             const val = this.emitExpr(s.value, 'i64', ctx);
-            ctx.line(`ming_vec_set(&${base}, ${idx}, ${val}, "${cstr(s.span?.file ?? '?')}", ${s.span?.line ?? 0}, ${s.span?.col ?? 0});`);
+            // v0.83 #58(plan §5.1):span 对齐 tree/VM 的写界检查口径(SETINDEX → target.span,
+            // interp.js:889)——原取语句级 span,列差 1(cc 报语句首列,tree/VM 报 `[i]` 起列)
+            const tsp = s.target.span;
+            ctx.line(`ming_vec_set(&${base}, ${idx}, ${val}, "${cstr(tsp?.file ?? s.span?.file ?? '?')}", ${tsp?.line ?? s.span?.line ?? 0}, ${tsp?.col ?? s.span?.col ?? 0});`);
             return;
           }
           if (bt === 'mi64') {
@@ -1669,7 +1680,9 @@ class CEmit {
       '',
       'static void ming_vec_set(ming_vec* v, long long i, long long x, const char* f, int l, int c) {',
       '    if (i < 0 || i >= v->n) {',
-      '        fprintf(stderr, "%s:%d:%d: error M4003[index-out-of-bounds]: 索引越界:长度 %lld,访问 %lld(用 .get(i) 返回 Option)\\n", f, l, c, v->n, i);',
+      // v0.83 #58(plan §5.1):元素写 = 写 flavor——消息不带 "(用 .get(i) 返回 Option)" 读后缀
+      // (interp.js:889 单一事实;读 flavor ming_vec_get 保持后缀,interp.js:1044 口径)
+      '        fprintf(stderr, "%s:%d:%d: error M4003[index-out-of-bounds]: 索引越界:长度 %lld,访问 %lld\\n", f, l, c, v->n, i);',
       '        exit(101);',
       '    }',
       '    v->d[i] = x;',
@@ -1912,7 +1925,8 @@ class CEmit {
     const ctx = {
       modFile,
       isMain,
-      specific: isMain, // v0.81 N-65.4 后仅 M4004(除零/取模零)维持此分叉;M4002 已四引擎统一
+      // v0.83(§4.13.4 P1.1):specific 旗标废除——M4004(除零/取模零)随 M4002(v0.81)
+      // 四引擎统一,main/eligible 同模板,最后一个消费点(emitCheckedS/U 的 PZ 门)已拆。
       scopes: [new Map()],
       retTy,
       lines: [],

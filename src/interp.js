@@ -902,10 +902,12 @@ export class Interp {
     }
   }
 
-  negSlow(v) {
+  // v0.83:span 参数(默认 null 保持向后兼容——vm.js UN 快路径经 Interp 继承调用本方法,
+  // 一元负号溢出时 tree 位置与 VM/wasm/cc 同源 e.span;消息文本逐字不变)。
+  negSlow(v, span = null) {
     const r = 0n - BigInt(v.v);
     if (!fits(r, v.bits, v.signed)) {
-      throw new Panic('M4002', '整数取负溢出:-' + v.v + ' 超出范围');
+      throw new Panic('M4002', '整数取负溢出:-' + v.v + ' 超出范围', span);
     }
     return V.int(r, v.bits, v.signed);
   }
@@ -1058,10 +1060,13 @@ export class Interp {
         if (v.t === 'int') {
           if (typeof v.v === 'number') {
             const r = -v.v;
-            if (!Number.isSafeInteger(r)) return this.negSlow(v);
+            // v0.83(#72):signed 窄型取负越界必须 panic——此前 number 路径只查
+            // SafeInteger,-2147483648(i32::MIN)取负得 2147483648(越界)静默返回,
+            // 与 VM/wasm 的 M4002 双引擎分歧;u64 取负无溢出概念(0-x 位型)不走此门。
+            if (!Number.isSafeInteger(r) || (v.signed && !fits(r, v.bits, true))) return this.negSlow(v, e.span);
             return V.int(r, v.bits, v.signed);
           }
-          return this.negSlow(v);
+          return this.negSlow(v, e.span);
         }
         return V.float(-v.v, v.bits);
       }
@@ -2218,27 +2223,37 @@ export class Interp {
       tasks.push({ sab, worker });
     }
     // 启动完毕后逐个等待(后面的任务在等待前面时已并行运行)
-    for (const task of tasks) {
-      if (task.failed) { results.push(V.enumv('builtin-res', 'Err', [V.str('无法启动子任务 worker: ' + task.failed)])); continue; }
-      const int32 = new Int32Array(task.sab);
-      // v0.60(#53):每次等待都钳到剩余墙钟配额,唤醒后熔断检查(M4012)——批量 join 不再绕过 --max-ms
-      const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
-      this.checkTimeQuota(span);
-      if (wr === 'timed-out') {
-        task.worker.terminate();
-        results.push(V.enumv('builtin-res', 'Err', [V.str('join 超时(120s)')]));
-        continue;
+    // v0.83(N-60.1):terminate 先于熔断检查 + finally 收割——M4012(或子任务 panic)中止
+    // 循环时,当前任务与尚未轮到的任务都不再泄漏运行中 worker(库/REPL 场景)。
+    // wait 返回即两态:'ok' = 结果已写入 SAB 且 worker 自然结束(terminate 无害,SAB 是
+    // 共享内存读回不受影响);'timed-out' = 仍在运行(本就应硬杀)。观察面(panic 码/消息/
+    // 退出码/输出)逐字不变——只把 terminate 的时序从"检查之后"挪到"检查之前"。
+    try {
+      for (const task of tasks) {
+        if (task.failed) { results.push(V.enumv('builtin-res', 'Err', [V.str('无法启动子任务 worker: ' + task.failed)])); continue; }
+        const int32 = new Int32Array(task.sab);
+        // v0.60(#53):每次等待都钳到剩余墙钟配额,唤醒后熔断检查(M4012)——批量 join 不再绕过 --max-ms
+        const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
+        try { task.worker.terminate(); } catch { /* 已退出 */ }
+        this.checkTimeQuota(span);
+        if (wr === 'timed-out') {
+          results.push(V.enumv('builtin-res', 'Err', [V.str('join 超时(120s)')]));
+          continue;
+        }
+        const len = Atomics.load(int32, 1);
+        const text = len > 0 ? Buffer.from(task.sab, 8, len).toString('utf8') : '';
+        try {
+          const parsed = JSON.parse(text);
+          if (!parsed.ok) results.push(V.enumv('builtin-res', 'Err', [V.str(String(parsed.error))]));
+          else results.push(V.enumv('builtin-res', 'Ok', [wireToV(parsed.value)]));
+        } catch {
+          results.push(V.enumv('builtin-res', 'Err', [V.str('join:子任务结果损坏')]));
+        }
       }
-      const len = Atomics.load(int32, 1);
-      const text = len > 0 ? Buffer.from(task.sab, 8, len).toString('utf8') : '';
-      try {
-        const parsed = JSON.parse(text);
-        if (!parsed.ok) results.push(V.enumv('builtin-res', 'Err', [V.str(String(parsed.error))]));
-        else results.push(V.enumv('builtin-res', 'Ok', [wireToV(parsed.value)]));
-      } catch {
-        results.push(V.enumv('builtin-res', 'Err', [V.str('join:子任务结果损坏')]));
+    } finally {
+      for (const t of tasks) {
+        if (!t.failed) { try { t.worker.terminate(); } catch { /* 已退出/已终止 */ } }
       }
-      task.worker.terminate();
     }
     return V.vec(results);
   }
@@ -2313,9 +2328,11 @@ export class Interp {
     const int32 = new Int32Array(task.sab);
     // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)——阻塞 join 不再绕过 --max-ms
     const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
+    // v0.83(N-60.1):先 terminate 再熔断检查(与 syncSpawnAll 同口径)——M4012 抛出路径
+    // 不再泄漏运行中 worker;'ok' 态 terminate 无害(结果已写入 SAB),观察面逐字不变。
+    try { task.worker.terminate(); } catch { /* 已退出 */ }
     this.checkTimeQuota(span);
     if (wr === 'timed-out') {
-      task.worker.terminate();
       return V.enumv('builtin-res', 'Err', [V.str('join 超时(120s):任务 #' + h.id)]);
     }
     const len = Atomics.load(int32, 1);
@@ -2427,9 +2444,11 @@ export class Interp {
     // v0.60(#53):显式用户超时与剩余墙钟配额取小;唤醒后熔断检查(M4012)——配额先尽则熔断,
     // 否则维持 M4010 任务超时语义不变
     const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(timeoutMs, this.remainingMs())));
+    // v0.83(N-60.1):先 terminate 再熔断检查(与 syncJoin 同口径)——M4012 抛出路径不再
+    // 泄漏运行中 worker;同时补齐正常返回路径的显式收割(原版仅超时路径 terminate)。
+    try { task.worker.terminate(); } catch { /* 已退出 */ }
     this.checkTimeQuota(span);
     if (wr === 'timed-out') {
-      task.worker.terminate();
       return V.enumv('builtin-res', 'Err', [this.panicInfoJson('M4010', 'join_detailed 超时(' + timeoutMs + 'ms):任务 #' + h.id, [])]);
     }
     const len = Atomics.load(int32, 1);
@@ -2480,36 +2499,46 @@ export class Interp {
   }
 
   // swallow=true:正在异常展开,子任务错误吞掉;false:正常退出,子任务 panic 向上抛
+  // v0.83(N-60.1):terminate 先于熔断检查 + finally 收割——M4012(或子任务 panic)中止
+  // 循环时,当前任务与尚未轮到的任务都不再泄漏运行中 worker(库/REPL 场景)。观察面逐字不变。
   exitSyncScope(swallow, span) {
     const frame = this.syncScopeStack.pop();
     if (!frame) return;
-    for (const id of frame.tasks) {
-      const task = this.syncTasks.get(id);
-      if (!task) continue; // 已显式 join
-      if (task.cancelled) { this.syncTasks.delete(id); continue; } // v0.31:已取消的任务不再等待(terminate 后 SAB 永不写)
-      this.syncTasks.delete(id);
-      const int32 = new Int32Array(task.sab);
-      // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)——scoped 收尾不再绕过 --max-ms
-      const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
-      this.checkTimeQuota(span);
-      if (wr === 'timed-out') {
-        task.worker.terminate();
-        if (!swallow) throw new Panic('M4001', 'scoped 子任务 join 超时(120s)', span);
-        continue;
+    try {
+      for (const id of frame.tasks) {
+        const task = this.syncTasks.get(id);
+        if (!task) continue; // 已显式 join
+        if (task.cancelled) { this.syncTasks.delete(id); continue; } // v0.31:已取消的任务不再等待(terminate 后 SAB 永不写)
+        this.syncTasks.delete(id);
+        const int32 = new Int32Array(task.sab);
+        // v0.60(#53):等待钳到剩余墙钟配额,唤醒后熔断检查(M4012)——scoped 收尾不再绕过 --max-ms
+        const wr = Atomics.wait(int32, 0, 0, Math.max(0, Math.min(120000, this.remainingMs())));
+        try { task.worker.terminate(); } catch { /* 已退出 */ }
+        this.checkTimeQuota(span);
+        if (wr === 'timed-out') {
+          if (!swallow) throw new Panic('M4001', 'scoped 子任务 join 超时(120s)', span);
+          continue;
+        }
+        const len = Atomics.load(int32, 1);
+        const text = len > 0 ? Buffer.from(task.sab, 8, len).toString('utf8') : '';
+        let parsed;
+        try { parsed = JSON.parse(text); } catch { continue; }
+        if (!parsed.ok && !swallow) {
+          // v0.30 错误链:子任务真实 panic 码透传(不再硬编码 M4001),原始栈作 cause
+          const p = new Panic(String(parsed.code ?? 'M4001'), 'scoped 子任务失败: ' + String(parsed.error), span);
+          p.cause = {
+            code: String(parsed.code ?? 'M4001'),
+            message: String(parsed.error),
+            stack: Array.isArray(parsed.stack) ? parsed.stack : [],
+          };
+          throw p;
+        }
       }
-      const len = Atomics.load(int32, 1);
-      const text = len > 0 ? Buffer.from(task.sab, 8, len).toString('utf8') : '';
-      let parsed;
-      try { parsed = JSON.parse(text); } catch { continue; }
-      if (!parsed.ok && !swallow) {
-        // v0.30 错误链:子任务真实 panic 码透传(不再硬编码 M4001),原始栈作 cause
-        const p = new Panic(String(parsed.code ?? 'M4001'), 'scoped 子任务失败: ' + String(parsed.error), span);
-        p.cause = {
-          code: String(parsed.code ?? 'M4001'),
-          message: String(parsed.error),
-          stack: Array.isArray(parsed.stack) ? parsed.stack : [],
-        };
-        throw p;
+    } finally {
+      // 尚在 syncTasks 的 = 未轮到的任务(cancelled 的 worker 已被 cancel 终止,重杀无害)
+      for (const id of frame.tasks) {
+        const t = this.syncTasks.get(id);
+        if (t && !t.cancelled) { try { t.worker.terminate(); } catch { /* 已退出 */ } }
       }
     }
   }

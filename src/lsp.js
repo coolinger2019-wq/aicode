@@ -665,6 +665,11 @@ function completionFor(file, src, line0, col0) {
   const items = [];
   for (const it of filtered) {
     if (seen.has(it.name)) continue;
+    // v0.83:占位符出口过滤(v0.80 审查 NOTE-2)——parseForCompletion 的占位修复文本
+    // `mingLspPlaceholder0` 经 `use x as ` 别名位被解析成 UseDecl.alias,再经 useImportsOf
+    // 登记进 ctx.imports,在通用列表泄漏为模块候选(kind 9)。在唯一出口(所有列表路径
+    // 汇合的去重循环)统一拦掉内部前缀候选;入口(parseForCompletion 占位机制)不动。
+    if (it.name.startsWith('mingLspPlaceholder')) continue;
     seen.add(it.name);
     const ci = { label: it.name, kind: it.kind };
     if (it.detail) ci.detail = it.detail;

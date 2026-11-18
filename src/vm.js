@@ -92,7 +92,28 @@ export class VMInterp extends Interp {
               throw new Panic('M4002', '整数运算溢出/移位越界', spans[spanIdx] ?? null);
             },
             panic_m4004: (spanIdx) => {
+              // v0.83:泛化文案导入保留——旧 AOT 产物(dist 内容寻址缓存)按名解析导入,
+              // 仍需宿主提供;新生成的模块一律改走 panic_m4004_op(携带操作数)。
               throw new Panic('M4004', '整数除零', spans[spanIdx] ?? null);
+            },
+            // v0.83(§4.13.4 P1.1):M4004 消息口径统一——wasm 除零/取模零检查携带操作数
+            // 穿越导入边界,宿主按 tree/VM 同款模板组消息(interp.js:386/392/423/429
+            // 单一事实参考);统一后 tree/VM/wasm/cc 四引擎 M4004 消息文本逐字一致。
+            // 签名:panic_m4004_op(a:i64, kind:i32, spanIdx:i32)
+            //   a    = 操作数(wasm i64 位型 BigInt;i64 形态按有符号 display,u64 形态按
+            //         无符号重解释(BigInt.asUintN)——tree 存 u64 为非负值,display 同形)
+            //   kind = 0 i64 除零(整数除零:<a> / 0——interp.js:386/423 口径)
+            //          1 i64 取模零(整数取模零:<a> % 0——interp.js:392/429 口径)
+            //          2 u64 除零(同除零模板,a 无符号重解释)
+            //          3 u64 取模零(同取模零模板,a 无符号重解释)
+            panic_m4004_op: (a, kind, spanIdx) => {
+              const u = (x) => BigInt.asUintN(64, x);
+              let msg;
+              if (kind === 0) msg = `整数除零:${a} / 0`;
+              else if (kind === 1) msg = `整数取模零:${a} % 0`;
+              else if (kind === 2) msg = `整数除零:${u(a)} / 0`;
+              else msg = `整数取模零:${u(a)} % 0`;
+              throw new Panic('M4004', msg, spans[spanIdx] ?? null);
             },
             // v0.81(N-65.4):M4002 消息口径统一——wasm 溢出检查携带操作数穿越导入边界,
             // 宿主按 tree/VM 同款模板组消息(interp.js panicOverflow/intBinSlow/negSlow
@@ -702,7 +723,7 @@ export class VMInterp extends Interp {
                   stack.push(V.int(r, v.bits, v.signed));
                   break;
                 }
-                const fixed = this.negSlow(v);
+                const fixed = this.negSlow(v, this.spanOf(frame, ins));
                 stack.push(fixed);
               } else {
                 const r = 0n - v.v;
