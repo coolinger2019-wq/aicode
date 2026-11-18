@@ -1260,7 +1260,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 
 ### 4.13.3 设计耦合簇（更新）
 
-- **簇 A 零拷贝与证明联动（ADR-009）**：Slice 只读视图 ↔ 带长度 Ptr ↔ unsafe(cond) 证明携带 ↔ read_bytes_range——四件同一设计簇一次到位。**rossum 数据在案**（moltbook:74/75/137）为簇 A 提供首个真实用例锚点；Slice 无证明携带 = 新 unsafe 逃逸口，证明无 Slice = 无对象可证。
+- **簇 A 零拷贝与证明联动（ADR-009 ✅ 已落盘 2026-11-19，docs/adr-009-streaming-slice.md）**：Slice 只读视图 ↔ 带长度 Ptr ↔ unsafe(cond) 证明携带 ↔ read_bytes_range——四件同一设计簇一次设计、**分阶段实现**（S1 read_bytes_range v0.86 / S2 Slice[u8] v0.87+ / S3 带长度 Ptr+C ABB 条件 / S4 unsafe(cond) 远期四门槛）。**rossum 数据在案**（moltbook:74/75/137）为首个真实用例锚点；Slice 无证明携带 = 新 unsafe 逃逸口，证明无 Slice = 无对象可证——裁决见 ADR-009 §2（Slice 值语义例外三硬约束/8MB 单次上限保留/污点载体不扩/证明不消除检查维持）。
 - **簇 B 污点窗口**——**v0.82 已关闭**（argv/响应头/metadata 三族落地）。残项各自门槛：read_to_end 翻转（破坏性微窗）、stringify_untrusted/Untrusted[u8]（真实用例）、流敏感/形式化（远期）。
 - **簇 C 并发与传输**：TLS 可独立于并发模型（传输层）；keep-alive/优雅停机/自省 API 耦合连接生命周期设计；UDP/WS 各自另裁；async 挂"确定性并发"语义 ADR（ADR-001:204 原判维持）。**禁止混合形态**。
 - **簇 D 后端 ABI**：C FFI struct/array + 交叉编译 + asm 多架构——用例驱动；FFI 扩面**必须先裁决 #55 NUL 策略**（plan:682 前置义务）。
@@ -1293,7 +1293,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | v0.84 | ✅ 已交付（2026-11-18）：观测与诚实性复批（coverage 95.0%/90.3%、bench 字段遍历亚线性 1.65–2.08x、AI 快照级联 1.75→1.29/误导 7→0 + capabilities 复算/references 5 处/N-66 口径）+ **fits bits=32 修复**（v0.83 审查 M1；顺带消除 VM i32 ±1 假 M4002）——审查 REQUEST_CHANGES（2 MAJOR 表述/登记面）修复后通过 | 纯测量/文档为主；审查新登记 3 项窄型算术分歧转 v0.85 |
 | v0.85 | ✅ 已交付（2026-11-18）：窄型算术一致性收口（intBin `+`/`*`/`/` 运行时窄 bits fits 门——静默回绕收敛 M4002，零校准）+ M3013 无损拓宽 fix 族（快照数据唯一有据族，f-probe 0 error）+ VM ADDI 两件（>2^53 BigInt 回落 / `-=` 消息模板）——审查 APPROVE-with-minor（1 预存 MAJOR 登记+表述收窄，3 MINOR 全落实） | 零新增 M 码；§93 23 check + §94 13 check |
 | v0.85 审查登记（v0.84 审查落盘） | ① 窄型 `+`/`*`/`/` number 快路径无 fits 门（tree/VM 一致但静默溢出——`127i8+1i8=128`、`i32::MIN/-1=2147483648`，违约"溢出必 panic"；补门 = 语义变更需理由化）② VM ADDI 对 >2^53 合法 i64 和假报 M4002（isSafeInteger 失败置 null 直 panic，未回落 BigInt——tree 正确，硬规则 1 分歧）③ ADDI `-=` 越界消息 tree「整数-溢出:a - 1」vs VM「整数+溢出:a + -1」（i8/i32/i64 全宽度，同码同 exit，仅消息文本） | **v0.85 候选（P1）**——①②为语义分歧/违约，③为消息面；均 pre-existing（HEAD 纯净副本复现），无既有测试锁定 |
-| v0.86 | 流式第一片（read_bytes_range 最小流式） | **前置 = ADR-009 落盘 + 维护者复核**；rossum 数据在案 |
+| v0.86 | 流式第一片（read_bytes_range 最小流式，ADR-009 S1） | **ADR-009 已落盘（2026-11-19）；维护者复核位 = ADR-009 §7（12 项清单；S1 先行、复核否决仅回退 S1）**；rossum 数据在案 |
 | v0.87+ | Slice/带长度 Ptr/unsafe(cond) 联动（簇 A 续）；污点微窗（read_to_end）；条件驱动簇（TLS/C ABI/asm 多架构/泛型缓存） | 各自门槛 |
 | 远期 | async 语义 ADR；流敏感污点；形式化；mask 重开三门槛 | 独立 ADR |
 | 随时 | bench WARN 复测（本轮回测 WARN 0 已登记）；S11 stderr 提示一行（serve-observation Backlog 级） | — |
@@ -1305,7 +1305,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 - **v0.83 LSP 占位符过滤**：问题 = `use x as ` 回落通用列表泄漏内部占位符 mingLspPlaceholder0（kind 9）——补全面唯一已知错补残留。前置 = 无。规模 = lsp.js 过滤一行 + §89 补断言。验收 = 回落列表不含占位符前缀；既有补全零回归。风险 = 无。
 - **v0.84 观测复批**：问题 = v0.80–v0.82 三版大改 checker/wasm/cbackend/lsp 后，coverage/bench/AI 快照/capabilities 口径全部停在旧时点；references.md 5 处过时行文与 N-66 口径漂移损害"文档=实现"承诺。前置 = 无（纯测量）。规模 = coverage 复测 1 次插桩全量 + bench 1 次 + 快照语料重跑（v0.66 方法学复用）+ 文档批。验收 = 全部数字来自可复现命令并回填文档；零 src 语义改动（补测 3 条除外）。风险 = coverage 数字回落（大改后正常波动——如实登记不设门槛）。
 - **v0.85 fix 第三波 + LSP 第二切片**：问题 = fix 9/79 ≈11%、LSP 别名位/子目录 use 仍断供——但**选族与选件必须由新快照数据驱动**（v0.66 数据已被 v0.67–v0.80 消化完毕）。前置 = v0.84 快照复测。规模 = 每族 30–60 行 + f-probe（fix）/每件保守切片（LSP）。验收 = 应用后必消除（fix）/宁可空列表不可错补（LSP）+ 既有锚点零校准。风险 = 误伤面（v0.80 MAJOR-1 先例——每族锚定替换域与守卫）；数据不足则如实缩项。
-- **ADR-009 流式·Slice 簇**：问题 = 8MB 上限 + 无零拷贝（rossum：30 帧缓冲不可）——read_bytes_range 最小流式有独立价值，但 Slice/带长度 Ptr/unsafe(cond) 是同一设计簇（单做任一件都是半成品）。前置 = rossum 数据在案（moltbook:74/75/137）；**ADR-009 落盘 + 维护者复核**。规模 = ADR 设计（Slice 表示/生命周期逃逸分析/证明携带联动/与 8MB 上限关系）→ 实现 read_bytes_range 先行（黄金逐字节 + 大文件分段）。验收 = 大文件分段处理黄金逐字节 + 四引擎一致。风险 = 证明系统复杂度（证明携带不达则 Slice 缓行——read_bytes_range 独立交付不受阻）。
+- **ADR-009 流式·Slice 簇（✅ 已落盘 2026-11-19，docs/adr-009-streaming-slice.md）**：问题 = 8MB 上限 + 无零拷贝（rossum：30 帧缓冲不可）——read_bytes_range 最小流式有独立价值，但 Slice/带长度 Ptr/unsafe(cond) 是同一设计簇（单做任一件都是半成品）。**裁决**：S1 read_bytes_range 立即实现（`Result[Untrusted[Vec[u8]], str]`/8MB 单次上限保留/短读截断合法/负数与越界 Err/计费按返回长度）；S2 Slice[u8]（视图例外三硬约束：非 mut 源/块内线性/M3051 逃逸拒绝；证明义务复用 len 符号；proven 不消除运行时检查）；S3 带长度 Ptr 延迟（C ABI 用例 + #55 NUL 前置）；S4 unsafe(cond) 延迟（四门槛：证明器覆盖率评估/Slice+带长度 Ptr 就位/proof_fuzz 扩展反例验证/维护者复核——ADR-003 唯一例外仅门槛全满足后生效）。**风险 = 证明系统复杂度（S4 不达则 S1/S2 独立交付不受阻）**。
 - **污点微窗（read_to_end）**：问题 = io.read_to_end 维持净 str——同源 read_line 已标，口径差异是 v0.77 登记的诚实边界。前置 = 维护者裁决窗口（破坏性小面——消费方需改污值代数处理）。规模 = 签名翻转 1 处 + 消费面迁移。验收 = 同源同污纪律闭合；良性路径逐字节。风险 = 低（消费面小）；与 stringify_untrusted 并窗裁决。
 
 ### 4.13.7 Backlog 处置表增补（沿 §4.12.6 编制）
@@ -1319,7 +1319,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | M3013 fix 窄结果位边界（v0.85 审查 m1 记录）：处方入窄上下文可能新报 M3002（精确类型面接住，非静默——v93.23 锁定） | 登记（行为边界，非缺陷） | v0.80 f-probe 口径的适用边界已写入 intWidenFix 头注 |
 | coverage/bench/AI 快照复测 + capabilities 口径 + references/moltbook 审计 + N-66 | **v0.84 候选（P1）** | 纯测量/文档；为 v0.85 供数据 |
 | fix 第三波 / LSP 第二切片 | **v0.85 候选（P2）** | 数据驱动；前置 = v0.84 快照 |
-| 流式·Slice 簇（ADR-009） | **v0.86 候选（P2）** | rossum 数据在案；ADR 落盘 + 复核 |
+| 流式·Slice 簇（ADR-009） | **✅ ADR-009 已落盘（2026-11-19）；S1 v0.86 开工，S2 v0.87+，S3/S4 维持门槛** | rossum 数据在案；维护者复核位 = ADR-009 §7 |
 | read_to_end 翻转 / stringify_untrusted | **下一污点微窗（P2，维护者裁决）** | 破坏性窗口制；同源纪律闭合 |
 | serve TLS / C FFI ABI / 交叉编译 / asm 多架构 / 泛型缓存 / 证明扩大 / WS·UDP·keep-alive·自省 API / N-65.1 / N-60.3 / get(i) 载体 / 密码学 / e05·e24 warn 化 / 孤立代理对 / HTTP 流式 | **P3 条件驱动** | 各自门槛未满足（证据/用例/数据/设计） |
 | async 语义 ADR / 流敏感污点 / 形式化 / mask 重开 / Blood 远期参考 / L2-L3 | **P4 远期** | 语义定义或研究构想先行 |
