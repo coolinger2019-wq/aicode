@@ -1308,10 +1308,10 @@ class BytecodeCompiler {
           if (mEntry?.kind === 'enum') {
             const vv = mEntry.decl.variants.find(x => x.name === e.name);
             if (vv && vv.rtypes.length === 0) {
-              this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: { def: mEntry.decl, tag: e.name } }), 0, e.span);
+              this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: this.enumSpecV(mEntry.decl, e.name) }), 0, e.span);
               return;
             }
-            this.emit(st, OP.CONST, this.poolAdd({ __tag: 'enumspec', v: { def: mEntry.decl, tag: e.name } }), 0, e.span);
+            this.emit(st, OP.CONST, this.poolAdd({ __tag: 'enumspec', v: this.enumSpecV(mEntry.decl, e.name) }), 0, e.span);
             return;
           }
           if (mEntry?.kind === 'const') {
@@ -1324,10 +1324,10 @@ class BytecodeCompiler {
           const v = ent.decl.variants.find(x => x.name === e.name);
           if (v && v.rtypes?.length === 0) {
             // 零参变体是完整值:直接构造
-            this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: { def: ent.decl, tag: e.name } }), 0, e.span);
+            this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: this.enumSpecV(ent.decl, e.name) }), 0, e.span);
             return;
           }
-          this.emit(st, OP.CONST, this.poolAdd({ __tag: 'enumspec', v: { def: ent.decl, tag: e.name } }), 0, e.span);
+          this.emit(st, OP.CONST, this.poolAdd({ __tag: 'enumspec', v: this.enumSpecV(ent.decl, e.name) }), 0, e.span);
           return;
         }
         // 本模块枚举之外:Option/Result 名已在上方处理
@@ -1355,7 +1355,7 @@ class BytecodeCompiler {
     const ctorSpec = this.tryCtorSpec(callee, st);
     if (ctorSpec) {
       for (const a of e.args) this.compileExpr(a, st);
-      this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: ctorSpec }), e.args.length, e.span);
+      this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: this.enumSpecV(ctorSpec.def, ctorSpec.tag) }), e.args.length, e.span);
       return;
     }
 
@@ -1374,9 +1374,8 @@ class BytecodeCompiler {
             return;
           }
           if (mEntry?.kind === 'enum') {
-            const spec = { def: mEntry.decl, tag: callee.name };
             for (const a of e.args) this.compileExpr(a, st);
-            this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: spec }), e.args.length, e.span);
+            this.emit(st, OP.MAKEENUM, this.poolAdd({ __tag: 'enumspec', v: this.enumSpecV(mEntry.decl, callee.name) }), e.args.length, e.span);
             return;
           }
           if (mEntry?.kind === 'const') {
@@ -1408,6 +1407,23 @@ class BytecodeCompiler {
     for (const a of e.args) this.compileExpr(a, st);
     this.emit(st, OP.CALL, e.args.length, 0, e.span);
     void want;
+  }
+
+  // v0.89(§4.13.7):enumspec 附带逐 payload 归一规格(normSpecs 纯数据,VM MAKEENUM
+  // 构造归一;tree constructVariant 同口径)。优先 checker 解析后的 rtypes,缺省回退
+  // AST types;泛型 payload(规格 null)/builtin-opt·res(def 为字符串)不归一;
+  // 无窄型 payload → normSpecs 不挂(旧产物/既有池布局逐字节兼容)。
+  enumSpecV(def, tag) {
+    const v = { def, tag };
+    if (def && typeof def === 'object' && Array.isArray(def.variants)) {
+      const variant = def.variants.find((x) => x.name === tag);
+      const ts = variant ? (variant.rtypes ?? variant.types) : null;
+      if (Array.isArray(ts)) {
+        const specs = ts.map((t) => declaredSpecOfTy(t) ?? declaredSpecOfTyAst(t));
+        if (specs.some(Boolean)) v.normSpecs = specs;
+      }
+    }
+    return v;
   }
 
   // 识别 枚举.变体(含三段路径)作为构造器调用
@@ -1493,14 +1509,16 @@ class BytecodeCompiler {
     if (e.body.nt === 'BlockExpr') this.compileBlock(e.body.block, sub, true);
     else this.compileExpr(e.body, sub, true);
     this.emit(sub, OP.RET, 0, 0, e.span);
-    // v0.87(§4.13.7)/v0.88(§4.13.7 四边界):lambda 形参归一规格——编译函数对象携带
-    // narrowSpecs(非序列化字段:AOT 对含 lambda 程序维持既有源码模式回退,<闭包> 缺
-    // entry.sig 的拒绝不变)。优先级:AST 标注(标注形参,v0.87 叶形态;declaredSpecOf
-    // TyAst 覆盖 Vec[窄] 标注)→ checker 统一后回写的 e.narrowParamTypes(无标注形参经
-    // 期望 fn 类型统一——本版新面;类型经单一事实来源 declaredSpecOfTy 构建规格树)。
-    // lambda 无返回标注位 → ret 恒 null(块体尾值/return 值保持来源标签;lambda 返回
-    // 位归一为登记遗留,见报告)。
-    const lamNarrowSpecs = { params: e.params.map((p, i) => declaredSpecOfTyAst(p.type) ?? declaredSpecOfTy(e.narrowParamTypes?.[i]) ?? null), ret: null };
+    // v0.87(§4.13.7)/v0.88(§4.13.7 四边界)/v0.89(§4.13.7):lambda 形参/返回归一规格
+    // ——编译函数对象携带 narrowSpecs(非序列化字段:AOT 对含 lambda 程序维持既有源码
+    // 模式回退,<闭包> 缺 entry.sig 的拒绝不变)。形参优先级:AST 标注(标注形参,v0.87
+    // 叶形态;declaredSpecOfTyAst 覆盖 Vec[窄]/Map[*,窄] 标注)→ checker 统一后回写的
+    // e.narrowParamTypes(无标注形参经期望 fn 类型统一;类型经单一事实来源 declared
+    // SpecOfTy 构建规格树)。返回位(v0.89):checker 统一后回写的 e.narrowRetSpec——
+    // 内联 HOF 实参经 fn(ret 窄) 期望统一/体尾推断窄型时非 null;callCompiled RET 归一
+    // (narrowSpecsOfFn)据此重标。闭包在别处创建后传入的形态由传参边界 __retSpec 打标
+    // 通道覆盖(tree callClosure);lambda 返回非窄型 → null(推断 i64 = 原生死)。
+    const lamNarrowSpecs = { params: e.params.map((p, i) => declaredSpecOfTyAst(p.type) ?? declaredSpecOfTy(e.narrowParamTypes?.[i]) ?? null), ret: declaredSpecOfTy(e.narrowRetSpec) ?? null };
     this.functions[idx] = { name: '<闭包>', modFile: st.mod.file, nParams: e.params.length, nLocals: sub.nLocals, code: sub.code, narrowSpecs: lamNarrowSpecs };
     this.curFnIdx = savedCur;
     this.emit(st, OP.CLOSURE, idx, this.poolAdd({ __tag: 'plan', v: plan }), e.span);

@@ -39,9 +39,16 @@ function stripWireAst(x) {
 function taggedToWire(kind, v) {
   // v0.88(§4.13.7 四边界):structspec 附带字段规格树(normSpec,纯数据)——AOT
   // MAKESTRUCT ctor 归一依赖;缺省 null(旧产物兼容,ctor 不归一)。'spec'/'specarr'
-  // 规格条目走默认 stripWireAst 透传(规格树无 span/def 等剥离键)。
+  // 规格条目走默认 stripWireAst 透传(规格树无 span/def 等剥离键;v0.89 扩展的
+  // {kt,vt}/{fn:{ret}} 形态同为纯数据)。
+  // v0.89(§4.13.7):enumspec 附带逐 payload 归一规格(normSpecs,纯数据数组)——AOT
+  // MAKEENUM 构造归一依赖;缺省 undefined(无窄型 payload 形态,旧产物兼容)。
   if (kind === 'structspec' && v && typeof v === 'object') return { names: v.names, def: minimalDef(v.def), normSpec: v.normSpec ?? null };
-  if (kind === 'enumspec' && v && typeof v === 'object') return { def: typeof v.def === 'string' ? v.def : minimalDef(v.def), tag: v.tag };
+  if (kind === 'enumspec' && v && typeof v === 'object') {
+    const w = { def: typeof v.def === 'string' ? v.def : minimalDef(v.def), tag: v.tag };
+    if (v.normSpecs) w.normSpecs = v.normSpecs;
+    return w;
+  }
   return stripWireAst(v);
 }
 function poolItemToWire(v) {

@@ -22,6 +22,16 @@
 //               元组模式)的差分探测器:v0.87 现状下这些边界"静默一致"(非分歧面),
 //               v0.88 四边界归一落地后,界内值正常、越界必须 M4002 双引擎一致 panic
 //               ——归一不对称 → fuzz 直接抓出。全部 rng 驱动,确定性保持。
+//   v0.89:同族缺口差分形态扩展(Agent B)——wide 族窄型池再入 4 shape:
+//               (nmap Map[str,u8] 标注初始化 + set 写位 + get().unwrap() 读窄算术、
+//               nlret 零参 HOF ()->u8 + lambda 体返回位 + 调用侧窄算术、
+//               nenum enum 窄 payload 构造 + match 绑定读窄算术、
+//               ninfer 无标注元组解构重赋值(M1a) + 推断容器 plain push(M1b))。
+//               形态即 §4.13.7 同族缺口(Map 值位/lambda 返回位/enum payload/
+//               推断型 M1a/M1b)的差分探测器:v0.88 基线审计(B 纯净副本 17 探针)
+//               实测 plain 通道三腿静默(260/2147483648)、后缀通道已 M4002(标签
+//               存活)——v0.89 归一落地后 plain 通道越界必须收敛 M4002 双引擎一致,
+//               归一不对称 → fuzz 直接抓出。全部 rng 驱动,确定性保持。
 // 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -252,21 +262,27 @@ function genStmt(s, vars, strVar, mode, lines, ctx) {
   }
 }
 
-// ---- v0.88:窄型形态生成(Agent B 独立差分压测;仅 wide 族调用)----
-// 设计约束(§4.13.7 遗留四边界探测):
+// ---- v0.88/v0.89:窄型形态生成(Agent B 独立差分压测;仅 wide 族调用)----
+// 设计约束(§4.13.7 遗留四边界 + 同族缺口探测):
 //   1. check-valid:窄型算术两侧恒同型——字面量一律带后缀(plain 字面量在窄型算术
 //      位不收窄,`n + 5` 即 M3013,实测);plain 字面量只用在实测合法位(窄型 let
-//      初始化/重赋值、Vec 标注初始化与 push/set、struct 字段位——即 v0.87 归一后的
-//      i64 标签位静默面,归一后应收敛 M4002 的那侧)。
+//      初始化/重赋值、Vec 标注初始化与 push/set、struct 字段位、Map 值位/lambda 体
+//      返回位/enum payload 位、推断绑定重赋值与推断容器 push——即归一前 i64 标签位
+//      静默面,归一后应收敛 M4002 的那侧);plain 字面量恒非负(负字面量是一元负号
+//      表达式,窄型上下文不收窄)。
 //   2. 越界 panic 面靠边界值(≈250..255u8 / i32::MAX)偶发触发,概率压在 ~10-15%/shape
 //      ——panic 程序三腿比对的正是 [exit 101 + M4002],同样是差分面。
 //   3. 全 rng 驱动;无循环新增(不爆步数);变量名带 s 序号防 M3016。
 //   4. 与 i64 主变量 x0 的混合只经 `as i64`(窄值进宽域唯一无损通道)。
 function genNarrowStmt(s, vars, lines, ctx) {
   void vars;
-  const pool = ['nlet', 'nlet', 'nvec', 'ntuple'];
+  const pool = ['nlet', 'nlet', 'nvec', 'ntuple', 'nmap', 'nmap', 'ninfer', 'ninfer', 'ninfer'];
   if (ctx.nz) pool.push('nstruct', 'nstruct');
   if (ctx.hz) pool.push('nlambda', 'nlambda');
+  // v0.89 新面探测权重 ×3:nlret/nenum 各自依赖前置声明(P=0.6),按净分布对齐
+  // 既有 gated shape(v0.88 实测 ~3.6/seed)与 ninfer 双子形态(M1a/M1b)的覆盖需求
+  if (ctx.hr) pool.push('nlret', 'nlret', 'nlret');
+  if (ctx.ez) pool.push('nenum', 'nenum', 'nenum');
   const kind = pick(pool);
   const k = int(1, 9); // 算术右操作数(小值)
   if (kind === 'nlet') {
@@ -329,7 +345,7 @@ function genNarrowStmt(s, vars, lines, ctx) {
       lines.push(`    let (ta${s}, tb${s}) = t${s};`);
       lines.push(`    x0 = x0 + (ta${s} + ${k}u8) as i64 + tb${s} as i64;`);
     }
-  } else {
+  } else if (kind === 'nlambda') {
     // HOF (u8)->i64 + 无标注/标注 lambda 形参(§4.13.7 无标注 lambda 形参边界;
     // 无标注位 = 静默面,标注位 v0.87 已归一 → 边界实参经标注 lambda 触发 M4002 对照)
     if (rng() < 0.5) {
@@ -337,15 +353,59 @@ function genNarrowStmt(s, vars, lines, ctx) {
     } else {
       lines.push(`    x0 = x0 + ${ctx.hz}((q${s}: u8) => (q${s} * ${k}u8) as i64);`);
     }
+  } else if (kind === 'nmap') {
+    // Map 值位(§4.13.7 同族第五缺口;B 基线 g1a/g1b:plain 值位三腿静默 260,g1d:
+    // 后缀值位标签经存取存活 → M4002)——标注 Map[str,u8] 初始化 + set 写位 +
+    // get().unwrap() 读窄算术;init "k" 位承载越界面(25% 边界带),set "j" 位恒界内
+    // 但读回可见(set 存储路径被观测)。
+    const mu = rng() < 0.25 ? int(247, 255) : int(0, 240);
+    const suffix = rng() < 0.5;
+    lines.push(`    let mut nm${s}: Map[str, u8] = {"k": ${suffix ? mu + 'u8' : mu}};`);
+    lines.push(`    nm${s}.set("j", ${rng() < 0.5 ? int(0, 240) + 'u8' : int(0, 240)});`);
+    lines.push(`    x0 = x0 + (nm${s}.get("k").unwrap() + ${k}u8) as i64 + nm${s}.get("j").unwrap() as i64;`);
+  } else if (kind === 'nlret') {
+    // lambda 返回位(§4.13.7 同族缺口;B 基线 g2a/g2c:plain 体三腿静默 260,g2b:
+    // 后缀体标签经闭包返回存活 → M4002)——零参 HOF ()->u8 + lambda 体返回位;
+    // lambda 无返回标注语法(parser 只有 `) =>` 形态),通道划分 = 体 plain vs 体后缀。
+    const rv = rng() < 0.25 ? int(247, 255) : int(0, 240);
+    const suffix = rng() < 0.5;
+    lines.push(`    x0 = x0 + ${ctx.hr}(() => ${suffix ? rv + 'u8' : rv});`);
+  } else if (kind === 'nenum') {
+    // enum payload(§4.13.7 同族缺口;B 基线 g3a:plain payload 三腿静默 260,g3b:
+    // 后缀 payload 标签经 ctor→match 绑定存活 → M4002)——窄 payload 构造 + match
+    // 绑定读窄算术;payload 位承载越界面(25% 边界带)。
+    const pv = rng() < 0.25 ? int(247, 255) : int(0, 240);
+    const suffix = rng() < 0.5;
+    lines.push(`    let en${s} = ${ctx.ez}.A(${suffix ? pv + 'u8' : pv});`);
+    lines.push(`    let ev${s} = match en${s} { ${ctx.ez}.A(x) => x, ${ctx.ez}.B => 0u8 };`);
+    lines.push(`    x0 = x0 + (ev${s} + ${k}u8) as i64;`);
+  } else {
+    // 推断型静默面 M1a/M1b(§4.13.7 第 6/7 项;B 基线 g4a/g4b2:plain 通道三腿静默
+    // 260/2147483648)——checker 推断窄型但无声明规格树,plain 通道不归一。
+    // M1a:无标注元组解构(元素后缀) + plain 重赋值(推断绑定无规格 → 标签被剥);
+    // M1b:推断容器(元素后缀使容器推断为窄型) + plain push(push 归一只认
+    // __elemTy 标签,推断容器无标签)+ 读窄算术;i32::MAX 15% 边界带。
+    if (rng() < 0.5) {
+      const rv = rng() < 0.25 ? int(247, 255) : int(0, 240);
+      lines.push(`    let mut (ia${s}, ib${s}) = (${int(0, 240)}u8, ${int(0, 240)}u8);`);
+      lines.push(`    ia${s} = ${rv};`);
+      lines.push(`    x0 = x0 + (ia${s} + ${k}u8) as i64 + ib${s} as i64;`);
+    } else {
+      const pv = rng() < 0.15 ? 2147483647 : int(0, 999999);
+      const suffix = rng() < 0.5;
+      lines.push(`    let mut iv${s} = [${int(1, 40)}i32, ${int(1, 40)}i32];`);
+      lines.push(`    iv${s}.push(${suffix ? pv + 'i32' : pv});`);
+      lines.push(`    x0 = x0 + (iv${s}[2] + ${k}i32) as i64;`);
+    }
   }
 }
 
 function genProgram(mode) {
   const nVars = int(2, 3);
   const vars = [];
-  // v0.88:窄型形态上下文(wide 族专属)——struct 声明与 HOF 声明按种子概率前置发射,
-  // 供 genNarrowStmt 的 nstruct/nlambda 臂引用;其余程序零变化。
-  const ctx = { nz: null, hz: null, hzArg: 0 };
+  // v0.88/v0.89:窄型形态上下文(wide 族专属)——struct/enum 声明与 HOF 声明按种子
+  // 概率前置发射,供 genNarrowStmt 的 nstruct/nlambda/nlret/nenum 臂引用;其余程序零变化。
+  const ctx = { nz: null, hz: null, hzArg: 0, ez: null, hr: null };
   const pre = [];
   if (mode === 'wide') {
     if (rng() < 0.6) {
@@ -358,6 +418,16 @@ function genProgram(mode) {
       // 偶发触发 M4002,作归一对称性的活体对照
       ctx.hzArg = rng() < 0.3 ? int(246, 255) : int(0, 220);
       pre.push(`fn HZ(f: (u8) -> i64) -> i64 { return f(${ctx.hzArg}); }`);
+    }
+    if (rng() < 0.6) {
+      ctx.ez = 'NE';
+      pre.push('enum NE { A(u8), B }');
+    }
+    if (rng() < 0.6) {
+      ctx.hr = 'HR';
+      // 零参 HOF:调用侧 f() + 10u8 窄算术——lambda 体 plain = 返回位静默面(v0.89
+      // 基线 g2a/g2c),体后缀 = 已归一对照(M4002);HR 自身返回 i64,越界面全在 f() 侧
+      pre.push('fn HR(f: () -> u8) -> i64 { return (f() + 10u8) as i64; }');
     }
   }
   const lines = [...pre, 'fn main() with io {'];

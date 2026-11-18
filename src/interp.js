@@ -58,7 +58,10 @@ export class V {
   // v0.88(§4.13.7):narrowParamTypes = checker 统一后的 lambda 形参 checker 类型
   // (checker 回写 AST e.narrowParamTypes;无标注形参经期望 fn 类型统一时非空;规格树
   // 由引擎侧 declaredSpecOfTy 从类型构建——checker 不反向导入 interp,避免环)。
-  static closure(params, body, env, fnType, narrowParamTypes = null) { return { t: 'closure', params, body, env, fnType, narrowParamTypes }; }
+  // v0.89(§4.13.7):narrowRetSpec = checker 统一后的 lambda 返回 checker 类型
+  // (checkLambda 回写 AST e.narrowRetSpec;HOF 形参 fn(ret 窄) 统一或体尾推断为窄型时
+  // 非空;规格树由引擎侧 declaredSpecOfTy 构建——与 narrowParamTypes 同通道同判据)。
+  static closure(params, body, env, fnType, narrowParamTypes = null, narrowRetSpec = null) { return { t: 'closure', params, body, env, fnType, narrowParamTypes, narrowRetSpec }; }
   static fnref(mod, entry) { return { t: 'fnref', mod, entry }; }
   static range(lo, hi) { return { t: 'range', lo, hi }; }
   static json(kind, v) { return { t: 'json', kind, v }; }
@@ -80,9 +83,11 @@ export function deepCopy(v) {
     case 'slice': return { t: 'slice', base: v.base, off: v.off, len: v.len };
     case 'tuple': return { t: 'tuple', a: v.a.map(deepCopy) };
     case 'map': {
+      // v0.89(§4.13.7):__valTy(值规格标签)随拷贝保留——跨 let/传参/clone 边界的
+      // map 对象 set/下标写归一不断档(与 vec __elemTy 同款;键是 JS 原语,无标签位)。
       const m = new Map();
       for (const [k, val] of v.m) m.set(k, deepCopy(val));
-      return { t: 'map', m };
+      return { t: 'map', m, __valTy: v.__valTy };
     }
     // v0.88(§4.13.7):__spec(字段规格标签)随拷贝保留——结构体值跨边界后字段写
     // (assignTo Field / VM SETFIELD)归一不断档。
@@ -103,8 +108,10 @@ export function deepCopy(v) {
       // <closure> 的 bindPattern 深拷贝即触发;trace 实证:L1 vars.has(a)=true/tys=none)。
       // v0.88(§4.13.7):narrowParamTypes(checker 统一后的无标注形参类型)随拷贝
       // 保留——闭包经 let/实参搬运后形参归一不断档(v0.87 MAJOR-2 同款教训)。
+      // v0.89(§4.13.7):narrowRetSpec(checker 统一后的返回类型)与 __retSpec(传参
+      // 边界按 fn(ret 窄) 规格打标)同样随拷贝保留——返回位归一不断档。
       const tys = v.env.tys ? new Map(v.env.tys) : undefined;
-      return { t: 'closure', params: v.params, body: v.body, env: { vars: env, parent: v.env.parent, mod: v.env.mod, localFns: v.env.localFns, tys }, fnType: v.fnType, narrowParamTypes: v.narrowParamTypes };
+      return { t: 'closure', params: v.params, body: v.body, env: { vars: env, parent: v.env.parent, mod: v.env.mod, localFns: v.env.localFns, tys }, fnType: v.fnType, narrowParamTypes: v.narrowParamTypes, narrowRetSpec: v.narrowRetSpec, __retSpec: v.__retSpec };
     }
     case 'fnref': return v;
     default: return v;
@@ -509,18 +516,25 @@ export function narrowSpecOfTy(t) {
 //
 // v0.87 的归一规格只有"窄型 int 叶"(narrowSpecOfTyAst/narrowSpecOfTy);v0.88 把
 // 规格升级为树,覆盖登记的四条遗留边界(struct 字段/Vec 元素/无标注 lambda 形参/
-// 元组模式)。规格树形态:
+// 元组模式);v0.89 同族收口再扩两支(Map 值位/lambda 返回位)。规格树形态:
 //   {bits, signed}        窄型 int 叶(重标)
 //   {el: <spec>}          Vec[el](逐元素归一 + 给 vec 值打 __elemTy 供 push/写归一)
 //   {ts: [spec|null...]}  元组(逐分量;null 分量不归一)
 //   {fields: {名: spec}}  结构体(逐字段归一 + 给 struct 值打 __spec 供字段写归一)
-//   null                  其余类型不归一(i64/u64 运行时原生死;Map/enum/泛型为登记遗留)
+//   {kt: <spec|null>, vt: <spec|null>}  Map(值位按 vt 递归归一 + 给 map 值打 __valTy
+//                         供 set/下标写归一;键位归一实际空转——键存储为 JS number
+//                         原语无标签位,键位守门在 checker 越界键字面量 M3002;{kt}
+//                         为文档性声明,审查 m2 修正注释口径)
+//   {fn: {ret: <spec>}}   fn(ret 窄)(闭包值打 __retSpec 供 callClosure 返回归一)
+//   null                  其余类型不归一(i64/u64 运行时原生死;enum payload 在构造位
+//                         按 def 归一不走规格树,泛型为登记遗留)
 
 const SPEC_DEPTH_LIMIT = 24; // 递归深度守卫(嵌套容器/递归结构体防御;合法面远小于此)
 
 // AST 类型标注 → 规格树 | null。裸窄型 TName → 叶;Vec[<可归一元素>] → {el};
-// TTuple → {ts}(任一分量可归一才成树);命名结构体/其余 → null(AST 侧无 checker
-// 解析,struct 声明走 declaredSpecOfStructDef)。
+// Map[k, v](任一位可归一)→ {kt, vt}(v0.89);TTuple → {ts}(任一分量可归一才成树);
+// 命名结构体/其余 → null(AST 侧无 checker 解析,struct 声明走 declaredSpecOfStructDef;
+// enum payload 在构造位按 def.variants 归一,不经本函数)。
 export function declaredSpecOfTyAst(t, depth = 0) {
   if (!t || typeof t !== 'object' || depth > SPEC_DEPTH_LIMIT) return null;
   if (t.nt === 'TName') {
@@ -532,11 +546,22 @@ export function declaredSpecOfTyAst(t, depth = 0) {
       const el = declaredSpecOfTyAst(t.args[0], depth + 1);
       return el ? { el } : null;
     }
+    if (t.name === 'Map' && t.args.length === 2) {
+      const kt = declaredSpecOfTyAst(t.args[0], depth + 1);
+      const vt = declaredSpecOfTyAst(t.args[1], depth + 1);
+      return (kt || vt) ? { kt, vt } : null;
+    }
     return null;
   }
   if (t.nt === 'TTuple') {
     const ts = (t.ts ?? []).map((x) => declaredSpecOfTyAst(x, depth + 1));
     return ts.some(Boolean) ? { ts } : null;
+  }
+  // v0.89(§4.13.7):fn 标注((params) -> ret)——返回位可归一才成树({fn:{ret}});
+  // 形参位不进规格(fn 形参的归一由 lambda 自身 narrowParamTypes/AST 标注承担)。
+  if (t.nt === 'TFn') {
+    const ret = declaredSpecOfTyAst(t.ret, depth + 1);
+    return ret ? { fn: { ret } } : null;
   }
   return null;
 }
@@ -571,9 +596,10 @@ export function declaredSpecOfStructDef(def, depth = 0) {
   return spec;
 }
 
-// checker 类型 → 规格树 | null(memory 编译/AOT wire 通用:wire 的 vec/tuple/int
-// 完整回传 bits/signed;struct wire 只有名字无 def → null——struct 值恒在 ctor
-// 归一,传参/返回归一对 struct 是防御性重复,见报告)。
+// checker 类型 → 规格树 | null(memory 编译/AOT wire 通用:wire 的 vec/tuple/int/map
+// 完整回传判别字段;struct wire 只有名字无 def → null——struct 值恒在 ctor 归一,
+// 传参/返回归一对 struct 是防御性重复,见报告;fn 类型 → {fn:{ret}}(v0.89:闭包
+// 形参经 fn(ret 窄) 类型归一时打 __retSpec)。
 export function declaredSpecOfTy(t, depth = 0) {
   if (!t || typeof t !== 'object' || depth > SPEC_DEPTH_LIMIT) return null;
   if (t.k === 'int' && typeof t.bits === 'number' && t.bits < 64) {
@@ -583,9 +609,18 @@ export function declaredSpecOfTy(t, depth = 0) {
     const el = declaredSpecOfTy(t.el, depth + 1);
     return el ? { el } : null;
   }
+  if (t.k === 'map') {
+    const kt = declaredSpecOfTy(t.kt, depth + 1);
+    const vt = declaredSpecOfTy(t.vt, depth + 1);
+    return (kt || vt) ? { kt, vt } : null;
+  }
   if (t.k === 'tuple') {
     const ts = (t.ts ?? []).map((x) => declaredSpecOfTy(x, depth + 1));
     return ts.some(Boolean) ? { ts } : null;
+  }
+  if (t.k === 'fn') {
+    const ret = declaredSpecOfTy(t.ret, depth + 1);
+    return ret ? { fn: { ret } } : null;
   }
   if (t.k === 'struct' && t.def) return declaredSpecOfStructDef(t.def, depth);
   return null;
@@ -608,15 +643,27 @@ function specEq(a, b) {
     if (ka.length !== kb.length) return false;
     return ka.every((k) => specEq(a.fields[k], b.fields[k]));
   }
+  // v0.89(§4.13.7):Map {kt,vt} 与 fn {fn:{ret}} 规格相等(幂等快路径;嵌套容器位
+  // Vec[Map[str,u8]] 等经 el 分支递归到达)。null 位(不可归一)按同值判等。
+  if (a.kt !== undefined || a.fn !== undefined || b.kt !== undefined || b.fn !== undefined) {
+    if (a.kt !== undefined && b.kt !== undefined) return specEq(a.kt, b.kt) && specEq(a.vt, b.vt);
+    if (a.fn !== undefined && b.fn !== undefined) return specEq(a.fn.ret, b.fn.ret);
+    return false;
+  }
   return false;
 }
 
-// 绑定边界归一(v0.88 规格树递归):
+// 绑定边界归一(v0.88 规格树递归;v0.89 扩 Map/fn 两支):
 //   叶 {bits,signed} → 窄型 int 重标(v0.87 语义逐字不变,V.int 池载体同形态);
 //   {el} + vec      → 逐元素递归归一,新 vec 对象携带 __elemTy(push/insert/extend/
 //                     元素写归一的依据;deepCopy/slice/clone 保留标签);
 //   {ts} + tuple    → 逐分量递归(分量规格 null 不归一);
-//   {fields} + struct → 逐字段递归,新 struct 对象携带 __spec(字段写归一的依据)。
+//   {fields} + struct → 逐字段递归,新 struct 对象携带 __spec(字段写归一的依据);
+//   {kt,vt} + map   → 键/值位递归归一(v0.89;键位重标后在 normKey 存储位落为原语,
+//                     归一的可见面 = 越界键防御性 panic),新 map 对象携带 __valTy
+//                     (set/下标写归一的依据;deepCopy/clone 保留标签);
+//   {fn:{ret}} + closure → 闭包值挂 __retSpec(v0.89;callClosure 返回归一的依据;
+//                     fnref 不挂——fnref 调用走 callUser 按 sig 归一,已覆盖)。
 // 主路径 = 已在界内的重标(类型检查流保证:checker 拒绝 i64→窄型的隐式绑定与越界
 // 字面量,as/to_* 结果恒 fit,算术结果带窄 bits 且经 fits 门)——重标只改运行时 bits
 // 标签,str()/比较/deepCopy 对界内值输出不变。fits 失败在检查器合法程序可达的路径 =
@@ -654,7 +701,46 @@ export function normBindValue(v, spec, span = null) {
     }
     return { t: 'struct', def: v.def, name: v.name, fields, __spec: spec };
   }
+  // v0.89(§4.13.7):Map 值位——{kt,vt} 规格(键/值位递归;新 map 对象 __valTy 恒按
+  // 规格重建,不继承来源标签——声明 Map[str,i64] 的绑定不得沿用来源 u8 标签)。无幂等
+  // Map {kt,vt}:值位按 vt 递归归一 + __valTy 打标;键位归一实际空转(审查 m2 修正
+  // 注释口径:窄键经 normKey 存储为 number 原语,叶规格对 float 直返——键位守门在
+  // checker 的越界键字面量 M3002,运行时防御 panic 对实际键表示不可达;{kt} 位为
+  // 文档性声明)。重建 = 语义;调用面均为窄值 map,规模小。
+  if (spec.kt !== undefined) {
+    if (v.t !== 'map') return v;
+    const m = new Map();
+    for (const [k, val] of v.m) {
+      const kv = normBindValue(keyValue(k), spec.kt, span);
+      m.set(normKey(kv), normBindValue(val, spec.vt, span));
+    }
+    return { t: 'map', m, __valTy: spec.vt ?? null };
+  }
+  // v0.89(§4.13.7):lambda 返回位——{fn:{ret}} 规格给闭包挂 __retSpec(vclose 同形
+  // 态处理;fnref 保持原样)。优先 __retSpec 打标通道(tree callClosure 读),VM 侧
+  // vclose 返回归一走 narrowSpecs.ret(compileLambda 自 narrowRetSpec 回写构建)。
+  if (spec.fn !== undefined) {
+    if (v.t !== 'closure' && v.t !== 'vclose') return v;
+    if (v.__retSpec && specEq(v.__retSpec, spec.fn.ret)) return v;
+    return { ...v, __retSpec: spec.fn.ret };
+  }
   return v;
+}
+
+// v0.89(§4.13.7 M1b,推断型静默面——值标签驱动):构造位元素统一窄标签 → 元素规格。
+// 全部元素为同一 (bits,signed) 的窄型 int(运行时标签即事实类型——后缀字面量/已归一
+// 绑定/窄型算术结果)→ 返回叶规格;空容器/含 i64 标签或非 int 元素/标签不一致 → null
+// (不打标)。与声明驱动正交:有标注用声明规格(let 归一覆盖),无标注用值标签。
+// tree(VecLit/MapLit)与 VM(MAKEVEC/MAKEMAP)共享本判定,双引擎同判据。
+export function uniformNarrowSpec(items) {
+  if (!items || items.length === 0) return null;
+  let spec = null;
+  for (const x of items) {
+    if (!x || x.t !== 'int' || typeof x.bits !== 'number' || x.bits >= 64) return null;
+    if (!spec) spec = { bits: x.bits, signed: !!x.signed };
+    else if (x.bits !== spec.bits || x.signed !== spec.signed) return null;
+  }
+  return spec;
 }
 
 // ===================== panic 信号 =====================
@@ -920,8 +1006,15 @@ export class Interp {
       throw new Panic('M4005', `调用栈过深(>250 层递归)`, callSpan);
     }
     const fnType = clo.fnType;
-    // v0.88:返回规格树化(fnType 分支防御性死代码,树化与 callUser 同口径)
-    const retSpec = declaredSpecOfTy(fnType?.ret);
+    // v0.89(§4.13.7):lambda 返回位归一——优先级链:
+    //   ① clo.__retSpec(值标签驱动:闭包实参经 fn(ret 窄) 形参规格归一时打标——
+    //      闭包在别处创建、后传入窄返回 HOF 的形态,checker 回写通道覆盖不到);
+    //   ② declaredSpecOfTy(clo.narrowRetSpec)(checker 回写:checkLambda 统一完成后
+    //      e.narrowRetSpec,内联 HOF 实参/体尾推断窄返回的形态);
+    //   ③ declaredSpecOfTy(fnType?.ret)(防御性死代码——fnTypeHint 全库无写入点,保留
+    //      与 v0.88 口径一致)。
+    // null → 不归一(推断 i64 返回 = 运行时原生死)。
+    const retSpec = clo.__retSpec ?? declaredSpecOfTy(clo.narrowRetSpec) ?? declaredSpecOfTy(fnType?.ret);
     this.callStack.push({ name: '<闭包>', span: callSpan });
     this.ensuresStack.push(null);
     try {
@@ -1158,6 +1251,10 @@ export class Interp {
           return;
         }
         if (base.t === 'map') {
+          // v0.89(§4.13.7):Map 值写归一——按 map 值携带的值规格(__valTy,声明归一/
+          // 值标签驱动打标;与 vec __elemTy 同口径)。
+          const vspec = base.__valTy;
+          if (vspec) finalVal = normBindValue(finalVal, vspec, target.span);
           base.m.set(normKey(idx), finalVal);
           return;
         }
@@ -1190,6 +1287,15 @@ export class Interp {
         if (spec) {
           if (!env.tys) env.tys = new Map();
           env.tys.set(pat.name, spec);
+        } else if (v && v.t === 'int' && typeof v.bits === 'number' && v.bits < 64) {
+          // v0.89(§4.13.7 M1a,推断型静默面——值标签驱动登记):无标注绑定且初值携带
+          // 窄型运行时标签(后缀字面量/窄型算术结果/已归一来源)→ 按值标签登记 tys
+          // (值标签即事实类型;checker 推断上下文与之一致)。重赋值归一
+          // (assignTo Ident → declaredNarrowTy)由此不断档——`let mut (a,b) = (5u8,6u8);
+          // a = 250; a + 10u8` 三腿 M4002(修复前重赋值回 i64 标签静默 260)。
+          // 声明驱动优先:有标注(spec 非 null)用声明规格,本分支只补推断型。
+          if (!env.tys) env.tys = new Map();
+          env.tys.set(pat.name, { bits: v.bits, signed: !!v.signed });
         }
         return;
       }
@@ -1414,17 +1520,26 @@ export class Interp {
       }
       case 'VecLit': {
         this.chargeAllocBytes(e.elems.length, e.span);
-        return V.vec(e.elems.map(x => deepCopy(this.evalExpr(x, env))));
+        const items = e.elems.map(x => deepCopy(this.evalExpr(x, env)));
+        // v0.89(§4.13.7 M1b):推断容器值标签驱动打标——元素统一窄标签 → __elemTy
+        // (push/元素写归一生效;有标注 let 随后按声明规格归一,幂等)。
+        const vspec = uniformNarrowSpec(items);
+        return vspec ? { t: 'vec', a: items, __elemTy: vspec } : V.vec(items);
       }
       case 'MapLit': {
         this.chargeAllocBytes(e.entries.length, e.span);
         const m = new Map();
+        const vals = [];
         for (const en of e.entries) {
           const k = this.evalExpr(en.k, env);
-          const v = this.evalExpr(en.v, env);
-          m.set(normKey(k), deepCopy(v));
+          const v = deepCopy(this.evalExpr(en.v, env));
+          vals.push(v);
+          m.set(normKey(k), v);
         }
-        return V.map(m);
+        // v0.89(§4.13.7 M1b):推断 Map 值标签驱动打标——值统一窄标签 → __valTy
+        // (set/下标写归一生效;键位不参与——键存储为原语,无标签位)。
+        const vspec = uniformNarrowSpec(vals);
+        return vspec ? { t: 'map', m, __valTy: vspec } : V.map(m);
       }
       case 'TupleLit': return e.elems.length === 0 ? UNIT : V.tuple(e.elems.map(x => deepCopy(this.evalExpr(x, env))));
       case 'StructLit': return this.evalStructLit(e, env);
@@ -1432,7 +1547,9 @@ export class Interp {
         // 值语义:创建闭包时对可见环境做深拷贝快照,捕获后与外部脱钩
         // v0.88(§4.13.7):checker 统一后的形参类型随闭包携带(callClosure 据此构规格;
         // 深拷贝闭包分支同步保留)。
-        return V.closure(e.params, e.body, snapshotEnv(env), e.fnTypeHint ?? null, e.narrowParamTypes ?? null);
+        // v0.89(§4.13.7):checker 统一后的返回类型随闭包携带(callClosure 返回归一
+        // 优先级链第二位;深拷贝闭包分支同步保留)。
+        return V.closure(e.params, e.body, snapshotEnv(env), e.fnTypeHint ?? null, e.narrowParamTypes ?? null, e.narrowRetSpec ?? null);
       }
       case 'BlockExpr': return this.execBlock(e.block, env, {});
       case 'LoopExpr': {
@@ -1643,6 +1760,17 @@ export class Interp {
       return V.enumv('builtin-res', ctor.variant, args);
     }
     const def = ctor.def;
+    // v0.89(§4.13.7):enum payload 构造位归一——按声明变体类型逐位重标(优先 checker
+    // 解析后的 rtypes,缺省回退 AST types;泛型 payload(rtype 含 param)规格 null 不归一)。
+    // match 绑定/字段读沿 vals 取值即带窄标签;VM 对称位 = MAKEENUM 的 normSpecs。
+    const variant = def?.variants?.find((x) => x.name === ctor.variant);
+    if (variant) {
+      const ts = variant.rtypes ?? variant.types;
+      if (Array.isArray(ts)) {
+        const specs = ts.map((t) => declaredSpecOfTy(t) ?? declaredSpecOfTyAst(t));
+        if (specs.some(Boolean)) args = args.map((a, i) => (specs[i] ? normBindValue(a, specs[i], span) : a));
+      }
+    }
     return V.enumv(def, ctor.variant, args);
   }
 
@@ -3616,7 +3744,9 @@ export class Interp {
       case 'set': {
         const k = normKey(args[0]);
         if (!m.has(k)) this.chargeAllocBytes(1, span);
-        m.set(k, args[1]);
+        // v0.89(§4.13.7):Map 值写归一——按接收者携带的值规格(__valTy,声明归一/
+        // 值标签驱动打标)重标;越界值 = 防御路径(检查器拒绝越界字面量)→ M4002。
+        m.set(k, recv.__valTy ? normBindValue(args[1], recv.__valTy, span) : args[1]);
         return UNIT;
       }
       case 'has': return V.bool(m.has(normKey(args[0])));

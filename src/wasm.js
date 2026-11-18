@@ -173,11 +173,14 @@ export function tryCompileWasm(check, compiled) {
   }
 }
 
-// v0.88(§4.13.7 四边界):标注类型是否携带归一规格(与 interp.js declaredSpecOfTyAst
-// 同判据的自包含副本;wasm.js 不导入 interp 避免循环依赖)。窄型叶沿用 v0.87;
-// Vec[<可归一元素>](含嵌套)与 TTuple(任一分量可归一)为 v0.88 新面——let 绑定处
-// tree/VM 归一(元素/分量标签收窄,算术处 fits 门 M4002),wasm 执行该函数(裸 i64,
-// 无 fits 门)即三腿分歧 → 具名排除。
+// v0.88(§4.13.7 四边界)/v0.89(§4.13.7):标注类型是否携带归一规格(与 interp.js
+// declaredSpecOfTyAst 同判据的自包含副本;wasm.js 不导入 interp 避免循环依赖)。窄型叶
+// 沿用 v0.87;Vec[<可归一元素>](含嵌套)与 TTuple(任一分量可归一)为 v0.88 新面;
+// Map[k, v](任一位可归一)与 TFn(ret 可归一)为 v0.89 新面——let 绑定处 tree/VM 归一
+// (元素/分量/键值/闭包返回标签收窄,算术处 fits 门 M4002),wasm 执行该函数(裸 i64,
+// 无 fits 门)即三腿分歧 → 具名排除(Map 窄值位的 wasm 形态拒绝本就由槽类型推导兜住,
+// TFn 位本就因 Lambda 体 Unsupported 回落——本条款使排除具名化并与 interp.js 判据
+// 对齐,防御同构)。
 function typeHasNormSpec(t, depth = 0) {
   if (!t || typeof t !== 'object' || depth > 24) return false;
   if (t.nt === 'TName') {
@@ -185,9 +188,14 @@ function typeHasNormSpec(t, depth = 0) {
       return !!{ i8: 1, i16: 1, i32: 1, u8: 1, u16: 1, u32: 1 }[t.name];
     }
     if (t.name === 'Vec' && t.args.length === 1) return typeHasNormSpec(t.args[0], depth + 1);
+    // v0.89(审查 m2 取舍登记):kt 位归一实际空转(键为 number 原语),kt-only 排除属
+    // 保守过度排除——保留以维持「声明含可归一位即排除」的单一口径(改 vt-only 属
+    // 资格语义变更,另裁);Map[u8,str] 值无窄归一面,行为差异仅 strict 状态。
+    if (t.name === 'Map' && t.args.length === 2) return typeHasNormSpec(t.args[0], depth + 1) || typeHasNormSpec(t.args[1], depth + 1);
     return false;
   }
   if (t.nt === 'TTuple') return (t.ts ?? []).some((x) => typeHasNormSpec(x, depth + 1));
+  if (t.nt === 'TFn') return typeHasNormSpec(t.ret, depth + 1);
   return false;
 }
 

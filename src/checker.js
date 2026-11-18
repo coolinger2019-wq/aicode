@@ -6579,6 +6579,12 @@ export class Checker {
     // declaredSpecOfTy 从类型构建。两引擎共享本 AST;类型对象仅内存存活(lambda 不进
     // AOT 序列化)。无期望且无标注 → tvar 原样(引擎侧 spec null,不归一)。
     e.narrowParamTypes = ps.map((p) => p.type);
+    // v0.89(§4.13.7):lambda 返回类型同样回写——统一后的返回 checker 类型(内联 HOF
+    // 实参经 fn(ret 窄) 期望统一/体尾推断窄型时非 i64)。引擎侧两条消费通道:tree
+    // callClosure 的返回规格链第二位(clo.narrowRetSpec)、VM compileLambda 的
+    // narrowSpecs.ret(callCompiled RET 归一)。闭包在别处创建、后传入窄返回 HOF 的
+    // 形态由传参边界 __retSpec 打标通道覆盖(两通道正交,见 interp.js callClosure 注)。
+    e.narrowRetSpec = retT ?? null;
     // v0.87(审查 MAJOR-1):lambda 块尾隐式返回的 Slice 门禁——显式 return 语句已有
     // 逃逸发射点,块尾值/推断返回类型此前无检查点;视图越 lambda 边界 = 逃逸(M3051)。
     if (retT && typeContainsSlice(resolveT(retT, new Map()))) {

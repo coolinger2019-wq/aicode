@@ -21971,6 +21971,492 @@ fn main() with io, fs {
   // ---- §98-END
 }
 
+// ===================== 99. v0.89:窄型归一同族收口(Map 值位/lambda 返回位/enum payload/推断型静默面 M1a·M1b)=====================
+// 文件所有权:§99 = 本区全部用例(Agent A)。实现面:src/interp.js(规格树 {kt,vt}/{fn:{ret}}
+// + TFn + normBindValue Map/闭包分支 + uniformNarrowSpec 值标签驱动 + deepCopy __valTy/
+// __retSpec/narrowRetSpec + bindPattern M1a 值标签登记 + assignTo Index map + mapMethodImpl
+// set + VecLit/MapLit 值驱动打标 + Lambda 携带 narrowRetSpec + constructVariant payload
+// 归一 + callClosure 返回规格链)/ src/checker.js(checkLambda 返回类型回写 e.narrowRetSpec)/
+// src/compiler.js(compileLambda narrowSpecs.ret + enumSpecV normSpecs 六发射点)/ src/vm.js
+// (SET normBySlotTag 值标签驱动 + MAKEVEC/MAKEMAP 值驱动打标 + MAKEENUM normSpecs +
+// setIndexValue map)/ src/wasm.js(typeHasNormSpec Map/TFn 具名排除对齐)/ src/artifact.js
+// (enumspec normSpecs wire)。
+// 语义:同族收口——五条登记静默面(Map 值位第五缺口/lambda 返回位/enum payload/M1a 无标注
+// 元组解构重赋值/M1b 推断容器 push)静默回绕 → M4002,向"溢出必 panic"契约收敛;统一设计 =
+// 声明驱动(规格树)+ 值标签驱动(uniformNarrowSpec/bindPattern 登记/SET 槽现值标签)双通道
+// 正交。溢出消息与 v0.85/87/88 同族模板逐字(panicOverflow:"整数+溢出:a + b 超出 i<bits><u> 范围")。
+{
+  const dir99 = path.join(TMP, 'v89');
+  fs.mkdirSync(dir99, { recursive: true });
+  const m99 = (name, src) => { const f = path.join(dir99, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags99 = ['', '--no-wasm', '--tree'];
+  const runAll99 = (p) => flags99.map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const firstLine99 = (r) => (r.stderr ?? '').split('\n')[0] ?? '';
+  const fmtRuns99 = (runs) => runs.map((r) => `${r.code}:${JSON.stringify((r.stdout ?? '').slice(0, 40))}/${JSON.stringify(firstLine99(r).slice(0, 90))}`).join(' | ');
+  const panics99 = (runs, msg) => runs.every((r) => r.code === 101 && firstLine99(r).includes(msg));
+
+  // ---- v99.1:①Map 值位(第五同族缺口)——`let m: Map[str, u8] = {"a": 250}` MapLit
+  //      值在 let 归一处按 {kt,vt} 规格重标,读后窄型算术三腿 M4002(修复前静默 260) ----
+  {
+    const p = m99('v99_1_maplet.ming', [
+      'fn main() with io {',
+      '    let m: Map[str, u8] = {"a": 250};',
+      '    let x = m.get("a").unwrap() + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.1:①Map 值位归一——MapLit 值按 {kt,vt} 规格重标,读后算术三腿 M4002 逐字(整数+溢出:250 + 10 超出 i8u 范围;修复前静默 260)',
+      panics99(runs, '整数+溢出:250 + 10 超出 i8u 范围'), fmtRuns99(runs));
+  }
+
+  // ---- v99.2:①Map 界内零回归——get/下标读/set/下标写/界内算术/clone/values 迭代/
+  //      display 三腿逐字(归一重标只改 bits 标签,界内输出不变) ----
+  {
+    const p = m99('v99_2_mapinrange.ming', [
+      'fn main() with io {',
+      '    let m: Map[str, u8] = {"a": 250, "b": 5};',
+      '    print(str(m.get("a").unwrap()));',
+      '    print(str(m["b"]));',
+      '    let mut m2 = m.clone();',
+      '    m2.set("c", 200);',
+      '    print(str(m2.get("c").unwrap()));',
+      '    m2["d"] = 100;',
+      '    print(str(m2["d"]));',
+      '    print(str(m2.get("a").unwrap() + 5u8));',
+      '    print(str(debug(m2)));',
+      '    let mut total: i64 = 0;',
+      '    for val in m2.values() {',
+      '        total = total + (val as i64);',
+      '    }',
+      '    print(str(total));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.2:①Map 界内零回归——读/写/clone/values 迭代/display 三腿逐字 250/5/200/100/255/{a: 250, b: 5, c: 200, d: 100}/555',
+      runs.every((r) => r.code === 0 && r.stdout === '250\n5\n200\n100\n255\n{"a": 250, "b": 5, "c": 200, "d": 100}\n555\n'),
+      fmtRuns99(runs));
+  }
+
+  // ---- v99.3:①set/下标写归一——界外链经写位收口(u8 型来源经 set/下标写重标后
+  //      读算术 M4002;修复前写位不重标,i64 标签静默) ----
+  {
+    const p1 = m99('v99_3a_mapset.ming', [
+      'fn get_u8() -> u8 {',
+      '    250u8',
+      '}',
+      'fn main() with io {',
+      '    let mut m: Map[str, u8] = {"a": 5};',
+      '    m.set("b", get_u8());',
+      '    let x = m.get("b").unwrap() + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const p2 = m99('v99_3b_mapidx.ming', [
+      'fn get_u8() -> u8 {',
+      '    250u8',
+      '}',
+      'fn main() with io {',
+      '    let mut m: Map[str, u8] = {"a": 5};',
+      '    m["b"] = get_u8();',
+      '    let x = m["b"] + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const r1 = runAll99(p1);
+    const r2 = runAll99(p2);
+    check('v99.3:①set/下标写归一——__valTy 写位重标后读算术三腿 M4002 逐字(整数+溢出:250 + 10 超出 i8u 范围;修复前静默 260)',
+      panics99(r1, '整数+溢出:250 + 10 超出 i8u 范围') && panics99(r2, '整数+溢出:250 + 10 超出 i8u 范围'),
+      `a=${fmtRuns99(r1)} | b=${fmtRuns99(r2)}`);
+  }
+
+  // ---- v99.4:①键位核验——Map[u8, str] 键标注({kt} 规格,值 str 不归一)let 归一
+  //      界内键读/display 零回归三腿逐字(键显示 1.0/200.0 = normKey number 载体经
+  //      keyValue 的预存口径,HEAD 逐字同,本版键位归一不改变键存储与显示);索引/get
+  //      键实参需后缀字面量(checker 对窄键位不做无标注字面量上下文窄化,预存口径);
+  //      Map[str, i64] 控制组声明归一恒 null 零变化 ----
+  {
+    const p = m99('v99_4_mapkey.ming', [
+      'fn main() with io {',
+      '    let m: Map[u8, str] = {1u8: "a", 200u8: "b"};',
+      '    print(str(m.get(1u8).unwrap()));',
+      '    print(str(m[200u8]));',
+      '    print(str(debug(m)));',
+      '    let w: Map[str, i64] = {"x": 2147483647};',
+      '    print(str(w["x"]));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.4:①键位规格树——Map[u8, str] 键位归一界内零回归三腿逐字 a/b/{1.0: "a", 200.0: "b"}/2147483647(键显示为预存口径;键位越界为防御路径,检查器拒绝越界键字面量,运行时不可达)',
+      runs.every((r) => r.code === 0 && r.stdout === 'a\nb\n{1.0: "a", 200.0: "b"}\n2147483647\n'),
+      fmtRuns99(runs));
+  }
+
+  // ---- v99.5:②lambda 返回位(HOF 形态)——`h(() => 250)` 形参 () -> u8,lambda 体
+  //      250 返回位经 narrowRetSpec(checker 统一回写)归一,h 内算术三腿 M4002
+  //      (修复前 retSpec 读 fnType?.ret 死代码,静默 260) ----
+  {
+    const p = m99('v99_5_lamhof.ming', [
+      'fn h(f: () -> u8) -> i64 {',
+      '    let x = f() + 10u8;',
+      '    x as i64',
+      '}',
+      'fn main() with io {',
+      '    print(str(h(() => 250)));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.5:②lambda 返回位归一(HOF 形态)——narrowRetSpec 回写 → 返回值重标,算术三腿 M4002 逐字(整数+溢出:250 + 10 超出 i8u 范围;修复前静默 260)',
+      panics99(runs, '整数+溢出:250 + 10 超出 i8u 范围'), fmtRuns99(runs));
+  }
+
+  // ---- v99.6:②直接形态 + 传参打标通道——`let f: () -> u8 = () => 250`(TFn 标注
+  //      let:{fn:{ret}} 规格 → __retSpec;checker narrowRetSpec 双通道)读后算术
+  //      M4002;后缀体形态 `let g = () => 200u8; h(g)` 界内流零回归 ----
+  {
+    const p1 = m99('v99_6a_letfn.ming', [
+      'fn main() with io {',
+      '    let f: () -> u8 = () => 250;',
+      '    let x = f() + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const p2 = m99('v99_6b_letfnin.ming', [
+      'fn h(f: () -> u8) -> i64 {',
+      '    f() as i64',
+      '}',
+      'fn main() with io {',
+      '    let g = () => 200u8;',
+      '    print(str(h(g)));',
+      '}',
+    ].join('\n'));
+    const r1 = runAll99(p1);
+    const r2 = runAll99(p2);
+    check('v99.6:②标注 let fn 形态返回归一三腿 M4002 逐字(250 + 10 超出 i8u 范围)+ 后缀体闭包传参界内零回归 200',
+      panics99(r1, '整数+溢出:250 + 10 超出 i8u 范围') && r2.every((r) => r.code === 0 && r.stdout === '200\n'),
+      `a=${fmtRuns99(r1)} | b=${fmtRuns99(r2)}`);
+  }
+
+  // ---- v99.7:②界内零回归——HOF 界内/直接标注界内/推断 u8 体闭包传参 三腿逐字 ----
+  {
+    const p = m99('v99_7_lamin.ming', [
+      'fn h(f: () -> u8) -> i64 {',
+      '    let x = f() + 10u8;',
+      '    x as i64',
+      '}',
+      'fn h2(f: () -> u8) -> i64 {',
+      '    f() as i64',
+      '}',
+      'fn main() with io {',
+      '    print(str(h(() => 200)));',
+      '    print(str(h2(() => 250)));',
+      '    let g = () => 200u8;',
+      '    print(str(h2(g)));',
+      '    let f2: () -> u8 = () => 200;',
+      '    print(str(f2() + 10u8));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.7:②lambda 返回位界内零回归——HOF/直接/传参 三腿逐字 210/250/200/210(归一只重标,界内值不变)',
+      runs.every((r) => r.code === 0 && r.stdout === '210\n250\n200\n210\n'),
+      fmtRuns99(runs));
+  }
+
+  // ---- v99.8:③enum payload——`E.A(250)` 构造位按变体声明类型归一,match 绑定值
+  //      带窄标签,绑定算术三腿 M4002(修复前构造不归一,静默 260) ----
+  {
+    const p = m99('v99_8_enum.ming', [
+      'enum E {',
+      '    A(u8),',
+      '    B,',
+      '}',
+      'fn main() with io {',
+      '    let e = E.A(250);',
+      '    let x = match e {',
+      '        E.A(v) => v + 10u8,',
+      '        E.B => 0u8,',
+      '    };',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.8:③enum payload 构造归一——按 def.variants[tag] 逐位重标,match 绑定算术三腿 M4002 逐字(整数+溢出:250 + 10 超出 i8u 范围;修复前静默 260)',
+      panics99(runs, '整数+溢出:250 + 10 超出 i8u 范围'), fmtRuns99(runs));
+  }
+
+  // ---- v99.9:③enum 界内零回归——双 payload 位第二位算术/方法调用/display/遍历匹配
+  //      三腿逐字(Pt(200, 30) 双位构造,第二位读 40) ----
+  {
+    const p = m99('v99_9_enumin.ming', [
+      'enum Sh {',
+      '    Pt(u8, u8),',
+      '    Origin,',
+      '}',
+      'fn describe(s: Sh) -> str with io {',
+      '    match s {',
+      '        Sh.Pt(a, b) => "pt",',
+      '        Sh.Origin => "org",',
+      '    }',
+      '}',
+      'fn main() with io {',
+      '    let s1 = Sh.Pt(200, 30);',
+      '    let x = match s1 {',
+      '        Sh.Pt(v, n) => v + 10u8,',
+      '        Sh.Origin => 0u8,',
+      '    };',
+      '    print(str(x));',
+      '    let y = match s1 {',
+      '        Sh.Pt(a, b) => b + 10u8,',
+      '        Sh.Origin => 0u8,',
+      '    };',
+      '    print(str(y));',
+      '    print(str(describe(s1)));',
+      '    print(str(debug(s1)));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.9:③enum 界内零回归——双 payload 位/方法调用/display 三腿逐字 210/40/pt/Pt(200, 30)',
+      runs.every((r) => r.code === 0 && r.stdout === '210\n40\npt\nPt(200, 30)\n'),
+      fmtRuns99(runs));
+  }
+
+  // ---- v99.10:④a M1a 无标注元组解构 + plain 重赋值——bindPattern 值标签驱动登记
+  //      env.tys(tree)/SET normBySlotTag 槽现值标签(VM),重赋值重标后算术三腿
+  //      M4002(修复前重赋值回 i64 标签静默 260) ----
+  {
+    const p = m99('v99_10_m1a.ming', [
+      'fn main() with io {',
+      '    let mut (a, _) = (5u8, 6u8);',
+      '    a = 250;',
+      '    let x = a + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.10:④a M1a 无标注元组解构重赋值归一——值标签驱动登记,重赋值后算术三腿 M4002 逐字(整数+溢出:250 + 10 超出 i8u 范围;修复前静默 260)',
+      panics99(runs, '整数+溢出:250 + 10 超出 i8u 范围'), fmtRuns99(runs));
+  }
+
+  // ---- v99.11:④a M1a plain 形态 + 捕获重赋值——`let mut x = 5u8; x = 250` 界内重标
+  //      250/255 逐字;lambda 捕获推断窄型重赋值后算术 M4002 三腿对称(tree env.tys 链
+  //      vs VM 捕获槽 normBySlotTag) ----
+  {
+    const p1 = m99('v99_11a_m1aplain.ming', [
+      'fn main() with io {',
+      '    let mut x = 5u8;',
+      '    x = 250;',
+      '    print(str(x));',
+      '    x = 100;',
+      '    print(str(x + 155u8));',
+      '}',
+    ].join('\n'));
+    const p2 = m99('v99_11b_m1acap.ming', [
+      'fn main() with io {',
+      '    let mut a = 5u8;',
+      '    let bump = () => { a = 250; print(str(a + 10u8)); };',
+      '    bump();',
+      '}',
+    ].join('\n'));
+    const r1 = runAll99(p1);
+    const r2 = runAll99(p2);
+    check('v99.11:④a M1a plain 重赋值界内零回归 250/255 逐字 + lambda 捕获重赋值算术三腿 M4002 逐字(250 + 10 超出 i8u 范围)',
+      r1.every((r) => r.code === 0 && r.stdout === '250\n255\n') && panics99(r2, '整数+溢出:250 + 10 超出 i8u 范围'),
+      `a=${fmtRuns99(r1)} | b=${fmtRuns99(r2)}`);
+  }
+
+  // ---- v99.12:④b M1b 推断容器 push——`let v = [1i32, 2i32]` VecLit 元素统一窄标签
+  //      → __elemTy(MAKEVEC 同判据),push 归一后读算术三腿 M4002(修复前推断容器
+  //      无标签,push 静默 2147483648) ----
+  {
+    const p = m99('v99_12_m1b.ming', [
+      'fn main() with io {',
+      '    let mut v = [1i32, 2i32];',
+      '    v.push(2147483647);',
+      '    let x = v[2] + 1i32;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.12:④b M1b 推断容器 push 归一——VecLit 值标签驱动打标 __elemTy,push 后读算术三腿 M4002 逐字(整数+溢出:2147483647 + 1 超出 i32 范围;修复前静默 2147483648)',
+      panics99(runs, '整数+溢出:2147483647 + 1 超出 i32 范围'), fmtRuns99(runs));
+  }
+
+  // ---- v99.13:④b M1b 界内零回归——推断 Vec clone 后 push(标签随 deepCopy)界内
+  //      201 + display 逐字;推断 Map 值驱动打标 __valTy,set 后读算术 210 逐字 ----
+  {
+    const p = m99('v99_13_m1bin.ming', [
+      'fn main() with io {',
+      '    let v = [1i32, 2i32];',
+      '    let mut w = v.clone();',
+      '    w.push(200);',
+      '    print(str(w[2] + 1i32));',
+      '    print(str(debug(w)));',
+      '    let m = {"k": 1u8, "j": 2u8};',
+      '    let mut m3 = m.clone();',
+      '    m3.set("n", 200);',
+      '    print(str(m3.get("n").unwrap() + 10u8));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    check('v99.13:④b M1b 界内零回归——推断 Vec/Map 值标签随 clone 保留,set/push 界内三腿逐字 201/[1, 2, 200]/210',
+      runs.every((r) => r.code === 0 && r.stdout === '201\n[1, 2, 200]\n210\n'),
+      fmtRuns99(runs));
+  }
+
+  // ---- v99.14:⑤零校准锚——v98.16a(let i32 叶)重断言逐字(位置+消息)+ v98.14b
+  //      (无标注元组绑定)重断言 3 + v96.8c(Slice 变体载荷 M3051)诊断面零变化 ----
+  {
+    const p1 = m99('v99_14a_anchor.ming', [
+      'fn main() -> i64 with io {',
+      '    let a: i32 = 2147483647;',
+      '    let b = a + 1i32;',
+      '    print(str(b));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const p2 = m99('v99_14b_tupanchor.ming', [
+      'fn main() with io {',
+      '    let (a, b) = (1, 2);',
+      '    print(str(a + b));',
+      '}',
+    ].join('\n'));
+    const p3 = m99('v99_14c_slice.ming', 'enum Box { Held(Vec[u8]), Empty }\nfn main() -> i64 { let v: Vec[u8] = [1u8]; let s = v.view(0, 1); let b = Box.Held(s); return 0; }\n');
+    const r1 = runAll99(p1);
+    const r2 = runAll99(p2);
+    const ck3 = runMing(['check', p3, '--json']);
+    const anchorSuffix = ':3:15: error M4002[integer-overflow]: 整数+溢出:2147483647 + 1 超出 i32 范围';
+    check('v99.14:零校准锚——v98.16a let i32 叶三腿首行逐字(路径+ :3:15 M4002 逐字消息)+ v98.14b 无标注元组绑定 3 + v96.8c 变体载荷 Slice M3051 诊断零变化',
+      r1.every((r) => r.code === 101 && firstLine99(r) === `${p1}${anchorSuffix}`)
+        && r2.every((r) => r.code === 0 && r.stdout === '3\n')
+        && (ck3.stdout ?? '').includes('M3051'),
+      `a=${fmtRuns99(r1)} | b=${fmtRuns99(r2)} | c=${(ck3.stdout ?? '').includes('M3051')}`);
+  }
+
+  // ---- v99.15:⑤wasm 资格面——Map[*,窄] 标注 let 函数具名排除(dbg 无 fn OK;
+  //      strict exit 0)+ Map[str,i64] 控制组保持 eligible(不过度排除) ----
+  {
+    const p = m99('v99_15_gate.ming', [
+      'fn probe() -> i64 {',
+      '    let m: Map[str, u8] = {"a": 250};',
+      '    let v = m.get("a").unwrap();',
+      '    return v as i64;',
+      '}',
+      'fn ctrl() -> i64 {',
+      '    let m: Map[str, i64] = {"a": 250};',
+      '    return m.get("a").unwrap();',
+      '}',
+      'fn main() with io {',
+      '    print(str(probe()));',
+      '    print(str(ctrl()));',
+      '}',
+    ].join('\n'));
+    const runs = runAll99(p);
+    const dbg = runMing(['run', p], { env: { MING_WASM_DEBUG: '1' } });
+    const strict = runMing(['run', p, '--strict-wasm']);
+    const ok = runs.every((r) => r.code === 0 && r.stdout === '250\n250\n')
+      && (dbg.stderr ?? '').includes('[wasm] fn ctrl OK')
+      && !(dbg.stderr ?? '').includes('[wasm] fn probe OK')
+      && strict.code === 0 && strict.stdout === '250\n250\n';
+    check('v99.15:wasm 门禁——Map[*,窄] 标注 let 函数具名排除(无 fn probe OK),Map[str,i64] 控制组保持 eligible,strict exit 0,三腿 250/250',
+      ok, `runs=${fmtRuns99(runs)} dbg_ok=${JSON.stringify((dbg.stderr ?? '').split('\n').filter((l) => l.includes('[wasm] fn')))} strict=${strict.code}`);
+  }
+
+  // ---- v99.16:⑥AOT 规格透传——Map {kt,vt} spec/enum normSpecs 池条目经 wire 往返,
+  //      M1a/M1b 值标签驱动(无 wire 数据)dist 腿同收敛;界内逐字 + 溢出 M4002 exit 101 ----
+  {
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v99-'));
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v89aot"\nversion = "0.1.0"\nentry = "main.ming"\n');
+    fs.writeFileSync(path.join(proj, 'main.ming'), [
+      'enum E { A(u8), B }',
+      'fn main() with io {',
+      '    let e = E.A(200);',
+      '    let x = match e {',
+      '        E.A(v) => v as i64,',
+      '        E.B => 0,',
+      '    };',
+      '    print(str(x));',
+      '    let m: Map[str, u8] = {"a": 250, "b": 5};',
+      '    print(str(m["b"]));',
+      '    let mut (a, _) = (5u8, 6u8);',
+      '    a = 200;',
+      '    print(str(a));',
+      '    let mut v = [1i32, 2i32];',
+      '    v.push(200);',
+      '    print(str(v[2]));',
+      '}',
+    ].join('\n'));
+    const build = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const aotOk = build.status === 0 && fs.existsSync(path.join(proj, 'dist', 'app.bytecode.json')) && !fs.existsSync(path.join(proj, 'dist', 'app.ming'));
+    const run1 = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    // 溢出形态:enum 构造 250 → match 绑定算术 M4002(dist 字节码 VM 经 wire normSpecs 归一)
+    fs.writeFileSync(path.join(proj, 'ovf.ming'), [
+      'enum E { A(u8), B }',
+      'fn main() with io {',
+      '    let e = E.A(250);',
+      '    let x = match e {',
+      '        E.A(v) => v + 10u8,',
+      '        E.B => 0u8,',
+      '    };',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v89aot"\nversion = "0.1.0"\nentry = "ovf.ming"\n');
+    spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const run2 = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    // 溢出形态 2:M1a 值标签驱动(dist VM 与内存 VM 同代码路径,零 wire 数据)
+    fs.writeFileSync(path.join(proj, 'ovf2.ming'), [
+      'fn main() with io {',
+      '    let mut (a, _) = (5u8, 6u8);',
+      '    a = 250;',
+      '    let x = a + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v89aot"\nversion = "0.1.0"\nentry = "ovf2.ming"\n');
+    spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const run3 = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    check('v99.16:AOT 规格透传——build 真字节码产物(enumspec normSpecs/spec {kt,vt} wire 往返;M1a/M1b 值标签驱动零 wire 数据),dist 界内 200/5/200/200 逐字 + 溢出形态(enum normSpecs / M1a 值标签)M4002 exit 101',
+      aotOk && run1.status === 0 && run1.stdout === '200\n5\n200\n200\n'
+        && run2.status === 101 && (run2.stderr ?? '').includes('M4002') && (run2.stderr ?? '').includes('整数+溢出:250 + 10 超出 i8u 范围')
+        && run3.status === 101 && (run3.stderr ?? '').includes('整数+溢出:250 + 10 超出 i8u 范围'),
+      `build=${build.status} r1=${run1.status}:${JSON.stringify(run1.stdout)} r2=${run2.status}:${JSON.stringify((run2.stderr ?? '').split('\n')[0])} r3=${run3.status}:${JSON.stringify((run3.stderr ?? '').split('\n')[0])}`);
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+
+  // ---- v99.17/v99.18(v0.89 审查 m5 补锚)----
+  {
+    // M1b 混合标签不打标的「保持现状」锁定——防止未来把 uniform 判据改成「任一窄即打标」时无锚
+    const p = m99('v99_17_mixed.ming', [
+      'fn main() with io {',
+      '  let mut v = [1i32, 2];',
+      '  v.push(2147483647);',
+      '  print(str(v[2] + 1i32));',
+      '}',
+    ].join('\n'));
+    const legs = runAll99(p);
+    check('v99.17:M1b 混合标签不打标保持现状——三腿一致静默 2147483648(uniformNarrowSpec 判据锚)',
+      legs.every((r) => r.code === 0 && (r.stdout ?? '') === '2147483648\n')
+        && legs[0].stdout === legs[1].stdout && legs[0].stdout === legs[2].stdout,
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 30))).join(' | ')}`);
+  }
+  {
+    // M1a 跨窄型泛化——i16 重赋值归一后算术越界 M4002(§99 现只锁 u8,补 i16)
+    const p = m99('v99_18_i16.ming', [
+      'fn main() with io {',
+      '  let mut a = 5i16;',
+      '  a = 250;',
+      '  print(str(a + 32767i16));',
+      '}',
+    ].join('\n'));
+    const legs = runAll99(p);
+    check('v99.18:M1a 跨窄型泛化——i16 重赋值归一后算术越界三腿 M4002 逐字(整数+溢出:250 + 32767 超出 i16 范围)',
+      legs.every((r) => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('整数+溢出:250 + 32767 超出 i16 范围'))
+        && legs[0].stderr === legs[1].stderr && legs[0].stderr === legs[2].stderr,
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stderr ?? '').split('\n')[0].slice(0, 100))).join(' | ')}`);
+  }
+  // ---- §99-END
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

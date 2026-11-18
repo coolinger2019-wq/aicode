@@ -6,7 +6,7 @@
 // 栈布局:操作数在 valueStack;每帧 {fn, ip, locals[], captures[]}。
 // 值语义:ST/SET/BIND/调用实参/集合构造全部 deepCopy;mut self 的 self 不拷贝。
 
-import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, declaredSpecOfTy } from './interp.js';
+import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, declaredSpecOfTy, uniformNarrowSpec } from './interp.js';
 import { compile, OP, BIN } from './compiler.js';
 import { tint, tfloat, T_STR, T_BOOL, INT_TYPES, typeStr, resolveT } from './checker.js';
 import { MATH_IMPORTS } from './wasm.js';
@@ -729,8 +729,12 @@ export class VMInterp extends Interp {
           // v0.87(§4.13.7):同 ST——重赋值到窄型槽(编译器按 narrowSlots 登记发射规格)。
           // 复合赋值(ADDI/BINSETI/BINSET2)不经此处:结果沿左操作数已归一的窄 bits,
           // fits 门在算术处收口,写入自带窄标签。
+          // v0.89(§4.13.7 M1a):c=0 时按目标槽现值的窄标签归一(值标签驱动,与 tree
+          // bindPattern 值标签登记 + declaredNarrowTy 重赋值同口径)——`let mut a = 5u8;
+          // a = 250;` 写入值是 i64 标签(上下文窄化字面量),不归一则后续窄型算术静默。
+          // 现值非窄 int(宽槽/容器槽)→ 原路径,零变化。
           const v = deepCopy(stack.pop());
-          const nv = ins[3] ? normBindValue(v, resolvedPool[ins[3]], this.spanOf(frame, ins)) : v;
+          const nv = ins[3] ? normBindValue(v, resolvedPool[ins[3]], this.spanOf(frame, ins)) : this.normBySlotTag(frame, ins, v);
           if (ins[1] === 0) frame.locals[ins[2]] = nv;
           else frame.captures[ins[2]] = nv;
           break;
@@ -861,7 +865,10 @@ export class VMInterp extends Interp {
           const n = ins[1];
           const items = stack.splice(stack.length - n, n).map(deepCopy);
           this.chargeAllocBytes(n, this.spanOf(frame, ins));
-          stack.push(V.vec(items));
+          // v0.89(§4.13.7 M1b):推断容器值标签驱动打标(与 tree evalExpr VecLit 同判据,
+          // uniformNarrowSpec 共享)——元素统一窄标签 → __elemTy,push/元素写归一生效。
+          const vspec = uniformNarrowSpec(items);
+          stack.push(vspec ? { t: 'vec', a: items, __elemTy: vspec } : V.vec(items));
           break;
         }
         case OP.MAKEMAP: {
@@ -869,11 +876,16 @@ export class VMInterp extends Interp {
           const flat = stack.splice(stack.length - 2 * n, 2 * n);
           this.chargeAllocBytes(n, this.spanOf(frame, ins));
           const m = new Map();
+          const vals = [];
           for (let i = 0; i < n; i++) {
             const k = flat[i * 2], v = deepCopy(flat[i * 2 + 1]);
+            vals.push(v);
             m.set(normKey(k), v);
           }
-          stack.push(V.map(m));
+          // v0.89(§4.13.7 M1b):推断 Map 值标签驱动打标(与 tree evalExpr MapLit 同判据)
+          // ——值统一窄标签 → __valTy,set/下标写归一生效。
+          const vspec = uniformNarrowSpec(vals);
+          stack.push(vspec ? { t: 'map', m, __valTy: vspec } : V.map(m));
           break;
         }
         case OP.MAKETUPLE: {
@@ -898,7 +910,11 @@ export class VMInterp extends Interp {
         case OP.MAKEENUM: {
           const spec = pool[ins[1]].v;
           const n = ins[2];
-          const vals = n ? stack.splice(stack.length - n, n).map(deepCopy) : [];
+          let vals = n ? stack.splice(stack.length - n, n).map(deepCopy) : [];
+          // v0.89(§4.13.7):enum payload 构造位归一——编译期随 enumspec 附带的逐 payload
+          // 规格(normSpecs,decl.variants[tag] 逐位;无窄型 payload → null,旧产物兼容)
+          // 逐位重标(tree constructVariant 同口径;match 绑定沿 vals 取值即带窄标签)。
+          if (spec.normSpecs) vals = vals.map((x, i) => (spec.normSpecs[i] ? normBindValue(x, spec.normSpecs[i], this.spanOf(frame, ins)) : x));
           const def = spec.def === 'builtin-opt' || spec.def === 'builtin-res' ? spec.def : spec.def;
           stack.push(V.enumv(def, spec.tag, vals));
           break;
@@ -1072,10 +1088,28 @@ export class VMInterp extends Interp {
       return;
     }
     if (base.t === 'map') {
-      base.m.set(normKey(idx), val);
+      // v0.89(§4.13.7):Map 值写归一——按 map 值携带的值规格(__valTy;tree assignTo
+      // Index map 分支同口径)。
+      const vspec = base.__valTy;
+      base.m.set(normKey(idx), vspec ? normBindValue(val, vspec, span) : val);
       return;
     }
     throw new Panic('M4001', '内部错误:索引赋值目标类型错误', span);
+  }
+
+  // v0.89(§4.13.7 M1a,推断型静默面——值标签驱动):c=0 重赋值的目标槽窄标签归一。
+  // 判据与 tree 同源(初值绑定处的窄标签即事实类型):仅当写入值是 i64/u64 标签 int
+  // 且目标槽现值携带窄型标签(bits<64)时按现值标签重标——上下文窄化字面量(检查器
+  // 合法、运行时 i64 标签)在重赋值边界收窄;其余形态原样返回(宽槽零变化,旧产物
+  // 兼容)。tree 侧登记在 env.tys(bindPattern 值标签驱动),VM 侧无槽级类型表,按
+  // 现值标签即时判定——同一程序两引擎判据等价(值标签 = 确定性事实,无状态无漂移)。
+  normBySlotTag(frame, ins, v) {
+    if (!v || v.t !== 'int' || typeof v.bits !== 'number' || v.bits < 64) return v;
+    const cur = ins[1] === 0 ? frame.locals[ins[2]] : frame.captures[ins[2]];
+    if (cur && cur.t === 'int' && typeof cur.bits === 'number' && cur.bits < 64) {
+      return normBindValue(v, { bits: cur.bits, signed: !!cur.signed }, this.spanOf(frame, ins));
+    }
+    return v;
   }
 
   // 调用值:vclose / fnref / builtin / stdfn / typeobj / ctor
