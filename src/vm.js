@@ -6,7 +6,7 @@
 // 栈布局:操作数在 valueStack;每帧 {fn, ip, locals[], captures[]}。
 // 值语义:ST/SET/BIND/调用实参/集合构造全部 deepCopy;mut self 的 self 不拷贝。
 
-import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, narrowSpecOfTy } from './interp.js';
+import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, declaredSpecOfTy } from './interp.js';
 import { compile, OP, BIN } from './compiler.js';
 import { tint, tfloat, T_STR, T_BOOL, INT_TYPES, typeStr, resolveT } from './checker.js';
 import { MATH_IMPORTS } from './wasm.js';
@@ -18,6 +18,10 @@ export function resolveConst(c) {
     if (c.v.startsWith('__stdmod:')) return { t: 'stdmod', name: c.v.slice(9) };
     return V.str(c.v);
   }
+  // v0.88(§4.13.7 四边界):归一规格池条目解包——'spec' = 规格树(纯数据);
+  // 'specarr' = 规格池下标数组(BIND 逐槽规格;元素仍经 resolvedPool 二次解析)。
+  if (c && c.__tag === 'spec') return c.v;
+  if (c && c.__tag === 'specarr') return c.v;
   if (c && c.__tag === 'typeobj') return { t: 'typeobj', prim: c.v };
   if (c && c.__tag === 'stdmod') return { t: 'stdmod', name: c.v };
   if (c && c.__tag === 'enumspec') return { t: 'ctor', enumName: typeof c.v.def === 'string' ? (c.v.def === 'builtin-opt' ? 'Option' : 'Result') : undefined, def: typeof c.v.def === 'string' ? c.v.def : c.v.def, variant: c.v.tag };
@@ -29,14 +33,16 @@ const TRACE = process.env.MING_TRACE === '1';
 const ITER_VAL = { done: false, value: null }; // 迭代器复用的结果对象(同步执行安全)
 const ITER_DONE = { done: true }; // 启动时读一次:每指令访问 process.env 是性能陷阱
 
-// v0.87(§4.13.7):编译函数的窄型归一规格。lambda(编译函数无 entry.sig)由编译器
-// 以 narrowSpecs 附加;模块函数回退 entry.sig(checker 内存编译 / AOT wire 反序列化
-// 均携带窄型 bits/signed)。返回 null 形参/返回均不归一(旧产物无 entry.sig 窄型时)。
+// v0.87(§4.13.7)/v0.88(规格树):编译函数的归一规格。lambda(编译函数无 entry.sig)
+// 由编译器以 narrowSpecs 附加;模块函数回退 entry.sig(checker 内存编译 / AOT wire
+// 反序列化均携带类型)。v0.88 规格树化:窄型叶沿用;Vec[窄]/元组形参/返回逐元素/逐
+// 分量归一。wire 类型(AOT)vec/tuple 完整回传 → 树化无碍;struct wire 无 def → null
+//(冗余面:struct 值恒在 ctor 归一,见报告)。返回 null 形参/返回均不归一(旧产物)。
 function narrowSpecsOfFn(fn) {
   if (fn.narrowSpecs) return fn.narrowSpecs;
   const sig = fn.entry?.sig;
   if (!sig) return null;
-  return { params: (sig.params ?? []).map((p) => narrowSpecOfTy(p.type)), ret: narrowSpecOfTy(sig.ret) };
+  return { params: (sig.params ?? []).map((p) => declaredSpecOfTy(p.type)), ret: declaredSpecOfTy(sig.ret) };
 }
 
 export class VMInterp extends Interp {
@@ -778,7 +784,12 @@ export class VMInterp extends Interp {
           const val = stack.pop();
           const base = stack.pop();
           if (base.t !== 'struct') throw new Panic('M4001', '内部错误:字段赋值目标不是结构体', this.spanOf(frame, ins));
-          base.fields.set(name, deepCopy(val));
+          // v0.88(§4.13.7 四边界):字段写归一——按值携带的 __spec 字段规格重标
+          //(tree assignTo Field 同口径;ctor/绑定/传参归一时打标)。
+          let nv = deepCopy(val);
+          const fspec = base.__spec ? base.__spec.fields?.[name] : null;
+          if (fspec) nv = normBindValue(nv, fspec, this.spanOf(frame, ins));
+          base.fields.set(name, nv);
           break;
         }
         case OP.INDEX: {
@@ -877,7 +888,11 @@ export class VMInterp extends Interp {
           const vals = stack.splice(stack.length - n, n);
           const fields = new Map();
           for (let i = 0; i < n; i++) fields.set(spec.names[i], deepCopy(vals[i]));
-          stack.push({ t: 'struct', def: spec.def, name: spec.def.name, fields });
+          // v0.88(§4.13.7 四边界):ctor 归一——按编译期字段规格树(normSpec)重标字段
+          // 值并打 __spec(tree evalStructLit 同口径;后续 SETFIELD 归一的依据)。
+          // 无窄型字段(normSpec null)→ 原路径,旧产物兼容。
+          const sv = { t: 'struct', def: spec.def, name: spec.def.name, fields };
+          stack.push(spec.normSpec ? normBindValue(sv, spec.normSpec, this.spanOf(frame, ins)) : sv);
           break;
         }
         case OP.MAKEENUM: {
@@ -920,8 +935,13 @@ export class VMInterp extends Interp {
         case OP.BIND: {
           const slots = pool[ins[1]].v;
           const binds = stack.pop();
+          // v0.88(§4.13.7 四边界):c = specarr 池下标(let 元组模式的逐绑定槽规格;
+          // 0 = 无规格,形态与 v0.87 逐字节相同)——逐槽按规格归一(叶重标/容器树递归)。
+          const specIdxs = ins[3] ? resolvedPool[ins[3]] : null;
           for (let i = 0; i < slots.length; i++) {
-            frame.locals[slots[i]] = deepCopy(binds[i]);
+            let bv = deepCopy(binds[i]);
+            if (specIdxs && specIdxs[i]) bv = normBindValue(bv, resolvedPool[specIdxs[i]], this.spanOf(frame, ins));
+            frame.locals[slots[i]] = bv;
           }
           break;
         }
@@ -1045,7 +1065,10 @@ export class VMInterp extends Interp {
       if (!Number.isInteger(i) || i < 0 || i >= base.a.length) {
         throw new Panic('M4003', `索引越界:长度 ${base.a.length},访问 ${i}`, span);
       }
-      base.a[i] = val;
+      // v0.88(§4.13.7 四边界):元素写归一——按值携带的 __elemTy(tree assignTo Index
+      // 同口径)。
+      const espec = base.__elemTy;
+      base.a[i] = espec ? normBindValue(val, espec, span) : val;
       return;
     }
     if (base.t === 'map') {

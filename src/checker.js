@@ -6571,6 +6571,14 @@ export class Checker {
     // 推断变量填充
     ps.forEach(p => { if (p.type.k === 'var') p.type = resolveT(p.type, binds) ?? p.type; });
     if (retT) retT = resolveT(retT, binds) ?? retT;
+    // v0.88(§4.13.7 四边界):统一后的形参 checker 类型回写 Lambda AST——无标注形参
+    // 经期望 fn 类型统一为窄型(或容器)时,运行时归一(tree callClosure / VM
+    // compileLambda)需要该类型;fnTypeHint 通道全库无写入点(死代码),AST 回写是唯一
+    // 可行通道。回写**类型**而非规格树:checker→interp 直接导入会成环(interp→checker
+    // 既有边;v0.69 ADR-005 废弃循环导入的先例口径),规格树由引擎侧单一事实来源
+    // declaredSpecOfTy 从类型构建。两引擎共享本 AST;类型对象仅内存存活(lambda 不进
+    // AOT 序列化)。无期望且无标注 → tvar 原样(引擎侧 spec null,不归一)。
+    e.narrowParamTypes = ps.map((p) => p.type);
     // v0.87(审查 MAJOR-1):lambda 块尾隐式返回的 Slice 门禁——显式 return 语句已有
     // 逃逸发射点,块尾值/推断返回类型此前无检查点;视图越 lambda 边界 = 逃逸(M3051)。
     if (retT && typeContainsSlice(resolveT(retT, new Map()))) {

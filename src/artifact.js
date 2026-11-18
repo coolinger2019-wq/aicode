@@ -37,7 +37,10 @@ function stripWireAst(x) {
   return x;
 }
 function taggedToWire(kind, v) {
-  if (kind === 'structspec' && v && typeof v === 'object') return { names: v.names, def: minimalDef(v.def) };
+  // v0.88(§4.13.7 四边界):structspec 附带字段规格树(normSpec,纯数据)——AOT
+  // MAKESTRUCT ctor 归一依赖;缺省 null(旧产物兼容,ctor 不归一)。'spec'/'specarr'
+  // 规格条目走默认 stripWireAst 透传(规格树无 span/def 等剥离键)。
+  if (kind === 'structspec' && v && typeof v === 'object') return { names: v.names, def: minimalDef(v.def), normSpec: v.normSpec ?? null };
   if (kind === 'enumspec' && v && typeof v === 'object') return { def: typeof v.def === 'string' ? v.def : minimalDef(v.def), tag: v.tag };
   return stripWireAst(v);
 }
@@ -159,8 +162,13 @@ function validateArtifact(a) {
   const opSet = new Set(Object.values(OP));
   const poolSlot = new Map([ // 操作数是常量池下标的指令(口径 = compiler.js OP 注释与发射点)
     [OP.CONST, 1], [OP.GETFIELD, 1], [OP.SETFIELD, 1], [OP.CALLMETHOD, 1],
-    [OP.CLOSURE, 2], [OP.PATMATCH, 1], [OP.BIND, 1], [OP.MAKESTRUCT, 1],
+    [OP.CLOSURE, 2], [OP.PATMATCH, 1], [OP.BIND, 1],
+    // v0.88(审查 m1):BIND 第 5 元 c = specarr 池下标(窄型解构归一规格;0 = 无规格合法)
+    [OP.BIND, 3], [OP.MAKESTRUCT, 1],
     [OP.MAKEENUM, 1], [OP.CAST, 1], [OP.BINSETI, 2],
+    // v0.88(§4.13.7 四边界):ST/SET c 操作数 = 归一规格池下标(v0.87 起;此前未校验,
+    // 现补齐界检查——0 = 无规格合法,非 0 必须 ∈ [0, pool.length))。
+    [OP.ST, 3], [OP.SET, 3],
   ]);
   const jumpSlot = new Map([ // 操作数是跳转目标(指令下标)的指令
     [OP.JUMP, 1], [OP.JUMPFALSE, 1], [OP.JUMPNONE, 1], [OP.ITERNEXT, 1],

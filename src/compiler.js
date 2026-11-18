@@ -9,7 +9,7 @@
 //
 // 指令编码:[op, a, b, spanIdx](数组);操作码见 OP。
 
-import { V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, narrowSpecOfTyAst } from './interp.js';
+import { V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, declaredSpecOfTyAst, declaredSpecOfPatAst, declaredSpecOfTy } from './interp.js';
 import { Interp } from './interp.js';
 import { resolveT, typeStr } from './checker.js';
 import { tryCompileWasm } from './wasm.js';
@@ -91,9 +91,14 @@ export function compile(checkResult) {
   return built;
 }
 
-// v0.87(§4.13.7):函数体是否含窄型标注 let(递归遍历;WeakSet 防环 + 深度限防御)。
-// 只认 PIdent 模式的裸窄型标注(与运行时归一边界同口径);元组模式/容器元素不在此列。
-// 用途 = tryWasm 窄型 let 门禁(见其内注释)。
+// v0.87(§4.13.7)/v0.88(§4.13.7 四边界):函数体是否含"携带归一规格的标注 let"(递归
+// 遍历;WeakSet 防环 + 深度限防御)。v0.87 只认 PIdent 模式的裸窄型标注;v0.88 扩展为
+// 规格树判据 declaredSpecOfTyAst——Vec[窄] 标注({el})/元组标注({ts},PIdent 或
+// PTuple 模式)一并命中:let 绑定处 tree/VM 归一(元素/分量标签收窄),wasm 执行该
+// 函数(裸 i64,无 fits 门)即三腿分歧 → 必须排除出 wasm 分层(v0.87 同理由)。
+// 用途 = tryWasm 窄型 let 门禁(见其内注释)。struct 字段 ctor 归一形态(StructLit)
+// 不在此列:含 StructLit 的函数 wasm shape 阶段即 REJECT("表达式 StructLit"),
+// 元组/Vec 窄值经传参/返回进 wasm 的入口也已被 shape 拒绝(实测见 v0.88 报告)。
 function declHasNarrowLet(node, seen = new WeakSet(), depth = 0) {
   if (!node || typeof node !== 'object' || depth > 500) return false;
   if (seen.has(node)) return false;
@@ -102,7 +107,9 @@ function declHasNarrowLet(node, seen = new WeakSet(), depth = 0) {
     for (const x of node) if (declHasNarrowLet(x, seen, depth + 1)) return true;
     return false;
   }
-  if (node.nt === 'Let' && node.pat?.nt === 'PIdent' && narrowSpecOfTyAst(node.type)) return true;
+  if (node.nt === 'Let'
+      && (node.pat?.nt === 'PIdent' || node.pat?.nt === 'PTuple')
+      && declaredSpecOfTyAst(node.type)) return true;
   for (const k in node) {
     const v = node[k];
     if (v && typeof v === 'object') {
@@ -555,17 +562,22 @@ class BytecodeCompiler {
   compileStmt(s, st) {
     switch (s.nt) {
       case 'Let': {
-        // v0.87(§4.13.7):窄型标注 → 绑定归一规格(ident 模式;V.int(0,bits,signed)
-        // 作池载体,ST c 操作数携带)。VM 在 ST 处按声明类型重标;tree 引擎同口径归一。
-        const narrowSpec = narrowSpecOfTyAst(s.pat?.nt === 'PIdent' ? s.type : null);
-        const specIdx = narrowSpec ? this.poolAdd(V.int(0, narrowSpec.bits, narrowSpec.signed)) : 0;
-        if (s.init) {
-          this.compileExpr(s.init, st);
-          // 模式绑定:ident → ST;元组 → PATMATCH+BIND
-          this.compileLetPattern(s.pat, st, specIdx);
+        // v0.87(§4.13.7)/v0.88(§4.13.7 四边界):绑定归一规格——按"模式位置 × 标注"
+        // 构建规格树。PIdent 叶沿用 V.int(0,bits,signed) 池载体(v0.87 产物/池布局
+        // 兼容);规格树(Vec[窄] {el} / 元组 {ts})入池 __tag 'spec'(artifact 纯数据
+        // 透传)。PTuple 模式把规格传给 compileLetPattern:逐绑定槽 BIND specarr +
+        // narrowSlots 登记(SET 归一)。ST/BIND c 操作数携带池下标,VM 绑定处归一;
+        // tree 引擎同口径(declaredSpecOfPatAst + normBindValue)。池 0 号位被 run()
+        // 预置的 None 常量占用,specIdx 恒 ≥1,c=0 编码"无规格"无歧义。
+        const spec = s.pat.nt === 'PWild' ? null : declaredSpecOfPatAst(s.pat, s.type);
+        if (s.pat.nt === 'PTuple') {
+          if (s.init) this.compileExpr(s.init, st);
+          else this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, s.span);
+          this.compileLetPattern(s.pat, st, 0, spec);
         } else {
-          // let x: T;(v0.2 允许?检查器要求初始化或标注;无 init 需要标注——声明即占位)编译为 CONST unit 绑定
-          this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, s.span);
+          const specIdx = spec ? this.poolAddSpec(spec) : 0;
+          if (s.init) this.compileExpr(s.init, st);
+          else this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, s.span);
           this.compileLetPattern(s.pat, st, specIdx);
         }
         return;
@@ -835,12 +847,18 @@ class BytecodeCompiler {
     }
   }
 
+  // v0.88(§4.13.7):规格入池——叶沿用 V.int(0,bits,signed) 载体(v0.87 池条目形态
+  // 不变);规格树走 __tag 'spec'(artifact 纯数据透传,resolveConst 解包)。
+  poolAddSpec(spec) {
+    if (spec.bits !== undefined) return this.poolAdd(V.int(0, spec.bits, spec.signed));
+    return this.poolAdd({ __tag: 'spec', v: spec });
+  }
+
   // let 的绑定模式:ident / _ / 元组
-  // v0.87(§4.13.7):specIdx = 窄型规格池下标(let 标注 i8/u8/i16/u16/i32/u32 时由
-  // compileStmt Let 传入;池条目为 V.int(0, bits, signed) 载体)。ST c 操作数携带 →
-  // VM 在绑定处归一(旧产物 c=0 不归一,additive 兼容)。元组模式不带标注位 → 不携带
-  // (元组绑定归一登记为遗留边界)。
-  compileLetPattern(pat, st, specIdx = 0) {
+  // v0.87(§4.13.7)/v0.88(§4.13.7 四边界):specIdx = 归一规格池下标(PIdent;ST c
+  // 操作数携带 → VM 绑定处归一,旧产物 c=0 additive 兼容);patSpec = 元组模式规格树
+  // (PTuple;逐绑定槽 BIND specarr + narrowSlots 登记,重赋值 SET 归一)。
+  compileLetPattern(pat, st, specIdx = 0, patSpec = null) {
     switch (pat.nt) {
       case 'PIdent': {
         const slot = this.declareLocal(st, pat.name);
@@ -858,7 +876,17 @@ class BytecodeCompiler {
         this.emit(st, OP.PATMATCH, this.patternAdd(pat), 0, pat.span);
         this.emit(st, OP.JUMPNONE, 0, 0, pat.span);
         const j = this.here(st) - 1;
-        this.emitBinds(pat, st);
+        // v0.88(§4.13.7):逐绑定槽规格——collectPatSpecs 与 collectPatNames 同一 DFS
+        // 序(PWild/字面量位跳过,与 slots 对齐);各槽规格入池后 BIND c 携带下标数组
+        // (specarr);无规格形态 c=0 与 v0.87 字节相同。
+        let specArrIdx = 0;
+        if (patSpec?.ts) {
+          const specs = [];
+          collectPatSpecs(pat, patSpec, specs);
+          const idxs = specs.map((sp) => (sp ? this.poolAddSpec(sp) : 0));
+          if (idxs.some((x) => x !== 0)) specArrIdx = this.poolAdd({ __tag: 'specarr', v: idxs });
+        }
+        this.emitBinds(pat, st, specArrIdx);
         this.emit(st, OP.JUMP, 0, 0, pat.span);      // 正常路径跳过防御
         const jSkip = this.here(st) - 1;
         // 防御落点(检查器保证不可达)
@@ -874,11 +902,18 @@ class BytecodeCompiler {
   }
 
   // 发射绑定:栈顶 binds 数组 → 各绑定槽(顺序 = 模式遍历序)
-  emitBinds(pat, st) {
+  // v0.88(§4.13.7):specArrIdx 非零时逐槽 narrowSlots 登记(该槽 SET 归一)。
+  emitBinds(pat, st, specArrIdx = 0) {
     const names = [];
     collectPatNames(pat, names);
     const slots = names.map(n => this.declareLocal(st, n));
-    this.emit(st, OP.BIND, this.parr(slots), 0, pat.span);
+    if (specArrIdx) {
+      const idxs = this.pool[specArrIdx].v;
+      slots.forEach((slot, i) => {
+        if (idxs[i]) (st.narrowSlots ??= new Map()).set(slot, idxs[i]);
+      });
+    }
+    this.emit(st, OP.BIND, this.parr(slots), 0, pat.span, specArrIdx);
   }
 
   patternAdd(pat) {
@@ -1152,7 +1187,11 @@ class BytecodeCompiler {
         if (!def) throw new CompileError('结构体未解析:' + e.path.join('.'), e.span);
         const names = e.fields.map(f => f.name);
         if ((def.invariants ?? []).length === 0) { for (const f of e.fields) this.compileExpr(f.value, st); } else { this.pushScope(st); const slots = new Map(); for (const f of e.fields) { this.compileExpr(f.value, st); const slot = this.declareLocal(st, f.name); this.emit(st, OP.ST, 0, slot, f.span); slots.set(f.name, slot); } for (const inv of def.invariants) { this.compileExpr(inv.expr, st); this.compileContractFail(st, '契约违反: invariant', inv.span ?? e.span, (st) => { this.emit(st, OP.CONST, this.poolAdd(V.bool(false)), 0, inv.span ?? e.span); }); } this.popScope(st); for (const f of e.fields) this.emit(st, OP.LD, 0, slots.get(f.name), f.span); }
-        this.emit(st, OP.MAKESTRUCT, this.poolAdd({ __tag: 'structspec', v: { names, def } }), e.fields.length, e.span);
+        // v0.88(§4.13.7 四边界):structspec 附带字段规格树(normSpec)——VM MAKESTRUCT
+        // ctor 归一(tree evalStructLit 同口径)。artifact 序列化 normSpec 为纯数据透传;
+        // 无窄型字段 → null(旧产物兼容)。
+        const normSpec = declaredSpecOfTy({ k: 'struct', def });
+        this.emit(st, OP.MAKESTRUCT, this.poolAdd({ __tag: 'structspec', v: { names, def, normSpec } }), e.fields.length, e.span);
         return;
       }
       case 'Lambda': {
@@ -1454,12 +1493,14 @@ class BytecodeCompiler {
     if (e.body.nt === 'BlockExpr') this.compileBlock(e.body.block, sub, true);
     else this.compileExpr(e.body, sub, true);
     this.emit(sub, OP.RET, 0, 0, e.span);
-    // v0.87(§4.13.7):lambda 形参归一规格——编译函数对象携带 narrowSpecs(非序列化
-    // 字段:AOT 对含 lambda 程序维持既有源码模式回退,<闭包> 缺 entry.sig 的拒绝不变)。
-    // checker 未把统一后的 lambda 类型回写 AST(fnTypeHint 恒 null)→ 以 AST 标注为准;
-    // 未标注形参不归一(登记遗留:窄型上下文中的无标注 lambda 形参保持来源标签)。
-    // lambda 无返回标注位 → ret 恒 null(块体尾值/return 值保持来源标签)。
-    const lamNarrowSpecs = { params: e.params.map((p) => narrowSpecOfTyAst(p.type)), ret: null };
+    // v0.87(§4.13.7)/v0.88(§4.13.7 四边界):lambda 形参归一规格——编译函数对象携带
+    // narrowSpecs(非序列化字段:AOT 对含 lambda 程序维持既有源码模式回退,<闭包> 缺
+    // entry.sig 的拒绝不变)。优先级:AST 标注(标注形参,v0.87 叶形态;declaredSpecOf
+    // TyAst 覆盖 Vec[窄] 标注)→ checker 统一后回写的 e.narrowParamTypes(无标注形参经
+    // 期望 fn 类型统一——本版新面;类型经单一事实来源 declaredSpecOfTy 构建规格树)。
+    // lambda 无返回标注位 → ret 恒 null(块体尾值/return 值保持来源标签;lambda 返回
+    // 位归一为登记遗留,见报告)。
+    const lamNarrowSpecs = { params: e.params.map((p, i) => declaredSpecOfTyAst(p.type) ?? declaredSpecOfTy(e.narrowParamTypes?.[i]) ?? null), ret: null };
     this.functions[idx] = { name: '<闭包>', modFile: st.mod.file, nParams: e.params.length, nLocals: sub.nLocals, code: sub.code, narrowSpecs: lamNarrowSpecs };
     this.curFnIdx = savedCur;
     this.emit(st, OP.CLOSURE, idx, this.poolAdd({ __tag: 'plan', v: plan }), e.span);
@@ -1535,6 +1576,18 @@ function collectPatNames(pat, out) {
     case 'PIdent': out.push(pat.name); return;
     case 'PTuple': for (const p of pat.pats) collectPatNames(p, out); return;
     case 'PEnum': for (const p of pat.args) collectPatNames(p, out); return;
+    default: return;
+  }
+}
+
+// v0.88(§4.13.7):模式位置的规格树提取——与 collectPatNames 严格同一 DFS 序与跳过
+// 规则(PWild/PLit 跳过、PEnum 参数位下推但 let 模式不出现枚举形态),保证 specs[i]
+// 与 BIND 槽位一一对应。PIdent 位携带该位置的规格(无规格 → null)。
+function collectPatSpecs(pat, spec, out) {
+  switch (pat.nt) {
+    case 'PIdent': out.push(spec ?? null); return;
+    case 'PTuple': for (let i = 0; i < pat.pats.length; i++) collectPatSpecs(pat.pats[i], spec?.ts?.[i] ?? null, out); return;
+    case 'PEnum': for (const p of pat.args) collectPatSpecs(p, null, out); return;
     default: return;
   }
 }

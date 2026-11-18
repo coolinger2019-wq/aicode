@@ -13,6 +13,15 @@
 //   v0.56(3d):helper 增首参 Vec[i64](wasm 仅支持 Vec 形参在首位),新增 for-in 体内
 //               continue/break(F1)与 `%` 条件/while 内 `%` continue(F2)——两种形态修复前
 //               分别会挂起/整模块回落,现均应真实经 wasm 执行。
+//   v0.88:窄型形态扩展(Agent B 独立差分压测)——wide 族新增 5 类窄型 shape
+//               (nlet 窄型标注 let ± 界内/越界算术、nvec Vec[i32]/Vec[u8] 标注初始化 +
+//               元素读改写、nstruct 窄型字段构造 + 读改写、ntuple 元组解构(后缀元素/
+//               标注解构/mut 重赋值)、nlambda HOF (u8)->i64 + 无标注/标注 lambda 形参)。
+//               仅 wide 族注入(cc 族保持纯 i64 C1 面内;wasm 族不动,存活断言面不变)。
+//               形态即 §4.13.7 遗留四边界(struct 字段/Vec 元素/无标注 lambda 形参/
+//               元组模式)的差分探测器:v0.87 现状下这些边界"静默一致"(非分歧面),
+//               v0.88 四边界归一落地后,界内值正常、越界必须 M4002 双引擎一致 panic
+//               ——归一不对称 → fuzz 直接抓出。全部 rng 驱动,确定性保持。
 // 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -100,7 +109,13 @@ function genCond(vars, depth) {
 }
 
 // ---- 语句生成。v0.41:cc 族 = wide 全形态(C3 起 Option/f64/Map 全部入 C 面)----
-function genStmt(s, vars, strVar, mode, lines) {
+function genStmt(s, vars, strVar, mode, lines, ctx) {
+  // v0.88:窄型形态仅注入 wide 族(cc 族必须保持纯 i64 以留在 C1 面内;wasm 族存活
+  // 断言面不动)。~35% 语句槽位改走窄型池,其余槽位沿既有分布(共存不破坏)。
+  if (mode === 'wide' && ctx && rng() < 0.35) {
+    genNarrowStmt(s, vars, lines, ctx);
+    return;
+  }
   const v = pick(vars);
   const kind = pick(['assign', 'assign', 'compound', 'compound', 'while', 'vec', 'forin', 'str', 'ifelse', 'loop', 'matchx', 'option', 'vecm', 'strm', 'f64', 'mapx', 'forrange']);
   void mode;
@@ -237,10 +252,115 @@ function genStmt(s, vars, strVar, mode, lines) {
   }
 }
 
+// ---- v0.88:窄型形态生成(Agent B 独立差分压测;仅 wide 族调用)----
+// 设计约束(§4.13.7 遗留四边界探测):
+//   1. check-valid:窄型算术两侧恒同型——字面量一律带后缀(plain 字面量在窄型算术
+//      位不收窄,`n + 5` 即 M3013,实测);plain 字面量只用在实测合法位(窄型 let
+//      初始化/重赋值、Vec 标注初始化与 push/set、struct 字段位——即 v0.87 归一后的
+//      i64 标签位静默面,归一后应收敛 M4002 的那侧)。
+//   2. 越界 panic 面靠边界值(≈250..255u8 / i32::MAX)偶发触发,概率压在 ~10-15%/shape
+//      ——panic 程序三腿比对的正是 [exit 101 + M4002],同样是差分面。
+//   3. 全 rng 驱动;无循环新增(不爆步数);变量名带 s 序号防 M3016。
+//   4. 与 i64 主变量 x0 的混合只经 `as i64`(窄值进宽域唯一无损通道)。
+function genNarrowStmt(s, vars, lines, ctx) {
+  void vars;
+  const pool = ['nlet', 'nlet', 'nvec', 'ntuple'];
+  if (ctx.nz) pool.push('nstruct', 'nstruct');
+  if (ctx.hz) pool.push('nlambda', 'nlambda');
+  const kind = pick(pool);
+  const k = int(1, 9); // 算术右操作数(小值)
+  if (kind === 'nlet') {
+    // 窄型标注 let(u8/i32)+ 复合赋值 + 界内/越界算术——v0.87 已归一边界(对照锚)
+    if (rng() < 0.5) {
+      const u8v = rng() < 0.25 ? int(246, 255) : int(0, 240);
+      lines.push(`    let mut na${s}: u8 = ${u8v};`);
+      if (rng() < 0.4) lines.push(`    na${s} += ${k}u8;`);
+      lines.push(`    x0 = x0 + (na${s} + ${k}u8) as i64;`);
+    } else {
+      // plain 字面量(无后缀)只允许非负:负字面量是一元负号表达式,窄型上下文不收窄
+      // (let 标注/元素写位 → M3002,实测;struct 字段位除外)——负值一律走后缀形态
+      const i32v = rng() < 0.15 ? '2147483647' : String(int(0, 999999));
+      lines.push(`    let mut nb${s}: i32 = ${i32v};`);
+      if (rng() < 0.4) lines.push(`    nb${s} += ${k}i32;`);
+      lines.push(`    x0 = x0 + (nb${s} + ${k}i32) as i64;`);
+    }
+  } else if (kind === 'nvec') {
+    // Vec 窄型标注初始化 + push/set 元素写 + 元素读算术(§4.13.7 Vec 元素边界)
+    // 元素字面量:12% 边界值(后缀,窄标签位 → fits 门活)+ 20% plain(无后缀,
+    // i64 标签位静默面——b2b 实测形态;左操作数窄标签位的 fits 门仍管辖窄算术)
+    if (rng() < 0.5) {
+      // plain 分支非负(负字面量不收窄);负值走后缀分支
+      const e = () => (rng() < 0.12 ? '2147483647i32' : (rng() < 0.2 ? String(int(0, 50)) : `${int(-50, 50)}i32`));
+      lines.push(`    let mut nv${s}: Vec[i32] = [${e()}, ${e()}];`);
+      lines.push(`    nv${s}.push(${e()});`);
+      lines.push(`    nv${s}[0] = ${e()};`);
+      lines.push(`    let ac${s}: i32 = nv${s}[0] + nv${s}[1];`);
+      lines.push(`    x0 = x0 + ac${s} as i64 + nv${s}[2] as i64;`);
+    } else {
+      const e = () => (rng() < 0.12 ? '255u8' : (rng() < 0.2 ? String(int(0, 240)) : `${int(0, 240)}u8`));
+      lines.push(`    let mut nu${s}: Vec[u8] = [${e()}, ${e()}];`);
+      lines.push(`    nu${s}.push(${e()});`);
+      lines.push(`    nu${s}[0] = ${e()};`);
+      lines.push(`    x0 = x0 + (nu${s}[0] + ${k}u8) as i64 + nu${s}[2] as i64;`);
+    }
+  } else if (kind === 'nstruct') {
+    // struct 窄型字段构造 + 读改写(§4.13.7 struct 字段边界;plain 字面量位 = 静默面;
+    // plain 负 i32 字段实测可收窄,但保守起见 plain 恒非负,负值走后缀)
+    const plain = rng() < 0.5;
+    const au = rng() < 0.25 ? int(246, 255) : int(0, 240);
+    const bi = plain ? int(0, 999999) : int(-9999, 9999);
+    lines.push(`    let p${s} = ${ctx.nz} { a: ${plain ? au : au + 'u8'}, b: ${plain ? bi : bi + 'i32'} };`);
+    lines.push(`    x0 = x0 + (p${s}.a + ${k}u8) as i64 + p${s}.b as i64;`);
+  } else if (kind === 'ntuple') {
+    // 元组解构三形态(§4.13.7 元组模式边界):后缀元素 / 标注解构(只能后缀——
+    // plain 字面量在标注元组解构初始化位是 M3002,实测)/ mut 重赋值(plain 字面量位)
+    const au = rng() < 0.25 ? int(246, 255) : int(0, 240);
+    const bi = int(-9999, 9999);
+    const form = pick(['suffix', 'annot', 'reassign']);
+    if (form === 'reassign') {
+      lines.push(`    let mut (tc${s}, td${s}) = (${au}u8, ${bi}i32);`);
+      lines.push(`    tc${s} = ${rng() < 0.5 ? au : au + 'u8'};`);
+      lines.push(`    x0 = x0 + (tc${s} + ${k}u8) as i64 + td${s} as i64;`);
+    } else if (form === 'annot') {
+      lines.push(`    let (ta${s}, tb${s}): (u8, i32) = (${au}u8, ${bi}i32);`);
+      lines.push(`    x0 = x0 + (ta${s} + ${k}u8) as i64 + tb${s} as i64;`);
+    } else {
+      lines.push(`    let t${s} = (${au}u8, ${bi}i32);`);
+      lines.push(`    let (ta${s}, tb${s}) = t${s};`);
+      lines.push(`    x0 = x0 + (ta${s} + ${k}u8) as i64 + tb${s} as i64;`);
+    }
+  } else {
+    // HOF (u8)->i64 + 无标注/标注 lambda 形参(§4.13.7 无标注 lambda 形参边界;
+    // 无标注位 = 静默面,标注位 v0.87 已归一 → 边界实参经标注 lambda 触发 M4002 对照)
+    if (rng() < 0.5) {
+      lines.push(`    x0 = x0 + ${ctx.hz}((q${s}) => (q${s} + ${k}u8) as i64);`);
+    } else {
+      lines.push(`    x0 = x0 + ${ctx.hz}((q${s}: u8) => (q${s} * ${k}u8) as i64);`);
+    }
+  }
+}
+
 function genProgram(mode) {
   const nVars = int(2, 3);
   const vars = [];
-  const lines = ['fn main() with io {'];
+  // v0.88:窄型形态上下文(wide 族专属)——struct 声明与 HOF 声明按种子概率前置发射,
+  // 供 genNarrowStmt 的 nstruct/nlambda 臂引用;其余程序零变化。
+  const ctx = { nz: null, hz: null, hzArg: 0 };
+  const pre = [];
+  if (mode === 'wide') {
+    if (rng() < 0.6) {
+      ctx.nz = 'NZ';
+      pre.push('struct NZ { a: u8, b: i32 }');
+    }
+    if (rng() < 0.6) {
+      ctx.hz = 'HZ';
+      // HOF 实参:30% 边界值(246..255)——经标注 lambda 形参(v0.87 已归一位)
+      // 偶发触发 M4002,作归一对称性的活体对照
+      ctx.hzArg = rng() < 0.3 ? int(246, 255) : int(0, 220);
+      pre.push(`fn HZ(f: (u8) -> i64) -> i64 { return f(${ctx.hzArg}); }`);
+    }
+  }
+  const lines = [...pre, 'fn main() with io {'];
   for (let i = 0; i < nVars; i++) {
     const v = `x${i}`;
     vars.push(v);
@@ -253,7 +373,7 @@ function genProgram(mode) {
   lines.push(`    let mut f1 = ${pick(['0.5', '-1.0', '4.75', '2.5'])};`);
   const nStmt = int(2, 5);
   for (let s = 0; s < nStmt; s++) {
-    genStmt(s, vars, sv, mode, lines);
+    genStmt(s, vars, sv, mode, lines, ctx);
   }
   lines.push(`    print(str(${vars[0]}));`);
   lines.push(`    print(str(${sv}.char_len()));`);

@@ -173,11 +173,33 @@ export function tryCompileWasm(check, compiled) {
   }
 }
 
-// v0.87(审查 MINOR-3 内化):函数体是否含窄型标注 let——与 compiler.js declHasNarrowLet
-// 同款(独立副本避免 compiler→wasm 循环导入;两处注释双向互指)。用途 = analyze 资格
-// 具名条款:含窄型标注 let 的函数不进 wasm 分层(窄型槽是裸 i64,wasm 侧无 fits 门——
-// 归一后 tree/VM 在算术处 M4002,wasm 执行该函数即三腿分歧;v0.86 前为 compiler clone
-// 标记过渡实现,本条款为其内化,clone 保留作纵深防御)。
+// v0.88(§4.13.7 四边界):标注类型是否携带归一规格(与 interp.js declaredSpecOfTyAst
+// 同判据的自包含副本;wasm.js 不导入 interp 避免循环依赖)。窄型叶沿用 v0.87;
+// Vec[<可归一元素>](含嵌套)与 TTuple(任一分量可归一)为 v0.88 新面——let 绑定处
+// tree/VM 归一(元素/分量标签收窄,算术处 fits 门 M4002),wasm 执行该函数(裸 i64,
+// 无 fits 门)即三腿分歧 → 具名排除。
+function typeHasNormSpec(t, depth = 0) {
+  if (!t || typeof t !== 'object' || depth > 24) return false;
+  if (t.nt === 'TName') {
+    if (!(t.args && t.args.length)) {
+      return !!{ i8: 1, i16: 1, i32: 1, u8: 1, u16: 1, u32: 1 }[t.name];
+    }
+    if (t.name === 'Vec' && t.args.length === 1) return typeHasNormSpec(t.args[0], depth + 1);
+    return false;
+  }
+  if (t.nt === 'TTuple') return (t.ts ?? []).some((x) => typeHasNormSpec(x, depth + 1));
+  return false;
+}
+
+// v0.87(审查 MINOR-3 内化)/v0.88(§4.13.7 四边界):函数体是否含"携带归一规格的标注
+// let"——与 compiler.js declHasNarrowLet 同款(独立副本避免 compiler→wasm 循环导入;
+// 两处注释双向互指)。v0.88 匹配面从窄型叶扩展到规格树形态(Vec[窄]/元组标注;PIdent
+// 或 PTuple 模式)。用途 = analyze 资格具名条款:含该形态 let 的函数不进 wasm 分层
+//(窄型槽/容器元素在 wasm 侧是裸 i64,无 fits 门——归一后 tree/VM 在算术处 M4002,
+// wasm 执行该函数即三腿分歧;v0.86 前为 compiler clone 标记过渡实现,本条款为其内化,
+// clone 保留作纵深防御)。struct 字段 ctor 归一形态(StructLit)与 struct/元组/Vec[窄]
+// 经形参/返回进 wasm 的入口不在此列:实测 shape 阶段即拒绝(StructLit REJECT /
+// struct・Vec[窄]・元组形参 numOk 拒绝 / Vec 返回 Unsupported),见 v0.88 报告。
 function declHasNarrowLet(node, seen = new WeakSet(), depth = 0) {
   if (!node || typeof node !== 'object' || depth > 500) return false;
   if (seen.has(node)) return false;
@@ -186,9 +208,9 @@ function declHasNarrowLet(node, seen = new WeakSet(), depth = 0) {
     for (const x of node) if (declHasNarrowLet(x, seen, depth + 1)) return true;
     return false;
   }
-  if (node.nt === 'Let' && node.pat?.nt === 'PIdent' && node.type?.nt === 'TName'
-      && !(node.type.args && node.type.args.length)
-      && { i8: 1, i16: 1, i32: 1, u8: 1, u16: 1, u32: 1 }[node.type.name]) return true;
+  if (node.nt === 'Let'
+      && (node.pat?.nt === 'PIdent' || node.pat?.nt === 'PTuple')
+      && typeHasNormSpec(node.type)) return true;
   for (const k in node) {
     const v = node[k];
     if (v && typeof v === 'object') {
