@@ -1,0 +1,3 @@
+fn main() with io {
+    prnt("hi");
+}

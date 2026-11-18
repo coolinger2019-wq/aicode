@@ -1,0 +1,5 @@
+fn main() with io {
+    let j = std.json.parse("{}").unwrap();
+    let v = j.a;
+    debug(v);
+}

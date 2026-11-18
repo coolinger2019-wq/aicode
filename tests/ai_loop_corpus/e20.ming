@@ -1,0 +1,4 @@
+fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {
+    return buf[n];
+}
+fn main() with io { print(str(f([1, 2], 2))); }

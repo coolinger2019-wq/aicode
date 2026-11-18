@@ -1,0 +1,6 @@
+use std.io;
+fn main() with io {
+    let u = io.read_line();
+    let n = u.trim();
+    print(n);
+}

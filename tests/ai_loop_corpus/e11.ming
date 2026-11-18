@@ -1,0 +1,6 @@
+fn main() with io {
+    let a: i32 = 1;
+    let b: i64 = 2;
+    let c = a + b;
+    print(str(c));
+}

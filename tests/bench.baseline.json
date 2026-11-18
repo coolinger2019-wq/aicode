@@ -1,43 +1,43 @@
 {
   "meta": {
-    "date": "2026-11-14",
+    "date": "2026-11-18",
     "node": "v24.11.0",
     "platform": "win32-x64",
-    "ming": "0.65.0",
-    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)(契约 invariant 循环为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。"
+    "ming": "0.83.0",
+    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)(两项契约 invariant 均为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;invariant.shape 记录形态 single/fields4;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。"
   },
   "items": {
     "fib(24) 递归": {
-      "treeMs": 214,
-      "vmMs": 93,
+      "treeMs": 222,
+      "vmMs": 97,
       "speedup": 2.3,
-      "ccMs": 11.4,
-      "ccPerVm": 8.1
+      "ccMs": 10.15,
+      "ccPerVm": 9.5
     },
     "循环累加 100 万": {
-      "treeMs": 238,
-      "vmMs": 161,
-      "speedup": 1.5,
-      "ccMs": 11.52,
-      "ccPerVm": 14
+      "treeMs": 247,
+      "vmMs": 172,
+      "speedup": 1.4,
+      "ccMs": 9.43,
+      "ccPerVm": 18.3
     },
     "高阶方法 10 万元素": {
-      "treeMs": 203,
-      "vmMs": 179,
+      "treeMs": 215,
+      "vmMs": 190,
       "speedup": 1.1,
       "ccMs": null,
       "ccPerVm": null
     },
     "词频统计 2 万词": {
-      "treeMs": 109,
-      "vmMs": 111,
-      "speedup": 1,
+      "treeMs": 119,
+      "vmMs": 127,
+      "speedup": 0.9,
       "ccMs": null,
       "ccPerVm": null
     },
     "契约 invariant 循环": {
-      "treeMs": 313,
-      "vmMs": 267,
+      "treeMs": 342,
+      "vmMs": 290,
       "speedup": 1.2,
       "ccMs": null,
       "ccPerVm": null,
@@ -45,16 +45,42 @@
         "loopN": 10000,
         "rounds": 30,
         "exits": 300000,
-        "vmUs": 0.23,
-        "treeUs": 0.25,
+        "shape": "single",
+        "vmUs": 0.25,
+        "treeUs": 0.29,
         "vmPct": 25.8,
-        "treePct": 23.6,
-        "vmUsMedian": 0.24,
+        "treePct": 25.3,
+        "vmUsMedian": 0.26,
         "treeUsMedian": 0.25,
-        "vmPctMedian": 26.8,
-        "treePctMedian": 23.4,
-        "controlVmMs": 198,
-        "controlTreeMs": 239,
+        "vmPctMedian": 25.8,
+        "treePctMedian": 21.4,
+        "controlVmMs": 215,
+        "controlTreeMs": 256,
+        "samples": 5,
+        "cc": "skipped:C1 不支持该程序形态:let 推导 null"
+      }
+    },
+    "契约 invariant 字段遍历": {
+      "treeMs": 528,
+      "vmMs": 426,
+      "speedup": 1.2,
+      "ccMs": null,
+      "ccPerVm": null,
+      "invariant": {
+        "loopN": 10000,
+        "rounds": 30,
+        "exits": 300000,
+        "shape": "fields4",
+        "vmUs": 0.45,
+        "treeUs": 0.56,
+        "vmPct": 31.4,
+        "treePct": 31.7,
+        "vmUsMedian": 0.43,
+        "treeUsMedian": 0.52,
+        "vmPctMedian": 28.8,
+        "treePctMedian": 29.2,
+        "controlVmMs": 293,
+        "controlTreeMs": 361,
         "samples": 5,
         "cc": "skipped:C1 不支持该程序形态:let 推导 null"
       }

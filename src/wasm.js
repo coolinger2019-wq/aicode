@@ -86,6 +86,9 @@ const STR_IMPORTS = ['str_const', 'str_cat', 'str_eq', 'str_len'];
 const VECMAP_IMPORTS = [
   ['vec_new', [], 'i32'],
   ['vec_len', ['i32'], 'i64'],
+  // dead registration(无发射点,v0.84 登记;删除需导入索引重排,另裁):上一代句柄读
+  // 路径残留——参数 Vec 自 v0.63 起在调用边界扁平化进线性内存,下标读为直接内存加载,
+  // 三条导入仅注册无发射点。导入表纪律"只追加不插删"(v0.63 G1 教训),保留以维持索引。
   ['vec_get_i64', ['i32', 'i64'], 'i64'],
   ['vec_get_f64', ['i32', 'i64'], 'f64'],
   ['vec_get_str', ['i32', 'i64'], 'i32'],

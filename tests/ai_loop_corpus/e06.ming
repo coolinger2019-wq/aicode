@@ -1,0 +1,5 @@
+fn main() with io {
+    let s = "hello";
+    let n = s.lenth();
+    print(str(n));
+}

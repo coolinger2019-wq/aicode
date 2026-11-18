@@ -1,0 +1,4 @@
+fn main() with io {
+    let x: str = "abc";
+    print(str(x));
+}

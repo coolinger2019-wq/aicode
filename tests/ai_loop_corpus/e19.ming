@@ -1,0 +1,4 @@
+fn main() with io {
+    let r = foobar(3);
+    print("v=\{r}");
+}

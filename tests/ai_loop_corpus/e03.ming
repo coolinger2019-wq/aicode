@@ -1,0 +1,5 @@
+fn main() with io {
+    let line = std.io.read_line();
+    let s: str = line;
+    print(s);
+}

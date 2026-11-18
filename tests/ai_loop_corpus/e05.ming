@@ -1,0 +1,8 @@
+fn set_at(mut v: Vec[i64], i: i64, x: i64) {
+    v[i] = x;
+}
+fn main() with io {
+    let mut v = [1, 2, 3];
+    set_at(v, 5, 9);
+    print(str(v.len()));
+}

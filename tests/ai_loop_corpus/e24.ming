@@ -1,0 +1,6 @@
+fn f(v: Vec[i64]) -> i64 {
+    return v[0];
+}
+fn main() with io {
+    print(str(f([])));
+}

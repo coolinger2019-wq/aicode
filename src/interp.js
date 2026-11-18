@@ -345,7 +345,13 @@ function panicOverflow(op, a, b, span = null) {
 export function fits(v, bits, signed) {
   if (typeof v === 'number') {
     if (bits <= 53) {
-      if (signed) { const m = (1 << (bits - 1)); return v >= -m && v < m; }
+      // v0.84:用幂运算而非位移——`1 << (bits - 1)` 在 bits=32 时得 -2147483648
+      // (JS 位运算 32 位有符号),区间检查恒 false:i32 的 number 快路径全部绕行
+      // (vm.js ADDI 更会假报 M4002),int.to_i32() 恒 None。2 ** 31 精确且无此怪癖。
+      // 边界(审查 MAJOR-1):fits 门只覆盖调用它的路径(intBin `-`/一元 `-`/VM ADDI/
+      // to_*);`+`/`*`/`/` number 快路径从不调用 fits——窄型静默溢出为预存缺口,
+      // plan §5.1 已登记(v0.85 收口候选),本修复不触达。
+      if (signed) { const m = (2 ** (bits - 1)); return v >= -m && v < m; }
       return v >= 0 && v < (2 ** bits);
     }
     // bits=64:number 路径只可能在安全整数内 → 一定在 i64/u64 范围内(符号已由运算守卫保证)

@@ -1,0 +1,4 @@
+fn main() with io {
+    let _x = 1
+    print("hi");
+}

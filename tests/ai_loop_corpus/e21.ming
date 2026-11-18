@@ -1,0 +1,11 @@
+use std.net;
+use std.json;
+fn handler(req: Untrusted[Json]) -> Json {
+    return std.json.parse("{}").unwrap();
+}
+fn main() with net, io {
+    match std.net.serve(27001, handler) {
+        Ok(v) => print("ok"),
+        Err(e) => print("err=\{e}"),
+    }
+}

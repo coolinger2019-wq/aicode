@@ -1,0 +1,4 @@
+fn main() with io {
+    fn id[T](x: T) -> T { return x; }
+    print(str(id(1)));
+}

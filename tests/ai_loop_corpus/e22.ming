@@ -1,0 +1,5 @@
+let y = 1;
+
+fn main() with io {
+    debug(y);
+}

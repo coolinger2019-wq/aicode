@@ -1,0 +1,9 @@
+fn main() with io {
+    let a: i64 = "s";
+    let w = 1i32 + 1i64;
+    let mut c = 1;
+    c = 2;
+    let x = "s";
+    let z = nosuchfn(3);
+    print(str(z));
+}

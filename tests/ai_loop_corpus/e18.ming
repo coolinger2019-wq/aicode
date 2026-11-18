@@ -1,0 +1,6 @@
+fn f() with io {
+    print("x");
+}
+fn main() {
+    f();
+}

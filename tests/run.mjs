@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { computeSummaries } from '../src/prover.js';
 import { completionFor, definitionFor, documentSymbolsFor } from '../src/lsp.js';
 import { VMInterp } from '../src/vm.js';
+import { fits } from '../src/interp.js';
 import { Checker } from '../src/checker.js';
 import { compile, CompileError } from '../src/compiler.js';
 
@@ -19824,6 +19825,167 @@ fn main() with io, fs {
       ok91, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl91(r).slice(0, 90))).join(' | ')}`);
   }
   // ---- §91-END
+}
+
+// ===================== 92. v0.84:fits number 路径 bits=32 怪癖修复(plan §4.13.7 P1 小件)=====================
+// 文件所有权:§92 = 本区全部用例。实现面:src/interp.js fits() number 路径
+// `1 << (bits-1)` → `2 ** (bits-1)`——bits=32 时 JS 位移得 -2147483648,区间检查恒 false:
+// ① i32 的 number 快路径全部绕行(慢但不错);② `int.to_i32()` 恒 None(预存 bug);
+// ③ vm.js ADDI(i32 局部 `x += 1`/`x -= 1`)假报 M4002(实测 v0.83 HEAD:i32 值 5+1 即 panic,
+//    tree 正常——同宗缺陷随修复一并消除)。
+// **边界如实声明(审查 MAJOR-1)**:本次 fits 修复只覆盖"经 fits 门"的路径——intBin `-`/
+// 一元 `-`/VM ADDI/to_*;`+`/`*`/`/` 的 number 快路径**从不调用 fits**(预存缺口:
+// 窄型(tree/VM 一致地)静默溢出,如 127i8+1i8=128、i32::MIN/-1=2147483648——与
+// "溢出必 panic"契约不符,plan §5.1 已登记,v0.85 收口候选)。修复对这些路径零影响。
+// v91.9(i32::MIN 取负 M4002,位置 2:72)在修复后逐字零校准,§92 v92.6 重锚。
+{
+  const dir92 = path.join(TMP, 'v92');
+  fs.mkdirSync(dir92, { recursive: true });
+  const m92 = (name, src) => { const f = path.join(dir92, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const threeLegs92 = (p) => ['', '--no-wasm', '--tree'].map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const fl92 = (r) => ((r.stderr ?? '').split('\n')[0] || '');
+
+  // ---- v92.1:fits bits=32 边界(白盒;number/BigInt 双路径 + signed/unsigned) ----
+  {
+    const cases = [
+      [5, 32, true, true], [2147483647, 32, true, true], [-2147483648, 32, true, true],
+      [2147483648, 32, true, false], [-2147483649, 32, true, false],
+      [0, 32, false, true], [4294967295, 32, false, true], [4294967296, 32, false, false], [-1, 32, false, false],
+      [5n, 32, true, true], [2147483648n, 32, true, false],
+    ];
+    const bad = cases.filter(([v, b, s, want]) => fits(v, b, s) !== want);
+    check('v92.1:fits bits=32 边界——i32 界内 true/界外 false、u32 界内 true、BigInt 路径同口径(修复前 signed 恒 false)',
+      bad.length === 0, `bad=${JSON.stringify(bad)}`);
+  }
+
+  // ---- v92.2:fits i8/i16/64 边界回归(旧行为不受影响) ----
+  {
+    const cases = [
+      [127, 8, true, true], [128, 8, true, false], [-128, 8, true, true], [-129, 8, true, false],
+      [32767, 16, true, true], [32768, 16, true, false],
+      [255, 8, false, true], [256, 8, false, false],
+      [9007199254740991, 64, true, true], [0, 64, false, true], [-1, 64, false, false],
+    ];
+    const bad = cases.filter(([v, b, s, want]) => fits(v, b, s) !== want);
+    check('v92.2:fits i8/i16/i64u 边界回归——窄型与 64 位 number 路径零变化',
+      bad.length === 0, `bad=${JSON.stringify(bad)}`);
+  }
+
+  // ---- v92.3:to_i32 Option 端到端正/负例(修复前恒 None;三腿 stdout 逐字) ----
+  {
+    const p = m92('f92_to_i32.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i64 = 5;',
+      '  match a.to_i32() {',
+      '    Some(v) => print(v),',
+      '    None => print(-1)',
+      '  }',
+      '  let b: i64 = 2147483647;',
+      '  match b.to_i32() {',
+      '    Some(v) => print(v),',
+      '    None => print(-2)',
+      '  }',
+      '  let c: i64 = -2147483648;',
+      '  match c.to_i32() {',
+      '    Some(v) => print(v),',
+      '    None => print(-3)',
+      '  }',
+      '  let d: i64 = 2147483648;',
+      '  match d.to_i32() {',
+      '    Some(v) => print(v),',
+      '    None => print(-4)',
+      '  }',
+      '  let e: i64 = -2147483649;',
+      '  match e.to_i32() {',
+      '    Some(v) => print(v),',
+      '    None => print(-5)',
+      '  }',
+      '  let f: i32 = 5 as i32;',
+      '  print(f.to_i32().unwrap());',
+      '  0',
+      '}',
+    ].join('\n'));
+    const runs = threeLegs92(p);
+    const want = '5\n2147483647\n-2147483648\n-4\n-5\n5\n';
+    check('v92.3:to_i32 正/负例端到端——5→Some(5)、i32::MIN→Some、2147483648/-2147483649→None(修复前恒 None);三腿 stdout 逐字',
+      runs.every((r) => r.code === 0 && r.stdout === want),
+      `runs=${runs.map((r) => r.code + ':' + JSON.stringify(r.stdout)).join(' | ')}`);
+  }
+
+  // ---- v92.4:i8/i16 转换边界回归(端到端,旧行为不受影响) ----
+  {
+    const p = m92('f92_i8_i16.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i64 = 127;',
+      '  match a.to_i8() {',
+      '    Some(v) => print(v),',
+      '    None => print(-1)',
+      '  }',
+      '  let b: i64 = 128;',
+      '  match b.to_i8() {',
+      '    Some(v) => print(v),',
+      '    None => print(-2)',
+      '  }',
+      '  let c: i64 = -128;',
+      '  match c.to_i8() {',
+      '    Some(v) => print(v),',
+      '    None => print(-3)',
+      '  }',
+      '  let d: i64 = 32768;',
+      '  match d.to_i16() {',
+      '    Some(v) => print(v),',
+      '    None => print(-4)',
+      '  }',
+      '  0',
+      '}',
+    ].join('\n'));
+    const runs = threeLegs92(p);
+    const want = '127\n-2\n-128\n-4\n';
+    check('v92.4:i8/i16 转换边界回归——127→Some、128→None、-128→Some、32768→None;三腿逐字',
+      runs.every((r) => r.code === 0 && r.stdout === want),
+      `runs=${runs.map((r) => r.code + ':' + JSON.stringify(r.stdout)).join(' | ')}`);
+  }
+
+  // ---- v92.5:i32 局部 ±1 快路径(VM ADDI)——修复前 VM 对任意 i32 += 1 假报 M4002 ----
+  {
+    const p = m92('f92_addi32.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i64 = 5;',
+      '  let mut x: i32 = a as i32;',
+      '  x += 1;',
+      '  print(x);',
+      '  x -= 1;',
+      '  print(x);',
+      '  0',
+      '}',
+    ].join('\n'));
+    const runs = threeLegs92(p);
+    check('v92.5:i32 局部 += 1/-= 1 三腿一致(5→6→5;修复前 VM ADDI fits bits=32 恒 false → 假 M4002,树引擎正常)',
+      runs.every((r) => r.code === 0 && r.stdout === '6\n5\n'),
+      `runs=${runs.map((r) => r.code + ':' + JSON.stringify(r.stdout) + ':' + JSON.stringify(fl92(r).slice(0, 70))).join(' | ')}`);
+  }
+
+  // ---- v92.6:v91.9 零校准锚点重断言(i32::MIN 取负仍 M4002 2:72 逐字) ----
+  {
+    const p = m92('f92_i32min.ming', 'fn f(a: i32) -> i32 { return -a; }\nfn main() -> i64 with io { let a = (-2147483647 - 1) as i32; print(str(-a)); return 0; }\n');
+    const legs = threeLegs92(p);
+    const ok = legs.every((r) => r.code === 101 && fl92(r).includes('M4002'))
+      && fl92(legs[0]) === fl92(legs[1]) && fl92(legs[0]) === fl92(legs[2])
+      && fl92(legs[0]).includes('整数取负溢出:--2147483648 超出范围')
+      && fl92(legs[0]).startsWith(p + ':2:72:');
+    check('v92.6:v91.9 零校准锚点——fits 修复后 i32::MIN 取负三腿仍 M4002 首行逐字(位置 2:72)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl92(r).slice(0, 90))).join(' | ')}`);
+  }
+  // ---- v92.7(审查 MINOR-1):修复后新启用的 i32 number 快路径结果断言——intBin '-'
+  //      与一元取负的界内形态(tree/VM/wasm 三腿逐字;防未来 fits 回归时静默出错)----
+  {
+    const p = m92('v92_fastpath.ming', ['fn main() -> i64 with io {', '    let a: i32 = 5i32;', '    let b: i32 = 7i32;', '    print(str(a - b));', '    print(str(-a));', '    return 0;', '}', ''].join('\n'));
+    const legs = ['', '--no-wasm', '--tree'].map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+    check('v92.7:i32 number 快路径(减法/一元负)三腿逐字——修复后启用,5-7=-2、-5=-5',
+      legs.every((r) => r.code === 0 && r.stdout === '-2\n-5\n'),
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 40))).join(' | ')}`);
+  }
+  // ---- §92-END
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);

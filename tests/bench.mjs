@@ -20,6 +20,12 @@
 // - cc 腿:资格分析在 trait 派发之前就拒绝结构体局部变量——`let c = Cell {...}` 实测为
 //   `C1 不支持该程序形态:let 推导 null`;显式标注类型则 `C2 仅数值/str/Vec[i64]` 拒绝。
 //   与 trait 方法派发无关;自动尝试后跳过并把真实原因记入基线 invariant.cc。
+//
+// v0.84(plan §4.13.5 观测复批;moltbook Starfish 开放测量缺口):
+// - 第 6 项"契约 invariant 字段遍历":struct 带 4 个 i64 字段,invariant 为 `a + b + c + d >= 0`
+//   (遍历全部字段的和式);对照组同形态无 invariant。10,000 次/轮 × 30 轮 = 300,000 次
+//   mut-self 退出,5 次交错取样中位——与第 5 项(单字段 `v >= 0`)同口径,直接回答
+//   "字段遍历形态成本是否随表达式线性放大"。
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -192,12 +198,52 @@ function reportBaseline(name, tree, vm, speedup, ccPerVm, extraMetrics = null) {
 }
 
 // v0.59-P3:契约 invariant 成本(mut-self 退出重查)。实验组/对照组同形态,
-// 唯一差异是 struct 字段上的 `invariant v >= 0`;方法派发与循环完全一致。
-function benchInvariant(name) {
+// 唯一差异是 struct 字段上的 `invariant ...`;方法派发与循环完全一致。
+// v0.84(plan §4.13.5 观测复批):第二形态「字段遍历」——invariant 表达式遍历 4 个 i64 字段
+// (和式),对照组同形态无 invariant;回答 moltbook Starfish 的"字段遍历形态未测,
+// 成本随表达式线性放大"假设:单字段 vs 4 字段的每次退出成本直接可比。
+function benchInvariant(name, fields = false) {
   const N = 10000;      // 单轮 mut-self 退出次数(任务要求 10,000 量级)
   const ROUNDS = 30;    // 放大轮数:µs 级差异 × 300,000 次退出才脱离 ~50ms 启动噪声
   const EXITS = N * ROUNDS;
-  const src = (withInv) => [
+  const src = (withInv) => (fields ? [
+    'trait WideOps {',
+    '    fn set_all(mut self, a: i64, b: i64, c: i64, d: i64);',
+    '    fn get(self) -> i64;',
+    '}',
+    'struct Wide {',
+    '    a: i64,',
+    '    b: i64,',
+    '    c: i64,',
+    '    d: i64,',
+    withInv ? '    invariant a + b + c + d >= 0,' : '',
+    '}',
+    'impl WideOps for Wide {',
+    '    fn set_all(mut self, a: i64, b: i64, c: i64, d: i64) {',
+    '        self.a = a;',
+    '        self.b = b;',
+    '        self.c = c;',
+    '        self.d = d;',
+    '    }',
+    '    fn get(self) -> i64 {',
+    '        return self.a + self.b + self.c + self.d;',
+    '    }',
+    '}',
+    'fn main() with io {',
+    '    let mut w = Wide { a: 0, b: 0, c: 0, d: 0 };',
+    '    let mut r = 0;',
+    '    while r < ' + ROUNDS + ' {',
+    '        let mut i = 0;',
+    '        while i < ' + N + ' {',
+    '            w.set_all(i, i, i, i);',
+    '            i += 1;',
+    '        }',
+    '        r += 1;',
+    '    }',
+    '    print(str(w.get()));',
+    '}',
+    '',
+  ] : [
     'trait CellOps {',
     '    fn set(mut self, v: i64);',
     '    fn get(self) -> i64;',
@@ -228,10 +274,11 @@ function benchInvariant(name) {
     '    print(str(c.get()));',
     '}',
     '',
-  ].filter((l) => l !== '').join('\n');
-  const pOn = benchFile('invariant-on.ming', src(true));
-  const pOff = benchFile('invariant-off.ming', src(false));
-  const CHECK = String(N - 1);
+  ]).filter((l) => l !== '').join('\n');
+  const tag = fields ? 'invariant-fields' : 'invariant';
+  const pOn = benchFile(tag + '-on.ming', src(true));
+  const pOff = benchFile(tag + '-off.ming', src(false));
+  const CHECK = fields ? String(4 * (N - 1)) : String(N - 1);
 
   // 预热 + 输出校验(两腿、两程序都必须是同一结果;相等比较,避免 '9999' 子串误匹配)
   for (const [tag, p] of [['invariant', pOn], ['对照', pOff]]) {
@@ -275,7 +322,7 @@ function benchInvariant(name) {
     ccNote = '  cc=跳过(无编译器)';
     ccStatus = 'skipped:no-cc';
   } else {
-    const built = ccBuildDetail(pOn, path.join(TMP, 'ccout-invariant'));
+    const built = ccBuildDetail(pOn, path.join(TMP, 'ccout-' + tag));
     const exe = built.exe;
     if (!exe) {
       ccNote = `  cc=跳过(${built.reason})`;
@@ -305,6 +352,7 @@ function benchInvariant(name) {
     name, tree: treeOn, vm: vmOn, speedup: round1(speedup), cc: cc === null ? null : round2(cc), ccPerVm: ccPerVm === null ? null : round1(ccPerVm),
     invariant: {
       loopN: N, rounds: ROUNDS, exits: EXITS,
+      shape: fields ? 'fields4' : 'single',
       vmUs: round2(vmUs), treeUs: round2(treeUs),
       vmPct: round1(vmPct), treePct: round1(treePct),
       vmUsMedian: round2(vmUsMed), treeUsMedian: round2(treeUsMed),
@@ -379,6 +427,18 @@ fn main() with io {
 // 5) 契约 invariant 成本(v0.59-P3;Starfish 回应):mut-self 退出重查的每次开销
 benchInvariant('契约 invariant 循环');
 
+// 6) 契约 invariant 字段遍历(v0.84,plan §4.13.5;moltbook Starfish 开放测量缺口):
+//    4 字段和式 invariant vs 同形态无 invariant 对照,与第 5 项(单字段)同口径直接对比。
+benchInvariant('契约 invariant 字段遍历', true);
+
+const invSingle = RESULTS.find((r) => r.name === '契约 invariant 循环')?.invariant;
+const invFields = RESULTS.find((r) => r.name === '契约 invariant 字段遍历')?.invariant;
+if (invSingle && invFields) {
+  const ratio = (a, b) => (b > 0 ? (a / b).toFixed(2) + 'x' : 'n/a');
+  console.log(`invariant 形态对比(4 字段 / 单字段,5 次取样中位): vm ${invFields.vmUsMedian}µs/次 / ${invSingle.vmUsMedian}µs/次 = ${ratio(invFields.vmUsMedian, invSingle.vmUsMedian)};`
+    + ` tree ${invFields.treeUsMedian}µs/次 / ${invSingle.treeUsMedian}µs/次 = ${ratio(invFields.treeUsMedian, invSingle.treeUsMedian)}`);
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 
 if (WRITE_BASELINE) {
@@ -400,8 +460,8 @@ if (WRITE_BASELINE) {
       platform: `${process.platform}-${process.arch}`,
       ming: mingVersion(),
       note: '同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)'
-        + '(契约 invariant 循环为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;'
-        + 'invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);'
+        + '(两项契约 invariant 均为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;'
+        + 'invariant.shape 记录形态 single/fields4;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);'
         + 'cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。',
     },
     items,
