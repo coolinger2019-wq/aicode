@@ -283,6 +283,36 @@ function simpleOperandText(node) {
   }
 }
 
+// v0.85(§93,fix 第三波——AI 快照 §6.4 唯一数据支撑族):整数宽度混算的机械处方——
+// 把可无损拓宽的窄侧操作数包成 `(x as i64)`。应用后必消除(对应宽度诊断消失)且不静默
+// 改语义(窄型值域 ⊂ i64:u32 最大 4294967295 < 2^63)。
+// 守卫(宁缺毋滥,v0.76/v0.80 两 MAJOR 先例——锚定替换域计算与排除面):
+//   * 恰一侧为 i64(有符号 64 位),另一侧 bits<=32(i8/i16/i32/u8/u16/u32——有符号/
+//     无符号窄型进 i64 均无损);
+//   * u64 混算不发射:u64→i64 非无损,u64 与窄型单侧拓宽后仍符号性错配(消除不了);
+//   * 窄侧必须是 Ident 或整数字面量(simpleOperandText 机械重建;复杂表达式 span 自
+//     运算符起,且包一层需前后两处插入,单连续替换域表达不了——放弃);
+//   * 任一侧含 Untrusted 不发射(洗白禁令,防御性守卫——整数类型本不含污)。
+//   * 带一元负号的字面量(`-1i32`)是 Unary 节点而非 IntLit——不发射(保守;审查 m3 登记)。
+// **已知边界(审查 m1,与 v0.80 f-probe 口径对齐)**:本处方消除的是"对应宽度诊断";
+// 若该表达式处于窄结果上下文(let 标注/窄形参/窄返回),应用后可能新报 M3002
+// (中间类型变 i64 的精确类型错误,非静默改语义)——§93 v93.23 记录锁定。
+// 调用面:+ - * /(M3013)与关系比较(M3008);% / 位移 / 按位不发射(逐个核验后保守
+// 跳过:%,按位为 M3008 且宽度语义另有口径;位移 << / >> 混宽本就 check 通过,现无诊断面)。
+function intWidenFix(l, r, lNode, rNode) {
+  if (l?.k !== 'int' || r?.k !== 'int') return null;
+  if (typeContainsUntrusted(l) || typeContainsUntrusted(r)) return null;
+  const wide = (t) => t.bits === 64 && t.signed === true;
+  const narrow = (t) => t.bits <= 32;
+  let node = null;
+  if (wide(l) && narrow(r)) node = rNode;
+  else if (wide(r) && narrow(l)) node = lNode;
+  if (!node || (node.nt !== 'Ident' && node.nt !== 'IntLit')) return null;
+  const text = simpleOperandText(node);
+  if (text === null) return null;
+  return spanFix(node.span, `(${text} as i64)`);
+}
+
 // 判断类型是否可安全做 == (运行时结构相等)
 export function isComparable(t, binds) {
   t = resolveT(t, binds);
@@ -5741,8 +5771,15 @@ export class Checker {
         }
         if (both(t => t.k === 'int')) {
           if (!same()) {
-            if (l.signed === r.signed) this.diags.push(err('M3013', `整数宽度不同:${typeStr(l)} 与 ${typeStr(r)} 不能直接运算`, span, CODE_HINTS.M3013));
-            else this.diags.push(err('M3013', `有符号与无符号不能直接运算:${typeStr(l)} 与 ${typeStr(r)}`, span, CODE_HINTS.M3013));
+            const d = l.signed === r.signed
+              ? err('M3013', `整数宽度不同:${typeStr(l)} 与 ${typeStr(r)} 不能直接运算`, span, CODE_HINTS.M3013)
+              : err('M3013', `有符号与无符号不能直接运算:${typeStr(l)} 与 ${typeStr(r)}`, span, CODE_HINTS.M3013);
+            // v0.85(§93):窄→i64 无损拓宽处方(消息逐字不变,只新增 fix 字段)
+            if (lNode && rNode) {
+              const fx = intWidenFix(l, r, lNode, rNode);
+              if (fx) d.fix = fx;
+            }
+            this.diags.push(d);
             return l;
           }
           return l;
@@ -5793,7 +5830,15 @@ export class Checker {
       }
       case '<': case '<=': case '>': case '>=': {
         const ok = (both(t => t.k === 'int') && same()) || (both(t => t.k === 'float') && same()) || (both(t => t.k === 'str'));
-        if (!ok) this.diags.push(err('M3008', `"${op}" 不能比较 ${typeStr(l)} 与 ${typeStr(r)}`, span));
+        if (!ok) {
+          const d = err('M3008', `"${op}" 不能比较 ${typeStr(l)} 与 ${typeStr(r)}`, span);
+          // v0.85(§93):混合宽度整数比较是同一无损拓宽面(消息逐字不变,只新增 fix 字段)
+          if (lNode && rNode) {
+            const fx = intWidenFix(l, r, lNode, rNode);
+            if (fx) d.fix = fx;
+          }
+          this.diags.push(d);
+        }
         return T_BOOL;
       }
       case '==': case '!=': {

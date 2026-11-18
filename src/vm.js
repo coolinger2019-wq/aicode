@@ -925,18 +925,25 @@ export class VMInterp extends Interp {
         }
         // ---- 融合指令(v0.9):局部槽上的算术直存,免栈操作与中间对象 ----
         case OP.ADDI: {
-          // a=槽,c=±1:等价 intBin('+', old, ±1) 全语义(含溢出检查)
+          // a=槽,b=±1(ins[2],审查 n3 更正预存标签):等价 intBin(sign, old, 1) 全语义(含溢出检查)。
+          // v0.85 审查登记 ②:number 快路径失去安全整数精度 ≠ 溢出——如
+          // 2^53-1 + 1 = 9007199254740992 仍是合法 i64;不能直接 panic,
+          // 回落 BigInt 精确重算(interp.intBin '+' 同款策略:"可能仍在 i64 内:精确重算")。
+          // v0.85 审查登记 ③:消息模板按增量符号选——`x -= 1` 走 '-' 模板
+          // (整数-溢出:a - 1),与 tree(intBin('-', old, 1) → panicOverflow('-'))逐字一致。
           const old = frame.locals[ins[1]];
           const span = this.spanOf(frame, ins);
+          const d = ins[2];
           let r;
           if (typeof old.v === 'number') {
-            r = old.v + ins[2];
-            if (!Number.isSafeInteger(r)) r = null;
+            r = old.v + d;
+            if (!Number.isSafeInteger(r)) r = BigInt(old.v) + BigInt(d);
           } else {
-            r = BigInt(old.v) + BigInt(ins[2]);
+            r = BigInt(old.v) + BigInt(d);
           }
-          if (r === null || !fits(r, old.bits, old.signed)) {
-            throw new Panic('M4002', `整数+溢出:${old.v} + ${ins[2]} 超出 i${old.bits}${old.signed ? '' : 'u'} 范围`, span);
+          if (!fits(r, old.bits, old.signed)) {
+            const op = d < 0 ? '-' : '+';
+            throw new Panic('M4002', `整数${op}溢出:${old.v} ${op} ${d < 0 ? -d : d} 超出 i${old.bits}${old.signed ? '' : 'u'} 范围`, span);
           }
           frame.locals[ins[1]] = V.int(r, old.bits, old.signed);
           break;

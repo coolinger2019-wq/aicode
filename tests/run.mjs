@@ -13270,12 +13270,17 @@ fn main() with io, fs {
   // §84.5 形状/§84.11 f-probe 机器证明)。M3001 零 fix 维持;e14 的 fix 字段允许 M3002
   // let 标注位('str = ')与 M3004 mut 插入位('mut ')各恰一处。e13/e16/e06/e04 无此两类
   // 真实根因(e06 的 lenth 与 str 方法表无 ≤2 近名),全诊断零 fix 口径不变。
-  check('v70.8:f01–f05 探针回归——五形态 M3001/毒化级联零 fix 字段(旧误导处方无应用面);e14 另允许 M3002 let 标注位(replacement 恰 "str = ")与 M3004 mut 插入位(replacement 恰 "mut ",v0.80 扩面重校准)两处方',
+  // v0.85 重校准(v0.76/v0.80 同型理由化):e14 第三行 `1i32 + 1i64` 是**真实根因**整数
+  // 宽度混算(窄侧整数字面量),v0.85 M3013 无损拓宽 fix 族在其上发射 `(1 as i64)`
+  // (应用后该根因消除——§93 f-probe 机器证明)。M3001 零 fix 维持;e14 的 fix 字段
+  // 允许第三处方 M3013(替换文本恰 "(1 as i64)")。
+  check('v70.8:f01–f05 探针回归——五形态 M3001/毒化级联零 fix 字段(旧误导处方无应用面);e14 另允许 M3002 let 标注位(replacement 恰 "str = ")、M3004 mut 插入位(replacement 恰 "mut ",v0.80 扩面重校准)与 M3013 无损拓宽位(replacement 恰 "(1 as i64)",v0.85 扩面重校准)三处方',
     noFix70(r13) && noFix70(r16) && noFix70(r06) && noFix70(r04)
       && !!r14.j && r14.j.diagnostics.every((d) => d.code !== 'M3001' || d.fix === undefined)
-      && r14.j.diagnostics.filter((d) => d.fix).every((d) => (d.code === 'M3002' && d.fix.replacement === 'str = ') || (d.code === 'M3004' && d.fix.replacement === 'mut '))
+      && r14.j.diagnostics.filter((d) => d.fix).every((d) => (d.code === 'M3002' && d.fix.replacement === 'str = ') || (d.code === 'M3004' && d.fix.replacement === 'mut ') || (d.code === 'M3013' && d.fix.replacement === '(1 as i64)'))
       && r14.j.diagnostics.some((d) => d.code === 'M3002' && d.fix)
-      && r14.j.diagnostics.some((d) => d.code === 'M3004' && d.fix),
+      && r14.j.diagnostics.some((d) => d.code === 'M3004' && d.fix)
+      && r14.j.diagnostics.some((d) => d.code === 'M3013' && d.fix),
     `e13=${codes70(r13)} e16=${codes70(r16)} e06=${codes70(r06)} e14=${codes70(r14)} e04=${codes70(r04)}`);
 
   // v70.9 REPL #60(方案 a,plan §4.6.4/§4.7.2 定案):let 行执行成功后回显"仅当前输入生效"
@@ -18142,10 +18147,16 @@ fn main() with io, fs {
       `W3101=${JSON.stringify(w3101?.fix)}`);
   }
   {
+    // v0.85 理由化重校准(v0.76/v0.80 同型):v0.84 时 M3013 是"新 5 族守卫域之外→无 fix"
+    // 的零回归锚点;v0.85(§93)按 AI 快照 §6.4 数据新增 M3013 无损拓宽 fix 族——同一语料
+    // (i32 + i64,窄侧 Ident)现在发射 `(a as i64)`(应用后复检 0 error,§93 f-probe 机器
+    // 证明;替换域 = 窄侧操作数 token,4:14–15 恰 "a")。"M3013 无 fix"承诺随数据驱动扩面
+    // 按理由化退场,锚点转为该族形状锚定(消息字段与诊断席位不变)。
     const { j } = j84(m84('v84n_3013.ming', ['fn main() -> i64 {', '    let a: i32 = 1;', '    let b: i64 = 2;', '    let _c = a + b;', '    return 0;', '}', ''].join('\n')));
     const d = find84(j, 'M3013');
-    check('v84.22:零回归锚点——M3013(新 5 族守卫域之外)维持无 fix',
-      !!d && d.fix == null,
+    check('v84.22:M3013 无损拓宽 fix 族(v0.85 理由化重校准)——i32+i64 窄侧 Ident 发射 (a as i64)(替换域 4:14–15)',
+      !!d && d.fix != null && d.fix.replacement === '(a as i64)'
+        && d.fix.start?.line === 4 && d.fix.start?.col === 14 && d.fix.end?.col === 15,
       `diag=${JSON.stringify(d?.fix)}`);
   }
   // ---- v84.23–v84.25 守卫排除面负例补全(独立审查 MINOR-2:循环绑定、Json 赋值位、
@@ -19986,6 +19997,551 @@ fn main() with io, fs {
       `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 40))).join(' | ')}`);
   }
   // ---- §92-END
+}
+
+// ===================== 93. v0.85:窄型算术门禁收口(intBin fits 门)+ M3013 无损拓宽 fix 族 =====================
+// 文件所有权:§93 = 本区全部用例(实现面:src/interp.js intBin / src/checker.js intWidenFix;
+// src/vm.js 归 §94)。任务 1(plan §4.13.5 v0.85 审查登记 ①):`+`/`*`/`/` 的 number 快路径
+// 此前只查 Number.isSafeInteger(`/` 甚至没有 fit 检查),窄型(i8/i16/i32/u8/u16/u32)溢出
+// 在 tree/VM 静默回绕(127i8+1i8=128、i32::MIN/-1=2147483648)——违约 design.md/GUIDE/
+// capabilities 的"溢出必 panic"承诺。修复 = `+`/`*` 快路径条件补 `!fits(r,bits,signed)`、
+// `/` 在精确商后补 fits,越界统一回落 intBinSlow(BigInt 精确路径 → M4002);`%` 结果恒在
+// 界内不动。**语义变更为理由化收敛**(v0.56 A2 无符号减法先例同型:静默回绕 → 设计契约);
+// **零校准审计**:全仓无既有测试锁定窄型静默结果(examples/tools 逐个 check 全绿;
+// numbers.ming 的窄型溢出行是注释),本修复不校准任何既有断言。
+// 任务 2(AI 快照 §6.4 唯一数据支撑族):M3013 无损拓宽 fix——窄侧 Ident/整数字面量包
+// `(x as i64)`(宽侧 i64;u32→i64 无损;u64 混算/复杂表达式/位移/按位/%/== 不发射)。
+// M3013 消息逐字不变(仅新增 fix 字段);关系比较(M3008 混宽)是同一无损拓宽面。
+{
+  const dir93 = path.join(TMP, 'v93');
+  fs.mkdirSync(dir93, { recursive: true });
+  const m93 = (name, src) => { const f = path.join(dir93, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const threeLegs93 = (p) => ['', '--no-wasm', '--tree'].map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const fl93 = (r) => ((r.stderr ?? '').split('\n')[0] || '');
+  const j93 = (p) => { const r = runMing(['check', p, '--json']); try { return JSON.parse(r.stdout); } catch { return null; } };
+  const find93 = (j, code) => (j?.diagnostics ?? []).find((d) => d.code === code) ?? null;
+  const applyFix93 = (src, fix) => {
+    const lines = src.split('\n');
+    const off = (pt) => { let n = 0; for (let i = 0; i < pt.line - 1; i++) n += lines[i].length + 1; return n + pt.col - 1; };
+    return src.slice(0, off(fix.start)) + fix.replacement + src.slice(off(fix.end));
+  };
+  // 三腿 M4002 首行逐字(含位置 → 同时锁定跨引擎 span 一致)+ exit 101
+  const overflow93 = (name, src, wantMsg, wantPos) => {
+    const p = m93(name + '.ming', src);
+    const legs = threeLegs93(p);
+    const want = `${p}:${wantPos}: error M4002[integer-overflow]: ${wantMsg}`;
+    const ok = legs.every((r) => r.code === 101 && fl93(r) === want);
+    return { ok, p, detail: `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl93(r))).join(' | ')}` };
+  };
+  // fix 正例:f-probe(单条 fix 程序化应用 → 独立文件 → 复检 0 error)+ 消息/替换域逐字
+  const fixProbe93 = (name, src, code, wantMsg, wantFixJson) => {
+    const f = m93(name + '.ming', src);
+    const j = j93(f);
+    const d = find93(j, code);
+    if (!d || !d.fix) return { ok: false, detail: `diag=${JSON.stringify(d)}` };
+    const fixedSrc = applyFix93(src, d.fix);
+    const f2 = m93(name + '-fixed.ming', fixedSrc);
+    const j2 = j93(f2);
+    const ok = (wantMsg == null || d.message === wantMsg)
+      && (wantFixJson == null || JSON.stringify(d.fix) === wantFixJson)
+      && j2?.ok === true;
+    return { ok, fix: d.fix, message: d.message, detail: `msg=${JSON.stringify(d.message)} fix=${JSON.stringify(d.fix)} re_ok=${j2?.ok} re_codes=${JSON.stringify((j2?.diagnostics ?? []).map((x) => x.code))}` };
+  };
+
+  // ---- 任务 1:窄型溢出矩阵(三腿首行逐字;修复前全部静默回绕)----
+  {
+    const c = overflow93('f93_i8_add',
+      ['fn main() -> i64 with io {', '  let a: i8 = 127i8;', '  let b: i8 = 1i8;', '  print(a + b);', '  return 0;', '}', ''].join('\n'),
+      '整数+溢出:127 + 1 超出 i8 范围', '4:11');
+    check('v93.1:窄型 i8 `+` 溢出——127i8+1i8 三腿 M4002 首行逐字(4:11,位置=运算符)+ exit 101(修复前 tree/VM 静默 128)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_i8_mul',
+      ['fn main() -> i64 with io {', '  let a: i8 = -128i8;', '  let b: i8 = -1i8;', '  print(a * b);', '  return 0;', '}', ''].join('\n'),
+      '整数*溢出:-128 * -1 超出 i8 范围', '4:11');
+    check('v93.2:窄型 i8 `*` 溢出(负侧)——-128i8*-1i8 三腿 M4002 首行逐字(修复前静默 128)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_i16_add',
+      ['fn main() -> i64 with io {', '  let a: i16 = 32767i16;', '  let b: i16 = 1i16;', '  print(a + b);', '  return 0;', '}', ''].join('\n'),
+      '整数+溢出:32767 + 1 超出 i16 范围', '4:11');
+    check('v93.3:窄型 i16 `+` 溢出——32767i16+1i16 三腿 M4002 首行逐字(修复前静默 32768)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_i16_div',
+      ['fn main() -> i64 with io {', '  let a: i16 = -32768i16;', '  print(a / -1i16);', '  return 0;', '}', ''].join('\n'),
+      '整数除法溢出:-32768 / -1', '3:11');
+    check('v93.4:窄型 i16 `/` 溢出——i16::MIN/-1 三腿 M4002 首行逐字(慢路径既有除法溢出模板;修复前静默 32768)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_i32_add',
+      ['fn main() -> i64 with io {', '  let a: i32 = i32.max_value();', '  print(a + 1i32);', '  return 0;', '}', ''].join('\n'),
+      '整数+溢出:2147483647 + 1 超出 i32 范围', '3:11');
+    check('v93.5:窄型 i32 `+` 溢出——i32::MAX+1 三腿 M4002 首行逐字(修复前静默 2147483648)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_i32_mul',
+      ['fn main() -> i64 with io {', '  let a: i32 = i32.min_value();', '  print(a * -1i32);', '  return 0;', '}', ''].join('\n'),
+      '整数*溢出:-2147483648 * -1 超出 i32 范围', '3:11');
+    check('v93.6:窄型 i32 `*` 溢出(负侧)——i32::MIN*-1 三腿 M4002 首行逐字(修复前静默 2147483648)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_i32_div',
+      ['fn main() -> i64 with io {', '  let a: i32 = i32.min_value();', '  print(a / -1i32);', '  return 0;', '}', ''].join('\n'),
+      '整数除法溢出:-2147483648 / -1', '3:11');
+    check('v93.7:窄型 i32 `/` 溢出——i32::MIN/-1 三腿 M4002 首行逐字(修复前静默 2147483648;intBinSlow 除法模板逐字)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_u32_add',
+      ['fn main() -> i64 with io {', '  let a: u32 = 4294967295u32;', '  let b: u32 = 1u32;', '  print(a + b);', '  return 0;', '}', ''].join('\n'),
+      '整数+溢出:4294967295 + 1 超出 i32u 范围', '4:11');
+    check('v93.8:窄型 u32 `+` 溢出——4294967295u32+1u32 三腿 M4002 首行逐字(i32u 命名口径;修复前静默 4294967296)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_u16_mul',
+      ['fn main() -> i64 with io {', '  let a: u16 = 65535u16;', '  let b: u16 = 2u16;', '  print(a * b);', '  return 0;', '}', ''].join('\n'),
+      '整数*溢出:65535 * 2 超出 i16u 范围', '4:11');
+    check('v93.9:窄型 u16 `*` 溢出——65535u16*2u16 三腿 M4002 首行逐字(i16u 命名口径;修复前静默 131070)', c.ok, c.detail);
+  }
+  {
+    const c = overflow93('f93_u8_sub',
+      ['fn main() -> i64 with io {', '  let a: u8 = 0u8;', '  let b: u8 = 1u8;', '  print(a - b);', '  return 0;', '}', ''].join('\n'),
+      '整数-溢出:0 - 1 超出 i8u 范围', '4:11');
+    check('v93.10:`-` 既有 fits 门(v0.56 A2)在窄宽度的零校准锚——0u8-1u8 三腿 M4002 首行逐字(本修复不改变 `-` 语义)', c.ok, c.detail);
+  }
+  {
+    const p = m93('f93_inrange.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i8 = -128i8;',
+      '  let b: i8 = 127i8;',
+      '  print(a + b);',
+      '  print(b - b);',
+      '  print(a / 2i8);',
+      '  print(-64i8 * 2i8);',
+      '  let c: i32 = 2147483647i32;',
+      '  print(c - 1i32);',
+      '  let d: i32 = -2147483648i32;',
+      '  print(d / 2i32);',
+      '  print(46340i32 * 46340i32);',
+      '  let u: u32 = 4294967295u32;',
+      '  print(u - u);',
+      '  print(u / 5u32);',
+      '  print(65536u32 * 65535u32);',
+      '  print(255u8 / 255u8);',
+      '  return 0;',
+      '}', ''].join('\n'));
+    const legs = threeLegs93(p);
+    const want = '-1\n0\n-64\n-128\n2147483646\n-1073741824\n2147395600\n0\n858993459\n4294901760\n1\n';
+    check('v93.11:界内零回归——i8/i32/u32/u8 的 + - * / 边界值三腿 stdout 逐字(fits 门不误伤合法结果)',
+      legs.every((r) => r.code === 0 && r.stdout === want),
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify(r.stdout)).join(' | ')}`);
+  }
+  {
+    const p = m93('f93_i64.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i64 = 9007199254740991;',
+      '  let b: i64 = 1;',
+      '  print(a + b);',
+      '  print(b + a);',
+      '  print(a - b);',
+      '  print(a * 2);',
+      '  let c: i64 = -9007199254740991;',
+      '  print(c / 3);',
+      '  return 0;',
+      '}', ''].join('\n'));
+    const legs = threeLegs93(p);
+    const want = '9007199254740992\n9007199254740992\n9007199254740990\n18014398509481982\n-3002399751580330\n';
+    const ov = overflow93('f93_i64_ov',
+      ['fn main() -> i64 with io {', '  let a: i64 = i64.max_value();', '  print(a + 1);', '  return 0;', '}', ''].join('\n'),
+      '整数+溢出:9223372036854775807 + 1 超出 i64 范围', '3:11');
+    check('v93.12:i64 快/慢路径行为不变——>2^53 合法和/差/积/商三腿 stdout 逐字(BigInt 精确),i64 max+1 溢出锚 M4002 首行逐字',
+      legs.every((r) => r.code === 0 && r.stdout === want) && ov.ok,
+      `runs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 60))).join(' | ')} ov=${JSON.stringify(ov.detail)}`);
+  }
+  {
+    const p = m93('f93_addi32.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i64 = 5;',
+      '  let mut x: i32 = a as i32;',
+      '  x += 1;',
+      '  print(x);',
+      '  x -= 1;',
+      '  print(x);',
+      '  0',
+      '}', ''].join('\n'));
+    const legs = threeLegs93(p);
+    check('v93.13:VM ADDI i32 ±1 快路径回归锚(v92.5 形态重断言)——三腿 6/5 逐字,本修复不引入假 M4002',
+      legs.every((r) => r.code === 0 && r.stdout === '6\n5\n'),
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify(r.stdout)).join(' | ')}`);
+  }
+
+  // ---- 任务 2:M3013 无损拓宽 fix 族(正例 f-probe + 负例守卫面 + 消息/形状零回归)----
+  const W3013 = '整数宽度不同:i32 与 i64 不能直接运算';
+  {
+    const src = ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: i64 = 2;', '  let _c = a + b;', '  return 0;', '}', ''].join('\n');
+    const r = fixProbe93('f93fx_ident', src, 'M3013', W3013,
+      '{"start":{"line":4,"col":12},"end":{"line":4,"col":13},"replacement":"(a as i64)"}');
+    check('v93.14:M3013 正例(窄侧 Ident)——消息逐字不变 + fix 形状逐字 (a as i64)(4:12–13)+ f-probe 应用后复检 0 error', r.ok, r.detail);
+  }
+  {
+    const src = ['fn main() -> i64 {', '  let _c = 1i32 + 1i64;', '  return 0;', '}', ''].join('\n');
+    const r = fixProbe93('f93fx_lit', src, 'M3013', W3013,
+      '{"start":{"line":2,"col":12},"end":{"line":2,"col":16},"replacement":"(1 as i64)"}');
+    check('v93.15:M3013 正例(窄侧整数字面量)——`1i32` 包 `(1 as i64)`(值保持;替换域=字面量 token 含后缀)+ f-probe 0 error', r.ok, r.detail);
+  }
+  {
+    const src = ['fn main() -> i64 {', '  let a: u32 = 1;', '  let b: i64 = 2;', '  let _c = a + b;', '  return 0;', '}', ''].join('\n');
+    const r = fixProbe93('f93fx_u32', src, 'M3013', '有符号与无符号不能直接运算:u32 与 i64',
+      '{"start":{"line":4,"col":12},"end":{"line":4,"col":13},"replacement":"(a as i64)"}');
+    check('v93.16:M3013 正例(u32+i64 符号混用但无损)——u32 值域 [0,2^32) ⊂ i64,`(a as i64)` 应用后 0 error', r.ok, r.detail);
+  }
+  {
+    const src = ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: i64 = 2;', '  let _c = a < b;', '  return 0;', '}', ''].join('\n');
+    const r = fixProbe93('f93fx_cmp', src, 'M3008', '"<" 不能比较 i32 与 i64',
+      '{"start":{"line":4,"col":12},"end":{"line":4,"col":13},"replacement":"(a as i64)"}');
+    check('v93.17:M3008 关系比较混宽(同一无损拓宽面)——消息逐字不变 + fix (a as i64) + f-probe 应用后 0 error', r.ok, r.detail);
+  }
+  {
+    const f1 = m93('f93n_u64.ming', ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: u64 = 2;', '  let _c = a + b;', '  return 0;', '}', ''].join('\n'));
+    const f2 = m93('f93n_nn.ming', ['fn main() -> i64 {', '  let a: u32 = 1;', '  let b: i32 = 2;', '  let _c = a + b;', '  return 0;', '}', ''].join('\n'));
+    const f3 = m93('f93n_float.ming', ['fn main() -> i64 {', '  let a: f32 = 1.0;', '  let b: f64 = 2.0;', '  let _c = a + b;', '  return 0;', '}', ''].join('\n'));
+    const d1 = find93(j93(f1), 'M3013'), d2 = find93(j93(f2), 'M3013'), d3 = find93(j93(f3), 'M3013');
+    check('v93.18:M3013 负例——u64 混算(非 lossless)/双向窄型(u32+i32,单侧拓宽消除不了)/浮点宽度(f32+f64,as i64 非语义等价)均不发 fix',
+      !!d1 && d1.fix == null && !!d2 && d2.fix == null && !!d3 && d3.fix == null,
+      `u64=${JSON.stringify(d1?.fix)} nn=${JSON.stringify(d2?.fix)} float=${JSON.stringify(d3?.fix)}`);
+  }
+  {
+    const f1 = m93('f93n_complex.ming', ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: i64 = 2;', '  let _c = (a * 2i32) + b;', '  return 0;', '}', ''].join('\n'));
+    const f2 = m93('f93n_compound.ming', ['fn main() -> i64 {', '  let mut a: i32 = 1;', '  let b: i64 = 2;', '  a += b;', '  return 0;', '}', ''].join('\n'));
+    const f3 = m93('f93n_const.ming', ['const X = 1i32 + 1i64;', 'fn main() -> i64 {', '  return 0;', '}', ''].join('\n'));
+    const d1 = find93(j93(f1), 'M3013'), d2 = find93(j93(f2), 'M3013'), d3 = find93(j93(f3), 'M3013');
+    check('v93.19:M3013 负例——复杂表达式窄侧(Binary span 自运算符起,单域替换表达不了)/复合赋值(无操作数节点)/const 表达式(无节点)均不发 fix',
+      !!d1 && d1.fix == null && !!d2 && d2.fix == null && !!d3 && d3.fix == null,
+      `complex=${JSON.stringify(d1?.fix)} compound=${JSON.stringify(d2?.fix)} const=${JSON.stringify(d3?.fix)}`);
+  }
+  {
+    const f1 = m93('f93n_mod.ming', ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: i64 = 2;', '  let _c = a % b;', '  return 0;', '}', ''].join('\n'));
+    const f2 = m93('f93n_shift.ming', ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: i64 = 2;', '  let _c = a << b;', '  return 0;', '}', ''].join('\n'));
+    const f3 = m93('f93n_eq.ming', ['fn main() -> i64 {', '  let a: i32 = 1;', '  let b: i64 = 2;', '  let _c = a == b;', '  return 0;', '}', ''].join('\n'));
+    const j1 = j93(f1), j2 = j93(f2), j3 = j93(f3);
+    const d1 = find93(j1, 'M3008'), d3 = find93(j3, 'M3002');
+    check('v93.20:守卫排除面——% 混宽(M3008)不发 fix;位移 << 混宽本就 check 通过(无诊断面);== 混宽走 M3002 类型面不发 fix(各自登记,不在本族)',
+      !!d1 && d1.fix == null && d1.message === '"%" 只支持同宽度的整数(i32 与 i64)'
+        && j2?.ok === true
+        && !!d3 && d3.fix == null,
+      `mod=${JSON.stringify(d1)} shift.ok=${j2?.ok} eq=${JSON.stringify(d3?.fix)}`);
+  }
+  {
+    const src = ['fn main() -> i64 {', '  let _c = 0xFFi32 + 1i64;', '  return 0;', '}', ''].join('\n');
+    const r = fixProbe93('f93fx_hex', src, 'M3013', W3013, null);
+    check('v93.21:M3013 字面量渲染忠实——0xFFi32 替换为 (255 as i64)(值不变、进位无关)+ f-probe 应用后 0 error',
+      r.ok && r.fix?.replacement === '(255 as i64)', r.detail);
+  }
+  // ---- v93.22(审查 m2):镜像分支——宽在左/窄在右,fix 必须落在右操作数 ----
+  {
+    const src = ['fn f(a: i32, b: i64) -> i64 { return b + a; }', 'fn main() -> i64 { return f(1, 2); }', ''].join('\n');
+    const f = m93('v93_mirror.ming', src);
+    const j = j93(f);
+    const d = find93(j, 'M3013');
+    const applied = m93('v93_mirror_ok.ming', d && d.fix ? applyFix93(src, d.fix) : src);
+    const j2 = j93(applied);
+    check('v93.22:M3013 镜像分支(宽在左/窄在右)——fix 落在右操作数 a(replacement 形状 (a as i64));应用后 0 error',
+      !!d && d.fix != null && d.fix.replacement === '(a as i64)' && j2?.ok === true,
+      `fix=${JSON.stringify(d?.fix)} re_ok=${j2?.ok}`);
+  }
+  // ---- v93.23(审查 m1):已知边界记录——fix 应用在窄结果位会新报 M3002(目标 M3013 消除)。
+  //      v0.80 f-probe「应用后 0 新增码」口径的边界:本族处方消除的是对应宽度诊断,
+  //      入窄上下文(let 标注 i32/初始化 i64)由 M3002 精确类型面接住——非静默,不掩盖。----
+  {
+    const src = ['fn main() -> i64 {', '  let a: i32 = 3i32;', '  let _c: i32 = a * 2i64;', '  return 0;', '}', ''].join('\n');
+    const f = m93('v93_narrowctx.ming', src);
+    const j = j93(f);
+    const d = find93(j, 'M3013');
+    const applied = m93('v93_narrowctx_ok.ming', d && d.fix ? applyFix93(src, d.fix) : src);
+    const j2 = j93(applied);
+    const d2 = find93(j2, 'M3002');
+    check('v93.23:已知边界记录——fix 应用在窄结果位:目标 M3013 消除 + 新报 M3002(let 标注 i32/初始化 i64;精确类型面接住非静默)',
+      !!d && d.fix != null && j2 != null && !!d2 && find93(j2, 'M3013') == null,
+      `fix=${JSON.stringify(d?.fix)} re_codes=${JSON.stringify((j2?.diagnostics ?? []).map((x) => x.code))}`);
+  }
+  // ---- §93-END
+}
+
+// ===================== 94. v0.85:VM ADDI 两件收口(plan §4.13.5 v0.85 审查登记 ②/③)=====================
+// 文件所有权:§94 = 本区全部用例。实现面:src/vm.js OP.ADDI。
+// ② >2^53 合法 i64 和假报 M4002(硬规则 1 双引擎分歧):VM ADDI number 路径
+//    isSafeInteger 失败曾直接置 null 按溢出 panic;现回落 BigInt 精确重算
+//    (interp.intBin '+' 同款策略),合法和正常产出、真溢出仍 M4002。
+// ③ ADDI `-=` 越界消息模板:统一 `整数+溢出:a + -1` 曾与 tree 的
+//    `整数-溢出:a - 1`(intBin('-') → panicOverflow('-'))分歧;现按增量符号选模板。
+// 范围说明:ADDI 仅由 compiler.js 发射于 `x += 1` / `x -= 1`(IntLit 恰为 1;
+// `x += 2`/`x += y` 走 BINSETI/BINSET2 → intBin,不在本修复面)。
+// 窄型 `+=` 溢出属 v0.85 登记 ①(Agent A §93 intBin fits 门);该修复与本文合并后,
+// v94.10 按"两批合并后"口径锁定三腿 M4002(缺该修复时 tree 会静默回绕 127+1=128)。
+// 窄型 `-=` 由 intBin '-' 既有 fits 门覆盖,照常锁定(v94.4/v94.5)。
+{
+  const dir94 = path.join(TMP, 'v94');
+  fs.mkdirSync(dir94, { recursive: true });
+  const m94 = (name, src) => { const f = path.join(dir94, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const threeLegs94 = (p) => ['', '--no-wasm', '--tree'].map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const fl94 = (r) => ((r.stderr ?? '').split('\n')[0] || '');
+
+  // ---- v94.1:合法 sum > 2^53(number 精度失效 ≠ 溢出)三腿逐字 ----
+  {
+    const p = m94('v94_safe53.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut x: i64 = 9007199254740991;',
+      '  x += 1;',
+      '  print(str(x));',
+      '  let mut y: i64 = -9007199254740991;',
+      '  y -= 1;',
+      '  print(str(y));',
+      '  y += 1;',
+      '  print(str(y));',
+      '  let mut z: i64 = 9223372036854775806;',
+      '  z += 1;',
+      '  print(str(z));',
+      '  z -= 1;',
+      '  print(str(z));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const want = '9007199254740992\n-9007199254740992\n-9007199254740991\n9223372036854775807\n9223372036854775806\n';
+    const legs = threeLegs94(p);
+    check('v94.1:2^53-1 += 1 / -2^53-1 -= 1 / i64::MAX-1 ± 1 均合法——三腿逐字(修复前 VM ADDI isSafeInteger 失败假报 M4002)',
+      legs.every((r) => r.code === 0 && r.stdout === want),
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 80)) + ':' + JSON.stringify(fl94(r).slice(0, 80))).join(' | ')}`);
+  }
+
+  // ---- v94.2:i64::MAX += 1 真溢出——三腿首行逐字 M4002(exit 101) ----
+  {
+    const p = m94('v94_max.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut x: i64 = 9223372036854775807;',
+      '  x += 1;',
+      '  print(str(x));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    const msg = 'M4002[integer-overflow]: 整数+溢出:9223372036854775807 + 1 超出 i64 范围';
+    const ok = legs.every((r) => r.code === 101 && fl94(r).startsWith(p + ':3:3:') && fl94(r).includes(msg))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2]);
+    check('v94.2:i64::MAX += 1 三腿 M4002 首行逐字(整数+溢出:9223372036854775807 + 1 超出 i64 范围)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 100))).join(' | ')}`);
+  }
+
+  // ---- v94.3:i64::MIN -= 1 真溢出——三腿首行逐字(修复前 VM 为 `整数+溢出:a + -1`) ----
+  {
+    const p = m94('v94_min.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut x: i64 = -9223372036854775808;',
+      '  x -= 1;',
+      '  print(str(x));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    const msg = 'M4002[integer-overflow]: 整数-溢出:-9223372036854775808 - 1 超出 i64 范围';
+    const ok = legs.every((r) => r.code === 101 && fl94(r).startsWith(p + ':3:3:') && fl94(r).includes(msg))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2]);
+    check('v94.3:i64::MIN -= 1 三腿 M4002 首行逐字(整数-溢出:-9223372036854775808 - 1 超出 i64 范围)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 100))).join(' | ')}`);
+  }
+
+  // ---- v94.4:i8 下界 -= 1——窄宽度 '-' 模板三腿逐字 ----
+  {
+    const p = m94('v94_i8.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut x: i8 = -128i8;',
+      '  x -= 1;',
+      '  print(str(x));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    const msg = 'M4002[integer-overflow]: 整数-溢出:-128 - 1 超出 i8 范围';
+    const ok = legs.every((r) => r.code === 101 && fl94(r).includes(msg))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2])
+      && fl94(legs[0]).startsWith(p + ':3:3:');
+    check('v94.4:i8::MIN -= 1 三腿 M4002 首行逐字(整数-溢出:-128 - 1 超出 i8 范围;位置 3:3)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 100))).join(' | ')}`);
+  }
+
+  // ---- v94.5:i32 下界 -= 1——i32 宽度 '-' 模板三腿逐字 ----
+  {
+    const p = m94('v94_i32.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut y: i32 = (-2147483647 - 1) as i32;',
+      '  y -= 1;',
+      '  print(str(y));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    const msg = 'M4002[integer-overflow]: 整数-溢出:-2147483648 - 1 超出 i32 范围';
+    const ok = legs.every((r) => r.code === 101 && fl94(r).includes(msg))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2])
+      && fl94(legs[0]).startsWith(p + ':3:3:');
+    check('v94.5:i32::MIN -= 1 三腿 M4002 首行逐字(整数-溢出:-2147483648 - 1 超出 i32 范围;位置 3:3)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 100))).join(' | ')}`);
+  }
+
+  // ---- v94.6:u8 下界 -= 1——无符号同模板(后缀 `i8u` 沿 panicOverflow 既有口径) ----
+  {
+    const p = m94('v94_u8.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut x: u8 = 0u8;',
+      '  x -= 1;',
+      '  print(str(x));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    const msg = 'M4002[integer-overflow]: 整数-溢出:0 - 1 超出 i8u 范围';
+    const ok = legs.every((r) => r.code === 101 && fl94(r).includes(msg))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2])
+      && fl94(legs[0]).startsWith(p + ':3:3:');
+    check('v94.6:u8 0 -= 1 三腿 M4002 首行逐字(整数-溢出:0 - 1 超出 i8u 范围;后缀沿既有 panicOverflow 口径,位置 3:3)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 100))).join(' | ')}`);
+  }
+
+  // ---- v94.7:界内 ±1 多宽度零回归(i64/i32/i8/u8;修复对合法路径零扰动) ----
+  {
+    const p = m94('v94_inrange.ming', [
+      'fn main() -> i64 with io {',
+      '  let mut a: i64 = 5;',
+      '  a -= 1;',
+      '  a += 1;',
+      '  print(str(a));',
+      '  let mut b: i32 = 5i32;',
+      '  b -= 1;',
+      '  b += 1;',
+      '  print(str(b));',
+      '  let mut c: i8 = -128i8;',
+      '  c += 1;',
+      '  c -= 1;',
+      '  print(str(c));',
+      '  let mut d: u8 = 0u8;',
+      '  d += 1;',
+      '  d -= 1;',
+      '  print(str(d));',
+      '  return 0;',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    check('v94.7:界内 ±1 多宽度零回归——i64 5→4→5、i32 5→4→5、i8 -128→-127→-128、u8 0→1→0 三腿逐字',
+      legs.every((r) => r.code === 0 && r.stdout === '5\n5\n-128\n0\n'),
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 40))).join(' | ')}`);
+  }
+
+  // ---- v94.8:v92.5 零校准重断言(i32 局部 ±1 三腿;本修复不改变合法路径) ----
+  {
+    const p = m94('v94_v925.ming', [
+      'fn main() -> i64 with io {',
+      '  let a: i64 = 5;',
+      '  let mut x: i32 = a as i32;',
+      '  x += 1;',
+      '  print(x);',
+      '  x -= 1;',
+      '  print(x);',
+      '  0',
+      '}',
+    ].join('\n'));
+    const legs = threeLegs94(p);
+    check('v94.8:v92.5 零校准重断言——i32 局部 += 1/-= 1 三腿一致(5→6→5)',
+      legs.every((r) => r.code === 0 && r.stdout === '6\n5\n'),
+      `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 40))).join(' | ')}`);
+  }
+
+  // ---- v94.9:v91.9 零校准锚点重断言(i32::MIN 取负仍 M4002 2:72 逐字) ----
+  {
+    const p = m94('v94_v919.ming', 'fn f(a: i32) -> i32 { return -a; }\nfn main() -> i64 with io { let a = (-2147483647 - 1) as i32; print(str(-a)); return 0; }\n');
+    const legs = threeLegs94(p);
+    const ok = legs.every((r) => r.code === 101 && fl94(r).includes('M4002'))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2])
+      && fl94(legs[0]).includes('整数取负溢出:--2147483648 超出范围')
+      && fl94(legs[0]).startsWith(p + ':2:72:');
+    check('v94.9:v91.9 零校准锚点——i32::MIN 取负三腿仍 M4002 首行逐字(位置 2:72)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 90))).join(' | ')}`);
+  }
+  // ---- v94.10:窄型 `+=` 溢出跨批交互(登记 ①,Agent A §93 intBin fits 门)——
+  //      断言按"两批合并后"口径:三腿 M4002 首行逐字(缺该修复时 tree 静默回绕 127+1=128) ----
+  {
+    const cases = [
+      ['v94_i8add.ming', ['fn main() -> i64 with io {', '  let mut x: i8 = 127i8;', '  x += 1;', '  print(str(x));', '  return 0;', '}'].join('\n'),
+        'M4002[integer-overflow]: 整数+溢出:127 + 1 超出 i8 范围'],
+      ['v94_u8add.ming', ['fn main() -> i64 with io {', '  let mut x: u8 = 255u8;', '  x += 1;', '  print(str(x));', '  return 0;', '}'].join('\n'),
+        'M4002[integer-overflow]: 整数+溢出:255 + 1 超出 i8u 范围'],
+    ];
+    let ok = true;
+    const detail = [];
+    for (const [name, src, msg] of cases) {
+      const p = m94(name, src);
+      const legs = threeLegs94(p);
+      if (!(legs.every((r) => r.code === 101 && fl94(r).startsWith(p + ':3:3:') && fl94(r).includes(msg))
+        && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2]))) ok = false;
+      detail.push(name + '=' + legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 90))).join(' | '));
+    }
+    check('v94.10:窄型 += 1 溢出三腿 M4002 首行逐字(i8 127 / i8u 255;登记 ① 的 intBin fits 门与 ADDI 合并后口径)',
+      ok, detail.join(' ;; '));
+  }
+  // ---- v94.11:相邻复合赋值形态核验——ADDI 仅 ±1;`x -= 2`(BINSETI)/`x += y`(BINSET2)
+  //      走 intBin 既有 '-'/'+' 模板,三腿首行逐字(证明本修复的符号选择与既有面同口径) ----
+  {
+    const cases = [
+      ['v94_sub2.ming', ['fn main() -> i64 with io {', '  let mut x: i64 = -9223372036854775808;', '  x -= 2;', '  print(str(x));', '  return 0;', '}'].join('\n'),
+        'M4002[integer-overflow]: 整数-溢出:-9223372036854775808 - 2 超出 i64 范围', 3],
+      ['v94_addvar.ming', ['fn main() -> i64 with io {', '  let mut x: i64 = 9223372036854775807;', '  let y: i64 = 1;', '  x += y;', '  print(str(x));', '  return 0;', '}'].join('\n'),
+        'M4002[integer-overflow]: 整数+溢出:9223372036854775807 + 1 超出 i64 范围', 4],
+    ];
+    let ok = true;
+    const detail = [];
+    for (const [name, src, msg, line] of cases) {
+      const p = m94(name, src);
+      const legs = threeLegs94(p);
+      if (!(legs.every((r) => r.code === 101 && fl94(r).startsWith(p + ':' + line + ':3:') && fl94(r).includes(msg))
+        && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2]))) ok = false;
+      detail.push(name + '=' + legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 90))).join(' | '));
+    }
+    check('v94.11:相邻形态 `x -= 2`(BINSETI)与 `x += y`(BINSET2)溢出三腿首行逐字(符号模板与 ADDI 同口径)',
+      ok, detail.join(' ;; '));
+  }
+  // ---- v94.12:wasm 腿同口径——eligible 函数内 `x -= 1` 下界溢出(严格模式证明 wasm
+  //      真实执行,非 VM 回落;wasm 本就 '-' 模板,VM 修复后四腿首行逐字) ----
+  {
+    const p = m94('v94_elig_sub.ming', [
+      'fn g(a: i64) -> i64 { let mut x = a; x -= 1; return x; }',
+      'fn main() with io { print(str(g(-9223372036854775808))); }',
+    ].join('\n') + '\n');
+    const msg = 'M4002[integer-overflow]: 整数-溢出:-9223372036854775808 - 1 超出 i64 范围';
+    const legs = threeLegs94(p);
+    const strict = runMing(['run', p, '--strict-wasm']);
+    const ok = legs.every((r) => r.code === 101 && fl94(r).includes(msg))
+      && fl94(legs[0]) === fl94(legs[1]) && fl94(legs[0]) === fl94(legs[2])
+      && strict.code === 101 && fl94(strict) === fl94(legs[0]);
+    check('v94.12:eligible 函数内 `x -= 1` 下界溢出——四腿(tree/VM/wasm/strict exit 101)首行逐字(wasm 真实执行不回落)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify(fl94(r).slice(0, 90))).join(' | ')} strict=${strict.code}:${JSON.stringify(fl94(strict).slice(0, 90))}`);
+  }
+
+  // ---- v94.13:wasm 腿合法 2^53 和——eligible 函数内 `x += 1` 三腿逐字 +
+  //      [wasm] fn h OK(MING_WASM_DEBUG 证明真实经 wasm 而非 VM 回落) ----
+  {
+    const p = m94('v94_elig_safe53.ming', [
+      'fn h(a: i64) -> i64 { let mut x = a; x += 1; return x; }',
+      'fn main() with io { print(str(h(9007199254740991))); }',
+    ].join('\n') + '\n');
+    const want = '9007199254740992\n';
+    const legs = threeLegs94(p);
+    const strict = runMing(['run', p, '--strict-wasm']);
+    const dbg = runMing(['run', p], { env: { MING_WASM_DEBUG: '1' } });
+    const ok = legs.every((r) => r.code === 0 && r.stdout === want)
+      && strict.code === 0 && strict.stdout === want
+      && dbg.stdout === want && (dbg.stderr ?? '').includes('[wasm] fn h OK');
+    check('v94.13:eligible 函数内 `x += 1` 于 2^53-1——四腿逐字 9007199254740992 且 wasm 真实执行([wasm] fn h OK)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 40))).join(' | ')} strict=${strict.code}:${JSON.stringify(strict.stdout)} dbg=${JSON.stringify((dbg.stderr ?? '').split('\n').filter((l) => l.includes('[wasm] fn h')).join(' '))}`);
+  }
+  // ---- §94-END
 }
 
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
