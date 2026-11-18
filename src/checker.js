@@ -489,6 +489,10 @@ export const STD_MODULES = {
       mF('remove_dir', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('remove_dir_recursive', [T_STR], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('read_bytes', [T_STR], mkRes(mkUntrusted(mkVec(INT_TYPES.u8)), T_STR), { effect: 'fs' }),
+      // v0.86(ADR-009 §2.1 S1):最小流式范围读——单次 len ≤ 8MB 上限保留(总量无限制,
+      // 用户循环分段 = rossum 30 帧缓冲解法);短读截断合法;外部内容源同源同污(第三载体
+      // Untrusted[Vec[u8]],载体白名单不扩/无净旁路)。path 保持净槽(sink)。
+      mF('read_bytes_range', [T_STR, INT_TYPES.i64, INT_TYPES.i64], mkRes(mkUntrusted(mkVec(INT_TYPES.u8)), T_STR), { effect: 'fs' }),
       mF('write_bytes', [T_STR, 'outbytes'], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
       mF('append_bytes', [T_STR, 'outbytes'], mkRes(T_BOOL, T_STR), { effect: 'fs' }),
     ],

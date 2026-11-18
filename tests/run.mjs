@@ -20544,6 +20544,406 @@ fn main() with io, fs {
   // ---- §94-END
 }
 
+// ===================== 95. v0.86:ADR-009 S1 read_bytes_range 最小流式(plan §4.13.5)=====================
+// 文件所有权:§95 = 本区全部用例(Agent A)。实现面:src/checker.js(内置签名表)+ src/interp.js
+// (callStd builtin,tree/VM 共享;分段 readSync 每段 ≤1MB / finally 关 fd / 按实读字节计费)。
+// 契约:docs/adr-009-streaming-slice.md §2.1/§3 清单 1-3/§5(S1)。污点纪律:v0.77 第三载体
+// Untrusted[Vec[u8]] 同源同污——内容字节按设计不可读值(v80.2),本区经 write_bytes 出向透传
+// 落盘,JS 侧 Buffer.compare 做逐字节黄金;语言内消费面 = len/is_empty(白名单)。
+// 边界顺序锁定(ADR-009 §2.1):负参 Err → >8MB Err → len=0 Ok(空,不触盘)→ start ≥ size Err
+// → 短读截断(读越文件尾返回实际量)。
+{
+  const dir95 = path.join(TMP, 'v95');
+  fs.mkdirSync(dir95, { recursive: true });
+  const m95 = (name, src) => { const f = path.join(dir95, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const P95 = (n) => path.join(dir95, n).split(path.sep).join('/');
+  const flags95 = ['', '--no-wasm', '--tree'];
+  const runAll95 = (p, extra = []) => flags95.map((fl) => runMing(fl ? ['run', p, fl, ...extra] : ['run', p, ...extra]));
+  const same95 = (runs, want) => runs.every((r) => r.code === 0 && r.stdout === want);
+  const fmtRuns95 = (runs) => runs.map((r) => `${r.code}:${JSON.stringify(r.stdout)}/${JSON.stringify((r.stderr ?? '').split('\n')[0])}`).join(' | ');
+  const j95 = (p) => { const r = runMing(['check', p, '--json']); try { return { r, j: JSON.parse(r.stdout) }; } catch { return { r, j: null }; } };
+
+  // 确定性字节源:10KB 小文件(黄金/边界)+ 2.5MB 大文件(跨 1MB 分段边界)
+  const src10 = Buffer.alloc(10 * 1024);
+  for (let i = 0; i < src10.length; i++) src10[i] = (i * 7 + 13) % 256;
+  fs.writeFileSync(path.join(dir95, 'data10k.bin'), src10);
+  const srcBig = Buffer.alloc(2 * 1024 * 1024 + 512 * 1024);
+  for (let i = 0; i < srcBig.length; i++) srcBig[i] = (i * 31 + 7) % 256;
+  fs.writeFileSync(path.join(dir95, 'data2m5.bin'), srcBig);
+
+  // ---- v95.1:黄金逐字节——range(f,0,100) 与 read_bytes(f) 切片一致(经 write_bytes 落盘比对) ----
+  {
+    const p = m95('v95_1_golden.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, 100) {',
+      '        Ok(v) => {',
+      '            print(str(v.len()));',
+      '            if v.is_empty() { print("empty"); } else { print("nonempty"); }',
+      '            match std.fs.write_bytes("' + P95('out_range.bin') + '", v) {',
+      '                Ok(_) => print("wrote"),',
+      '                Err(e) => print("W-ERR:" + e),',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '    match std.fs.read_bytes("' + P95('data10k.bin') + '") {',
+      '        Ok(all) => match std.fs.write_bytes("' + P95('out_full.bin') + '", all) {',
+      '            Ok(_) => print("full"),',
+      '            Err(e) => print("F-ERR:" + e),',
+      '        },',
+      '        Err(e) => print("R-ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    const outRange = fs.readFileSync(path.join(dir95, 'out_range.bin'));
+    const outFull = fs.readFileSync(path.join(dir95, 'out_full.bin'));
+    const bytesOk = Buffer.compare(outFull, src10) === 0 && Buffer.compare(outRange, outFull.subarray(0, 100)) === 0;
+    check('v95.1:黄金逐字节——range(f,0,100) 与 read_bytes(f) 切片经 write_bytes 落盘逐字节相等(三腿 stdout 100/nonempty/wrote/full + Buffer.compare)',
+      same95(runs, '100\nnonempty\nwrote\nfull\n') && bytesOk,
+      `${fmtRuns95(runs)} bytesOk=${bytesOk} rangeLen=${outRange.length} fullLen=${outFull.length}`);
+  }
+
+  // ---- v95.2:跨 1MB 分段边界读取(start=1MB-10, len=1MB+20)——分段循环组装正确 ----
+  {
+    const p = m95('v95_2_cross.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data2m5.bin') + '", 1048576 - 10, 1048576 + 20) {',
+      '        Ok(v) => {',
+      '            print(str(v.len()));',
+      '            match std.fs.write_bytes("' + P95('out_cross.bin') + '", v) {',
+      '                Ok(_) => print("wrote"),',
+      '                Err(e) => print("W-ERR:" + e),',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    const out = fs.readFileSync(path.join(dir95, 'out_cross.bin'));
+    const want = srcBig.subarray(1048576 - 10, 1048576 - 10 + 1048576 + 20);
+    check('v95.2:跨 1MB 分段边界(start=1048566, len=1048596)三腿 stdout 1048596 + 字节与源切片逐字节相等',
+      same95(runs, '1048596\nwrote\n') && Buffer.compare(out, want) === 0,
+      `${fmtRuns95(runs)} outLen=${out.length} wantLen=${want.length} eq=${Buffer.compare(out, want) === 0}`);
+  }
+
+  // ---- v95.3:跨文件尾短读截断(start=size-10, len=100 → 实际 10 字节,短读合法) ----
+  {
+    const p = m95('v95_3_short.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 10240 - 10, 100) {',
+      '        Ok(v) => {',
+      '            print(str(v.len()));',
+      '            if v.is_empty() { print("empty"); } else { print("nonempty"); }',
+      '            match std.fs.write_bytes("' + P95('out_tail.bin') + '", v) {',
+      '                Ok(_) => print("wrote"),',
+      '                Err(e) => print("W-ERR:" + e),',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    const out = fs.readFileSync(path.join(dir95, 'out_tail.bin'));
+    const want = src10.subarray(src10.length - 10);
+    check('v95.3:跨文件尾短读(start=10230, len=100 → 实际 10)三腿 stdout 10/nonempty + 末 10 字节逐字节相等',
+      same95(runs, '10\nnonempty\nwrote\n') && Buffer.compare(out, want) === 0,
+      `${fmtRuns95(runs)} outLen=${out.length} eq=${Buffer.compare(out, want) === 0}`);
+  }
+
+  // ---- v95.4:负参 Err(start 负)——消息逐字 ×3 腿 ----
+  {
+    const p = m95('v95_4_negstart.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", -1, 10) {',
+      '        Ok(_) => print("bug"),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    check('v95.4:start 负 → Err 消息逐字(三腿)',
+      same95(runs, 'ERR:read_bytes_range: start/len 不能为负: -1/10\n'), fmtRuns95(runs));
+  }
+
+  // ---- v95.5:负参 Err(len 负)——消息逐字 ×3 腿 ----
+  {
+    const p = m95('v95_5_neglen.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, -5) {',
+      '        Ok(_) => print("bug"),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    check('v95.5:len 负 → Err 消息逐字(三腿)',
+      same95(runs, 'ERR:read_bytes_range: start/len 不能为负: 0/-5\n'), fmtRuns95(runs));
+  }
+
+  // ---- v95.6:len=0 → Ok(空)——参数面终局,零长度读不触盘(缺文件同 Ok 空;ADR §2.1 顺序) ----
+  {
+    const mk = (name, path95) => m95(name, [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + path95 + '", 0, 0) {',
+      '        Ok(v) => { print(str(v.len())); if v.is_empty() { print("empty"); } else { print("nonempty"); } }',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runsA = runAll95(mk('v95_6_zero.ming', P95('data10k.bin')));
+    const runsB = runAll95(mk('v95_6_zero_missing.ming', P95('no-such-zero.bin')));
+    check('v95.6:len=0 → Ok 空(0/empty)三腿;缺文件 + len=0 亦 Ok 空(零长度读不触盘,ADR-009 §2.1 边界顺序)',
+      same95(runsA, '0\nempty\n') && same95(runsB, '0\nempty\n'),
+      `A=${fmtRuns95(runsA)} B=${fmtRuns95(runsB)}`);
+  }
+
+  // ---- v95.7:start ≥ 文件大小 → Err(消息逐字 ×3 腿;start==size 与 start>size 同口径) ----
+  {
+    const mk = (name, start) => m95(name, [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", ' + start + ', 10) {',
+      '        Ok(_) => print("bug"),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runsA = runAll95(mk('v95_7_start_eq.ming', 10240));
+    const runsB = runAll95(mk('v95_7_start_gt.ming', 10241));
+    check('v95.7:start ≥ size → Err 消息逐字(三腿;start==size 10240>=10240 与 start>size 10241>=10240)',
+      same95(runsA, 'ERR:read_bytes_range: start 超出文件大小: 10240 >= 10240\n')
+      && same95(runsB, 'ERR:read_bytes_range: start 超出文件大小: 10241 >= 10240\n'),
+      `A=${fmtRuns95(runsA)} B=${fmtRuns95(runsB)}`);
+  }
+
+  // ---- v95.8:单次 len > 8MB → Err(消息逐字 ×3 腿;上限保留在单次调用) ----
+  {
+    const p = m95('v95_8_toolarge.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, 8388609) {',
+      '        Ok(_) => print("bug"),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    check('v95.8:len > 8MB(8388609)→ Err 消息逐字(三腿)',
+      same95(runs, 'ERR:read_bytes_range: 单次读取上限 8MB(len = 8388609)\n'), fmtRuns95(runs));
+  }
+
+  // ---- v95.9:文件不存在 → Err(既有 ENOENT 口径,open 消息逐字 ×3 腿;期望值由同进程
+  //      fs.openSync 取真值,平台无关) ----
+  {
+    const missing = path.join(dir95, 'no-such-range.bin');
+    let enoentMsg = '';
+    try { fs.openSync(missing, 'r'); } catch (e) { enoentMsg = String(e.message); }
+    const p = m95('v95_9_enoent.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + missing.split(path.sep).join('/') + '", 0, 10) {',
+      '        Ok(_) => print("bug"),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    check('v95.9:ENOENT → Err(e.message) 逐字(三腿;期望消息取自同进程 fs.openSync)',
+      enoentMsg.startsWith('ENOENT') && same95(runs, 'ERR:' + enoentMsg + '\n'),
+      `want=${JSON.stringify(enoentMsg)} ${fmtRuns95(runs)}`);
+  }
+
+  // ---- v95.10:计费——按实际返回字节数一次计入 --max-alloc(v0.60 #52 外部输入边界口径):
+  //      read(f,0,100) 在 --max-alloc 100 放行、99 触发 M4011 exit 101(三腿) ----
+  {
+    const p = m95('v95_10_alloc.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, 100) {',
+      '        Ok(v) => print(str(v.len())),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const okRuns = runAll95(p, ['--max-alloc', '100']);
+    const gateRuns = runAll95(p, ['--max-alloc', '99']);
+    const gateOk = gateRuns.every((r) => r.code === 101
+      && (r.stderr ?? '').split('\n')[0].includes('M4011')
+      && (r.stderr ?? '').includes('累计分配 100 超过上限 99'));
+    check('v95.10:计费按实读 100 字节——--max-alloc 100 三腿 exit 0 输出 100;--max-alloc 99 三腿 exit 101 首行 M4011(累计 100 > 99)',
+      same95(okRuns, '100\n') && gateOk,
+      `ok=${fmtRuns95(okRuns)} gate=${gateRuns.map((r) => r.code + ':' + JSON.stringify((r.stderr ?? '').split('\n')[0].slice(0, 110))).join(' | ')}`);
+  }
+
+  // ---- v95.11:污点流——返回 Untrusted[Vec[u8]](第三载体,同源同污):len/is_empty 合法
+  //      (v95.1 已锁);进净槽 `let clean: Vec[u8] = v` → M3049;debug 洗白禁面 → M3050 ----
+  {
+    const sink = j95(m95('v95_11_sink.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, 10) {',
+      '        Ok(v) => { let clean: Vec[u8] = v; print(str(clean.len())); },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    const dbg = j95(m95('v95_11_debug.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, 10) {',
+      '        Ok(v) => { let d: str = debug(v); print(d); },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n')));
+    const sinkOk = sink.r.code === 1 && !!sink.j && sink.j.diagnostics.some((d) => d.code === 'M3049');
+    const dbgOk = dbg.r.code === 1 && !!dbg.j && dbg.j.diagnostics.some((d) => d.code === 'M3050');
+    check('v95.11:污点流——Untrusted[Vec[u8]] 进净槽 → M3049(第三载体 sink);debug 洗白禁面 → M3050',
+      sinkOk && dbgOk,
+      `sink=${sink.r.code}:${(sink.j?.diagnostics ?? []).map((d) => d.code).join(',')} dbg=${dbg.r.code}:${(dbg.j?.diagnostics ?? []).map((d) => d.code).join(',')}`);
+  }
+
+  // ---- v95.12:引擎面——三腿逐字(v95.1 已锁)+ wasm strict 'none'(fs 效果不 eligible,
+  //      v53.4 先例:strict exit 0 且输出与 VM 一致;非回落) ----
+  {
+    const p = m95('v95_12_strict.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 100, 20) {',
+      '        Ok(v) => print(str(v.len())),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = runAll95(p);
+    const strict = runMing(['run', p, '--strict-wasm']);
+    check('v95.12:引擎面——三腿一致(20)+ --strict-wasm exit 0 输出 20(fs 效果 eligible=0 → none,非回落)',
+      same95(legs, '20\n') && strict.code === 0 && strict.stdout === '20\n',
+      `legs=${fmtRuns95(legs)} strict=${strict.code}:${JSON.stringify(strict.stdout)}:${JSON.stringify((strict.stderr ?? '').split('\n')[0])}`);
+  }
+  // ---- v95.13(审查 MAJOR-1:核心宣称"总量无限制"的机器证明):>8MB 文件分段——
+  //      12MB+123 确定性字节,两段读(8MB + 余量)经 write_bytes 落盘,Node 侧拼接
+  //      逐字节等于源;三腿输出逐字(W1:8388608 / W2:4194427 = 文件大小-8MB) ----
+  {
+    const bigN = 12 * 1024 * 1024 + 123;
+    const big = Buffer.alloc(bigN);
+    for (let i = 0; i < bigN; i++) big[i] = (i * 31 + 7) & 0xff;
+    const bigFile = path.join(dir95, 'big12m.bin');
+    fs.writeFileSync(bigFile, big);
+    const p = m95('v95_13_big.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('big12m.bin') + '", 0, 8388608) {',
+      '        Ok(v) => { match std.fs.write_bytes("' + P95('big_out1.bin') + '", v) { Ok(_) => print("W1:" + str(v.len())), Err(e) => print("ERR1:" + e) } },',
+      '        Err(e) => print("ERR1:" + e),',
+      '    }',
+      '    match std.fs.read_bytes_range("' + P95('big12m.bin') + '", 8388608, 8388608) {',
+      '        Ok(v) => { match std.fs.write_bytes("' + P95('big_out2.bin') + '", v) { Ok(_) => print("W2:" + str(v.len())), Err(e) => print("ERR2:" + e) } },',
+      '        Err(e) => print("ERR2:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll95(p);
+    let same = false;
+    try {
+      const o1 = fs.readFileSync(path.join(dir95, 'big_out1.bin'));
+      const o2 = fs.readFileSync(path.join(dir95, 'big_out2.bin'));
+      same = Buffer.compare(Buffer.concat([o1, o2]), big) === 0;
+    } catch (e) { same = false; }
+    check('v95.13:>8MB 文件分段(12MB+123)——两段读(8MB+余量)三腿输出逐字 + 拼接逐字节等于源(总量无限制核心宣称的机器证明)',
+      same95(runs, 'W1:8388608\nW2:4194427\n') && same,
+      `${fmtRuns95(runs)} concat_eq=${same}`);
+  }
+  // ---- v95.14(审查 MINOR-1/NOTE-1):len=0 校验优先级(短路,不触盘、不校验 start/存在性)
+  //      与精确 8MB 边界——缺文件+len=0 → Ok(空);start 界内+len=0 → Ok(空);
+  //      len=8388608(恰等上限)→ Ok(10240) ----
+  {
+    const p = m95('v95_14_len0.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('no_such_file.bin') + '", 0, 0) {',
+      '        Ok(v) => print("A:" + str(v.len())),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '    match std.fs.read_bytes_range("' + P95('big12m.bin') + '", 8388608, 0) {',
+      '        Ok(v) => print("B:" + str(v.len())),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 0, 8388608) {',
+      '        Ok(v) => print("C:" + str(v.len())),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = runAll95(p);
+    check('v95.14:len=0 优先级(缺文件/界内 start 均 Ok 空,不触盘)+ 精确 8MB 边界(len=8388608 恰等上限 → Ok(10240))',
+      same95(legs, 'A:0\nB:0\nC:10240\n'), fmtRuns95(legs));
+  }
+  // ---- v95.15(审查 MINOR-5):计费按实读——尾部短读(请求 100 实读 10):
+  //      --max-alloc 10 放行、9 触发 M4011(三腿) ----
+  {
+    const p = m95('v95_15_tailalloc.ming', [
+      'use std.fs;',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes_range("' + P95('data10k.bin') + '", 10230, 100) {',
+      '        Ok(v) => print(str(v.len())),',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const okRuns = runAll95(p, ['--max-alloc', '10']);
+    const gateRuns = runAll95(p, ['--max-alloc', '9']);
+    const gateOk = gateRuns.every((r) => r.code === 101
+      && (r.stderr ?? '').split('\n')[0].includes('M4011')
+      && (r.stderr ?? '').includes('累计分配 10 超过上限 9'));
+    check('v95.15:计费按实读——尾部短读(请求 100 实读 10):--max-alloc 10 三腿 exit 0 输出 10;9 → 三腿 exit 101 M4011(累计 10 > 9)',
+      same95(okRuns, '10\n') && gateOk,
+      `ok=${fmtRuns95(okRuns)} gate=${gateRuns.map((r) => r.code + ':' + JSON.stringify((r.stderr ?? '').split('\n')[0].slice(0, 110))).join(' | ')}`);
+  }
+  // ---- §95-END
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

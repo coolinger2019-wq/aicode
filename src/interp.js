@@ -1467,6 +1467,56 @@ export class Interp {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
       }
+      // v0.86(ADR-009 §2.1 S1):最小流式范围读(path, start, len)——单次 len ≤ 8MB
+      // (总量无限制,用户循环分段);短读截断合法(读越文件尾 → 返回实际读取量);
+      // 分段 readSync(每段 ≤ 1MB)限制单次 syscall 读长;缓冲仍为请求区间一次性分配
+      // (Buffer.alloc(actual),≤8MB)——内存口径见 GUIDE(Vec[u8] 逐字节装箱,大帧须逐帧消费)。
+      // fd 在 finally 关闭。
+      // 边界顺序(ADR-009 §2.1):负参 Err → >8MB Err → len=0 Ok(空,无需触盘)→
+      // 打开后 stat:start >= size Err → 实际量 = min(len, size - start)。
+      // 计费(v0.60 #52 外部输入边界口径):按实际返回字节数一次计入 --max-alloc,
+      // 放在 IO 成功之后(catch 不吞 M4011 Panic——charge 在 try/finally 之外)。
+      case 'fs.read_bytes_range': {
+        const startB = BigInt(args[1].v);
+        const lenB = BigInt(args[2].v);
+        if (startB < 0n || lenB < 0n) {
+          return V.enumv('builtin-res', 'Err', [V.str('read_bytes_range: start/len 不能为负: ' + startB + '/' + lenB)]);
+        }
+        if (lenB > 8n * 1024n * 1024n) {
+          return V.enumv('builtin-res', 'Err', [V.str('read_bytes_range: 单次读取上限 8MB(len = ' + lenB + ')')]);
+        }
+        if (lenB === 0n) {
+          return V.enumv('builtin-res', 'Ok', [V.vec([])]);
+        }
+        const lenN = Number(lenB);
+        let fd = null;
+        let bytes = null;
+        try {
+          fd = nodeFs.openSync(args[0].v, 'r');
+          const size = nodeFs.fstatSync(fd).size;
+          if (startB >= BigInt(size)) {
+            return V.enumv('builtin-res', 'Err', [V.str('read_bytes_range: start 超出文件大小: ' + startB + ' >= ' + size)]);
+          }
+          const startN = Number(startB);
+          const actual = Math.min(lenN, size - startN); // 短读截断(读越文件尾合法)
+          const buf = Buffer.alloc(actual);
+          let off = 0;
+          const SEG = 1024 * 1024; // 每段 ≤ 1MB
+          while (off < actual) {
+            const n = Math.min(SEG, actual - off);
+            const got = nodeFs.readSync(fd, buf, off, n, startN + off);
+            if (got <= 0) break; // 文件收缩竞态:按实读截断(短读合法)
+            off += got;
+          }
+          bytes = off === actual ? buf : buf.subarray(0, off);
+        } catch (e) {
+          return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
+        } finally {
+          if (fd !== null) { try { nodeFs.closeSync(fd); } catch { /* 关闭失败不掩盖原结果 */ } }
+        }
+        this.chargeAllocBytes(bytes.length, span);
+        return V.enumv('builtin-res', 'Ok', [V.vec([...bytes].map(b => V.int(BigInt(b), 8, false)))]);
+      }
       case 'fs.write_bytes': {
         const r = this.u8VecToFile(args[0].v, args[1], 'write');
         if (r !== null) return V.enumv('builtin-res', 'Err', [V.str(r)]);

@@ -26,7 +26,7 @@ v0.31 起二进制 I/O 只有全量读写(`fs.read_bytes` / `write_bytes`),**8MB
 `std.fs.read_bytes_range(path: str, start: i64, len: i64) -> Result[Untrusted[Vec[u8]], str]`(效果 `fs`;与 `read_bytes` 同型返回)。
 
 - **污点**:外部内容源,返回 `Untrusted[Vec[u8]]`(第三载体,不引入新载体)。`std.unstr` 净化族不扩(用户按既有载体面消费:len/is_empty/投影到 debug 洗白需 sanitize——本片不新增净化器,登记不预支)。
-- **边界语义**:`start < 0` 或 `len < 0` → `Err`(消息 `read_bytes_range: start/len 不能为负: <start>/<len>`);`len == 0` → `Ok(空 Vec)`;读越文件尾 → 截断到文件尾返回实际读取量(短读合法——流式语义);`start >= 文件大小` → `Err`(消息 `read_bytes_range: start 超出文件大小: <start> >= <size>`);文件不存在/IO 错 → `Err`(既有 ENOENT 口径)。
+- **边界语义**:`start < 0` 或 `len < 0` → `Err`(消息 `read_bytes_range: start/len 不能为负: <start>/<len>`);`len == 0` → `Ok(空 Vec)`;读越文件尾 → 截断到文件尾返回实际读取量(短读合法——流式语义);`start >= 文件大小` → `Err`(消息 `read_bytes_range: start 超出文件大小: <start> >= <size>`);文件不存在/IO 错 → `Err`(既有 ENOENT 口径)。**校验优先级(实现定案,v95.6/v95.14 锁定)**:负参 → 8MB → `len=0`(短路:不触盘、不校验 start/存在性——零字节读不构成存在性探针,错误面确定且平台无关)→ open → `start>=size`;**仅大小可 stat 的普通文件**(FIFO/procfs 的 size=0 → 定位读 Err,属合理边界)。
 - **8MB 上限**:单次 `len > 8MB` → `Err`(消息 `read_bytes_range: 单次读取上限 8MB(len = <len>)`)——**上限保留在单次调用**;总量无限制(用户循环分段,这正是 30 帧缓冲的解法)。运行时实现用分段 `readSync` 循环(每段 ≤ 1MB)避免一次性大分配。
 - **计费与 `--max-alloc`**:按**实际返回字节数**计费(与 read_bytes 的"外部输入边界计费"一致,v0.60 #52 口径);不重复计费派生值。
 - **跨平台**:Node `fs.openSync/readSync(fd, buf, offset, length, position)`;Windows/Linux/macOS 同语义;文件句柄在 finally 关闭。
@@ -73,7 +73,7 @@ v0.31 起二进制 I/O 只有全量读写(`fs.read_bytes` / `write_bytes`),**8MB
 | 污点 | Untrusted[Vec[u8]](既有载体) | 净 only(载体不扩) | unsafe 面(污点面外) | 同左 |
 | 值语义 | 深拷贝(返回值) | **视图例外**(三条硬约束) | 复制地址(既有先例) | 复制地址 |
 | 证明 | 无 | len 符号复用 | 显式 len 参数 | 令牌=proven 义务 |
-| wasm | 不资格(具名回落) | v1 不资格(具名) | 不资格 | 不资格 |
+| wasm | strict none(eligible=0,非回落) | v1 不资格(具名) | 不资格 | 不资格 |
 | cc | 现状拒绝(C1) | v2 评估 | 目标面(延迟) | 延迟 |
 | 破坏性 | 无(additive) | 无(新类型) | 无 | 无 |
 

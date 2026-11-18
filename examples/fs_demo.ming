@@ -39,6 +39,59 @@ fn main() with io, fs {
     print(std.path.base_name("/tmp/demo.txt"));
     print(std.path.extension("a.tar.gz"));
 
+    // ---- 分段读(v0.86 S1,ADR-009):read_bytes_range(path, start, len)----
+    // 大文件不必整块进内存:单次 ≤8MB,总量由用户循环分段(如 30 帧
+    // 缓冲 = 循环读 30 次);返回 Untrusted[Vec[u8]](第三载体,同源同污),
+    // 操作面 = len/is_empty——污字节不可下标读,内容消费见 §18 污点节。
+    // 示意:3 帧 × 4 字节
+    let buf: Vec[u8] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    match std.fs.write_bytes("demo_frame.bin", buf) {
+        Ok(_) => print("二进制写成功(12 字节)"),
+        Err(e) => {
+            print("二进制写失败: \{e}");
+            return;
+        },
+    }
+    let total: i64 = buf.len();
+    let mut start: i64 = 0;
+    let mut seg: i64 = 0;
+    while start < total {
+        match std.fs.read_bytes_range("demo_frame.bin", start, 4) {
+            Ok(part) => {
+                print("段 \{seg}: start=\{start} 长度=\{part.len()}");
+
+                // 短读时按实际读取量推进
+                start = start + part.len();
+                seg = seg + 1;
+            },
+            Err(e) => {
+                print("分段读失败: \{e}");
+                return;
+            },
+        }
+    }
+
+    // 短读合法:越文件尾截断到实际量(start=10 请求 4 → 实读 2)
+    match std.fs.read_bytes_range("demo_frame.bin", 10, 4) {
+        Ok(tail) => print("尾段 start=10 请求 4 → 实读 \{tail.len()}"),
+        Err(e) => print("尾段失败: \{e}"),
+    }
+
+    // 边界:len=0 → Ok(空);负参 → Err;单次 >8MB → Err(上限保留在单次调用)
+    match std.fs.read_bytes_range("demo_frame.bin", 0, 0) {
+        Ok(empty) => print("len=0 → Ok(空=\{str(empty.is_empty())})"),
+        Err(e) => print("len=0 意外失败: \{e}"),
+    }
+    match std.fs.read_bytes_range("demo_frame.bin", -1, 4) {
+        Ok(_) => print("bug:负参应 Err"),
+        Err(e) => print("负参: \{e}"),
+    }
+    match std.fs.read_bytes_range("demo_frame.bin", 0, 8388609) {
+        Ok(_) => print("bug:>8MB 应 Err"),
+        Err(e) => print("超上限: \{e}"),
+    }
+    let _rm = std.fs.remove_file("demo_frame.bin");
+
     // 清理
     let _ = std.fs.remove_file("demo.txt");
     print("存在吗? \{str(std.fs.exists("demo.txt"))}");
