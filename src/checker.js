@@ -9,6 +9,7 @@
 //   {k:'struct',name,def,targs} {k:'enum',name,def,targs}   — def 指向 Decl,按引用比较
 //   {k:'range',el}
 //   {k:'ptr',el,mut}   — v0.54:不透明指针(仅 el=u8;mut 区分 Ptr[mut u8]/Ptr[u8],无隐式转换)
+//   {k:'slice',el}     — v0.87(ADR-009 S2):块内线性只读视图(仅 el=u8;块内线性由 M3051 静态保证)
 //   {k:'untrusted',el} — v0.61(ADR-002):污点标签 Untrusted[T](编译期,运行时擦除;载体 v1 仅 str)
 //   {k:'param',name}   — 泛型参数(检查体内)
 //   {k:'var',id}       — 推断变量,由 binds 解析
@@ -37,6 +38,9 @@ export function mkFn(ps, ret, effects = new Set()) { return { k: 'fn', ps, ret, 
 export function mkRange(el) { return { k: 'range', el }; }
 export function mkJoin(el) { return { k: 'join', el }; }
 // v0.54:Ptr 类型面 {k:'ptr', el, mut};el 当前只允许 u8(检查器 resolveTypeAst 强制)
+// v0.87(ADR-009 S2):Slice 类型面 {k:'slice', el};el 当前只允许 u8(ADR-009 §2.2:v1 仅
+// 字节视图,Slice[str]/泛型 Slice 登记另裁)。块内线性不由类型面表达,由 M3051 逃逸门禁保证。
+export function mkSlice(el) { return { k: 'slice', el }; }
 export function mkPtr(el, mut = false) { return { k: 'ptr', el, mut: !!mut }; }
 // v0.61(ADR-002):污点标签 {k:'untrusted', el};el 允许 str/Json(载体 v1 仅 str,
 // v0.68 ADR-004 §2.4 扩 Json,resolveTypeAst 白名单强制)。
@@ -96,6 +100,7 @@ function occurs(t, id, binds) {
     case 'fn': return t.ps.some(x => occurs(x, id, binds)) || occurs(t.ret, id, binds);
     case 'range': return occurs(t.el, id, binds);
     case 'ptr': return occurs(t.el, id, binds);
+    case 'slice': return occurs(t.el, id, binds);
     case 'untrusted': return occurs(t.el, id, binds);
     case 'struct': case 'enum': return (t.targs ?? []).some(x => occurs(x, id, binds));
     default: return false;
@@ -138,6 +143,8 @@ export function unify(a, b, binds) {
     case 'range': return unify(a.el, b.el, binds);
     // v0.54:Ptr 精确匹配——mut/非 mut 不同型,无隐式转换
     case 'ptr': return a.mut === b.mut && unify(a.el, b.el, binds);
+    // v0.87(ADR-009 S2):Slice 精确匹配(v1 仅 Slice[u8],元素逐位一致)
+    case 'slice': return unify(a.el, b.el, binds);
     // v0.61(ADR-002):Untrusted 精确匹配(载体也须一致)——Untrusted[T] 不是 T,
     // 这条免费得到 sink 门禁:未显式接受 Untrusted 的位置全是 sink。
     case 'untrusted': return unify(a.el, b.el, binds);
@@ -175,6 +182,7 @@ export function typeStr(t, binds = null) {
     case 'range': return `Range[${r(t.el)}]`;
     case 'join': return `Join[${r(t.el)}]`;
     case 'ptr': return `Ptr[${t.mut ? 'mut ' : ''}${r(t.el)}]`; // v0.54
+    case 'slice': return `Slice[${r(t.el)}]`; // v0.87(ADR-009 S2)
     case 'untrusted': return `Untrusted[${r(t.el)}]`; // v0.61(ADR-002 清单 15:doc/LSP/接口哈希随渲染串自动覆盖)
     case 'tuple': return t.ts.length === 0 ? '()' : `(${t.ts.map(r).join(', ')})`;
     case 'fn': { const base = `(${t.ps.map(r).join(', ')}) -> ${r(t.ret)}`; const es = [...(t.effects ?? [])]; return es.length ? base + ' with ' + es.join(', ') : base; }
@@ -319,6 +327,7 @@ export function isComparable(t, binds) {
   if (!t) return true;
   switch (t.k) {
     case 'fn': return false;
+    case 'slice': return false; // v0.87(ADR-009 S2):Slice 无值相等面(视图引用;审查 MINOR-1)
     case 'vec': return isComparable(t.el, binds);
     case 'ptr': return false; // v0.54:Ptr 不支持 ==/!=(用 is_null)
     case 'untrusted': return isComparable(t.el, binds); // v0.61:运行时擦除,相等即载体相等
@@ -986,6 +995,23 @@ export class Checker {
             }
             return mkPtr(el, mut);
           }
+          // v0.87(ADR-009 S2):Slice[u8] 块内线性只读视图。解析面接受任意单实参标注
+          // (元素合法性在此强制,先例 = Ptr);非 u8 元素报错回落 Slice[u8](先例口径)。
+          // Slice[u8] 可出现在 let 标注(绑定视图创建)与泛型实参位;形参/返回的禁面由
+          // 签名检查点发射 M3051;结构体字段/变体载荷为惰性类型(可声明不可构造——构造点
+          // 发射 M3051,声明期不拒;审查 MINOR-2 修正注释口径)。
+          if (parts.length === 1 && t.name === 'Slice') {
+            if (t.args.length !== 1) {
+              self.diagT(t.span, `Slice 需要 1 个类型参数,得到 ${t.args.length}(写法:Slice[u8])`);
+              return mkSlice(INT_TYPES.u8);
+            }
+            const el = go(t.args[0]);
+            if (!(el?.k === 'int' && el.bits === 8 && el.signed === false)) {
+              self.diagT(t.args[0].span ?? t.span, `Slice 的元素类型只支持 u8,得到 ${typeStr(el)}(Slice[str]/泛型 Slice 登记另裁,ADR-009 §2.2)`);
+              return mkSlice(INT_TYPES.u8);
+            }
+            return mkSlice(el);
+          }
           // v0.61(ADR-002):Untrusted[T] 污点标签;v0.68(ADR-004 §2.4/清单 3)载体白名单
           // 扩为 {str, Json}——Untrusted[Json] 复用同一构造器(泛型标注,不做别名),
           // unify/typeStr/doc/LSP 渲染全部自动覆盖(清单 15 口径)。其余载体仍拒
@@ -1230,6 +1256,9 @@ export class Checker {
               d.params[0].span ?? d.span));
           }
         }
+        // v0.87(ADR-009 S2):顶层 fn 签名 Slice 禁面——形参/返回不可含 Slice(块内线性,
+        // 视图只就地消费;extern 同面禁入,无 FFI 对应物)。
+        this.checkSigNoSlice(entry.sig.params, entry.sig.ret, d.ret?.span ?? d.span);
       } else if (entry.kind === 'trait') {
         const d = entry.decl;
         const methodsSig = new Map();
@@ -1240,6 +1269,8 @@ export class Checker {
             ps.push({ name: m.params[i].name, type: this.resolveTypeAst(m.params[i].type, mod, new Map(), 'trait'), span: m.params[i].span });
           }
           const ret = m.ret ? this.resolveTypeAst(m.ret, mod, new Map(), 'trait') : T_UNIT;
+          // v0.87(ADR-009 S2):trait 方法签名 Slice 禁面(impl 方法同面在 resolveImpls 校验)
+          this.checkSigNoSlice(ps, ret, m.ret?.span ?? m.span);
           methodsSig.set(m.name, { name: m.name, params: ps, ret, selfMut: m.selfMut, span: m.span });
         }
         entry.methodsSig = methodsSig;
@@ -1627,6 +1658,8 @@ export class Checker {
           ret: m.ret ? this.resolveTypeAst(m.ret, mod, tpMap, selfT) : T_UNIT,
           effects,
         };
+        // v0.87(ADR-009 S2):impl 方法签名 Slice 禁面(与 trait 声明/模块函数同口径)
+        this.checkSigNoSlice(sig.params.filter(p => !p.self), sig.ret, m.ret?.span ?? m.span);
         // 与 trait 声明匹配
         const nonSelf = sig.params.filter(p => !p.self);
         if (nonSelf.length !== spec.params.length) {
@@ -1849,13 +1882,16 @@ export class Checker {
       if (KNOWN_EFFECTS.has(e.name)) effects.add(e.name);
       else this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
     }
-    return {
+    const sig = {
       tparams: d.tparams,
       params: d.params.map(p => ({ name: p.name, mut: !!p.mut, type: this.resolveTypeAst(p.type, ctx.mod, tp), span: p.span })),
       ret: d.ret ? this.resolveTypeAst(d.ret, ctx.mod, tp) : T_UNIT,
       effects,
       declSpan: d.span ?? null, // v0.59 P2 审查 MINOR#1:重复定义诊断指向首次声明
     };
+    // v0.87(ADR-009 S2):本地函数签名 Slice 禁面(与模块函数同口径)
+    this.checkSigNoSlice(sig.params, sig.ret, d.ret?.span ?? d.span);
+    return sig;
   }
 
   // v0.59(#44):本地函数体检查(镜像 checkFnBody)。与模块函数的差异:
@@ -1966,6 +2002,52 @@ export class Checker {
     this.diags.push(err('M3046',
       `${site}含 Ptr(${typeStr(r)}),必须在 unsafe {} 块内(所在函数需声明 "with unsafe")`,
       span, CODE_HINTS.M3046));
+  }
+
+  // ===================== v0.87(ADR-009 S2):Slice 块内线性门禁 =====================
+  // Slice 只读视图的三条硬约束(ADR-009 §2.2)在 checker 的落点:
+  //   硬约束 1(仅非 mut Vec[u8] 可创建)——vecMethod 'view' 接收者校验(vecViewMethod);
+  //   硬约束 2(块内线性,不可逃逸)——本节 checkSliceArgs/checkSlicePayload/checkSigNoSlice
+  //     + Return/Assign/checkLet 发射点 + checkLambda 捕获检查(checkIdent 内判定);
+  //   硬约束 3(方法面白名单 len/get/at)——sliceMethod 分派器(白名单外 M3015)。
+  // 消息纪律:构造规则违反与逃逸同码 M3051[slice-escape],消息区分主语;逃逸面发射点
+  // 与既有 M3046 门禁(checkPtrArgs/checkPtrPayload)逐点同构。
+
+  // 实参逃逸门禁(镜像 checkPtrArgs;Slice 无 unsafe 豁免——视图永远不可跨调用边界)。
+  checkSliceArgs(args, argTs, calleeDesc) {
+    for (let i = 0; i < args.length; i++) {
+      const t = resolveT(argTs[i], new Map());
+      if (!typeContainsSlice(t)) continue;
+      this.diags.push(err('M3051',
+        `Slice 视图不可逃逸当前块(线性约束):不能作为${calleeDesc}的实参 #${i + 1}`,
+        args[i]?.span, CODE_HINTS.M3051));
+    }
+  }
+
+  // 载荷逃逸门禁(镜像 checkPtrPayload):Vec/Map 元素、变体载荷、元组成分、结构体字段。
+  checkSlicePayload(t, span, site) {
+    const r = t ? resolveT(t, new Map()) : null;
+    if (!typeContainsSlice(r)) return;
+    this.diags.push(err('M3051',
+      `Slice 视图不可逃逸当前块(线性约束):${site}不能承载 Slice(${typeStr(r)})`,
+      span, CODE_HINTS.M3051));
+  }
+
+  // 签名禁面:Slice 不可作函数形参/返回类型(v1 最保守——视图只就地消费,不跨函数)。
+  // 发射点:loadModule 顶层 fn 签名 / trait 方法签名 / impl 方法签名 / buildLocalFnSig。
+  checkSigNoSlice(params, ret, retSpan = null) {
+    for (const p of params) {
+      if (typeContainsSlice(p.type)) {
+        this.diags.push(err('M3051',
+          `Slice 视图不可跨函数边界(块内线性):形参 "${p.name}" 不能是 ${typeStr(p.type)}`,
+          p.span, CODE_HINTS.M3051));
+      }
+    }
+    if (ret && typeContainsSlice(ret)) {
+      this.diags.push(err('M3051',
+        `Slice 视图不可跨函数边界(块内线性):函数返回类型不能是 ${typeStr(ret)}`,
+        retSpan, CODE_HINTS.M3051));
+    }
   }
 
   // 效果检查:调用方必须声明被调方需要的全部效果
@@ -2126,6 +2208,13 @@ export class Checker {
         if (s.value) {
           const t = this.checkExpr(s.value, ctx, ctx.fnRet.k === 'unit' ? undefined : ctx.fnRet);
           if (t === null) break; // 表达式已报错;不再连锁
+          // v0.87(ADR-009 S2):Slice 逃逸门禁——视图不可 return(块内线性,ADR-009 §2.2
+          // 硬约束 2)。专用码先行:根因是逃逸而非类型不匹配。
+          if (typeContainsSlice(resolveT(t, new Map()))) {
+            this.diags.push(err('M3051',
+              'Slice 视图不可逃逸当前块(线性约束):不能 return 视图',
+              s.value.span, CODE_HINTS.M3051));
+          }
           if (!this.untrustedMismatchDiag(t, ctx.fnRet, s.span, 'return 的值类型与函数返回类型不匹配')
             && !unify(t, ctx.fnRet, binds) && t.k !== 'never' && ctx.fnRet.k !== 'never') {
             this.diags.push(err('M3002', `return 的值类型 ${typeStr(t, binds)} 与函数返回类型 ${typeStr(ctx.fnRet)} 不匹配`, s.span));
@@ -2262,6 +2351,20 @@ export class Checker {
       }
     }
     const initFailed = s.init && initT === null && this.diags.length > initDiagMark;
+    // v0.87(ADR-009 S2):let 的 Slice 逃逸门禁——绑定既有视图值(`let s2 = s`)拒绝;
+    // 唯一放行形态 = 初始化器是直接的 .view() 方法调用(视图就地产生)。if/match 等复合
+    // 表达式产生的视图同样拒(v1 最保守:Slice 只能由 view() 产生并就地消费)。
+    if (initT && typeContainsSlice(resolveT(initT, new Map()))) {
+      const isViewInit = s.init.nt === 'Call' && s.init.callee?.nt === 'Field' && s.init.callee.name === 'view';
+      // 审查 MINOR-4:初始化检查窗口内已发 M3051(载荷/实参位)则不重复(let 闸降噪,
+      // 避免同根因双诊断;initDiagMark 即本初始化器的诊断窗口起点)。
+      const innerEsc = this.diags.slice(initDiagMark).some((d) => d.code === 'M3051');
+      if (!isViewInit && !innerEsc) {
+        this.diags.push(err('M3051',
+          'Slice 视图不可逃逸当前块(线性约束):let 初始化器只能由 .view() 就地产生视图,不能绑定既有视图',
+          s.init.span, CODE_HINTS.M3051));
+      }
+    }
     const binds = new Map();
     if (s.init && declared) {
       if (!this.untrustedMismatchDiag(initT, declared, s.span, 'let 标注类型不匹配')
@@ -2272,8 +2375,10 @@ export class Checker {
         // 类型 AST 的 span 只覆盖首 token,标注全文末尾不可机械取得,故以 init 起点为右界,
         // 替换文本自带 " = "(标注与 = 之间的任意空距/注释一并归一)。污点边界不摘:
         // declared 含 Untrusted → 不给处方(摘标注即洗白旁路);不可标注形态由
-        // annotationFixType 判 null(宁缺毋滥)。
-        const fixT = typeContainsUntrusted(declared) ? null : annotationFixType(initT, binds);
+        // annotationFixType 判 null(宁缺毋滥)。v0.87:含 Slice 的初始化器同样不给
+        // (建议标注 Slice[u8] 对再绑定形态应用后仍是 M3051,处方必然引入新错误)。
+        const fixT = (typeContainsUntrusted(declared) || typeContainsSlice(resolveT(initT, new Map())))
+          ? null : annotationFixType(initT, binds);
         // 审查 MAJOR-2:六操作符起始形态的 init.span 自操作符起,右界取表达式真实首 token
         const endSp = exprFirstSpan(s.init) || s.init?.span;
         if (fixT && s.type?.span?.line && endSp?.line) {
@@ -2379,6 +2484,13 @@ export class Checker {
     const targetT = this.checkPlace(s.target, ctx);
     // v0.39 修复:右值是值位置(此前缺 valuePos → if 表达式右值被当作语句形式返回 unit)
     const valueT = this.checkExpr(s.value, ctx, targetT ?? undefined, true);
+    // v0.87(ADR-009 S2):Slice 逃逸门禁——`s2 = s` 与 `s2 = v.view(...)` 都拒(v1 最保守:
+    // 视图绑定一经创建不可再赋值)。复合赋值不在此判(切片无算术,checkBinaryOp M3008 为根因)。
+    if (s.op === '=' && typeContainsSlice(resolveT(valueT, new Map()))) {
+      this.diags.push(err('M3051',
+        'Slice 视图不可逃逸当前块(线性约束):视图不可赋值/再绑定(只能由 .view() 就地创建并就地消费)',
+        s.value.span ?? s.span, CODE_HINTS.M3051));
+    }
     const binds = new Map();
     if (s.op !== '=') {
       // 复合赋值:要求支持对应算术
@@ -2699,6 +2811,7 @@ export class Checker {
         const tt = mkTuple(ts);
         this.checkJoinNotStored(tt, new Map(), e.span, '作为元组成分');
         this.checkPtrPayload(tt, e.span, ctx, '元组成分'); // v0.54 审查 B3
+        this.checkSlicePayload(tt, e.span, '元组成分'); // v0.87 ADR-009 S2
         return tt;
       }
       case 'StructLit': return this.checkStructLit(e, ctx);
@@ -2726,6 +2839,22 @@ export class Checker {
     const found = ctx.scope.lookupValue(name);
     if (found?.kind === 'var') {
       found.v.used = true;
+      // v0.87(ADR-009 S2):Slice 捕获门禁——lambda 体内引用的 Slice 绑定若不在 lambda
+      // 自己的作用域层内(沿 scope 链上溯、在 lambdaBase 层之前未命中),即闭包捕获 =
+      // 逃逸词法块,M3051。Slice 类型稀有,非 Slice 绑定在此零开销(switch 单跳)。
+      if (typeContainsSlice(resolveT(found.v.type, new Map()))) {
+        let s = ctx.scope;
+        let captured = false;
+        for (; s; s = s.parent) {
+          if (s.vars.has(name)) break;      // lambda 自身作用域层内的绑定 → 就地引用,放行
+          if (s.lambdaBase) { captured = true; break; } // 到达 lambda 边界仍未命中 → 来自外层
+        }
+        if (captured) {
+          this.diags.push(err('M3051',
+            `Slice 视图不可逃逸当前块(线性约束):绑定 "${name}" 不可被闭包捕获(视图生命周期钉在词法块内)`,
+            e.span, CODE_HINTS.M3051));
+        }
+      }
       // v0.67(切口 2):毒化绑定读取置位探针(合法 never 无标记,不置位)
       if (this.nameProbe && found.v.poisoned) this.nameProbe.poison = true;
       return found.v.type;
@@ -2948,6 +3077,7 @@ export class Checker {
           }
         });
         this.checkPtrArgs(e.args, argTs, ctx, `函数 "${name}"`); // v0.54
+        this.checkSliceArgs(e.args, argTs, `本地函数 "${name}"`); // v0.87 ADR-009 S2
         this.checkEffects(ctx, localFn.effects, callee.span);
         return localFn.ret;
       }
@@ -3036,6 +3166,7 @@ export class Checker {
     }
     // v0.54:Ptr 实参传递门禁(extern 签名可接受 Ptr,不受块限制)
     this.checkPtrArgs(e.args, argTs, ctx, `函数 "${entry.decl.name}"`, !!entry.extern);
+    this.checkSliceArgs(e.args, argTs, `函数 "${entry.decl.name}"`); // v0.87 ADR-009 S2
     if (e.args.length !== sig.params.length) {
       this.diags.push(err('M3005', `函数 "${entry.decl.name}" 需要 ${sig.params.length} 个参数,得到 ${e.args.length}`, e.span,
         sig.params.length ? `签名: ${entry.decl.name}(${sig.params.map(p => typeStr(p.type)).join(', ')})` : null));
@@ -4473,6 +4604,7 @@ export class Checker {
       argTs.push(this.checkExpr(e.args[i], ctx, r.ps[i] ?? undefined));
     }
     this.checkPtrArgs(e.args, argTs, ctx, '函数值', !!r.extern); // v0.54
+    this.checkSliceArgs(e.args, argTs, '函数值'); // v0.87 ADR-009 S2
     for (let i = 0; i < Math.min(e.args.length, r.ps.length); i++) {
       if (!this.untrustedMismatchDiag(argTs[i], r.ps[i], e.args[i].span, `参数 #${i + 1} 类型不匹配`)
         && !unify(argTs[i], r.ps[i], binds)) {
@@ -4493,6 +4625,9 @@ export class Checker {
     // 报在调用表达式 span 上,便于与 checkPtrArgs(直接作为实参)按 span 去重。
     const ptrI = argTs.findIndex(t => typeContainsPtr(t ? resolveT(t, new Map()) : null));
     if (ptrI >= 0) this.checkPtrPayload(argTs[ptrI], e.span, ctx, '变体载荷');
+    // v0.87(ADR-009 S2):变体载荷 Slice 禁面(与 Vec 元素/结构体字段同口径)
+    const sliceI = argTs.findIndex(t => typeContainsSlice(t ? resolveT(t, new Map()) : null));
+    if (sliceI >= 0) this.checkSlicePayload(argTs[sliceI], e.span, '变体载荷');
     if (ctor.ps) {
       for (let i = 0; i < Math.min(argTs.length, ctor.ps.length); i++) {
         if (!unify(argTs[i], ctor.ps[i], binds)) {
@@ -4524,6 +4659,14 @@ export class Checker {
     const binds = new Map();
     for (let i = 0; i < Math.min(argTs.length, spec.params.length); i++) {
       const p = spec.params[i];
+      // v0.87(ADR-009 S2):Slice 实参逃逸门禁(先行)——内建的一切参数位都是逃逸面
+      // (debug/print/assert_eq/fs/net 全等);已发 M3051 则跳过位特定检查,避免双报。
+      if (typeContainsSlice(resolveT(argTs[i], new Map()))) {
+        this.diags.push(err('M3051',
+          `Slice 视图不可逃逸当前块(线性约束):不能作为内建 ${name} 的实参 #${i + 1}`,
+          e.args[i]?.span, CODE_HINTS.M3051));
+        continue;
+      }
       if (p === 'display') {
         // v0.59 P2 审查 MINOR#2:never 是底类型(表达式已必然终止/被拒绝),
         // 与 str(...) 的显示约束 unify 相容,不再级联 M3002。
@@ -4654,6 +4797,13 @@ export class Checker {
       }
       e.args.slice(1).forEach((a, i) => {
         const at = this.checkExpr(a, ctx, fnR.ps[i]);
+        // v0.87(ADR-009 S2):跨任务实参 = 逃逸面(视图不可随任务过界;子任务独立 VM,
+        // 视图的宿主侧引用表示无对应物)
+        if (typeContainsSlice(resolveT(at, new Map()))) {
+          this.diags.push(err('M3051',
+            `Slice 视图不可逃逸当前块(线性约束):不能作为 spawn 任务实参 #${i + 1}(视图不可跨任务)`,
+            a.span, CODE_HINTS.M3051));
+        }
         if (!this.untrustedMismatchDiag(at, fnR.ps[i], a.span, `spawn 参数 #${i + 1} 类型不匹配`)
           && !unify(at, fnR.ps[i], new Map())) {
           this.diags.push(err('M3002', `spawn 参数 #${i + 1} 类型不匹配:期望 ${typeStr(fnR.ps[i])},实际 ${typeStr(at, new Map())}`, a.span));
@@ -4915,6 +5065,7 @@ export class Checker {
     });
     // mem 的 Ptr 门禁已由上面的专项检查覆盖(allowPtr=true,避免重复诊断)
     this.checkPtrArgs(e.args, argTs, ctx, `std.${f.mod}.${f.fn.name}`, f.mod === 'mem');
+    this.checkSliceArgs(e.args, argTs, `std.${f.mod}.${f.fn.name}`); // v0.87 ADR-009 S2
     return f.fn.ret;
   }
 
@@ -5016,6 +5167,8 @@ export class Checker {
 
     // Ptr 方法(v0.54):load/store/offset 需 unsafe 上下文;is_null 块外允许
     if (r.k === 'ptr') return this.ptrMethod(r, name, args, ctx, callNode, expected, fieldCallee);
+    // Slice 方法(v0.87 ADR-009 S2):白名单 len/get/at,只读
+    if (r.k === 'slice') return this.sliceMethod(r, name, args, ctx, callNode, expected, fieldCallee);
     // Vec 方法
     if (r.k === 'vec') return this.vecMethod(r, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
     if (r.k === 'map') return this.mapMethod(r, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
@@ -5077,6 +5230,7 @@ export class Checker {
           }
         });
         this.checkPtrArgs(args, argTs, ctx, `方法 ".${name}"`); // v0.54
+        this.checkSliceArgs(args, argTs, `方法 ".${name}"`); // v0.87 ADR-009 S2
         return sig.ret;
       }
       // v0.67(切口 3):用户类型在已 impl 的方法集内给 nearest 建议(无 impl → 无表,维持现状)
@@ -5239,6 +5393,7 @@ export class Checker {
         const t = aT(0, T);
         if (!this.untrustedMismatchDiag(t, T, args[0].span, 'push 的元素类型不匹配') && !unify(t, T, binds)) this.diags.push(err('M3002', `push 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t, binds)}`, args[0].span));
         this.checkPtrPayload(t, args[0].span, ctx, 'Vec 元素'); // v0.54 审查 B3
+        this.checkSlicePayload(t, args[0].span, 'Vec 元素'); // v0.87 ADR-009 S2
         return T_UNIT;
       }
       case 'pop':
@@ -5337,6 +5492,7 @@ export class Checker {
         const t1 = aT(1, T);
         if (!this.untrustedMismatchDiag(t1, T, args[1].span, 'insert 的元素类型不匹配') && !unify(t1, T, binds)) this.diags.push(err('M3002', `insert 的元素类型是 ${typeStr(T, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
         this.checkPtrPayload(t1, args[1].span, ctx, 'Vec 元素'); // v0.54 审查 B3
+        this.checkSlicePayload(t1, args[1].span, 'Vec 元素'); // v0.87 ADR-009 S2
         return T_UNIT;
       }
       case 'remove': {
@@ -5352,6 +5508,7 @@ export class Checker {
         const t = aT(0, mkVec(T));
         if (!this.untrustedMismatchDiag(t, mkVec(T), args[0].span, 'extend 的参数类型不匹配') && !unify(t, mkVec(T), binds)) this.diags.push(err('M3002', `extend 的参数类型是 ${typeStr(mkVec(T), binds)},实际 ${typeStr(t, binds)}`, args[0].span));
         this.checkPtrPayload(t, args[0].span, ctx, 'Vec 元素'); // v0.54 审查 B3
+        this.checkSlicePayload(t, args[0].span, 'Vec 元素'); // v0.87 ADR-009 S2
         return T_UNIT;
       }
       case 'clone':
@@ -5363,6 +5520,10 @@ export class Checker {
         this.boundSatisfied(T, 'Compare', ctx, span);
         return mkOpt(T);
       }
+      case 'view':
+        // v0.87(ADR-009 S2):Slice 只读视图的唯一构造入口——接收者规则(ADR-009 §2.2
+        // 硬约束 1)在此强制:非 mut Vec[u8] 绑定名;运行时界检查在 interp vecMethodImpl。
+        return this.vecViewMethod(r, fieldCallee, args, ctx, span);
       default:
         // v0.67(切口 3):全表之外给 nearest 建议(如 setx → set)。v0.80(fix 扩面):
         // 同一 nearest 结果结构化为 fix(替换方法名 token;消息与 fix 单一来源)。
@@ -5376,6 +5537,94 @@ export class Checker {
           this.diags.push(dV);
         }
         return null;
+    }
+  }
+
+  // v0.87(ADR-009 S2):view() 接收者规则——唯一 Slice 构造入口(ADR-009 §2.2 硬约束 1)。
+  // 接收者必须是**绑定名**(Ident):表达式/字段/下标接收者、mut 绑定、非 u8 Vec 一律
+  // M3051(构造规则违反与逃逸同码,消息区分主语)。非 Vec 接收者不进本分派(vec 接收者
+  // 才路由到 vecMethod),由既有 M3015"方法不存在"口径处理。
+  // 允许面:let 绑定 / fn 形参(非 mut)——值语义下两者的存储在作用域内不可变(非 mut
+  // 绑定无元素写/重赋值面,checkPlace M3004 既有口径),视图无别名写面;模块常量(Vec[u8]
+  // const)同为不可变存储,一并放行。
+  vecViewMethod(r, fieldCallee, args, ctx, span) {
+    const base = fieldCallee.base;
+    if (base.nt !== 'Ident') {
+      this.diags.push(err('M3051',
+        'Slice 视图构造被拒绝:.view() 的接收者必须是 Vec[u8] 绑定名(不接受表达式/字段/下标接收者)',
+        span, CODE_HINTS.M3051));
+      return null;
+    }
+    const name = base.name;
+    const bindsRec = ctx.scope ? ctx.scope.lookupValue(name) : null;
+    if (bindsRec?.kind === 'var') {
+      if (bindsRec.v.mut) {
+        this.diags.push(err('M3051',
+          `Slice 视图构造被拒绝:"${name}" 是 mut 绑定——view 只接受非 mut 的 Vec[u8] 绑定(视图存活期内源存储必须不可变,ADR-009 §2.2 硬约束 1)`,
+          span, CODE_HINTS.M3051));
+        return null;
+      }
+    } else {
+      // 非作用域绑定的 Ident:模块常量(不可变存储,放行)或本地函数/其他(拒绝)。
+      const centry = ctx.mod.items.get(name);
+      if (centry?.kind !== 'const') {
+        this.diags.push(err('M3051',
+          `Slice 视图构造被拒绝:"${name}" 不是可创建视图的 Vec[u8] 绑定(只接受非 mut 局部绑定/形参/常量)`,
+          span, CODE_HINTS.M3051));
+        return null;
+      }
+    }
+    // 元素类型:只支持 Vec[u8](r.k === 'vec' 由分派保证)
+    const el = r.el ? resolveT(r.el, new Map()) : null;
+    if (!(el?.k === 'int' && el.bits === 8 && el.signed === false)) {
+      this.diags.push(err('M3051',
+        `Slice 视图构造被拒绝:view 只支持 Vec[u8] 接收者(得到 Vec[${typeStr(r.el, new Map())}];Slice[str]/泛型 Slice 登记另裁,ADR-009 §2.2)`,
+        span, CODE_HINTS.M3051));
+      return null;
+    }
+    if (!this.arityCheck('view', args, 2, 2, span)) return null;
+    const binds = new Map();
+    args.forEach((a, i) => {
+      const t = this.checkExpr(a, ctx, INT_TYPES.i64);
+      if (!unify(t, INT_TYPES.i64, binds)) this.diags.push(err('M3002', `view 的第 ${i + 1} 个参数必须是 i64`, a.span));
+    });
+    return mkSlice(INT_TYPES.u8);
+  }
+
+  // v0.87(ADR-009 S2):Slice 方法面白名单(ADR-009 §2.2 硬约束 3)——len/get/at,只读。
+  // 白名单外 M3015(既有"方法不存在"口径,带 nearest);无 mut 方法。
+  sliceMethod(r, name, args, ctx, callNode, expected, fieldCallee) {
+    const span = fieldCallee.span;
+    switch (name) {
+      case 'len':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return INT_TYPES.i64;
+      case 'get': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        const binds = new Map();
+        const t = this.checkExpr(args[0], ctx, INT_TYPES.i64);
+        if (!unify(t, INT_TYPES.i64, binds)) this.diags.push(err('M3002', `get 的索引必须是 i64`, args[0].span));
+        return mkOpt(INT_TYPES.u8);
+      }
+      case 'at': {
+        if (!this.arityCheck(name, args, 1, 1, span)) return null;
+        const binds = new Map();
+        const t = this.checkExpr(args[0], ctx, INT_TYPES.i64);
+        if (!unify(t, INT_TYPES.i64, binds)) this.diags.push(err('M3002', `at 的索引必须是 i64`, args[0].span));
+        return INT_TYPES.u8;
+      }
+      default: {
+        const mfS = methodNearFix(name, ['len', 'get', 'at']);
+        const dS = err('M3015',
+          `Slice[u8] 没有方法 ".${name}"(视图方法面只有 len / get / at;无 mut 方法,只读)${mfS.suffix}`,
+          span, 'Slice 是块内线性只读视图(ADR-009 §2.2):用 len/get/at 就地消费;返回 Vec 用既有 .slice(start, len)(拷贝语义)。');
+        if (mfS.near) {
+          const fx = spanFix(fieldCallee.nameSpan, mfS.near);
+          if (fx) dS.fix = fx;
+        }
+        this.diags.push(dS);
+        return null;
+      }
     }
   }
 
@@ -5396,6 +5645,7 @@ export class Checker {
         this.checkMutReceiver(fieldCallee.base, ctx, name, span);
         const t0 = aT(0, K); if (!this.untrustedMismatchDiag(t0, K, args[0].span, 'map 键类型不匹配') && !unify(t0, K, binds)) this.diags.push(err('M3002', `map 键类型是 ${typeStr(K, binds)},实际 ${typeStr(t0, binds)}`, args[0].span));
         const t1 = aT(1, V); if (!this.untrustedMismatchDiag(t1, V, args[1].span, 'map 值类型不匹配') && !unify(t1, V, binds)) this.diags.push(err('M3002', `map 值类型是 ${typeStr(V, binds)},实际 ${typeStr(t1, binds)}`, args[1].span));
+        this.checkSlicePayload(t1, args[1].span, 'Map 值'); // v0.87 ADR-009 S2
         this.checkPtrPayload(t0, args[0].span, ctx, 'Map 键'); // v0.54 审查 B3
         this.checkPtrPayload(t1, args[1].span, ctx, 'Map 值');
         return T_UNIT;
@@ -5850,7 +6100,10 @@ export class Checker {
           this.diags.push(err('M3002', `"${op}" 两侧类型不同:${typeStr(l, binds)} 与 ${typeStr(r, binds)}`, span));
           return T_BOOL;
         }
-        if (!isComparable(l, binds)) this.diags.push(err('M3008', '函数值不支持相等比较', span));
+        if (!isComparable(l, binds)) this.diags.push(err('M3008',
+          resolveT(l, new Map())?.k === 'slice'
+            ? 'Slice 视图不支持相等比较(视图无值相等面;用逐字节 get 比较)'
+            : '函数值不支持相等比较', span));
         if ((resolveT(l, binds)?.k === 'float')) {
           this.diags.push(warn('W3102', '浮点数用 == 比较可能因精度产生意外结果', span,
             '通常改用差值判断:abs(a - b) < 1e-9(std.math.abs)。确需相等比较可忽略此警告。'));
@@ -6237,6 +6490,8 @@ export class Checker {
         unify(expected, ft, binds); // 绑定未定的类型参数
       }
       if (typeContainsPtr(ft)) ptrField = true;
+      // v0.87(ADR-009 S2):结构体字段 Slice 禁面(逐字段报,主语带字段名)
+      this.checkSlicePayload(ft, f.value.span, `结构体字段 "${f.name}"`);
       this.checkFnEffectNarrowing(expected, ft, f.value.span);  // v0.54 审查 B4
     }
     const missing = decl.fields.filter(f => !seen.has(f.name)).map(f => f.name);
@@ -6293,6 +6548,9 @@ export class Checker {
       return { name: p.name, type: t, span: p.span };
     });
     const scope = new Scope(ctx.scope, ctx.mod);
+    // v0.87(ADR-009 S2):lambda 边界标记——checkIdent 据此判定 Slice 绑定捕获
+    // (视图绑定被闭包捕获 = 逃逸词法块,M3051;判定逻辑见 checkIdent 的 lambdaBase 上溯)。
+    scope.lambdaBase = true;
     for (const p of ps) scope.bind(p.name, p.type, false, p.span, true);
     const sink = new Set();
     // v0.79(#71):lambda 体是新函数边界——不继承外层 inLoop。lambda 内裸 continue/break
@@ -6313,6 +6571,13 @@ export class Checker {
     // 推断变量填充
     ps.forEach(p => { if (p.type.k === 'var') p.type = resolveT(p.type, binds) ?? p.type; });
     if (retT) retT = resolveT(retT, binds) ?? retT;
+    // v0.87(审查 MAJOR-1):lambda 块尾隐式返回的 Slice 门禁——显式 return 语句已有
+    // 逃逸发射点,块尾值/推断返回类型此前无检查点;视图越 lambda 边界 = 逃逸(M3051)。
+    if (retT && typeContainsSlice(resolveT(retT, new Map()))) {
+      this.diags.push(err('M3051',
+        'Slice 视图不可逃逸 lambda(线性约束):块尾/返回值不能是视图',
+        e.span ?? e.body.span, CODE_HINTS.M3051));
+    }
     if (ctx.effectSink) for (const e of sink) ctx.effectSink.add(e);
     return mkFn(ps.map(p => p.type), retT ?? T_UNIT, sink);
   }
@@ -6522,6 +6787,37 @@ export function typeContainsPtr(t, seen = new Set()) {
       const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
       const seen2 = new Set(seen).add(def);
       return def.variants.some(v => (v.rtypes ?? []).some(x => typeContainsPtr(substTypes(x, tps, sub), seen2)));
+    }
+    default: return false;
+  }
+}
+
+// v0.87(ADR-009 S2):类型是否(递归地)含 Slice 视图——块内线性逃逸门禁用(仿 typeContainsPtr
+// 模式,v0.54 审查 B3 先例)。Slice 只能由 view() 就地创建,任何"含 Slice"的实参/载荷/返回
+// 面都是逃逸面 → M3051。泛型参数/推断变量无法静态判定 → false,调用点以实参类型判定。
+export function typeContainsSlice(t, seen = new Set()) {
+  if (!t) return false;
+  switch (t.k) {
+    case 'slice': return true;
+    case 'vec': case 'opt': case 'range': case 'join': case 'ptr': return typeContainsSlice(t.el, seen);
+    case 'map': return typeContainsSlice(t.kt, seen) || typeContainsSlice(t.vt, seen);
+    case 'res': return typeContainsSlice(t.ok, seen) || typeContainsSlice(t.err, seen);
+    case 'tuple': return (t.ts ?? []).some(x => typeContainsSlice(x, seen));
+    case 'struct': {
+      const def = t.def;
+      if (!def?.fields?.length || seen.has(def)) return false;
+      const tps = def.tparams ?? [];
+      const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
+      const seen2 = new Set(seen).add(def);
+      return def.fields.some(f => f.rtype && typeContainsSlice(substTypes(f.rtype, tps, sub), seen2));
+    }
+    case 'enum': {
+      const def = t.def;
+      if (!def?.variants?.length || seen.has(def)) return false;
+      const tps = def.tparams ?? [];
+      const sub = new Map(tps.map((n, i) => [n, t.targs?.[i] ?? { k: 'param', name: n }]));
+      const seen2 = new Set(seen).add(def);
+      return def.variants.some(v => (v.rtypes ?? []).some(x => typeContainsSlice(substTypes(x, tps, sub), seen2)));
     }
     default: return false;
   }

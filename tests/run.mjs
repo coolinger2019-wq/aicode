@@ -20944,6 +20944,583 @@ fn main() with io, fs {
   // ---- §95-END
 }
 
+// ===================== 96. v0.87:ADR-009 S2 Slice[u8] 只读视图(plan §4.13.2 簇 A)=====================
+// 文件所有权:§96 = 本区全部用例(Agent A)。实现面:src/checker.js(Slice 类型面/view 构造
+// 接收者校验/M3051 逃逸门禁/签名禁面/闭包捕获)+ src/interp.js(零拷贝视图对象 + len/get/at,
+// tree/VM 共享 callMethod 分派)+ src/wasm.js(view 具名不资格)+ src/diag.js(M3051 三处登记)。
+// 契约:docs/adr-009-streaming-slice.md §2.2(三硬约束)/§3 清单 4-7。
+// 设计定案(实现期):① 运行时表示 {t:'slice',base,off,len} 共享源数组(零拷贝,白盒锁定);
+// ② 块内线性 = M3051[slice-escape](构造规则与逃逸同码,消息区分主语);③ 方法面白名单
+// len/get/at,白名单外 M3015;④ 视图越界 M4003 视图变体(消息三引擎逐字,tree/VM 共享实现);
+// ⑤ 证明面 v1 暂缓:prover 静态证明面不含 Slice 访问(s.at 是方法调用非 Index 节点,义务
+// 不采集——"未采集"≠"已证明",ADR/plan 注记);⑥ wasm:含 view 函数一律回落(strict 具名);
+// cc:经既有 C1 门拒绝(Vec[u8] 绑定即 C1,现状面零改动)。
+{
+  const dir96 = path.join(TMP, 'v96');
+  fs.mkdirSync(dir96, { recursive: true });
+  const m96 = (name, src) => { const f = path.join(dir96, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags96 = ['', '--no-wasm', '--tree'];
+  const runAll96 = (p) => flags96.map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const firstLine96 = (r) => (r.stderr ?? '').split('\n')[0] ?? '';
+  const fmtRuns96 = (runs) => runs.map((r) => `${r.code}:${JSON.stringify((r.stdout ?? '').slice(0, 40))}/${JSON.stringify(firstLine96(r).slice(0, 90))}`).join(' | ');
+  const j96 = (p) => { const r = runMing(['check', p, '--json']); try { return { r, j: JSON.parse(r.stdout) }; } catch { return { r, j: null }; } };
+  // check 层三腿:非法程序 run(三旗标)全部 exit 1 且 stderr 首行逐字(检查先于执行,三引擎同判)
+  const checkLegs96 = (p) => flags96.map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const diagMsgs96 = (p) => { const { j } = j96(p); return (j?.diagnostics ?? []).map((d) => `${d.code}:${d.message}`); };
+
+  // ---- v96.1:正例黄金——view(1,3) 的 len/at/get 三腿逐字 + get 边界(len-1 Some / len None) ----
+  {
+    const p = m96('v96_1_golden.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[u8] = [10u8, 20u8, 30u8, 40u8, 50u8];',
+      '    let s = v.view(1, 3);',
+      '    print(str(s.len()));',
+      '    print(str(s.at(0)));',
+      '    print(str(s.at(2)));',
+      '    match s.get(0) { Some(b) => print(str(b)), None => print("none") }',
+      '    match s.get(3) { Some(b) => print(str(b)), None => print("none") }',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll96(p);
+    check('v96.1:view 正例黄金(len=3/at=20,40/get(0)=Some(20)/get(3)=None)三腿逐字',
+      runs.every((r) => r.code === 0 && r.stdout === '3\n20\n40\n20\nnone\n'), fmtRuns96(runs));
+  }
+
+  // ---- v96.2:零拷贝白盒——view 对象 base/数组同一性 + deepCopy 视图引用复制 + 大 Vec 探针 ----
+  {
+    const { V, deepCopy } = await import('../src/interp.js');
+    const src = 'fn main() -> i64 { return 0; }\n';
+    const probe = m96('v96_2_wb.ming', src);
+    const cr = new Checker(probe, () => src).run();
+    const interp = new VMInterp(cr, { capture: true, tree: true });
+    const span = { file: probe, line: 1, col: 1 };
+    const vec = V.vec([V.int(10), V.int(20), V.int(30), V.int(40)]);
+    const s = interp.vecMethodImpl(vec, 'view', [V.int(1), V.int(2)], span);
+    const s2 = deepCopy(s);
+    const big = V.vec(Array.from({ length: 10000000 }, (_, i) => V.int(i % 256)));
+    const t0 = Date.now();
+    const sb = interp.vecMethodImpl(big, 'view', [V.int(0), V.int(10000000)], span);
+    const dt = Date.now() - t0;
+    const ok = s.t === 'slice' && s.base === vec && s.base.a === vec.a && s.off === 1 && s.len === 2
+      && s2 !== s && s2.base === vec && s2.off === 1 && s2.len === 2
+      && sb.base === big && sb.base.a === big.a && dt < 2000;
+    check('v96.2:零拷贝白盒——视图共享源数组对象(base/a 同一性)+ deepCopy=视图引用复制 + 10M 元素 view 毫秒级',
+      ok, `identity=${s.base === vec}/${s.base.a === vec.a} copy=${s2.base === vec} big=${sb.base === big}/${sb.base.a === big.a} ms=${dt}`);
+  }
+
+  // ---- v96.3:view 越界(start+len > n)→ M4003 视图变体三腿首行逐字 + exit 101 ----
+  {
+    const p = m96('v96_3_over.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[u8] = [1u8, 2u8, 3u8];',
+      '    let s = v.view(1, 3);',
+      '    print(str(s.len()));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = checkLegs96(p);
+    const msg = '视图越界:长度 3,start+len 4';
+    check('v96.3:view 越界 M4003(视图越界:长度 3,start+len 4)三腿首行逐字 + exit 101',
+      runs.every((r) => r.code === 101) && runs.every((r) => firstLine96(r).includes(msg))
+        && firstLine96(runs[0]) === firstLine96(runs[1]) && firstLine96(runs[0]) === firstLine96(runs[2]),
+      fmtRuns96(runs));
+  }
+
+  // ---- v96.4:view 负参(start<0 / len<0)→ M4003 三腿逐字(两程序) ----
+  {
+    const p1 = m96('v96_4a_negstart.ming', 'fn main() -> i64 with io { let v: Vec[u8] = [1u8, 2u8, 3u8]; let s = v.view(-1, 2); return s.len() as i64; }\n');
+    const p2 = m96('v96_4b_neglen.ming', 'fn main() -> i64 with io { let v: Vec[u8] = [1u8, 2u8, 3u8]; let s = v.view(0, -2); return s.len() as i64; }\n');
+    const r1 = checkLegs96(p1);
+    const r2 = checkLegs96(p2);
+    const m1 = '视图越界:长度 3,start/len 不能为负: -1/2';
+    const m2 = '视图越界:长度 3,start/len 不能为负: 0/-2';
+    const okAll = (rs, m) => rs.every((r) => r.code === 101) && rs.every((r) => firstLine96(r).includes(m))
+      && firstLine96(rs[0]) === firstLine96(rs[1]) && firstLine96(rs[0]) === firstLine96(rs[2]);
+    check('v96.4:view 负 start(-1)与负 len(-2)→ M4003 负参消息逐字(两程序 × 三腿)',
+      okAll(r1, m1) && okAll(r2, m2), `a=${fmtRuns96(r1)} | b=${fmtRuns96(r2)}`);
+  }
+
+  // ---- v96.5:at 越界 → M4003 视图变体(访问形态)三腿逐字 ----
+  {
+    const p = m96('v96_5_at.ming', 'fn main() -> i64 with io { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 2); print(str(s.at(5))); return 0; }\n');
+    const runs = checkLegs96(p);
+    const msg = '视图越界:长度 2,访问 5';
+    check('v96.5:at 越界 M4003(视图越界:长度 2,访问 5——对齐索引越界访问形态)三腿首行逐字 + exit 101',
+      runs.every((r) => r.code === 101) && runs.every((r) => firstLine96(r).includes(msg))
+        && firstLine96(runs[0]) === firstLine96(runs[1]) && firstLine96(runs[0]) === firstLine96(runs[2]),
+      fmtRuns96(runs));
+  }
+
+  // ---- v96.6:非法接收者三形态(mut 绑定/非 u8 Vec/表达式接收者)→ M3051 逐字(check --json) ----
+  {
+    const mut = m96('v96_6a_mut.ming', 'fn main() -> i64 { let mut v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 2); return s.len() as i64; }\n');
+    const nonu8 = m96('v96_6b_nonu8.ming', 'fn main() -> i64 { let v = [1, 2]; let s = v.view(0, 2); return s.len() as i64; }\n');
+    const expr = m96('v96_6c_expr.ming', 'fn mk() -> Vec[u8] { return [1u8, 2u8]; }\nfn main() -> i64 { let s = mk().view(0, 2); return s.len() as i64; }\n');
+    const msgs = { mut: diagMsgs96(mut), nonu8: diagMsgs96(nonu8), expr: diagMsgs96(expr) };
+    const mMut = 'M3051:Slice 视图构造被拒绝:"v" 是 mut 绑定——view 只接受非 mut 的 Vec[u8] 绑定(视图存活期内源存储必须不可变,ADR-009 §2.2 硬约束 1)';
+    const mNonu8 = 'M3051:Slice 视图构造被拒绝:view 只支持 Vec[u8] 接收者(得到 Vec[i64];Slice[str]/泛型 Slice 登记另裁,ADR-009 §2.2)';
+    const mExpr = 'M3051:Slice 视图构造被拒绝:.view() 的接收者必须是 Vec[u8] 绑定名(不接受表达式/字段/下标接收者)';
+    check('v96.6:非法接收者三形态 → M3051 消息逐字(mut 绑定/非 u8 Vec/表达式接收者)',
+      msgs.mut.includes(mMut) && msgs.nonu8.includes(mNonu8) && msgs.expr.includes(mExpr),
+      JSON.stringify(msgs));
+  }
+
+  // ---- v96.7:逃逸矩阵 A——return / 传参 / let 再绑定 → M3051 逐字 + run 三腿 exit 1 同判 ----
+  {
+    const ret = m96('v96_7a_ret.ming', 'fn mk(v: Vec[u8]) -> i64 { let s = v.view(0, 2); return s; }\nfn main() -> i64 { return 0; }\n');
+    const arg = m96('v96_7b_arg.ming', 'fn take(x: Vec[u8]) -> i64 { return x.len(); }\nfn main() -> i64 { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 2); return take(s); }\n');
+    const rebind = m96('v96_7c_rebind.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 1); let t = s; return t.len() as i64; }\n');
+    const mRet = 'M3051:Slice 视图不可逃逸当前块(线性约束):不能 return 视图';
+    const mArg = 'M3051:Slice 视图不可逃逸当前块(线性约束):不能作为函数 "take"的实参 #1';
+    const mRebind = 'M3051:Slice 视图不可逃逸当前块(线性约束):let 初始化器只能由 .view() 就地产生视图,不能绑定既有视图';
+    const legs = checkLegs96(ret);
+    const legsOk = legs.every((r) => r.code === 1) && firstLine96(legs[0]) === firstLine96(legs[1]) && firstLine96(legs[0]) === firstLine96(legs[2]);
+    check('v96.7:逃逸 A——return/传参/let 再绑定 M3051 消息逐字 + 非法程序 run 三腿 exit 1 同判',
+      diagMsgs96(ret).includes(mRet) && diagMsgs96(arg).includes(mArg) && diagMsgs96(rebind).includes(mRebind) && legsOk,
+      JSON.stringify({ ret: diagMsgs96(ret), arg: diagMsgs96(arg), rebind: diagMsgs96(rebind) }));
+  }
+
+  // ---- v96.8:逃逸矩阵 B——容器/构造载荷五面(Vec.push/Map.set/变体载荷/结构体字段/元组)逐字 ----
+  {
+    const push = m96('v96_8a_push.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8]; let mut w: Vec[Vec[u8]] = []; let s = v.view(0, 1); w.push(s); return 0; }\n');
+    const map = m96('v96_8b_map.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8]; let mut m: Map[str, Vec[u8]] = {}; let s = v.view(0, 1); m.set("k", s); return 0; }\n');
+    const ctor = m96('v96_8c_ctor.ming', 'enum Box { Held(Vec[u8]), Empty }\nfn main() -> i64 { let v: Vec[u8] = [1u8]; let s = v.view(0, 1); let b = Box.Held(s); return 0; }\n');
+    const structF = m96('v96_8d_struct.ming', 'struct B { v: Vec[u8] }\nfn main() -> i64 { let v: Vec[u8] = [1u8]; let s = v.view(0, 1); let b = B { v: s }; return 0; }\n');
+    const tuple = m96('v96_8e_tuple.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8]; let s = v.view(0, 1); let t = (s, 1); return 0; }\n');
+    const msgs = {
+      push: diagMsgs96(push), map: diagMsgs96(map), ctor: diagMsgs96(ctor), struct: diagMsgs96(structF), tuple: diagMsgs96(tuple),
+    };
+    const has = (arr, m) => arr.includes(m);
+    check('v96.8:逃逸 B——五载荷面 M3051 消息逐字(Vec 元素/Map 值/变体载荷/结构体字段/元组成分)',
+      has(msgs.push, 'M3051:Slice 视图不可逃逸当前块(线性约束):Vec 元素不能承载 Slice(Slice[u8])')
+        && has(msgs.map, 'M3051:Slice 视图不可逃逸当前块(线性约束):Map 值不能承载 Slice(Slice[u8])')
+        && has(msgs.ctor, 'M3051:Slice 视图不可逃逸当前块(线性约束):变体载荷不能承载 Slice(Slice[u8])')
+        && has(msgs.struct, 'M3051:Slice 视图不可逃逸当前块(线性约束):结构体字段 "v"不能承载 Slice(Slice[u8])')
+        && has(msgs.tuple, 'M3051:Slice 视图不可逃逸当前块(线性约束):元组成分不能承载 Slice((Slice[u8], i64))'),
+      JSON.stringify(msgs));
+  }
+
+  // ---- v96.9:赋值再绑定(mut s2 = s)→ M3051(视图不可赋值/再绑定)逐字 ----
+  {
+    const p = m96('v96_9_assign.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 1); let mut s2 = v.view(1, 1); s2 = s; return s2.len() as i64; }\n');
+    const mAssign = 'M3051:Slice 视图不可逃逸当前块(线性约束):视图不可赋值/再绑定(只能由 .view() 就地创建并就地消费)';
+    check('v96.9:s2 = s(mut 绑定)→ M3051 赋值逃逸消息逐字',
+      diagMsgs96(p).includes(mAssign), JSON.stringify(diagMsgs96(p)));
+  }
+
+  // ---- v96.10:签名禁面——形参/返回/本地函数签名 → M3051 逐字(三发射点) ----
+  {
+    const param = m96('v96_10a_param.ming', 'fn probe(s: Slice[u8]) -> i64 { return s.len(); }\nfn main() -> i64 { return 0; }\n');
+    const ret = m96('v96_10b_ret.ming', 'fn probe(v: Vec[u8]) -> Slice[u8] { return v.view(0, 1); }\nfn main() -> i64 { return 0; }\n');
+    const local = m96('v96_10c_local.ming', 'fn main() -> i64 { fn inner(s: Slice[u8]) -> i64 { return s.len(); } return 0; }\n');
+    const mParam = 'M3051:Slice 视图不可跨函数边界(块内线性):形参 "s" 不能是 Slice[u8]';
+    const mRet = 'M3051:Slice 视图不可跨函数边界(块内线性):函数返回类型不能是 Slice[u8]';
+    check('v96.10:签名禁面——形参/返回/本地函数 M3051 消息逐字(三发射点)',
+      diagMsgs96(param).includes(mParam) && diagMsgs96(ret).includes(mRet) && diagMsgs96(local).includes(mParam),
+      JSON.stringify({ param: diagMsgs96(param), ret: diagMsgs96(ret), local: diagMsgs96(local) }));
+  }
+
+  // ---- v96.11:闭包捕获 → M3051 逐字(lambda 边界上溯判定) ----
+  {
+    const p = m96('v96_11_capture.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 1); let f = () => s.at(0); return f(); }\n');
+    const mCap = 'M3051:Slice 视图不可逃逸当前块(线性约束):绑定 "s" 不可被闭包捕获(视图生命周期钉在词法块内)';
+    check('v96.11:lambda 捕获视图绑定 → M3051 消息逐字',
+      diagMsgs96(p).includes(mCap), JSON.stringify(diagMsgs96(p)));
+  }
+
+  // ---- v96.12:方法面白名单外 → M3015 逐字(to_str/push 不在 len/get/at) ----
+  {
+    const tostr = m96('v96_12a_tostr.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8]; let s = v.view(0, 1); let t = s.to_str(); return 0; }\n');
+    const msgs = diagMsgs96(tostr);
+    check('v96.12:白名单外方法 .to_str → M3015 消息逐字(视图方法面只有 len/get/at)',
+      msgs.includes('M3015:Slice[u8] 没有方法 ".to_str"(视图方法面只有 len / get / at;无 mut 方法,只读)'),
+      JSON.stringify(msgs));
+  }
+
+  // ---- v96.13:内建实参逃逸(debug)+ 跨任务实参(spawn)→ M3051 逐字 ----
+  {
+    const dbg = m96('v96_13a_debug.ming', 'fn main() -> i64 with io { let v: Vec[u8] = [1u8]; let s = v.view(0, 1); debug(s); return 0; }\n');
+    const sp = m96('v96_13b_spawn.ming', 'fn task(x: Vec[u8]) -> i64 { return x.len(); }\nfn main() -> i64 with sync { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 1); let h = std.sync.spawn(task, s); return 0; }\n');
+    const msgsDbg = diagMsgs96(dbg);
+    const msgsSp = diagMsgs96(sp);
+    check('v96.13:内建 debug 实参 + spawn 任务实参 → M3051 消息逐字(逃逸面:调试通道/跨任务)',
+      msgsDbg.includes('M3051:Slice 视图不可逃逸当前块(线性约束):不能作为内建 debug 的实参 #1')
+        && msgsSp.includes('M3051:Slice 视图不可逃逸当前块(线性约束):不能作为 spawn 任务实参 #1(视图不可跨任务)'),
+      JSON.stringify({ dbg: msgsDbg, sp: msgsSp }));
+  }
+
+  // ---- v96.14:wasm 具名回落——i64 签名 + 局部 Vec[u8] view:strict exit 2 点名 probe;非 strict 三腿一致 ----
+  {
+    const p = m96('v96_14_wasm.ming', [
+      'fn probe() -> i64 {',
+      '    let v: Vec[u8] = [7u8, 8u8, 9u8];',
+      '    let s = v.view(1, 2);',
+      '    return s.at(1) as i64 + s.len();',
+      '}',
+      'fn main() -> i64 with io {',
+      '    print(str(probe()));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll96(p);
+    const strict = runMing(['run', p, '--strict-wasm']);
+    const ok = runs.every((r) => r.code === 0 && r.stdout === '11\n')
+      && strict.code === 2 && strict.stderr.includes('strict-wasm: wasm 编译回落(probe)');
+    check('v96.14:wasm 不资格——含 view 函数 strict exit 2 具名回落(点名 probe)+ 非 strict 三腿逐字 11(VM 回落语义不变)',
+      ok, `${fmtRuns96(runs)} strict=${strict.code}:${JSON.stringify(firstLine96(strict).slice(0, 110))}`);
+  }
+
+  // ---- v96.15:cc 现状拒绝——C1 门(Vec[u8] 绑定即 C1,零 cbackend 改动) ----
+  {
+    const p = m96('v96_15_cc.ming', 'fn main() -> i64 { let v: Vec[u8] = [1u8, 2u8]; let s = v.view(0, 2); return s.at(0) as i64; }\n');
+    const r = runMing(['cc', p, '--no-run']);
+    check('v96.15:cc 现状面拒绝——C1 不支持该程序形态(exit 1;Vec[u8] 绑定在 C1/C2 面之外,ADR-009 §2.5 矩阵)',
+      r.code !== 0 && (r.stderr ?? '').includes('C1 不支持该程序形态'),
+      `code=${r.code} stderr=${JSON.stringify((r.stderr ?? '').split('\n')[0]?.slice(0, 120))}`);
+  }
+
+  // ---- v96.16:零校准锚——既有 Vec.slice 拷贝语义不变 + view 与 slice 并存(三腿) ----
+  {
+    const p = m96('v96_16_anchor.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[u8] = [1u8, 2u8, 3u8, 4u8];',
+      '    let s = v.view(0, 2);',
+      '    let w = v.slice(0, 2);',
+      '    let mut v2 = v;',
+      '    v2.push(99u8);',
+      '    print(str(s.len()));',
+      '    print(str(s.at(1)));',
+      '    print(str(w.len()));',
+      '    print(str(v2.len()));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll96(p);
+    // view 需非 mut 源(硬约束 1),push 走深拷贝副本 v2(值语义隔离)——视图窗口固定不变,
+    // slice 拷贝独立,两者并存零冲突
+    check('v96.16:零校准锚——Vec.slice 拷贝语义不变 + view 窗口固定 + 值语义深拷贝隔离(v2.push 不影响视图)三腿逐字',
+      runs.every((r) => r.code === 0 && r.stdout === '2\n2\n2\n5\n'), fmtRuns96(runs));
+  }
+  // ---- v96.17/v96.18(v0.87 审查 MAJOR-1/MINOR-1 修复锁定)----
+  {
+    // MAJOR-1:lambda 块尾隐式返回视图——逃逸门禁此前只覆盖显式 return,块尾值穿透
+    const f = m96('v96_17_lamret.ming', [
+      'fn main() with io {',
+      '  let f = () => { let vv: Vec[u8] = [9,8,7]; vv.view(0, 2) };',
+      '  print(str(f().at(0)));',
+      '}',
+    ].join('\n'));
+    const { r: r17, j: j17 } = j96(f);
+    const d17 = (j17?.diagnostics ?? []).find((x) => x.code === 'M3051');
+    check('v96.17:lambda 块尾隐式返回视图 → M3051(逃逸门禁覆盖块尾值;审查 MAJOR-1 修复)',
+      r17.code === 1 && !!d17 && d17.message.includes('不可逃逸 lambda'), JSON.stringify(j17?.diagnostics ?? []).slice(0, 150));
+  }
+  {
+    // MINOR-1:Slice == 静态拒绝(valueEquals 恒 false 的静默错误值面关闭)
+    const f = m96('v96_18_eq.ming', [
+      'fn main() with io {',
+      '  let v: Vec[u8] = [1,2,3];',
+      '  let s = v.view(0, 2);',
+      '  let t = v.view(0, 2);',
+      '  if s == t { print("eq"); } else { print("diff"); }',
+      '}',
+    ].join('\n'));
+    const { r: r18, j: j18 } = j96(f);
+    const d18 = (j18?.diagnostics ?? []).find((x) => x.code === 'M3008');
+    check('v96.18:Slice == 静态拒绝 → M3008(视图无值相等面;isComparable slice=false;审查 MINOR-1)',
+      r18.code === 1 && !!d18 && d18.message.includes('Slice 视图不支持相等比较'), JSON.stringify(j18?.diagnostics ?? []).slice(0, 150));
+  }
+  // ---- §96-END
+}
+
+// ===================== §97 窄型注解宽度归一(v0.87,plan §4.13.7 / v0.85 审查 M1) =====================
+// 文件所有权:§97 = 本区全部用例(Agent B)。实现面:src/interp.js(normBindValue/narrowSpec*
+// 助手 + tree let/重赋值/传参/返回/闭包/本地函数归一)+ src/vm.js(ST/SET c 规格 + callCompiled
+// 参数/返回归一)+ src/compiler.js(let 窄型规格发射/narrowSlots/lambda narrowSpecs/tryWasm
+// 窄型 let 门禁)。checker.js/wasm.js 零改动。
+// 语义定案:注解/声明产生窄型运行时值——let 标注、mut 重赋值、传参、返回、lambda 形参边界
+// 按声明类型重标 V.int(bits,signed);重标只改运行时 bits 标签(界内值 str()/比较/deepCopy
+// 输出不变),后续算术因 bits 收窄而在溢出处 panic(M4002,消息模板 = intBin 既有
+// `整数<op>溢出:a + b 超出 i<bits><u> 范围`)。fits 失败 = 防御路径(checker 保证不可达,
+// v97.12 白盒锁定):`整数溢出:<v> 超出 i<bits><u> 范围(绑定归一)`。
+// wasm 一致性:含窄型标注 let 的函数排除出 wasm 分层(compiler tryWasm 门禁,经既有资格
+// 不动点回落)——否则 wasm 腿对窄型算术静默(i64 槽无 fits 门)与 tree/VM 分歧(硬规则 1)。
+// 登记遗留(本版不修,报告见):struct 字段窄型位 / Vec·Map 元素窄型位 / 无标注 lambda 形参
+// / 元组模式绑定——值经这些位携带 i64 标签时左操作数宽度仍为 i64(三腿一致静默,非分歧面)。
+{
+  const dir97 = path.join(TMP, 'v97');
+  fs.mkdirSync(dir97, { recursive: true });
+  const m97 = (name, src) => { const f = path.join(dir97, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags97 = ['', '--no-wasm', '--tree'];
+  const runAll97 = (p) => flags97.map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const firstLine97 = (r) => (r.stderr ?? '').split('\n')[0] ?? '';
+  const fmtRuns97 = (runs) => runs.map((r) => `${r.code}:${JSON.stringify((r.stdout ?? '').slice(0, 40))}/${JSON.stringify(firstLine97(r).slice(0, 90))}`).join(' | ');
+
+  // ---- v97.1:M1 形态收口(let i32)——`let a: i32 = 2147483647; a + 1i32` 三腿 M4002 逐字 ----
+  // 归一后 a 带 i32 bits,溢出在算术处 panic(消息 = intBin 既有模板),不是绑定处
+  {
+    const p = m97('v97_1_let_i32.ming', [
+      'fn main() -> i64 with io {',
+      '    let a: i32 = 2147483647;',
+      '    let c: i32 = a + 1i32;',
+      '    print(str(c));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:20: error M4002[integer-overflow]: 整数+溢出:2147483647 + 1 超出 i32 范围`);
+    check('v97.1:M1 收口(let i32)——`let a: i32 = 2147483647; a + 1i32` 三腿 M4002 首行逐字 3:18(修复前三腿静默 2147483648)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.2:M1 形态收口(let u8)——i8u 命名口径三腿逐字 ----
+  {
+    const p = m97('v97_2_let_u8.ming', [
+      'fn main() -> i64 with io {',
+      '    let a: u8 = 255;',
+      '    let c: u8 = a + 1u8;',
+      '    print(str(c));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:19: error M4002[integer-overflow]: 整数+溢出:255 + 1 超出 i8u 范围`);
+    check('v97.2:M1 收口(let u8)——`255 + 1 超出 i8u 范围` 三腿逐字(v93.8 i32u 命名先例:u 型渲染 i<bits>u)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.3:返回边界——`fn f() -> u8 { return 200; } f() + 100u8` 三腿 M4002 逐字 ----
+  // f 本身无窄型 let → 仍 wasm eligible;归一发生在调用边界(VM 返回归一)——wasm 腿
+  // 返回 200 后由 callCompiled 按声明 u8 重标,主流程算术处 panic,三腿逐字
+  {
+    const p = m97('v97_3_ret.ming', [
+      'fn f() -> u8 { return 200; }',
+      'fn main() -> i64 with io {',
+      '    print(str(f() + 100u8));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:19: error M4002[integer-overflow]: 整数+溢出:200 + 100 超出 i8u 范围`);
+    check('v97.3:返回边界——`fn f() -> u8` 返回值在 VM RET 出口重标,f() + 100u8 三腿 M4002 逐字 3:19(修复前静默 300;f 窄返回本就非 eligible)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.4:传参边界——`fn g(x: u8) -> u8 { return x; }` 实参/返回双侧归一三腿逐字 ----
+  {
+    const p = m97('v97_4_param.ming', [
+      'fn g(x: u8) -> u8 { return x; }',
+      'fn main() -> i64 with io {',
+      '    print(str(g(200) + 100u8));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:22: error M4002[integer-overflow]: 整数+溢出:200 + 100 超出 i8u 范围`);
+    check('v97.4:传参边界——g(200)(上下文窄化字面量 i64 标签)形参归一 + 返回归一,三腿 M4002 逐字 3:20(修复前静默 300)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.5:复合赋值链——`let mut a: u8 = 250; a += 250u8` BINSETI fits 门三腿逐字 ----
+  {
+    const p = m97('v97_5_compound.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut a: u8 = 250;',
+      '    a += 250u8;',
+      '    a += 10;',
+      '    print(str(a));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:5: error M4002[integer-overflow]: 整数+溢出:250 + 250 超出 i8u 范围`);
+    check('v97.5:复合赋值链——let 归一后 BINSETI 沿 old.bits=8 fits 门三腿 M4002 逐字 3:5(v0.85 登记形态;修复前静默 510)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.5b:ADDI 融合路径(±1 窥孔)——let 归一后 old.bits=32 fits 门三腿逐字(v92.5 界内孪生的溢出侧)----
+  {
+    const p = m97('v97_5b_addi.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut a: i32 = 2147483647;',
+      '    a += 1;',
+      '    print(str(a));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:5: error M4002[integer-overflow]: 整数+溢出:2147483647 + 1 超出 i32 范围`);
+    check('v97.5b:复合赋值 ADDI——归一后 old.bits=32,`a += 1` 三腿 M4002 逐字 3:5(消息按 v0.85 ADDI 符号模板;修复前静默 2147483648)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.6:重赋值归一——`a = 100`(上下文窄化字面量)后再溢出,SET c 规格三腿逐字 ----
+  {
+    const p = m97('v97_6_reassign.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut a: u8 = 250;',
+      '    a = 100;',
+      '    a += 250u8;',
+      '    print(str(a));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:4:5: error M4002[integer-overflow]: 整数+溢出:100 + 250 超出 i8u 范围`);
+    check('v97.6:重赋值归一——`a = 100` 重标 u8(SET c 规格),`a += 250u8` 三腿 M4002 逐字 4:5(不归一则静默 350)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.7:lambda 形参归一——i64 标签元素进 (x: u8) 形参,三腿 M4002 逐字 ----
+  {
+    const p = m97('v97_7_lambda.ming', [
+      'fn main() -> i64 with io {',
+      '    let v: Vec[u8] = [250];',
+      '    let r = v.map((x: u8) => x + 10u8);',
+      '    print(str(r[0]));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:3:32: error M4002[integer-overflow]: 整数+溢出:250 + 10 超出 i8u 范围`);
+    check('v97.7:lambda 形参归一——[250](无后缀 i64 标签元素)进 (x: u8),tree callClosure/VM narrowSpecs 双路径三腿 M4002 逐字 3:30(修复前静默 260)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.8:界内零回归黄金——let/重赋值/传参/返回/本地 fn/lambda 全界内,三腿逐字 ----
+  // 重标对界内值无可见变化:str()/算术/deepCopy(传参按值)输出逐字不变
+  {
+    const p = m97('v97_8_inrange.ming', [
+      'fn twice(x: u8) -> u8 { return x * 2u8; }',
+      'fn main() -> i64 with io {',
+      '    let a: i32 = 100;',
+      '    let b: i32 = 23;',
+      '    print(str(a + b));',
+      '    print(str(a * b));',
+      '    let mut c: u8 = 250;',
+      '    c = 100;',
+      '    print(str(twice(c)));',
+      '    let lam = (y: u8) => y + 1u8;',
+      '    print(str(lam(200)));',
+      '    print(str(twice(lam(50))));',
+      '    fn shrink(x: u32) -> u32 { return x; }',
+      '    print(str(shrink(4000000000)));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 0 && r.stdout === '123\n2300\n200\n201\n102\n4000000000\n');
+    check('v97.8:界内零回归黄金——let/重赋值/传参/返回/lambda/本地 fn 全界内,三腿 stdout 逐字 123/2300/200/201/102/4000000000(重标零可见变化)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.9:wasm 窄型 let 门禁——纯函数窄型 let 算术三腿一致 M4002(修复前 wasm 腿静默 1)----
+  // 根因:窄型算术在 wasm i64 槽无 fits 门;含窄型 let 的函数经 tryWasm 门禁回落字节码
+  {
+    const p = m97('v97_9_gate.ming', [
+      'fn r() -> i64 {',
+      '    let a: i32 = 2147483647;',
+      '    let b: i32 = 2147483647;',
+      '    let c: i32 = a + b;',
+      '    if c > 0 { return 1; }',
+      '    return 0;',
+      '}',
+      'fn main() -> i64 with io {',
+      '    print(str(r()));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const dbg = runMing(['run', p], { env: { MING_WASM_DEBUG: '1' } });
+    const strict = runMing(['run', p, '--strict-wasm']);
+    const ok = runs.every((r) => r.code === 101 && firstLine97(r) === `${p}:4:20: error M4002[integer-overflow]: 整数+溢出:2147483647 + 2147483647 超出 i32 范围`)
+      && !(dbg.stderr ?? '').includes('[wasm] fn r OK') // 门禁:r 不再进 wasm(修复前 OK + 静默)
+      && strict.code === 101; // strict 下 r 回落属资格面(非编译回落)→ 不触发 exit 2;程序照常执行并在算术处 panic(exit 101)
+    check('v97.9:wasm 窄型 let 门禁——含窄型 let 的纯函数三腿一致 M4002 逐字 5:18;MING_WASM_DEBUG 无 fn r OK(修复前 OK 且静默 1);strict 非回落形态 exit 101',
+      ok, `${fmtRuns97(runs)} dbg_ok=${(dbg.stderr ?? '').includes('[wasm] fn r OK')} strict=${strict.code}`);
+  }
+
+  // ---- v97.10:遮蔽归一——内层无标注遮蔽不归一,外层标注变量归一;零校准锚(窄形参 + 取负)----
+  {
+    const p = m97('v97_10_shadow.ming', [
+      'fn neg32(a: i32) -> i32 { return -a; }',
+      'fn main() -> i64 with io {',
+      '    let a: u8 = 1;',
+      '    {',
+      '        let mut a = 300;',
+      '        a = 350;',
+      '        print(str(a));',
+      '    }',
+      '    print(str(a));',
+      '    let m = (-2147483647 - 1) as i32;',
+      '    print(str(neg32(m)));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    // neg32(-m):-(-2147483648) = 2147483648 界内 i32;再取负在 neg32 内 → 取负溢出 M4002
+    // (窄形参归一 × UN/negSlow 交互:v92.6 同族,本版参数归一后语义不变——值经 as 已窄标签)
+    const ok = runs.every((r) => r.code === 101 && r.stdout === '350\n1\n' && firstLine97(r).includes('整数取负溢出:--2147483648 超出范围') && firstLine97(r).startsWith(`${p}:1:34:`));
+    check('v97.10:遮蔽归一 + 窄形参取负零校准锚——内层无标注遮蔽不归一(350)/外层标注(1);neg32 形参归一后取负 M4002 位置 1:34 消息逐字(双负号 --2147483648;v92.6 同族交互锁定)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.11:契约交互——窄型形参/返回的 requires/ensures 界内三腿逐字(归一前后值同) ----
+  {
+    const p = m97('v97_11_contract.ming', [
+      'fn f(x: u8) -> u8 requires x > 0 ensures result < 255 { return x + 1u8; }',
+      'fn main() -> i64 with io {',
+      '    print(str(f(5)));',
+      '    return 0;',
+      '}',
+    ].join('\n'));
+    const runs = runAll97(p);
+    const ok = runs.every((r) => r.code === 0 && r.stdout === '6\n');
+    check('v97.11:契约交互——窄型形参归一后 requires(x > 0)/ensures(result < 255) 界内三腿逐字 6(归一只重标,契约求值不受扰)',
+      ok, fmtRuns97(runs));
+  }
+
+  // ---- v97.12(白盒):normBindValue 防御分支——越界 M4002 消息逐字/同型零开销/非 int 直返 ----
+  // 防御路径 checker 保证不可达(隐式绑定/越界字面量均编译期拒绝),此为直接单元锁定
+  {
+    const { normBindValue, V, Panic } = await import('../src/interp.js');
+    const cases = [];
+    let m1 = null;
+    try { normBindValue(V.int(2147483648, 64, true), { bits: 32, signed: true }, null); } catch (e) { m1 = e; }
+    cases.push(m1 instanceof Panic && m1.code === 'M4002' && m1.message === '整数溢出:2147483648 超出 i32 范围(绑定归一)');
+    let m2 = null;
+    try { normBindValue(V.int(-1, 64, true), { bits: 8, signed: false }, null); } catch (e) { m2 = e; }
+    cases.push(m2 instanceof Panic && m2.code === 'M4002' && m2.message === '整数溢出:-1 超出 i8u 范围(绑定归一)');
+    const same = V.int(5, 32, true);
+    cases.push(normBindValue(same, { bits: 32, signed: true }, null) === same); // 同型:同一对象(零开销)
+    const retag = normBindValue(V.int(300, 64, true), { bits: 16, signed: false }, null);
+    cases.push(retag.t === 'int' && retag.bits === 16 && retag.signed === false && retag.v === 300);
+    const unit = { t: 'unit' };
+    cases.push(normBindValue(unit, { bits: 8, signed: false }, null) === unit); // 非整型直返
+    check('v97.12(白盒):normBindValue——越界 M4002 `整数溢出:<v> 超出 i<bits><u> 范围(绑定归一)` 逐字/i32 与 i8u 双模板/同型同一对象/重标 16u/非 int 直返',
+      cases.every(Boolean), JSON.stringify(cases));
+  }
+  // ---- v97.13(v0.87 审查 MAJOR-2 修复锁定):闭包捕获的窄型绑定归一——lambda 内
+  //      `a = 44`(重赋值归一)+ `a += 250u8`(窄型算术 fits 门)三腿 M4002 首行逐字
+  //      (修复前 tree/VM 均静默 294——snapshotEnv 丢 tys + deepCopy closure 丢 tys + capture SET 无规格)----
+  {
+    const p = m97('v97_13_capt.ming', [
+      'fn main() with io {',
+      '  let mut a: u8 = 10u8;',
+      '  let bump = () => { a = 44; print(str(a)); a += 250u8; print(str(a)); };',
+      '  bump();',
+      '}',
+    ].join('\n'));
+    const legs = runAll97(p);
+    const ok = legs.every((r) => r.code === 101 && (r.stderr ?? '').split('\n')[0].includes('整数+溢出:44 + 250 超出 i8u 范围'))
+      && legs.every((r) => r.stdout === '44\n');
+    check('v97.13:闭包捕获窄型绑定——重赋值归一 + 算术 fits 门三腿 M4002 逐字(修复前静默 294;stdout 44 + exit 101)',
+      ok, `legs=${legs.map((r) => r.code + ':' + JSON.stringify((r.stdout ?? '').slice(0, 12)) + '/' + JSON.stringify((r.stderr ?? '').split('\n')[0].slice(0, 100))).join(' | ')}`);
+  }
+  // ---- §97-END
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

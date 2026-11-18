@@ -9,7 +9,7 @@
 //
 // 指令编码:[op, a, b, spanIdx](数组);操作码见 OP。
 
-import { V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig } from './interp.js';
+import { V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, narrowSpecOfTyAst } from './interp.js';
 import { Interp } from './interp.js';
 import { resolveT, typeStr } from './checker.js';
 import { tryCompileWasm } from './wasm.js';
@@ -89,6 +89,27 @@ export function compile(checkResult) {
   // v0.59 P1 审查 MINOR:删除死代码 `if (built.wasm && c.strConsts) ...`——
   // BytecodeCompiler 无 strConsts 字段;strConsts 已由 WasmCompiler.run() 随产物返回。
   return built;
+}
+
+// v0.87(§4.13.7):函数体是否含窄型标注 let(递归遍历;WeakSet 防环 + 深度限防御)。
+// 只认 PIdent 模式的裸窄型标注(与运行时归一边界同口径);元组模式/容器元素不在此列。
+// 用途 = tryWasm 窄型 let 门禁(见其内注释)。
+function declHasNarrowLet(node, seen = new WeakSet(), depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 500) return false;
+  if (seen.has(node)) return false;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const x of node) if (declHasNarrowLet(x, seen, depth + 1)) return true;
+    return false;
+  }
+  if (node.nt === 'Let' && node.pat?.nt === 'PIdent' && narrowSpecOfTyAst(node.type)) return true;
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === 'object') {
+      if (declHasNarrowLet(v, seen, depth + 1)) return true;
+    }
+  }
+  return false;
 }
 
 class BytecodeCompiler {
@@ -229,6 +250,25 @@ class BytecodeCompiler {
           ret: carrier(f.entry.sig.ret),
         },
       };
+      // v0.87(§4.13.7):窄型 let 门禁——含窄型标注 let 的函数排除出 wasm 分层。
+      // 缘由(实测):wasm 槽是裸 i64,窄型算术无 fits 门(emitCheckedOp 仅 i64/u64
+      // 两型;窄型字面量/`as`/窄型形参各有既有拒绝路径,唯窄型 let 标注静默通过——
+      // 修复前 tree/VM 同样静默,三腿一致;本版归一后 tree/VM 在算术处 M4002,wasm
+      // 若仍执行该函数即三腿分歧,违反硬规则 1)。处理 = 让该函数按既有资格不动点
+      // 回落字节码(VM 归一 + intBin 窄型 fits 门 → 与 tree 逐字)。机制:analyze()
+      // 对 decl.requires/ensures 真值的函数跳过资格(clone decl 置标记,不影响 checker
+      // 原始 decl 与 tree 引擎;调用方经资格不动点同步回落)。**已内化(v0.87 审查 MINOR-3 架构师落实)**:
+      // wasm.js analyze() 资格循环新增 declHasNarrowLet 具名条款(独立副本避免循环导入,
+      // 两处注释互指);本 clone 标记保留作纵深防御(条款不达时兜底)。
+      // 覆盖面说明:窄型值进入 eligible 函数仅余此通道——窄型形参/返回被 isEligibleShape
+      // numOk(bits===64) 拒绝,窄型字面量被发射期 Unsupported('非 64 位字面量') 拒绝,
+      // `as` 被Unsupported('表达式 As') 拒绝;无窄型 let 的函数不受影响。
+      if (!f.entry.decl?.requires && !f.entry.decl?.ensures && declHasNarrowLet(f.entry.decl?.body)) {
+        f.entry = {
+          ...f.entry,
+          decl: { ...f.entry.decl, requires: { __v87NarrowGate: true, expr: null, span: null } },
+        };
+      }
     }
     try {
       return tryCompileWasm(this.check, {
@@ -515,14 +555,18 @@ class BytecodeCompiler {
   compileStmt(s, st) {
     switch (s.nt) {
       case 'Let': {
+        // v0.87(§4.13.7):窄型标注 → 绑定归一规格(ident 模式;V.int(0,bits,signed)
+        // 作池载体,ST c 操作数携带)。VM 在 ST 处按声明类型重标;tree 引擎同口径归一。
+        const narrowSpec = narrowSpecOfTyAst(s.pat?.nt === 'PIdent' ? s.type : null);
+        const specIdx = narrowSpec ? this.poolAdd(V.int(0, narrowSpec.bits, narrowSpec.signed)) : 0;
         if (s.init) {
           this.compileExpr(s.init, st);
           // 模式绑定:ident → ST;元组 → PATMATCH+BIND
-          this.compileLetPattern(s.pat, st);
+          this.compileLetPattern(s.pat, st, specIdx);
         } else {
           // let x: T;(v0.2 允许?检查器要求初始化或标注;无 init 需要标注——声明即占位)编译为 CONST unit 绑定
           this.emit(st, OP.CONST, this.poolAdd(UNIT), 0, s.span);
-          this.compileLetPattern(s.pat, st);
+          this.compileLetPattern(s.pat, st, specIdx);
         }
         return;
       }
@@ -792,11 +836,18 @@ class BytecodeCompiler {
   }
 
   // let 的绑定模式:ident / _ / 元组
-  compileLetPattern(pat, st) {
+  // v0.87(§4.13.7):specIdx = 窄型规格池下标(let 标注 i8/u8/i16/u16/i32/u32 时由
+  // compileStmt Let 传入;池条目为 V.int(0, bits, signed) 载体)。ST c 操作数携带 →
+  // VM 在绑定处归一(旧产物 c=0 不归一,additive 兼容)。元组模式不带标注位 → 不携带
+  // (元组绑定归一登记为遗留边界)。
+  compileLetPattern(pat, st, specIdx = 0) {
     switch (pat.nt) {
       case 'PIdent': {
         const slot = this.declareLocal(st, pat.name);
-        this.emit(st, OP.ST, 0, slot, pat.span);
+        if (specIdx) {
+          (st.narrowSlots ??= new Map()).set(slot, specIdx); // 重赋值(SET)归一登记
+        }
+        this.emit(st, OP.ST, 0, slot, pat.span, specIdx);
         return;
       }
       case 'PWild': {
@@ -863,7 +914,12 @@ class BytecodeCompiler {
         const r = this.resolveLocalName(st, e.name);
         if (!r) throw new CompileError('名字未解析:' + e.name + '(赋值目标)', e.span);
         if (r.kind === 'fn') throw new CompileError('不能给本地函数 "' + e.name + '" 赋值', e.span);
-        this.emit(st, OP.SET, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span);
+        // v0.87(§4.13.7):窄型槽重赋值 → SET c 操作数携带归一规格(let 登记的
+        // narrowSlots;捕获槽随审查 MAJOR-2 透传进入子状态 narrowSlots——键为捕获
+        // 下标;无标注局部槽/无透传捕获 c=0 不归一)。
+        let specIdx = 0;
+        specIdx = st.narrowSlots?.get(r.kind === 'local' ? r.slot : r.idx) ?? 0;
+        this.emit(st, OP.SET, r.kind === 'local' ? 0 : 1, r.kind === 'local' ? r.slot : r.idx, e.span, specIdx);
         return;
       }
       case 'Field':
@@ -1367,6 +1423,10 @@ class BytecodeCompiler {
     // 全局条目,lambda 体直接 LDFN 即可(闭包帧无需运行时携带;值语义无差)。
     const plan = [];
     const captureMap = new Map();
+    // v0.87(审查 MAJOR-2):捕获槽的窄型归一规格透传——外层 narrowSlots 中被捕获的
+    // 局部槽,其规格随捕获下标进入子状态(capture 赋值 SET c=specIdx 归一不断档;
+    // 缺失面 = 闭包捕获的窄型绑定重赋值静默回绕,v0.85 M1 族漏网面)。
+    const capNarrow = new Map();
     const fnBinds = new Map(st.fnBinds ?? []); // 继承外层 lambda 的本地函数绑定
     for (const name of free) {
       const r = this.resolveName(st, name);
@@ -1375,6 +1435,10 @@ class BytecodeCompiler {
       const idx = plan.length;
       plan.push(r.kind === 'local' ? { local: r.slot } : { cap: r.idx });
       captureMap.set(name, idx);
+      if (r.kind === 'local') {
+        const sp = st.narrowSlots?.get(r.slot);
+        if (sp) capNarrow.set(idx, sp);
+      }
     }
     // 4) 编译 lambda 体
     const idx = this.functions.length;
@@ -1385,12 +1449,18 @@ class BytecodeCompiler {
     // 裸 break/continue 由 checker M3010/M3011 拦截;编译层防御断言见 compileStmt
     // Break/Continue(此前裸 POP 会弹穿共享操作数栈)。外层循环的 breakCtx 留在
     // st 上不被子状态携带,continue/break 不穿透 lambda。
-    const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry, resultSlot: null, fnBinds }; // v0.56(C2):闭包是独立帧,不得执行外层 ensures
+    const sub = { code: [], nLocals: 0, scopes: [new Map()], captures: captureMap, mod: st.mod, entry: st.entry, resultSlot: null, fnBinds, narrowSlots: capNarrow.size ? capNarrow : undefined }; // v0.56(C2):闭包是独立帧,不得执行外层 ensures;v0.87(审查 MAJOR-2):narrowSlots 随捕获下标透传
     for (const p of e.params) sub.scopes[0].set(p.name, sub.nLocals++);
     if (e.body.nt === 'BlockExpr') this.compileBlock(e.body.block, sub, true);
     else this.compileExpr(e.body, sub, true);
     this.emit(sub, OP.RET, 0, 0, e.span);
-    this.functions[idx] = { name: '<闭包>', modFile: st.mod.file, nParams: e.params.length, nLocals: sub.nLocals, code: sub.code };
+    // v0.87(§4.13.7):lambda 形参归一规格——编译函数对象携带 narrowSpecs(非序列化
+    // 字段:AOT 对含 lambda 程序维持既有源码模式回退,<闭包> 缺 entry.sig 的拒绝不变)。
+    // checker 未把统一后的 lambda 类型回写 AST(fnTypeHint 恒 null)→ 以 AST 标注为准;
+    // 未标注形参不归一(登记遗留:窄型上下文中的无标注 lambda 形参保持来源标签)。
+    // lambda 无返回标注位 → ret 恒 null(块体尾值/return 值保持来源标签)。
+    const lamNarrowSpecs = { params: e.params.map((p) => narrowSpecOfTyAst(p.type)), ret: null };
+    this.functions[idx] = { name: '<闭包>', modFile: st.mod.file, nParams: e.params.length, nLocals: sub.nLocals, code: sub.code, narrowSpecs: lamNarrowSpecs };
     this.curFnIdx = savedCur;
     this.emit(st, OP.CLOSURE, idx, this.poolAdd({ __tag: 'plan', v: plan }), e.span);
   }

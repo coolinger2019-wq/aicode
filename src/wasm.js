@@ -173,6 +173,31 @@ export function tryCompileWasm(check, compiled) {
   }
 }
 
+// v0.87(审查 MINOR-3 内化):函数体是否含窄型标注 let——与 compiler.js declHasNarrowLet
+// 同款(独立副本避免 compiler→wasm 循环导入;两处注释双向互指)。用途 = analyze 资格
+// 具名条款:含窄型标注 let 的函数不进 wasm 分层(窄型槽是裸 i64,wasm 侧无 fits 门——
+// 归一后 tree/VM 在算术处 M4002,wasm 执行该函数即三腿分歧;v0.86 前为 compiler clone
+// 标记过渡实现,本条款为其内化,clone 保留作纵深防御)。
+function declHasNarrowLet(node, seen = new WeakSet(), depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 500) return false;
+  if (seen.has(node)) return false;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const x of node) if (declHasNarrowLet(x, seen, depth + 1)) return true;
+    return false;
+  }
+  if (node.nt === 'Let' && node.pat?.nt === 'PIdent' && node.type?.nt === 'TName'
+      && !(node.type.args && node.type.args.length)
+      && { i8: 1, i16: 1, i32: 1, u8: 1, u16: 1, u32: 1 }[node.type.name]) return true;
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === 'object') {
+      if (declHasNarrowLet(v, seen, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
 // 资格分析独立入口(C 后端复用;单一事实来源 = WasmCompiler.analyze)
 // 返回 Map<mingFnIdx, { exportName, nParams }>
 export function analyzeEligibility(check, compiled, opts = {}) {
@@ -387,7 +412,9 @@ export class WasmCompiler {
     // 资格分析(形状)
     for (let i = 0; i < fns.length; i++) {
       const f = fns[i];
-      if (f && !(f.entry?.decl?.requires || f.entry?.decl?.ensures) && this.isEligibleShape(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3))) {
+      if (f && !(f.entry?.decl?.requires || f.entry?.decl?.ensures)
+          && !declHasNarrowLet(f.entry?.decl?.body)
+          && this.isEligibleShape(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3) && (!numericOnly || this.isNumericSig(f, !!opts.sigExt, !!opts.sigExt2, !!opts.sigExt3))) {
         this.eligible.set(i, { exportName: 'm' + i, nParams: f.nParams });
       }
     }
@@ -2060,7 +2087,14 @@ export class WasmCompiler {
       uleb(ctx.bytes, widx);
       return;
     }
-    if (callee.nt !== 'Ident') throw new Unsupported('非直接调用');
+    if (callee.nt !== 'Ident') {
+      // v0.87(ADR-009 S2):Slice 视图构造 view() 具名不资格——视图是宿主侧零拷贝引用
+      // 表示({t:'slice',base,off,len},共享源数组),wasm 线性内存无对应物(ADR-009 §2.2
+      // 引擎矩阵:wasm 不资格,具名回落,strict 可见)。方法调用除 Option/Result 消费链外
+      // 本就不资格;接收者类型在 wasm 层不可判(无类型解析),凡 .view 一律具名——用户
+      // impl 同名方法本就经此回落,消息分流不改变资格结论。
+      throw new Unsupported(callee.name === 'view' ? 'Slice 视图构造 view()(ADR-009 S2:不资格)' : '非直接调用');
+    }
     const mingIdx = this.resolveEligibleMingIdx(ctx, callee.name);
     if (mingIdx === null) throw new Unsupported('调用 ' + callee.name);
     const widx = DEFINED_BASE + (this.wasmOrder ? this.wasmOrder.indexOf(mingIdx) : -1);

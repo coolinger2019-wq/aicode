@@ -6,7 +6,7 @@
 // 栈布局:操作数在 valueStack;每帧 {fn, ip, locals[], captures[]}。
 // 值语义:ST/SET/BIND/调用实参/集合构造全部 deepCopy;mut self 的 self 不拷贝。
 
-import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits } from './interp.js';
+import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, narrowSpecOfTy } from './interp.js';
 import { compile, OP, BIN } from './compiler.js';
 import { tint, tfloat, T_STR, T_BOOL, INT_TYPES, typeStr, resolveT } from './checker.js';
 import { MATH_IMPORTS } from './wasm.js';
@@ -28,6 +28,16 @@ const BIN2OP = Object.entries(BIN).reduce((m, [k, v]) => (m[v] = k, m), {});
 const TRACE = process.env.MING_TRACE === '1';
 const ITER_VAL = { done: false, value: null }; // 迭代器复用的结果对象(同步执行安全)
 const ITER_DONE = { done: true }; // 启动时读一次:每指令访问 process.env 是性能陷阱
+
+// v0.87(§4.13.7):编译函数的窄型归一规格。lambda(编译函数无 entry.sig)由编译器
+// 以 narrowSpecs 附加;模块函数回退 entry.sig(checker 内存编译 / AOT wire 反序列化
+// 均携带窄型 bits/signed)。返回 null 形参/返回均不归一(旧产物无 entry.sig 窄型时)。
+function narrowSpecsOfFn(fn) {
+  if (fn.narrowSpecs) return fn.narrowSpecs;
+  const sig = fn.entry?.sig;
+  if (!sig) return null;
+  return { params: (sig.params ?? []).map((p) => narrowSpecOfTy(p.type)), ret: narrowSpecOfTy(sig.ret) };
+}
 
 export class VMInterp extends Interp {
   // v0.39 真 AOT:从字节码产物加载,跳过 Checker 与编译器(树引擎不可用:需要完整 AST)
@@ -620,9 +630,18 @@ export class VMInterp extends Interp {
     }
     const beforeLen = this.frames.length;
     const scopeBase = this.syncScopeStack?.length ?? 0;
+    // v0.87(§4.13.7):传参边界归一(与 tree callUser 同口径)——形参声明窄型 → 实参
+    // 值重标。模块函数 sig 来自 checker(内存编译)/wire(AOT;typeToWire 保留
+    // bits/signed),lambda 由编译器 narrowSpecs 附加。窄型形参函数本就不 wasm
+    // eligible(shape 阶段 numOk 拒绝),故此路径只服务字节码帧。
+    const fnSpecs = narrowSpecsOfFn(fn);
+    const pspecs = fnSpecs?.params ?? [];
+    const retSpecV = fnSpecs?.ret ?? null;
     const locals = new Array(fn.nLocals);
     for (let i = 0; i < fn.nParams; i++) {
-      locals[i] = (noCopySelf && i === 0) ? args[i] : deepCopy(args[i]);
+      let a = (noCopySelf && i === 0) ? args[i] : deepCopy(args[i]);
+      if (pspecs[i]) a = normBindValue(a, pspecs[i], span);
+      locals[i] = a;
     }
     this.depth++;
     this.callStack.push({ name: fn.name, span });
@@ -632,7 +651,10 @@ export class VMInterp extends Interp {
       const ret = this.execLoop();
       this.depth--;
       this.callStack.pop();
-      return ret;
+      // v0.87(§4.13.7):返回边界归一——与 tree callUser 同口径(声明返回窄型 → 重标)。
+      // wasm 路径不在此归一:窄型返回函数 shape 阶段即非 eligible(numOk bits===64),
+      // 该路径不可达,不添加死分支。
+      return normBindValue(ret ?? UNIT, retSpecV, span);
     } catch (e) {
       // v0.30 修复:与树引擎一致,Panic 携带 Ming 层调用链(最老在前,展示层反转)
       if (e instanceof Panic && !e.stack.length) {
@@ -687,15 +709,24 @@ export class VMInterp extends Interp {
           break;
         }
         case OP.ST: {
+          // v0.87(§4.13.7):c 操作数 = 窄型规格池下标(编译器仅对带窄型标注的 let 目标
+          // 发射;0 = 无规格)。归一 = 按声明类型重标 V.int——上下文窄化字面量的 i64 标签
+          // 在绑定处收窄,后续算术(fits 门/ADDI/BINSETI)据此在溢出时 panic。旧产物
+          // c=0 → 不归一(旧语义照跑)。
           const v = deepCopy(stack.pop());
-          if (ins[1] === 0) frame.locals[ins[2]] = v;
-          else frame.captures[ins[2]] = v;
+          const nv = ins[3] ? normBindValue(v, resolvedPool[ins[3]], this.spanOf(frame, ins)) : v;
+          if (ins[1] === 0) frame.locals[ins[2]] = nv;
+          else frame.captures[ins[2]] = nv;
           break;
         }
         case OP.SET: {
+          // v0.87(§4.13.7):同 ST——重赋值到窄型槽(编译器按 narrowSlots 登记发射规格)。
+          // 复合赋值(ADDI/BINSETI/BINSET2)不经此处:结果沿左操作数已归一的窄 bits,
+          // fits 门在算术处收口,写入自带窄标签。
           const v = deepCopy(stack.pop());
-          if (ins[1] === 0) frame.locals[ins[2]] = v;
-          else frame.captures[ins[2]] = v;
+          const nv = ins[3] ? normBindValue(v, resolvedPool[ins[3]], this.spanOf(frame, ins)) : v;
+          if (ins[1] === 0) frame.locals[ins[2]] = nv;
+          else frame.captures[ins[2]] = nv;
           break;
         }
         case OP.LDFN: {
