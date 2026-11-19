@@ -1,0 +1,541 @@
+{
+  "meta": {
+    "task": "plan §4.15 T5.1 基准对比采集(信息性观测,不作 CI 门槛)",
+    "date": "2026-11-19T22:47:37.238Z",
+    "ming": "0.92.0",
+    "node": "v24.11.0",
+    "python": "Python 3.10.11(plan 写 3.12——实用 3.10.11,版本偏差如实记录)",
+    "gcc": "gcc.exe (GCC) 16.2.0(C:/w64devkit/bin/gcc.exe)",
+    "os": "Windows_NT 10.0.26200 win32-x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12600K × 16",
+    "loadavg": [
+      0,
+      0,
+      0
+    ],
+    "loadNote": "harness 单线程顺序执行,采集期间无并行重活;Windows loadavg 无真实口径(恒 0),以本注记为准",
+    "protocol": "任务 1–6:预热 1 + 正式 5 取 min,统一\"程序内部自测主任务耗时\"口径(Ming=std.time.monotonic_ms,JS=performance.now,Py=time.perf_counter,C=QueryPerformanceCounter);任务 7 启动时间 = 整进程墙钟(harness 计)。每次运行都做验证 token 数值比对,不一致即 fail",
+    "mingCcNote": "Ming cc 腿计时 = exe 进程墙钟(cc 后端不支持 time 效果,无法程序内自测;实测 C1 拒绝);与自测口径差 ≈ 进程启动(个位数 ms)",
+    "memNote": "内存尽力而为:仅 JS 自报 process.memoryUsage().rss(memBytes);Python resource 模块 Windows 不可用(本机不可用,skip);C/Ming 无标准口径 → N/A,不编造",
+    "fixture": {
+      "json": {
+        "file": "C:\\Users\\COOLIN~1\\AppData\\Local\\Temp\\ming-bench-vs\\json\\data_10mb.json",
+        "sizeBytes": 10469349,
+        "items": 68000,
+        "seed": 20261120
+      }
+    },
+    "cCompile": "-O2;计算程序规模参数取自 argv(防 gcc -O2 常量折叠掏空计时段)"
+  },
+  "tasks": {
+    "fib24": {
+      "title": "fib(24) 递归",
+      "expect": "46368",
+      "legs": {
+        "ming-tree": {
+          "ok": true,
+          "minMs": 148,
+          "runs": [
+            154,
+            148,
+            157,
+            162,
+            148
+          ]
+        },
+        "ming-vm": {
+          "ok": true,
+          "minMs": 6,
+          "runs": [
+            6,
+            6,
+            7,
+            7,
+            6
+          ]
+        },
+        "ming-cc": {
+          "ok": true,
+          "minMs": 14.181,
+          "runs": [
+            18.688,
+            19.517,
+            15.414,
+            15.01,
+            14.181
+          ],
+          "timingNote": "墙钟口径(进程内无时钟,C 后端不支持 time 效果)"
+        },
+        "js": {
+          "ok": true,
+          "minMs": 0.545,
+          "runs": [
+            0.56,
+            0.545,
+            0.591,
+            0.585,
+            0.574
+          ],
+          "memBytes": 41832448
+        },
+        "py": {
+          "ok": true,
+          "minMs": 6.394,
+          "runs": [
+            6.507,
+            6.571,
+            6.394,
+            6.448,
+            6.595
+          ]
+        },
+        "c": {
+          "ok": true,
+          "minMs": 0.056,
+          "runs": [
+            0.056,
+            0.058,
+            0.058,
+            0.067,
+            0.061
+          ]
+        }
+      },
+      "notes": [
+        "Ming 主腿:fib 为独立纯函数,wasm 资格(MING_WASM_DEBUG=1 实测 [wasm] fn fib OK)",
+        "C 腿 N 从 argv 取(防 gcc -O2 常量折叠)"
+      ]
+    },
+    "loopsum": {
+      "title": "循环累加 100 万",
+      "expect": "500000500000",
+      "legs": {
+        "ming-tree": {
+          "ok": true,
+          "minMs": 289,
+          "runs": [
+            289,
+            294,
+            316,
+            314,
+            334
+          ]
+        },
+        "ming-vm": {
+          "ok": true,
+          "minMs": 6,
+          "runs": [
+            6,
+            6,
+            6,
+            6,
+            6
+          ]
+        },
+        "ming-cc": {
+          "ok": true,
+          "minMs": 10.628,
+          "runs": [
+            10.628,
+            12.503,
+            11.657,
+            10.712,
+            11.099
+          ],
+          "timingNote": "墙钟口径(进程内无时钟,C 后端不支持 time 效果)"
+        },
+        "js": {
+          "ok": true,
+          "minMs": 2.064,
+          "runs": [
+            2.104,
+            2.064,
+            2.085,
+            2.438,
+            2.489
+          ],
+          "memBytes": 43917312
+        },
+        "py": {
+          "ok": true,
+          "minMs": 38.717,
+          "runs": [
+            46.248,
+            39.402,
+            47.913,
+            38.717,
+            38.83
+          ]
+        },
+        "c": {
+          "ok": true,
+          "minMs": 0.223,
+          "runs": [
+            0.223,
+            0.223,
+            0.223,
+            0.223,
+            0.223
+          ]
+        }
+      },
+      "notes": [
+        "Ming:累加放纯函数助手 sum_to,wasm 资格实测 OK(主循环真实经 wasm)",
+        "C 腿 N 从 argv 取(防 gcc -O2 常量折叠)"
+      ]
+    },
+    "hof": {
+      "title": "HOF 链 10 万元素",
+      "expect": "2500050000",
+      "legs": {
+        "ming-tree": {
+          "ok": true,
+          "minMs": 82,
+          "runs": [
+            82,
+            86,
+            86,
+            97,
+            87
+          ]
+        },
+        "ming-vm": {
+          "ok": true,
+          "minMs": 62,
+          "runs": [
+            62,
+            71,
+            70,
+            63,
+            67
+          ]
+        },
+        "ming-cc": {
+          "ok": false,
+          "na": true,
+          "reason": "C1 不支持该程序形态:空 Vec 字面量(需标注,先赋非空再用)"
+        },
+        "js": {
+          "ok": true,
+          "minMs": 1.991,
+          "runs": [
+            1.991,
+            2.499,
+            2.457,
+            2.418,
+            2.345
+          ],
+          "memBytes": 46899200
+        },
+        "py": {
+          "ok": true,
+          "minMs": 8.692,
+          "runs": [
+            8.726,
+            8.692,
+            8.909,
+            8.885,
+            8.904
+          ]
+        },
+        "c": {
+          "ok": true,
+          "minMs": 0.022,
+          "runs": [
+            0.022,
+            0.022,
+            0.022,
+            0.022,
+            0.022
+          ],
+          "notes": [
+            "循环等价(C 无 HOF)"
+          ]
+        }
+      },
+      "notes": [
+        "C 腿为手写循环等价(C 标准库无 HOF;语义与 map(+1)/filter(偶数)/fold(求和) 一致)",
+        "C 腿 N 从 argv 取(防 gcc -O2 常量折叠)"
+      ]
+    },
+    "wordfreq": {
+      "title": "词频统计 2 万词",
+      "expect": "20000 64 309 298",
+      "legs": {
+        "ming-tree": {
+          "ok": true,
+          "minMs": 26,
+          "runs": [
+            26,
+            30,
+            26,
+            26,
+            26
+          ]
+        },
+        "ming-vm": {
+          "ok": true,
+          "minMs": 18,
+          "runs": [
+            18,
+            21,
+            20,
+            18,
+            19
+          ]
+        },
+        "ming-cc": {
+          "ok": false,
+          "na": true,
+          "reason": "C1 不支持该程序形态:let 标注 Vec(C2 仅数值/str/Vec[i64])"
+        },
+        "js": {
+          "ok": true,
+          "minMs": 0.845,
+          "runs": [
+            0.921,
+            0.888,
+            0.845,
+            1.046,
+            1.034
+          ],
+          "memBytes": 44625920
+        },
+        "py": {
+          "ok": true,
+          "minMs": 1.254,
+          "runs": [
+            2.206,
+            1.254,
+            1.31,
+            1.398,
+            1.402
+          ]
+        },
+        "c": {
+          "ok": true,
+          "minMs": 0.391,
+          "runs": [
+            0.405,
+            0.391,
+            0.4,
+            0.402,
+            0.398
+          ],
+          "notes": [
+            "哈希映射为手写开放寻址表(FNV-1a,标准 C 零第三方)"
+          ]
+        }
+      },
+      "notes": [
+        "生成器 = mulberry32(Ming std.rand 同源,harness BigInt 复刻 src/interp.js randStep);四语言验证 token(总数/去重数/alpha/nimbus 计数)一致即序列同源实证",
+        "计时段 = 仅哈希映射计数(生成 2 万词数组为 setup,不计时)",
+        "C 腿 N 从 argv 取(防 gcc -O2 常量折叠)"
+      ]
+    },
+    "jsonparse": {
+      "title": "10MB JSON 解析",
+      "expect": "2311966000 68000",
+      "legs": {
+        "ming-tree": {
+          "ok": true,
+          "minMs": 239,
+          "runs": [
+            264,
+            239,
+            250,
+            263,
+            239
+          ]
+        },
+        "ming-vm": {
+          "ok": true,
+          "minMs": 238,
+          "runs": [
+            243,
+            238,
+            260,
+            239,
+            246
+          ]
+        },
+        "ming-cc": {
+          "ok": false,
+          "na": true,
+          "reason": "C1 不支持该程序形态:块尾表达式(unit 返回 Match)"
+        },
+        "js": {
+          "ok": true,
+          "minMs": 40.469,
+          "runs": [
+            41.032,
+            41.198,
+            40.469,
+            40.828,
+            40.598
+          ],
+          "memBytes": 85671936
+        },
+        "py": {
+          "ok": true,
+          "minMs": 100.812,
+          "runs": [
+            101.278,
+            104.351,
+            102.301,
+            100.812,
+            114.383
+          ]
+        },
+        "c": {
+          "ok": false,
+          "na": true,
+          "reason": "C 标准库无 JSON 解析;零第三方依赖纪律(仓库硬规则 3)不引入 json-c 等外部库"
+        }
+      },
+      "notes": [
+        "fixture = C:\\Users\\COOLIN~1\\AppData\\Local\\Temp\\ming-bench-vs\\json\\data_10mb.json(嵌套对象/数组/字符串/数字,9.98MB,68000 items;复用既有);确定性与可复现",
+        "计时段 = 仅解析(文件读取为 setup);验证 token = meta.total 与 meta.n_items",
+        "Ming 走污值路径:read_file → Untrusted[str] → parse → Untrusted[Json] → 投影表消费"
+      ]
+    },
+    "filescan": {
+      "title": "1k 文件扫描",
+      "expect": "10000 197845",
+      "legs": {
+        "ming-tree": {
+          "ok": true,
+          "minMs": 108,
+          "runs": [
+            113,
+            112,
+            108,
+            129,
+            116
+          ]
+        },
+        "ming-vm": {
+          "ok": true,
+          "minMs": 97,
+          "runs": [
+            118,
+            142,
+            107,
+            97,
+            131
+          ]
+        },
+        "ming-cc": {
+          "ok": false,
+          "na": true,
+          "reason": "C1 不支持该程序形态:let 推导 null"
+        },
+        "js": {
+          "ok": true,
+          "minMs": 77.074,
+          "runs": [
+            77.074,
+            80.97,
+            90.076,
+            114.312,
+            83.303
+          ],
+          "memBytes": 44912640
+        },
+        "py": {
+          "ok": true,
+          "minMs": 77.099,
+          "runs": [
+            110.324,
+            84.224,
+            77.099,
+            138.237,
+            81.018
+          ]
+        },
+        "c": {
+          "ok": true,
+          "minMs": 65.616,
+          "runs": [
+            118.422,
+            65.89,
+            75.215,
+            65.616,
+            74.674
+          ]
+        }
+      },
+      "notes": [
+        "程序启动时在各自 scratch 目录生成 1000 个 ~210B 确定性文件(内容逐式同源),生成不计时",
+        "计时段 = 逐个读取并累计行数(按 \\n 计)与字节数(二进制读)",
+        "C 腿 N 从 argv 取(防 gcc -O2 常量折叠)"
+      ]
+    },
+    "startup": {
+      "title": "启动时间(整进程墙钟)",
+      "expect": "",
+      "legs": {
+        "js": {
+          "ok": true,
+          "minMs": 61.774,
+          "runs": [
+            72.636,
+            72.06,
+            69.584,
+            71.186,
+            61.774
+          ]
+        },
+        "py": {
+          "ok": true,
+          "minMs": 40.09,
+          "runs": [
+            42.139,
+            40.09,
+            42.403,
+            40.158,
+            41.224
+          ]
+        },
+        "c": {
+          "ok": true,
+          "minMs": 10.653,
+          "runs": [
+            10.653,
+            10.832,
+            10.868,
+            11.874,
+            10.723
+          ]
+        },
+        "ming-version": {
+          "ok": true,
+          "minMs": 67.742,
+          "runs": [
+            68.462,
+            67.856,
+            67.742,
+            75.916,
+            90.351
+          ]
+        },
+        "ming-tools-wc": {
+          "ok": true,
+          "minMs": 91.839,
+          "runs": [
+            106.66,
+            103.079,
+            98.428,
+            91.839,
+            92.213
+          ]
+        }
+      },
+      "notes": [
+        "口径 = 整进程墙钟(harness performance.now 包住 spawn),与任务 1–6 的程序内自测口径不同",
+        "ming-tools-wc = AOT 缓存命中路径(.ming-cache/tools,预热运行保证缓存已建);wc 对象 examples/hello.ming",
+        "ming-version / ming-tools-wc 均为 node bin/ming.js 入口——含 Node 启动(诚实口径,ming 的真实入口如此)"
+      ]
+    }
+  }
+}

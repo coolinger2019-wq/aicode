@@ -1,0 +1,16 @@
+// bench_vs T5.1 任务 1:fib(24) 递归(Ming,自测计时口径)
+// 输出协议:<结果> <自测毫秒>;tree/VM 腿用本文件(含 time 效果)。
+// 注意:main 带 time 效果 → cc 不资格(实测 C1 let 推导 null);cc 腿用 fib_cc.ming。
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() with io, time {
+    let t0 = std.time.monotonic_ms();
+    let r = fib(24);
+    let t1 = std.time.monotonic_ms();
+    print(str(r) + " " + str(t1 - t0));
+}

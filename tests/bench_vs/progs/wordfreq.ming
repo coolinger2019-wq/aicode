@@ -1,0 +1,27 @@
+// bench_vs T5.1 任务 4:词频统计 2 万词(Ming,自测计时口径)。
+// 文本生成器:mulberry32(与 Ming std.rand 同源,种子 20261120)从 64 词表抽 2 万词;
+// 其余三语言用同一算法逐式复刻(harness 有序列一致性自检)。
+// 计时段 = 仅哈希映射计数(生成词数组为 setup,不计时)。cc 不资格(Map 局部变量出 C2 白名单)。
+use std.rand;
+
+fn main() with io, time, rand {
+    let vocab: Vec[str] = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey", "xray", "yankee", "zulu", "apple", "banana", "cherry", "date", "elder", "fig", "grape", "honey", "kiwi", "lemon", "mango", "nutmeg", "olive", "peach", "quince", "raspberry", "strawberry", "tomato", "ugli", "vanilla", "walnut", "xigua", "yuzu", "zucchini", "amber", "bright", "crisp", "dawn", "ember", "frost", "gleam", "haven", "ivory", "jade", "karma", "lumen", "meadow", "nimbus"];
+    std.rand.seed(20261120);
+    let mut words: Vec[str] = [];
+    let mut i: i64 = 0;
+    while i < 20000 {
+        let idx = std.rand.range(0, 64);
+        words.push(vocab[idx]);
+        i += 1;
+    }
+    let t0 = std.time.monotonic_ms();
+    let mut counts: Map[str, i64] = {};
+    let mut k: i64 = 0;
+    while k < 20000 {
+        let w = words[k];
+        counts.set(w, counts.get(w).unwrap_or(0) + 1);
+        k += 1;
+    }
+    let t1 = std.time.monotonic_ms();
+    print(str(words.len()) + " " + str(counts.len()) + " " + str(counts.get("alpha").unwrap_or(0)) + " " + str(counts.get("nimbus").unwrap_or(0)) + " " + str(t1 - t0));
+}

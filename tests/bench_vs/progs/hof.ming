@@ -1,0 +1,15 @@
+// bench_vs T5.1 任务 3:HOF 链 10 万元素(map + filter 各一道,fold 求和聚合)。
+// 语义等价:JS map/filter/reduce、Py map/filter/functools.reduce、C 手写循环等价(表注明)。
+// 含闭包调用的函数不达 wasm 资格(cc 实测 C1 空 Vec 字面量;wasm 层闭包回落 VM)——两腿口径。
+fn main() with io, time {
+    let mut v: Vec[i64] = [];
+    let mut i: i64 = 0;
+    while i < 100000 {
+        v.push(i);
+        i += 1;
+    }
+    let t0 = std.time.monotonic_ms();
+    let sum = v.map((x) => x + 1).filter((x) => x % 2 == 0).fold(0, (acc, x) => acc + x);
+    let t1 = std.time.monotonic_ms();
+    print(str(sum) + " " + str(t1 - t0));
+}

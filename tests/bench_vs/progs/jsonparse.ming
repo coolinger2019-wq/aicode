@@ -1,0 +1,26 @@
+// bench_vs T5.1 任务 5:10MB JSON 解析(Ming,自测计时口径)。
+// 计时段 = 仅 std.json.parse(文件读取为 setup);验证 = meta.total 与 meta.n_items。
+// 污值路径:read_file → Untrusted[str] → parse → Untrusted[Json] → 投影表消费(as_num 净值)。
+// cc 不资格(实测 C1 let 推导 null——time/match 形态)。
+use std.fs;
+
+use std.json;
+
+fn main() with io, fs, time {
+    match std.fs.read_file("data_10mb.json") {
+        Ok(content) => {
+            let t0 = std.time.monotonic_ms();
+            match std.json.parse(content) {
+                Ok(doc) => {
+                    let meta = doc.get("meta").unwrap();
+                    let total = meta.get("total").unwrap().as_num().unwrap();
+                    let n = meta.get("n_items").unwrap().as_num().unwrap();
+                    let t1 = std.time.monotonic_ms();
+                    print(str(total) + " " + str(n) + " " + str(t1 - t0));
+                },
+                Err(e) => print("PARSE_ERR " + e),
+            }
+        },
+        Err(e) => print("READ_ERR " + e),
+    }
+}

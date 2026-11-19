@@ -1,0 +1,47 @@
+// bench_vs T5.1 任务 6:1k 文件扫描(Ming,自测计时口径)。
+// 程序启动时在 cwd 生成 1000 个小文件(~210B,确定性内容,10 行/文件),生成不计时;
+// 计时段 = 逐个 read_file 并累计行数(按 \n 计)与字节数(byte_len)。
+// Untrusted 消费面:byte_len(净)/split("\n")→Vec[Untrusted[str]].len()(容器长度净)。
+// cc 不资格(实测 C1 let 推导 null——time/match 形态)。
+use std.fs;
+
+fn file_name(i: i64) -> str {
+    return "f" + str(i) + ".txt";
+}
+
+fn build_content(i: i64) -> str {
+    let mut s = "";
+    let mut j: i64 = 0;
+    while j < 10 {
+        s = s + "file " + str(i) + " line " + str(j) + " v" + str((i + j) % 97) + "\n";
+        j += 1;
+    }
+    return s;
+}
+
+fn main() with io, fs, time {
+    let mut i: i64 = 0;
+    while i < 1000 {
+        let _w = std.fs.write_file(file_name(i), build_content(i));
+        i += 1;
+    }
+    let t0 = std.time.monotonic_ms();
+    let mut lines: i64 = 0;
+    let mut bytes: i64 = 0;
+    let mut k: i64 = 0;
+    while k < 1000 {
+        match std.fs.read_file(file_name(k)) {
+            Ok(content) => {
+                lines += content.split("\n").len() - 1;
+                bytes += content.byte_len();
+            },
+            Err(e) => {
+                print("READ_ERR " + e);
+                return;
+            },
+        }
+        k += 1;
+    }
+    let t1 = std.time.monotonic_ms();
+    print(str(lines) + " " + str(bytes) + " " + str(t1 - t0));
+}

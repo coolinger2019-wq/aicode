@@ -1,0 +1,12 @@
+// bench_vs T5.1 任务 1 cc 变体:无 time 效果(cc 后端不支持 monotonic_ms,实测 C1 拒绝)。
+// 计时口径 = harness 测 exe 进程墙钟(与自测口径差 ≈ 进程启动,个位数 ms;结果如实注记)。
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() with io {
+    print(str(fib(24)));
+}

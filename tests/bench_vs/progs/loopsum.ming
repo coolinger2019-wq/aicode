@@ -1,0 +1,19 @@
+// bench_vs T5.1 任务 2:循环累加 1..1000000(Ming,自测计时口径)。
+// 累加放纯函数助手 sum_to——wasm 资格实测 OK(MING_WASM_DEBUG=1: [wasm] fn sum_to OK),
+// 默认腿真实经 wasm;main 带 time 效果 → cc 不资格,cc 腿用 loopsum_cc.ming。
+fn sum_to(n: i64) -> i64 {
+    let mut s: i64 = 0;
+    let mut i: i64 = 1;
+    while i <= n {
+        s += i;
+        i += 1;
+    }
+    s
+}
+
+fn main() with io, time {
+    let t0 = std.time.monotonic_ms();
+    let s = sum_to(1000000);
+    let t1 = std.time.monotonic_ms();
+    print(str(s) + " " + str(t1 - t0));
+}
