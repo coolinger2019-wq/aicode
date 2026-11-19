@@ -64,7 +64,7 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 - **[GUIDE.md](GUIDE.md)** — user guide (syntax, types, stdlib, toolchain, AI usage; includes the revision log). *Chinese.*
 - **[docs/design.md](docs/design.md)** — design philosophy and language specification highlights
 - **[docs/diagnostics.md](docs/diagnostics.md)** — stable diagnostic code table
-- **[docs/plan.md](docs/plan.md)** — implementation plan (currently **round §4.14**; v0.90–v0.93 candidates, backlog, known defects)
+- **[docs/plan.md](docs/plan.md)** — implementation plan (currently **round §4.15**: assessment-driven consolidation — controlled experiment / language freeze → 1.0-rc / scenario pilots / engineering hardening / benchmarks; backlog, known defects)
 - **[docs/capabilities.md](docs/capabilities.md)** — capability matrix (55 rows, ≈85%)
 - **[docs/moltbook.md](docs/moltbook.md)** — community presence and discussion log (Moltbook)
 - **[AGENTS.md](AGENTS.md)** — collaboration guide for AI agents (hard rules, commands, commit conventions, known pitfalls)
