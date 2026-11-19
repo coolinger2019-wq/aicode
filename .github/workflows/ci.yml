@@ -5,6 +5,11 @@ name: CI
 # - C 腿独立 job(ubuntu/macos):有 gcc/clang 时全量回归自动启用 C 测试;无编译器则自跳过
 # - nightly:三种子深模糊(120 程序)+ 证明模糊 300 例
 # 约束:只用官方 action(actions/checkout / actions/setup-node),零 npm 依赖(仓库零依赖)。
+#
+# v0.91 文档漂移防护与支持矩阵(plan §4.15 T4.4/T4.3):
+# - docs-and-matrix job(ubuntu+Node20):node tests/docs_check.mjs(版本三处/README 最新版本/
+#   工具数/能力矩阵 42-10-3/历史表首条) + node tests/support_matrix/run.mjs(21 形态 × 5 列
+#   支持矩阵逐格实测比对;ubuntu 自带 gcc,cc 腿参与;无编译器环境 cc 列自动跳过不失败)。
 
 on:
   push:
@@ -72,6 +77,23 @@ jobs:
           fi
       - name: 全量回归(C 腿自动启用)
         run: node tests/run.mjs
+
+  docs-and-matrix:
+    name: docs-and-matrix (ubuntu, node 20)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 文档数字校验(版本三处/README 最新版本/工具数/能力矩阵计数)
+        run: node tests/docs_check.mjs
+      - name: 支持矩阵逐格实测(21 形态 × 5 列;cc 缺席自动跳列)
+        run: node tests/support_matrix/run.mjs
 
   nightly:
     name: nightly (seed ${{ matrix.seed }})

@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v0.89.0** (2026-11-19) |
-| Regression suite | **1539 checks, all green** (§1–§100; full run every time) |
+| Current version | **v0.91.0** (2026-11-20) |
+| Regression suite | **1541 checks, all green** (§1–§101; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.0% lines / 90.3% functions** (v0.84 refresh; vm.js 76.2%; re-measurement after v0.85–v0.89 is scheduled for v0.91) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
@@ -92,7 +92,8 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
-| v0.90.0 | 2026-11-19 | Engine consistency wave 3: AOT struct equality #73 / tree ctor-as-value / BIND span unification / u64 literal messages | 13 |
+| v0.91.0 | 2026-11-20 | Engineering hardening: suite timeouts + support matrix + docs check | 1541 |
+| v0.90.0 | 2026-11-19 | Engine consistency wave 3: AOT struct equality #73 / tree ctor-as-value / BIND span unification / u64 literal messages | 1539 |
 | v0.89.0 | 2026-11-19 | Narrow-type normalization: Map values / lambda returns / enum payload / inferred M1a·M1b | 1524 |
 | v0.88.0 | 2026-11-19 | Narrow-type annotation boundaries: spec-tree-driven four-boundary normalization + AOT normSpec | 1506 |
 | v0.87.0 | 2026-11-19 | ADR-009 S2: `Slice[u8]` read-only view (M3051) + narrow-type width normalization | 1488 |

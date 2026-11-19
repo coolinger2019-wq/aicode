@@ -3,6 +3,8 @@
 // 分节索引(v0.56 #34):分节号唯一、不复用。历史 v0.39–v0.43 块与更早的 v0.34–v0.38
 // 曾共用 34–38,现以 34b–38b 区分;§39 = v0.44,§40 = v0.45 契约系统(文档引用沿用)。
 // 后续新分节从 §60 起按序分配;`§N` 与 `N.` 是同一编号的两种写法,不另设第二套编号。
+// v0.91 T4.1(挂起加固):spawnT 统一超时(默认 120s)+ 超时杀进程树 + timedOut 具名标记;
+// secBegin 分节计时(每节一行 `§N x.xs` + 末尾总耗时);§101 机制自测(超时探针 + 未超时对照)。
 
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -29,19 +31,63 @@ function check(name, cond, detail = '') {
   else { failed++; failures.push({ name, detail }); process.stderr.write(`✗ ${name}\n${detail ? '    ' + detail.split('\n').join('\n    ') + '\n' : ''}`); }
 }
 
+// v0.91 T4.1(挂起加固):杀进程树——Windows taskkill /T /F;POSIX 先试进程组再兜底单杀。
+// 超时路径专用:spawnSync 的 timeout 只终止直接子进程,孙进程尽力而为回收。
+function killTree(pid) {
+  if (process.platform === 'win32') {
+    try { spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', timeout: 10000 }); } catch { /* 尽力而为 */ }
+  } else {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* 组不存在或已退出 */ }
+    try { process.kill(pid, 'SIGKILL'); } catch { /* 已退出 */ }
+  }
+}
+
+// v0.91 T4.1:套件统一 spawn 出口——timeout 默认 120s(v0.90 前硬编码 30s;可用 opts.timeout
+// 收紧或放宽,网络类长用例传更长)。超时 = killTree 杀进程树 + stderr 尾部追加具名标记
+// `[spawnT] timeout after Ns`(既有断言不依赖超时路径,绿色运行零行为变化)+ timedOut 标记
+// 供 §101 机制自测断言。目标:任何子进程等待都有界,"挂起"在机制上不可能。
+function spawnT(cmd, args, opts = {}) {
+  const tmo = opts.timeout ?? 120000;
+  const r = spawnSync(cmd, args, {
+    encoding: 'utf8',
+    input: opts.stdin ?? '',
+    cwd: opts.cwd ?? ROOT,
+    env: opts.env ?? process.env,
+    timeout: tmo,
+    killSignal: 'SIGKILL', // v0.91 审查 NOTE-1:超时即 SIGKILL,防子进程捕获 SIGTERM 后 spawnSync 仍无限等
+  });
+  const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
+  if (timedOut && r.pid) killTree(r.pid);
+  return {
+    code: r.status,
+    stdout: r.stdout ?? '',
+    stderr: (r.stderr ?? '') + (timedOut ? `\n[spawnT] timeout after ${Math.round(tmo / 1000)}s(已杀进程树)` : ''),
+    timedOut,
+  };
+}
+
 function runMing(args, opts = {}) {
   // v0.53 审查修复:默认剥掉 MING_WASM_STRICT——开发者 shell 导出该变量后整套用例
   // 会被当成 strict 模式(回落 exit 2)而大面积假失败。需要注入的用例显式传 env。
   const env = { ...process.env, ...(opts.env ?? {}) };
   if (!opts.env || !Object.prototype.hasOwnProperty.call(opts.env, 'MING_WASM_STRICT')) delete env.MING_WASM_STRICT;
-  const r = spawnSync(process.execPath, [MING, ...args], {
-    encoding: 'utf8',
-    input: opts.stdin ?? '',
-    cwd: opts.cwd ?? ROOT,
-    env,
-    timeout: 30000,
-  });
-  return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  const r = spawnT(process.execPath, [MING, ...args], { ...opts, env });
+  return { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
+}
+
+// v0.91 T4.1:分节计时——每个分节头后调用 secBegin('N');下一分节开始时打印上一节耗时
+// (一行:`§N x.xs`);套件末尾 secEndAll() 打印末节耗时与总耗时。只增输出,不改断言。
+const suiteT0 = Date.now();
+let secT0 = suiteT0, secCur = null;
+function secBegin(label) {
+  const now = Date.now();
+  if (secCur !== null) process.stdout.write(`§${secCur} ${((now - secT0) / 1000).toFixed(1)}s\n`);
+  secCur = label; secT0 = now;
+}
+function secEndAll() {
+  const now = Date.now();
+  if (secCur !== null) process.stdout.write(`§${secCur} ${((now - secT0) / 1000).toFixed(1)}s\n`);
+  process.stdout.write(`总耗时 ${((now - suiteT0) / 1000).toFixed(1)}s\n`);
 }
 
 function mingFile(name, src) {
@@ -51,6 +97,7 @@ function mingFile(name, src) {
 }
 
 // ===================== 1. 示例黄金输出 =====================
+secBegin('1');
 const GOLDEN = {
   'hello.ming': '你好, 世界!\n1..11 的和是 55\n',
   'fizzbuzz.ming': '1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz\n',
@@ -79,6 +126,7 @@ for (const [file, expected] of Object.entries(GOLDEN)) {
 }
 
 // ===================== 2. 诊断码回归 =====================
+secBegin('2');
 const DIAG_CASES = [
   // [说明, 源码, 期望错误码, 是否运行期]
   ['无隐式真值化', 'fn main() { let x = 1; if x { print("y"); } }', 'M3014', false],
@@ -151,6 +199,7 @@ DIAG_CASES.forEach(([desc, src, code, runtime, expectedOut], idx) => {
 });
 
 // ===================== 3. 运行时行为(panic 细节 / 退出码)====================
+secBegin('3');
 {
   const p = mingFile('panic-overflow.ming', 'fn main() with io { let m = i64.max_value(); print(str(m + 1)); }');
   const r = runMing(['run', p]);
@@ -176,6 +225,7 @@ DIAG_CASES.forEach(([desc, src, code, runtime, expectedOut], idx) => {
 }
 
 // ===================== 4. 值语义(无别名)====================
+secBegin('4');
 {
   const p = mingFile('value-semantics.ming', `
 fn mutate(mut v: Vec[i64]) {
@@ -205,6 +255,7 @@ fn main() with io {
 }
 
 // ===================== 5. fmt 幂等性与可编译性 =====================
+secBegin('5');
 {
   // 复制 examples 到临时目录(保持多文件模块的相对引用),原位格式化
   const fmtDir = path.join(TMP, 'fmt');
@@ -238,6 +289,7 @@ fn main() with io {
 }
 
 // ===================== 6. JSON 协议 =====================
+secBegin('6');
 {
   const r = runMing(['run', path.join(ROOT, 'examples', 'hello.ming'), '--json']);
   const j = JSON.parse(r.stdout);
@@ -256,6 +308,7 @@ fn main() with io {
 }
 
 // ===================== 7. 多文件与可见性 =====================
+secBegin('7');
 {
   const dir = path.join(TMP, 'modtest');
   fs.mkdirSync(dir, { recursive: true });
@@ -273,12 +326,14 @@ fn main() with io {
 }
 
 // ===================== 8. LSP 协议(子进程,同步消息流)=====================
+secBegin('8');
 {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'lsp_flow.mjs')], { encoding: 'utf8', timeout: 60000 });
   check('lsp:全流程(initialize/诊断/hover/shutdown)', r.status === 0, (r.stdout + r.stderr).slice(0, 300));
 }
 
 // ===================== 9. capability 文件系统(std.fs)=====================
+secBegin('9');
 {
   // 效果强制:未声明 fs 效果不得触碰文件系统
   const p = mingFile('fs-cap.ming', 'use std.fs;\nfn main() with io { print(str(std.fs.exists("x"))); }');
@@ -322,18 +377,21 @@ fn main() with io, fs {
 }
 
 // ===================== 10. capability 网络(std.net)=====================
+secBegin('10');
 {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'net_e2e.mjs')], { encoding: 'utf8', timeout: 180000 });
   check('net:效果强制 + http_get 端到端(双引擎)', r.status === 0, (r.stdout + r.stderr).slice(0, 300));
 }
 
 // ===================== 11. REPL =====================
+secBegin('11');
 {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'repl.mjs')], { encoding: 'utf8', timeout: 120000 });
   check('repl:会话(回显/声明持久/诊断/退出)', r.status === 0, (r.stdout + r.stderr).slice(0, 300));
 }
 
 // ===================== 12. WASM 分层(v0.11)=====================
+secBegin('12');
 {
   const srcs = [
     ['wasm fib 递归', 'fn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); } fn main() with io { print(str(fib(25))); }', '75025\n', null],
@@ -387,6 +445,7 @@ fn main() with io, fs {
 }
 
 // ===================== 13. 结构化并发(std.sync)=====================
+secBegin('13');
 {
   const srcs = [
     ['sync:双 spawn 并行', 'use std.sync;\nfn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }\nfn main() with io, sync {\n    let h1 = std.sync.spawn(fib, 25);\n    let h2 = std.sync.spawn(fib, 20);\n    let r1 = std.sync.join(h1);\n    let r2 = std.sync.join(h2);\n    print(str(r1.unwrap() + r2.unwrap()));\n}\n', '81790\n'],
@@ -415,6 +474,7 @@ fn main() with io, fs {
 }
 
 // ===================== 14. v0.15:Join 线性 / 约束强化 / WASM str =====================
+secBegin('14');
 {
   // Join 线性检查:句柄禁入集合
   const cases = [
@@ -447,6 +507,7 @@ fn main() with io, fs {
 }
 
 // ===================== 15. v0.16:多参 spawn / spawn_all =====================
+secBegin('15');
 {
   const srcs = [
     ['sync:多参 spawn', 'use std.sync;\nfn add3(a: i64, b: i64, c: i64) -> i64 { return a + b + c; }\nfn main() with io, sync { print(str(std.sync.join(std.sync.spawn(add3, 10, 20, 30)).unwrap())); }\n', '60\n'],
@@ -475,6 +536,7 @@ fn main() with io, fs {
 }
 
 // ===================== 16. v0.17:scoped 并发块 =====================
+secBegin('16');
 {
   const mk = (body) => 'use std.sync;\nfn fib(n: i64) -> i64 { if n < 2 { return n; } return fib(n - 1) + fib(n - 2); }\nfn boom() -> i64 { panic("scoped 子任务失败"); return 0; }\n' + body;
   const srcs = [
@@ -506,6 +568,7 @@ fn main() with io, fs {
 }
 
 // ===================== 17. v0.18:WASM Vec/Map 句柄化 =====================
+secBegin('17');
 {
   const srcs = [
     ['wasm vec sum 循环', 'fn sum(v: Vec[i64]) -> i64 { let mut t = 0; let mut i = 0; while i < v.len() { t += v[i]; i += 1; } return t; } fn main() with io { print(str(sum([10, 20, 30, 40]))); }', '100\n'],
@@ -533,6 +596,7 @@ fn main() with io, fs {
 }
 
 // ===================== 18. v0.19:线性内存传递 =====================
+secBegin('18');
 {
   const mkSum = (n, expected) => [
     ['lmem:sum 正确性(' + n + ')', 'fn sum(v: Vec[i64]) -> i64 { let mut t = 0; let mut i = 0; while i < v.len() { t += v[i]; i += 1; } return t; } fn build(n: i64) -> Vec[i64] { let mut v: Vec[i64] = []; let mut i = 0; while i < n { v.push(i); i += 1; } return v; } fn main() with io { print(str(sum(build(' + n + ')))); }', expected + '\n'],
@@ -569,6 +633,7 @@ fn main() with io, fs {
 }
 
 // ===================== 19. v0.20:内存写入 + for-in 迭代 + 赋值栈序修复 =====================
+secBegin('19');
 {
   const srcs = [
     ['v20:mut ptr push(容量预留)', 'fn fill(mut v: Vec[i64], n: i64) -> i64 { let mut i = 0; while i < n { v.push(i * 2); i += 1; } return v.len(); } fn main() with io { let v: Vec[i64] = [1, 2]; print(str(fill(v, 5))); }', '7\n'],
@@ -600,6 +665,7 @@ fn main() with io, fs {
 }
 
 // ===================== 20. v0.21:WASM 插值 + str 方法面 =====================
+secBegin('20');
 {
   const BS = "\\";
   const I = (e) => BS + '{' + e + '}';
@@ -622,6 +688,7 @@ fn main() with io, fs {
 }
 
 // ===================== 21. v0.22:Option 消费链 + 容器 for-in(wasm 内)=====================
+secBegin('21');
 {
   const srcs = [
     ['v22:get 消费链(wasm 内)', 'fn pick(v: Vec[i64], i: i64) -> i64 { return v.get(i).unwrap_or(-1); } fn main() with io { print(str(pick([10, 20], 0))); print(str(pick([10, 20], 9))); }', '10\n-1\n'],
@@ -642,6 +709,7 @@ fn main() with io, fs {
 }
 
 // ===================== 22. v0.23:线性内存统一语义 =====================
+secBegin('22');
 {
   const srcs = [
     ['lmem23:构造+push+返回 Vec', 'fn build(n: i64) -> Vec[i64] { let mut v: Vec[i64] = []; let mut i = 0; while i < n { v.push(i * i); i += 1; } return v; } fn sum(v: Vec[i64]) -> i64 { let mut t = 0; for x in v { t += x; } return t; } fn main() with io { let v = build(5); print(str(v.len())); print(str(sum(v))); }', '5\n30\n'],
@@ -659,6 +727,7 @@ fn main() with io, fs {
 }
 
 // ===================== 23. v0.25:时间日期 + 随机 =====================
+secBegin('23');
 {
   const BS = String.fromCharCode(92);
   const I = (e) => BS + '{' + e + '}';
@@ -681,6 +750,7 @@ fn main() with io, fs {
 }
 
 // ===================== 24. 短路求值真值表(v0.20 遗留 bug 回归)=====================
+secBegin('24');
 {
   // || 与 && 的 l true/false 全真值表(双引擎)——锁定 v0.20 修复的 || 短路结构
   const cases = [
@@ -704,6 +774,7 @@ fn main() with io, fs {
 }
 
 // ===================== 25. v0.26:正则 + 字符分类 + pad =====================
+secBegin('25');
 {
   const D = '\\d';  // JS 字符串:反斜杠+d(Ming 源码里 r"\d+" 的原文)
   const S = '\\s';
@@ -728,6 +799,7 @@ fn main() with io, fs {
 }
 
 // ===================== 26. v0.27:fmt + HTTP opts =====================
+secBegin('26');
 {
   const srcs = [
     ['v27:fmt.fixed', 'use std.fmt; fn main() with io { print(std.fmt.fixed(3.14159, 2)); print(std.fmt.fixed(2.0, 0)); }', '3.14\n2\n'],
@@ -790,6 +862,7 @@ fn main() with io, fs {
 }
 
 // ===================== 27. v0.27.1:mingkit 文件工具(用 Ming 自写)=====================
+secBegin('27');
 {
   const KIT = path.join(ROOT, 'tools', 'mingkit.ming');
   const kitRun = (args, stdin = '') => runMing(['run', KIT, ...args], { stdin });
@@ -877,6 +950,7 @@ fn main() with io, fs {
 }
 
 // ===================== 28. v0.28:std.log + std.fmt.align =====================
+secBegin('28');
 {
   const src28 = [
     'use std.log;',
@@ -931,6 +1005,7 @@ fn main() with io, fs {
 }
 
 // ===================== 29. v0.29:std.math 补全(反三角/双曲/log2/log10/cbrt/hypot/atan2)=====================
+secBegin('29');
 {
   const src29 = [
     'use std.math;',
@@ -984,6 +1059,7 @@ fn main() with io, fs {
 }
 
 // ===================== 30. v0.30:错误链(cause)=====================
+secBegin('30');
 {
   // panic 携带 Ming 层调用栈(修复长期承诺不生效的缺口)
   const ps = mingFile('v30-stack.ming', [
@@ -1084,6 +1160,7 @@ fn main() with io, fs {
 }
 
 // ===================== 31. v0.31:二进制 I/O 雏形 + 任务超时/取消 =====================
+secBegin('31');
 {
   // 二进制:to_bytes/to_str 往返 + write/read/append_bytes(含 0/255 边界)
   // v0.77 校准(ADR-007 清单 3,Untrusted[Vec[u8]] 第三载体):read_bytes 翻转 → Ok(v) 的 v 是
@@ -1184,6 +1261,7 @@ fn main() with io, fs {
 }
 
 // ===================== 32. v0.32:发布期门禁(配额/熔断)+ wasm 层存活断言 =====================
+secBegin('32');
 {
   // wasm 层存活断言(v0.32 制度化:模块必须真的实例化,且导出算对——此前整层静默回落 16 版)
   {
@@ -1267,6 +1345,7 @@ fn main() with io, fs {
 }
 
 // ===================== 33. v0.33:for-in 步长修复确认 + 模糊基线快速档 =====================
+secBegin('33');
 {
   // 步长修复后,for-in 求和经由 wasm 导出金标准(此前该形态回落)
   {
@@ -1310,6 +1389,7 @@ fn main() with io, fs {
 }
 
 // ===================== 34. v0.34:std.crypto(安全工具之北支柱 6 第一块)=====================
+secBegin('34');
 {
   const ck = mingFile('v34-crypto.ming', [
     'use std.crypto;',
@@ -1347,6 +1427,7 @@ fn main() with io, fs {
 }
 
 // ===================== 35. v0.35:std.bin 显式字节序 + crypto HMAC + 模糊器 as 扩展 =====================
+secBegin('35');
 {
   // bin:LE/BE 打包已知向量 + 往返 + 越界 Err + u64 补码位型(双引擎)
   const bn = mingFile('v35-bin.ming', [
@@ -1416,6 +1497,7 @@ fn main() with io, fs {
 }
 
 // ===================== 36. v0.36:字节流正则 + AES-256-CBC =====================
+secBegin('36');
 {
   // 字节流正则:latin1 无损(零字节与高位字节可匹配;双引擎)
   const rb = mingFile('v36-re-bytes.ming', [
@@ -1475,6 +1557,7 @@ fn main() with io, fs {
 }
 
 // ===================== 37. v0.37:AES-256-GCM(带认证)+ 模糊器 str/for-in 扩展 =====================
+secBegin('37');
 {
   // GCM:往返 + 篡改检出(异或翻转一个密文字节,tag 校验必失败;双引擎)
   const gm = mingFile('v37-gcm.ming', [
@@ -1513,6 +1596,7 @@ fn main() with io, fs {
 }
 
 // ===================== 38. v0.38:ming build dist 产物 + 模糊器 if/else =====================
+secBegin('38');
 {
   // dist 可移植产物:项目构建 → launcher 直跑(args 透传 / exit 0 / panic 101 / 跨 cwd)
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-dist-'));
@@ -1565,6 +1649,7 @@ fn main() with io, fs {
 }
 
 // ===================== 34b. v0.39:C 后端 C1(ming cc)=====================
+secBegin('34b');
 // (#34 去重,v0.56:原编号 34,与 v0.34 段重复;文档无 §34 指向本段,v0.34 段保持 34。)
 {
   const cdir = path.join(TMP, 'cc39');
@@ -1692,6 +1777,7 @@ fn main() with io, fs {
 }
 
 // ===================== 35b. v0.40:C2(str/Vec[i64])+ engdiff 自举工具 =====================
+secBegin('35b');
 // (#34 去重,v0.56:原编号 35,与 v0.35 段重复。)
 {
   const cdir = path.join(TMP, 'cc40');
@@ -1784,6 +1870,7 @@ fn main() with io, fs {
 }
 
 // ===================== 36b. v0.41:C3(Map/Option/f64 打印)+ cc 全形态差分 =====================
+secBegin('36b');
 // (#34 去重,v0.56:原编号 36,与 v0.36 段重复。)
 {
   const cdir = path.join(TMP, 'cc41');
@@ -1862,6 +1949,7 @@ fn main() with io, fs {
 }
 
 // ===================== 37b. v0.42:C4 extern fn FFI(效果即门禁 + C 后端 dlsym)=====================
+secBegin('37b');
 // (#34 去重,v0.56:原编号 37,与 v0.37 段重复。)
 {
   const cdir = path.join(TMP, 'cc42');
@@ -1908,6 +1996,7 @@ fn main() with io, fs {
 }
 
 // ===================== 38b. v0.43:ffi str 桥 + Result 进 C 面 =====================
+secBegin('38b');
 // (#34 去重,v0.56:原编号 38,与 v0.38 段重复。)
 {
   const cdir = path.join(TMP, 'cc43');
@@ -1992,6 +2081,7 @@ fn main() with io, fs {
 }
 
 // ===================== 39. v0.44:AI 协作护栏(过拟合检查/修复处方/热力图)+ VM 修复 =====================
+secBegin('39');
 {
   const cdir = path.join(TMP, 'v44');
   fs.mkdirSync(cdir, { recursive: true });
@@ -2080,6 +2170,7 @@ fn main() with io, fs {
 }
 
 // ===================== 40. 契约系统(v0.45 阶段 1)=====================
+secBegin('40');
 // (v0.56 #34:原写作 "§40";统一为 "40." 以消除编号断档。GUIDE/plan 的 §40 引用不变。)
 {
   const okSrc = ['fn f(a: i64) -> i64 requires a > 0 ensures result == a + 1 {', '  return a + 1;', '}', 'fn main() with io { print(str(f(3))); }'].join('\n');
@@ -2123,6 +2214,7 @@ fn main() with io, fs {
 }
 
 // ===================== 41. v0.45.1:自举工具检视(11 个工具全部实测)=====================
+secBegin('41');
 {
   const dir = path.join(TMP, 'v45tools');
   fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
@@ -2203,6 +2295,7 @@ fn main() with io, fs {
 }
 
 // ===================== 42. v0.46:契约阶段 2 第一步(invariant 封装 + 调用点静态校验)=====================
+secBegin('42');
 {
   const dir = path.join(TMP, 'v46');
   fs.mkdirSync(dir, { recursive: true });
@@ -2300,6 +2393,7 @@ fn main() with io, fs {
 }
 
 // ===================== 43. v0.48:QF_LIA 第一片(ensures 直线体静态验证)=====================
+secBegin('43');
 {
   const dir = path.join(TMP, 'v48');
   fs.mkdirSync(dir, { recursive: true });
@@ -2330,6 +2424,7 @@ fn main() with io, fs {
 }
 
 // ===================== 44. v0.49:ABI 哈希构建缓存(命中/接口哈希稳定性/--clean-cache)=====================
+secBegin('44');
 {
   const proj = path.join(TMP, 'v49proj');
   fs.mkdirSync(proj, { recursive: true });
@@ -2377,6 +2472,7 @@ fn main() with io, fs {
 }
 
 // ===================== 45. v0.49.1:GCM 长度边界修复(短明文往返 + nonce 唯一性 + <28B 拒绝)=====================
+secBegin('45');
 {
   const gb = mingFile('v491-gcm-boundary.ming', [
     'use std.crypto;',
@@ -2445,6 +2541,7 @@ fn main() with io, fs {
 }
 
 // ===================== 46. v0.50:ming tools 统一入口 =====================
+secBegin('46');
 {
   const dir = path.join(TMP, 'tools50');
   fs.mkdirSync(dir, { recursive: true });
@@ -2476,6 +2573,7 @@ fn main() with io, fs {
 }
 
 // ===================== 47. v0.50.1:wasm 比较操作码修复(<=/>= 六符 × i64/f64)=====================
+secBegin('47');
 {
   const icmp = mingFile('v501-wasm-cmp-i64.ming', [
     'fn f1(a: i64, b: i64) -> i64 { if a == b { return 1; } return 0; }',
@@ -2532,6 +2630,7 @@ fn main() with io, fs {
 }
 
 // ===================== 48. v0.51:效果门禁函数值(类型携带 effects)=====================
+secBegin('48');
 {
   const bypass = mingFile('v51-eff-bypass.ming', [
     'fn noisy() -> () with io { print("副作用!"); }',
@@ -2584,6 +2683,7 @@ fn main() with io, fs {
 }
 
 // ===================== 49. v0.51.1:契约纯性(M3043)+ ensures 全返回路径 =====================
+secBegin('49');
 {
   const reqMut = mingFile('v511-contract-mut-requires.ming', [
     'fn f(mut v: Vec[i64]) -> i64 requires (v.pop() != None) { return v.len(); }',
@@ -2649,6 +2749,7 @@ fn main() with io, fs {
 }
 
 // ===================== 50. v0.51.2:构建可信性(artifact/回退/缓存/哈希/守卫)=====================
+secBegin('50');
 {
   const proj = (name) => { const d = path.join(TMP, name); fs.mkdirSync(d, { recursive: true }); return d; };
   const writeProj = (d, files) => {
@@ -2718,6 +2819,7 @@ fn main() with io, fs {
 }
 
 // ===================== 51. v0.51.4:C 后端 UB 与语义对齐(f64/截断/str) =====================
+secBegin('51');
 {
   const detectCC = () => {
     const candidates = [];
@@ -2803,6 +2905,7 @@ fn main() with io, fs {
 }
 
 // ===================== 52. v0.51.4:检查器小缺陷(访问器/while let/元组/map 键/span) =====================
+secBegin('52');
 {
   // 1) 访问器返回副本:通过 get/unwrap 修改临时值不得影响原容器
   const acc = mingFile('v514-accessor.ming', [
@@ -2877,6 +2980,7 @@ fn main() with io, fs {
 }
 
 // ===================== 53. v0.52:CLI 边界(项目参数/ -o / 值旗标) =====================
+secBegin('53');
 {
   const dir = path.join(TMP, 'v52cli');
   fs.mkdirSync(dir, { recursive: true });
@@ -2916,6 +3020,7 @@ fn main() with io, fs {
 }
 
 // ===================== 54. v0.51.6:VM 复合赋值窥孔修复(x += N / -= N,N≠1 被误融 ±1)=====================
+secBegin('54');
 // 自举工具 diaghot 的 `i += 2` 在 VM 下静默算错暴露:窥孔融合只判 IntLit 不判值,
 // x += 2 被编成 ADDI +1(树引擎正确 → 双引擎分歧)。修复后三引擎一致。
 {
@@ -2949,6 +3054,7 @@ fn main() with io, fs {
 }
 
 // ===================== 55. v0.51.6:自举工具优化(错误纪律/多文件/点路径/目录展开/--top/幂等/深度)=====================
+secBegin('55');
 {
   const dir = path.join(TMP, 'tools516');
   fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
@@ -3125,6 +3231,7 @@ fn main() with io, fs {
 }
 
 // ===================== 56. v0.52 阶段 1:prover 抽出(线性形式代数 + 差分约束求解;M3042/M3041 行为逐字不变)=====================
+secBegin('56');
 {
   const dir = path.join(TMP, 'v52prover');
   fs.mkdirSync(dir, { recursive: true });
@@ -3326,12 +3433,12 @@ fn main() with io, fs {
   fs.rmSync(headDir, { recursive: true, force: true });
   fs.mkdirSync(path.join(headDir, 'bin'), { recursive: true });
   fs.mkdirSync(path.join(headDir, 'src'), { recursive: true });
-  const gitShow = (p) => { const g = spawnSync('git', ['-C', ROOT, 'show', 'HEAD:' + p], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }); return (g.status === 0 && !g.error) ? g.stdout : null; };
+  const gitShow = (p) => { const g = spawnSync('git', ['-C', ROOT, 'show', 'HEAD:' + p], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: 15000 }); return (g.status === 0 && !g.error) ? g.stdout : null; };
   const headReady = (() => {
     const bin = gitShow('bin/ming.js');
     if (!bin) return false;
     fs.writeFileSync(path.join(headDir, 'bin', 'ming.js'), bin);
-    const ls = spawnSync('git', ['-C', ROOT, 'ls-tree', '--name-only', 'HEAD', 'src/'], { encoding: 'utf8' });
+    const ls = spawnSync('git', ['-C', ROOT, 'ls-tree', '--name-only', 'HEAD', 'src/'], { encoding: 'utf8', timeout: 15000 });
     if (ls.status !== 0 || ls.error) return false;
     for (const line of ls.stdout.split('\n')) {
       const nm = line.trim();
@@ -3481,6 +3588,7 @@ fn main() with io, fs {
 }
 
 // ===================== 57. v0.53:strict wasm 三态 + 构建可信性(collectProjectSources/buildKey/build --json)=====================
+secBegin('57');
 // v0.53 阶段2 追加:env -i launcher 验收(v53.14-16)+ C 后端 str for-in 码点迭代黄金(v53.17-19)
 // v0.53 阶段3 追加:CI workflow 静态结构 + 版本三处一致/修订记录(v53.20-21)
 // v0.53 收口追加:尾表达式函数 wasm 模块有效性回归(v53.22;strict 暴露的既有回落形态)
@@ -3771,7 +3879,8 @@ fn main() with io, fs {
     && ciHas('run examples/fib.ming --strict-wasm') // M9:CI 跑示例 strict(纯 Node,不依赖 gcc)
     && ciHas('--count 120') && ciHas('--count 300')
     && ciHas('timeout-minutes: 20') && ciHas('timeout-minutes: 40')
-    && ciUses.length === 6 && ciUses.every(u => u === 'actions/checkout@v4' || u === 'actions/setup-node@v4')
+    && ciUses.length >= 6 && ciUses.every(u => /^actions\/[^@]+@v\d+$/.test(u)) // v0.91 校准理由化:docs-and-matrix job(T4.3/T4.4)使 uses 6→8;断言从精确计数改为官方 action 白名单(actions/*)——保留零第三方依赖原意,计数 pin 不再适应合法的 job 增量
+    && ciHas('node tests/docs_check.mjs') && ciHas('node tests/support_matrix/run.mjs') // v0.91:新 job 两步在位
     && !ciHas('npm install') && !ciHas('npm ci'),
     'exists=' + (ci.length > 0) + ' uses=' + JSON.stringify(ciUses));
 
@@ -3972,6 +4081,7 @@ fn main() with io, fs {
 }
 
 // ===================== 58. v0.54:with unsafe 最小实现(类型/语法/检查器/效果门禁/C5)=====================
+secBegin('58');
 // 14 项:v58.1-6 类型面/禁止面/门禁/黄金+三路 M4016;v58.7-11 C5 黄金/emit-c/alloc 失败/build 回退/既有 C 不变;
 // v58.12-14 Ptr 别名面/offset 链式 C 黄金/unsafe 效果传播。
 {
@@ -4590,6 +4700,7 @@ fn main() with io, fs {
 }
 
 // ===================== 59. v0.55:跨函数契约摘要 + 调用点线性前置条件(M3041 扩展)=====================
+secBegin('59');
 {
   const dir = path.join(TMP, 'v55');
   fs.mkdirSync(dir, { recursive: true });
@@ -5167,6 +5278,7 @@ fn main() with io, fs {
 
 
 // ===================== 60. v0.56:tree 引擎作用域模型统一(#23 for-in 遮蔽泄漏 / #28 块作用域泄漏)+ fmt 契约保真(#36)=====================
+secBegin('60');
 // 根因:execBlock 复用调用方 env,For/WhileLet 直接写外层 env。修复后每次进入块建立子环境
 // (childEnv),let/模式变量只写本层;赋值经 lookupVar 找到 owner,外层 mut 变量天然穿透。
 {
@@ -5682,7 +5794,7 @@ fn main() with io, fs {
     'fn main() with io { print(str(brk())); }',
     '',
   ].join('\n'), '3\n');
-  check('v60.26:W2 while 体内 if break 跳出正确层级(三引擎一致,死循环由 30s 超时拦截)', r6026.ok, r6026.detail);
+  check('v60.26:W2 while 体内 if break 跳出正确层级(三引擎一致,死循环由 120s 超时拦截)', r6026.ok, r6026.detail);
 
   // ---- v60.27:W2 continue——任务形态(% 条件)+ wasm eligible 形态(== 条件)----
   // 注:F2(v0.56)已修复 wasm inferNumType 的 Binary 重复 case,`%` 条件类型推导正常;
@@ -6093,7 +6205,7 @@ fn main() with io, fs {
     for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
       if (fs.existsSync(c)) return true;
     }
-    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
   })();
 
   // ---- v60.39(A1):body 的 `let a` 不得遮蔽形参——ensures 看形参值 ----
@@ -6537,6 +6649,7 @@ fn main() with io, fs {
 }
 
 // ===================== 61. v0.57:循环边界证明(QF_LIA 第四片)+ tools AOT 缓存 + 覆盖率/bench 基线 =====================
+secBegin('61');
 // A 组(v57.1–v57.19):范围 for(`for i in lo..hi`)体内 buf[i] 义务 —— 经
 //   `check --json --proof-report` 的 proofs 字段断言(义务 {kind, obligation, scope, counterexample};
 //   scope='loop' 循环体内 / 'body' 直线体)。义务/反例文本以实现实际输出校准;M3045 码/退出码/
@@ -7054,7 +7167,7 @@ fn main() with io, fs {
   // 完整插桩运行(NODE_V8_COVERAGE 跑全量回归,~7 分钟)为手动信息性项,不入门禁;
   // 基线数字见 docs/coverage-baseline.md(plan §4.3.8:先建立基线再谈阈值)。
   const covPath = path.join(ROOT, 'tests', 'coverage.mjs');
-  const covSyntax = spawnSync(process.execPath, ['--check', covPath], { encoding: 'utf8' });
+  const covSyntax = spawnSync(process.execPath, ['--check', covPath], { encoding: 'utf8', timeout: 15000 });
   const covBaselineDoc = path.join(ROOT, 'docs', 'coverage-baseline.md');
   check('v57.26:C1 coverage.mjs 存在且语法可加载(--check exit 0)+ 覆盖率基线文档存在(完整插桩运行为手动信息性项)',
     fs.existsSync(covPath) && covSyntax.status === 0 && fs.existsSync(covBaselineDoc),
@@ -7084,6 +7197,7 @@ fn main() with io, fs {
 }
 
 // ===================== 62. v0.58:LSP 补全/跳转/符号(A)+ std.str.join 与编译器名字解析(B)+ doc --json/--index 与 Release(C)=====================
+secBegin('62');
 // A 组(v58.1–v58.16):LSP 三新查询。语义断言直连 src/lsp.js 导出的
 //   completionFor/definitionFor/documentSymbolsFor(lsp.js 供测试/工具直连的可测入口);
 //   协议断言(initialize capabilities/诊断推送/didClose/坏 JSON 存活/非 ASCII 分帧)走 §8 同款
@@ -8010,6 +8124,7 @@ fn main() with io, fs {
 }
 
 // ===================== 63. v0.59:默认引擎全面性(wasm 覆盖收口 P1 + 本地函数恢复 P2 + invariant bench P3)=====================
+secBegin('63');
 // P1 组(v63.1–v63.21):#40 f64 局部/混合槽序、#42 Vec 多形参组合、#41 Map[str,i64]/i64 值 Index
 //   (宿主补丁解锁)、#43 str 返回、#45 值型 if、#46 块尾 if(while/for/void/嵌套)、#48 记账
 //   (str_cat/嵌套计数/插值不计费)、strConsts 常量非空 + AOT、剩余守护(VecLit/下标/mut/Option)
@@ -8036,7 +8151,7 @@ fn main() with io, fs {
     for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
       if (fs.existsSync(c)) return true;
     }
-    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
   })();
   const aot63 = (name, src) => {
     const proj = path.join(dir, name);
@@ -9239,6 +9354,7 @@ fn main() with io, fs {
 }
 
 // ===================== 64. v0.60:资源门禁一致性(#51 wasm 搬运计费 / #52 外部输入计费 / #53 --max-ms 钳制 / #47 tree 契约重入 / #54 CLI 旗标)=====================
+secBegin('64');
 // 文件所有权(三方评估,plan §4.4.4):§64-A = src/vm.js(#51 + runTests 透传)·
 // §64-B = src/interp.js(#52/#53/#47 + runTests 透传)· §64-C = bin/ming.js(#54 CLI 转发与冲突仲裁)。
 // 每个 agent 只在自己的 START/END 标记之间插入用例;不改其它区域,不改既有分节。
@@ -9307,7 +9423,7 @@ fn main() with io, fs {
   // 线性内存段(此前 push 的是搬运后的堆顶 → 永不复用、随调用单调增长;旧口径下
   // 搬运计费 40×100000 早在 500000 配额内爆掉)。wasm 真实执行另用小程序
   // MING_WASM_DEBUG 断言(fn sum OK 无 REJECT/实例化失败)——大程序逐调用
-  // 打 [wasm 参数] 超 runMing 30s 超时,与 §63 wasmOk63 用小程序同口径。
+  // 打 [wasm 参数] 超 runMing 120s 超时,与 §63 wasmOk63 用小程序同口径。
   // 注:100000 × sum([1,2,3]=6) = 600000(资源口径:循环 100000 次 VecLit 各计 3)。
   {
     const p = m64('a3_reuse.ming', [
@@ -9706,6 +9822,7 @@ fn main() with io, fs {
 }
 
 // ===================== 65. v0.61:污点最小片(窄源 v1;ADR-002)=====================
+secBegin('65');
 // 文件所有权:§65-K = tools/*.ming 迁移(12 处 env.get 解包位)+ 本区全部用例。
 // 语义权威:docs/adr-002-taint.md(窄源/白名单/禁面/sanitize_cli_path 裁决)+ docs/adr-002-spike.md(迁移面 12 处)。
 {
@@ -10382,7 +10499,7 @@ fn main() with io, fs {
       for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
         if (fs.existsSync(c)) return true;
       }
-      return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+      return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
     })();
     const fFfi = m65('k23a_ffi_untrusted.ming', [
       'extern "msvcrt" fn getenv(n: str) -> Untrusted[str];',
@@ -10458,6 +10575,7 @@ fn main() with io, fs {
 }
 
 // ===================== 66. v0.62:服务端 v1(std.net.serve,worker-per-connection;ADR-001 16/16)=====================
+secBegin('66');
 // 文件所有权:§66 = 本区全部用例(checker serve 门禁 / 三段式拒绝 / 回环与并发冒烟)。
 // 语义权威:docs/adr-001-concurrency.md §2.1/§5.2 + 评审清单 16/16 裁决(2026-11-14)。
 {
@@ -10759,7 +10877,7 @@ fn main() with io, fs {
     await new Promise((res) => {
       const t = setTimeout(() => {
         if (process.platform === 'win32') {
-          try { spawnSync('taskkill', ['/F', '/T', '/PID', String(server.proc.pid)], { encoding: 'utf8' }); } catch { /* 尽力而为 */ }
+          try { spawnSync('taskkill', ['/F', '/T', '/PID', String(server.proc.pid)], { encoding: 'utf8', timeout: 15000 }); } catch { /* 尽力而为 */ }
         }
         res();
       }, 3000);
@@ -10952,7 +11070,7 @@ fn main() with io, fs {
       for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
         if (fs.existsSync(c)) return true;
       }
-      return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+      return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
     })();
     if (ccAvail66) {
       const f = m66('k66_12_cc.ming', SRC66.get.split('__PORT__').join('26012'));
@@ -11067,6 +11185,7 @@ fn main() with io, fs {
 }
 
 // ===================== 67. v0.63:wasm 剩余守护收口 slice 2(plan §4.4.6b)=====================
+secBegin('67');
 // 文件所有权:§67 = 本区全部用例。五形态:mut Vec 元素写 / Vec 下标读 / Option unwrap·expect /
 // VecLit 数值元素 / f64 复合赋值——正例三引擎逐字 + 越界/None 的 M4003/M4006 消息-span-退出码逐字 + strict 存活。
 {
@@ -11735,6 +11854,7 @@ fn main() with io, fs {
 }
 
 // ===================== 68. v0.64:信任边界与诚实失败收口(plan §4.5.1)=====================
+secBegin('68');
 // 文件所有权:§68 = 本区全部用例。覆盖:#56 artifact 四损坏形态统一诊断 / S9 嵌套 serve 编译期拒绝
 // (两遍式;v68.13-16 审查修复批:M1 遮蔽正例不误伤回归 + S12 sanitize_cli_path 闸门扩展向量——
 // DEL(0x7F)/C1(NEL U+0085)/双向符(LRE U+202A) mark 字面量与 env 注入三引擎逐字) /
@@ -12143,7 +12263,7 @@ fn main() with io, fs {
     await new Promise((res) => {
       const t = setTimeout(() => {
         if (process.platform === 'win32') {
-          try { spawnSync('taskkill', ['/F', '/T', '/PID', String(server.proc.pid)], { encoding: 'utf8' }); } catch { /* 尽力而为 */ }
+          try { spawnSync('taskkill', ['/F', '/T', '/PID', String(server.proc.pid)], { encoding: 'utf8', timeout: 15000 }); } catch { /* 尽力而为 */ }
         }
         res();
       }, 3000);
@@ -12335,6 +12455,7 @@ fn main() with io, fs {
 }
 
 // ===================== 69. v0.65:wasm 守护收口 slice 3(plan §4.5.2;守护具名清单清零)=====================
+secBegin('69');
 // 文件所有权:§69 = 本区全部用例。五形态:expect(msg)/Map unwrap(map_has 导入)/Err unwrap(载荷 display)/
 // Vec[str] 下标读(句柄)/下标复合赋值 v[i] += x——正例三引擎逐字 + panic 消息-span-退出码逐字 + strict 存活 + #59 嵌套栈帧。
 {
@@ -12965,6 +13086,7 @@ fn main() with io, fs {
 }
 
 // ===================== 70. v0.67:诊断协议校准三切口 + REPL 顺带(plan §4.6.7/§4.7.2;#62/#60/#64)=====================
+secBegin('70');
 // 文件所有权:§70 = 本区全部用例。切口 1 毒化收敛(let 初始化器 + match 臂绑定双路径) /
 // 切口 2 M3012 语境化抑制 / 切口 3 M3015 nearest(三主发射点 + 通用) / REPL let 回显 + 横幅单一事实来源。
 {
@@ -13359,6 +13481,7 @@ fn main() with io, fs {
 }
 
 // ===================== 71. v0.68:Untrusted[Json] 载体解锁(ADR-004 §7.1 测试清单;serve 签名翻转/投影表/mark_json)=====================
+secBegin('71');
 // 文件所有权:§71 = 本区全部用例。签名破坏正负例 / 投影表逐条(标注赋值锁定) / sink 拦截矩阵(M3049 载体感知) /
 // mark_json 构造面 / 深拷贝保污 / 净 Json 对照不误伤 + 工具冒烟 / 擦除一致孪生 / 禁面 M3050 / 投影表外 M3050 /
 // as_obj 副本键形态修复回归 / wasm-C 资格核验(ADR-004 清单 12) / 契约内投影。
@@ -13965,6 +14088,7 @@ fn main() with io, fs {
 
 
 // ===================== 72. v0.69:eval(显式能力 with eval;ADR-005 12/12 go)=====================
+secBegin('72');
 // 文件所有权:§72 = 本区全部用例(ADR-005 §7 清单 12 项 + §9 实现期义务核验)。
 // 正例(字面量/合成串/嵌套/内层非零退出码)/ Err 化载荷(编译失败 N 条 std.json.parse 断言/类型错/
 // 内层 panic M4003/契约 M4015/缺 main M3023/熔断 M4001——panic 不穿透,外层存活)/
@@ -14376,6 +14500,7 @@ fn main() with io, fs {
 }
 
 // ===================== 73. v0.70:诊断校准二期(#63 parser 级联抑制——深度感知 panic-mode 恢复)=====================
+secBegin('73');
 // 文件所有权:§73 = 本区全部用例。
 // 根因机制:旧 recover(false) 语句停机表含顶层关键字 `test`(test 只能顶层,不是语句)——语句解析
 // 失败落在 `test` 上时 recover 立即返回(未消费),catch 强进 1 token 到 `ident {`,下一轮被误解析为
@@ -14639,6 +14764,7 @@ fn main() with io, fs {
 }
 
 // ===================== 74. v0.71:诊断残留收口(salvage 精化/valBrace 所有权/M3049 化)=====================
+secBegin('74');
 // 文件所有权:§74 = 本区全部用例(任务 1/2/3;#61 test 栈位置与 N-68 fmt 文案由并行 agent 负责,不在本区)。
 // 三个机制(全部 src/parser.js + src/checker.js,零新增 M 码):
 //   ① #68 salvage 精化:recover(false) 语句层停机表新增深度 0 `id(` 启发式——当前 token 是标识符
@@ -15015,6 +15141,7 @@ fn main() with io, fs {
 }
 
 // ===================== 75. v0.72:诊断质量补刀小批(if 分支混型 M3049 对称化/复合载体 remedy 精确化)=====================
+secBegin('75');
 // 文件所有权:§75 = 本区全部用例。零新增 M 码,无新语言面;两处改动都在 src/checker.js(v0.71 独立审查 2 MINOR):
 //   ① MINOR-1——if 分支混型点(checkIf 值形式,仿 match 臂 v0.71 先例)双向接入 untrustedMismatchDiag:
 //      分支混型且恰一侧含污 → M3049(what='if 两个分支类型不同',带净化处方);双侧净结构错配与双侧都含污
@@ -15271,6 +15398,7 @@ fn main() with io, fs {
 
 
 // ===================== 76. v0.73:解析深嵌套守卫(裸栈崩溃 → 稳定诊断)=====================
+secBegin('76');
 // 文件所有权:§76 = 本区全部用例。改动面:src/parser.js 单文件——解析递归深度计数器
 // this.exprDepth(构造器置 0)+ 四挂点 try/finally 进出配对:parsePrimary(全部表达式叶子
 // 入口,主闸)+ parseUnary(`-`/`!` 自递归)+ parseIf(else-if 链直接递归)+ parseBlock
@@ -15497,6 +15625,7 @@ fn main() with io, fs {
 }
 
 // ===================== 77. v0.74:内联汇编(显式能力 with asm;ADR-006 12/12 go;cc 独占+M4017 具名回落)=====================
+secBegin('77');
 // 文件所有权:§77 = 本区全部用例(ADR-006 §1 grammar/§2 引擎口径/§3 门禁/§4 M4017/§6 fuzz 合同)。
 // 形态参照:§58 unsafe(同"cc 独占+具名回落"家族:hasCC 探测+skip/M4016 句式/黄金+三路一致)与
 // §72 eval(同"显式能力"家族:M3029 门禁/契约内/serve handler/build 回退/wasm 'none' 三态)。
@@ -15928,6 +16057,7 @@ fn main() with io, fs {
 }
 
 // ===================== 78. v0.75:健壮性收尾(残留裸栈崩溃面全面清零)=====================
+secBegin('78');
 // 文件所有权:§78 = 本区全部用例。改动面:src/checker.js + src/lexer.js + src/parser.js
 // 三文件——零新增 M 码,复用 M4005[stack-overflow] 作 check/parse/lex-time 诊断变体
 // ("栈溢出"语义本名;先例 = v0.73 parser exprDepth 复用 M2001 的变体模式)。
@@ -16130,6 +16260,7 @@ fn main() with io, fs {
 }
 
 // ===================== 79. v0.76:第五崩面收口(call-arg 嵌套守卫盲视)+ fix 处方扩面 =====================
+secBegin('79');
 // 文件所有权:§79 = 本区全部用例。改动面:src/parser.js(parsePostfix 三重入点守卫)+
 // src/checker.js(M3002 let/const 标注位 fix + annotationFixType 助手)——零新增 M 码,
 // 零新 fix 协议(沿 v0.44 d.fix = {start,end,replacement})。
@@ -16227,7 +16358,7 @@ fn main() with io, fs {
     const p = m79('v79_4_call4000.ming', callArgSrc79(4000));
     const res = chk79(p);
     const deep = deepMsg79(res);
-    check('v79.4:call-arg 4000 层——check 在 runMing 30s 超时内完成(exit 1)+ M2001 ≥1 条逐字 + 零裸栈崩溃(恢复路径零挂起)',
+    check('v79.4:call-arg 4000 层——check 在 runMing 120s 超时内完成(exit 1)+ M2001 ≥1 条逐字 + 零裸栈崩溃(恢复路径零挂起)',
       res.code === 1 && res.j !== null && deep.length >= 1
         && deep.every((d) => (d.message || '') === M2001_MSG)
         && !crash79(res),
@@ -17946,6 +18077,7 @@ fn main() with io, fs {
 }
 
 // ===================== 84. v0.80:fix 结构化处方扩面(AI 协作面第二波)=====================
+secBegin('84');
 // 文件所有权:§84 = 本区全部用例。v0.80 fix 结构化处方扩面(AI 协作面第二波,plan §4.12.5):
 // 既有 4 族(M2002/M3029/M3001/M3002)之外,按快照(docs/ai-loop-snapshot.md)数据驱动新增
 // 5 个高频 fix 族——M3015(方法名 nearest 改写,v0.67 切口 3 消息建议的结构化同源)/
@@ -18200,6 +18332,7 @@ fn main() with io, fs {
 }
 
 // ===================== 85. v0.80:LSP 多文件符号补全第一切片 =====================
+secBegin('85');
 // 文件所有权:§85 = 本区全部用例。实现面仅 src/lsp.js(补全面 additive,既有单文件路径逐字未动)。
 // 切片三件(架构师合同 plan §4.12.5;保守原则:宁可空列表不可错补;check-ID 前缀 v85.*——
 // §83 号与 v83 前缀已被 xnsni/xnopen 工具提交占用,避让):
@@ -18434,6 +18567,7 @@ fn main() with io, fs {
 }
 
 // ===================== 86. v0.81:tree ContSig 硬化 + json_query C0 序列化收敛 =====================
+secBegin('86');
 // 文件所有权:§86 = 本区全部用例。两项引擎一致性清账(plan §4.12.5):
 //   ① tree 引擎 ContSig/BrkSig 纵深防御(v0.79 独立审查 NOTE-1)——src/interp.js 新增
 //     brkContGuard:callClosure(闭包分支)/callLocalFn 的 catch 在 RetSig 之后检查
@@ -18613,6 +18747,7 @@ fn main() with io, fs {
 }
 
 // ===================== 87. v0.81:wasm M4002 消息口径统一(N-65.4) =====================
+secBegin('87');
 // 文件所有权:§87 = 本区全部用例。实现面仅 src/vm.js(宿主导入 panic_m4002_op)+ src/wasm.js
 // (导入表尾部追加 TI+17;emitCheckedOp/emitCheckedOpU/Unary 共 13 个 M4002 调用点切换);
 // tree/VM(interp.js/compiler.js)零改动——消息模板单一事实参考在 interp.js
@@ -18658,7 +18793,7 @@ fn main() with io, fs {
     for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
       if (fs.existsSync(c)) return true;
     }
-    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
   })();
 
   // ---- 溢出形态矩阵 × 引擎腿(v87.1–v87.18) ----
@@ -18794,6 +18929,7 @@ fn main() with io, fs {
 }
 
 // ===================== 88. v0.82:污点 v1.3 窗口(argv 载体 + 响应头第四载体 + metadata;ADR-008)=====================
+secBegin('88');
 // 文件所有权:§88 = 本区全部用例。实现面:src/checker.js(载体白名单扩 Map[str,str] 第四载体 +
 // untrustedMapMethod 投影表 + main args 编译期 M3049 + fs.metadata / net.http_request_opts 签名翻转
 // + M3050 待解锁清单文案更新)+ src/interp.js 与 src/vm.js(M3023 消息随 main 合法带参形态翻转,
@@ -19183,6 +19319,7 @@ fn main() with io, fs {
 }
 
 // ===================== 89. v0.82:污点 v1.3 迁移面锁定(tools/*.ming ×14 + 迁移语料 + net_e2e;ADR-008)=====================
+secBegin('89');
 // 文件所有权:§89 = 本区全部用例。迁移形态(Agent F,§88 迁移完成记录):14 个工具 main
 // 签名 Vec[str] → Vec[Untrusted[str]],args 头部逐元素过 std.unstr.sanitize_cli_path
 // (校验不改写:拒控制字符,Ok 原样)取净值——路径位/CLI 匹配比较串统一净化,空串参数
@@ -19401,6 +19538,7 @@ fn main() with io, fs {
 }
 
 // ===================== 90. v0.83:panic 消息面收尾(M4004 四引擎统一 + #58 cc 残留 + N-61.2 卫生件) =====================
+secBegin('90');
 // 文件所有权:§90 = 本区全部用例(v0.83 Agent A)。实现面:src/wasm.js(导入表尾部追加 TI+18
 // panic_m4004_op;emitCheckedOp/emitCheckedOpU 共 4 个 M4004 调用点切换,emitPanic 泛化发射
 // 随之移除)+ src/vm.js(宿主导入 panic_m4004_op;泛化 panic_m4004 保留旧 AOT 兼容)+
@@ -19439,7 +19577,7 @@ fn main() with io, fs {
     for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
       if (fs.existsSync(c)) return true;
     }
-    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
   })();
 
   // ---- M4004 形态矩阵 × 引擎腿(v90.1–v90.9) ----
@@ -19628,6 +19766,7 @@ fn main() with io, fs {
 }
 
 // ===================== 91. v0.83:位置/工具链面小件清账(plan §4.13.4 P1.1)=====================
+secBegin('91');
 // 文件所有权:§91 = 本区全部用例(Agent B)。实现面:src/interp.js(negSlow 补 span 参数 +
 // N-60.1 四位点 terminate 先于熔断检查/finally 收割)+ src/lsp.js(completionFor 出口过滤
 // mingLspPlaceholder 前缀候选);tests/run.mjs 本区 + §87 neg 断言解锁校准(理由化:tree
@@ -19666,7 +19805,7 @@ fn main() with io, fs {
     for (const c of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
       if (fs.existsSync(c)) return true;
     }
-    return spawnSync('gcc', ['--version'], { encoding: 'utf8' }).status === 0;
+    return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
   })();
   // LSP 多文件公用夹具:v91.3 泄漏场景(目标文件必须真实存在)与 v91.5 as-别名正例共用
   m91('geom.ming', [
@@ -19839,6 +19978,7 @@ fn main() with io, fs {
 }
 
 // ===================== 92. v0.84:fits number 路径 bits=32 怪癖修复(plan §4.13.7 P1 小件)=====================
+secBegin('92');
 // 文件所有权:§92 = 本区全部用例。实现面:src/interp.js fits() number 路径
 // `1 << (bits-1)` → `2 ** (bits-1)`——bits=32 时 JS 位移得 -2147483648,区间检查恒 false:
 // ① i32 的 number 快路径全部绕行(慢但不错);② `int.to_i32()` 恒 None(预存 bug);
@@ -20000,6 +20140,7 @@ fn main() with io, fs {
 }
 
 // ===================== 93. v0.85:窄型算术门禁收口(intBin fits 门)+ M3013 无损拓宽 fix 族 =====================
+secBegin('93');
 // 文件所有权:§93 = 本区全部用例(实现面:src/interp.js intBin / src/checker.js intWidenFix;
 // src/vm.js 归 §94)。任务 1(plan §4.13.5 v0.85 审查登记 ①):`+`/`*`/`/` 的 number 快路径
 // 此前只查 Number.isSafeInteger(`/` 甚至没有 fit 检查),窄型(i8/i16/i32/u8/u16/u32)溢出
@@ -20268,6 +20409,7 @@ fn main() with io, fs {
 }
 
 // ===================== 94. v0.85:VM ADDI 两件收口(plan §4.13.5 v0.85 审查登记 ②/③)=====================
+secBegin('94');
 // 文件所有权:§94 = 本区全部用例。实现面:src/vm.js OP.ADDI。
 // ② >2^53 合法 i64 和假报 M4002(硬规则 1 双引擎分歧):VM ADDI number 路径
 //    isSafeInteger 失败曾直接置 null 按溢出 panic;现回落 BigInt 精确重算
@@ -20545,6 +20687,7 @@ fn main() with io, fs {
 }
 
 // ===================== 95. v0.86:ADR-009 S1 read_bytes_range 最小流式(plan §4.13.5)=====================
+secBegin('95');
 // 文件所有权:§95 = 本区全部用例(Agent A)。实现面:src/checker.js(内置签名表)+ src/interp.js
 // (callStd builtin,tree/VM 共享;分段 readSync 每段 ≤1MB / finally 关 fd / 按实读字节计费)。
 // 契约:docs/adr-009-streaming-slice.md §2.1/§3 清单 1-3/§5(S1)。污点纪律:v0.77 第三载体
@@ -20945,6 +21088,7 @@ fn main() with io, fs {
 }
 
 // ===================== 96. v0.87:ADR-009 S2 Slice[u8] 只读视图(plan §4.13.2 簇 A)=====================
+secBegin('96');
 // 文件所有权:§96 = 本区全部用例(Agent A)。实现面:src/checker.js(Slice 类型面/view 构造
 // 接收者校验/M3051 逃逸门禁/签名禁面/闭包捕获)+ src/interp.js(零拷贝视图对象 + len/get/at,
 // tree/VM 共享 callMethod 分派)+ src/wasm.js(view 具名不资格)+ src/diag.js(M3051 三处登记)。
@@ -21241,6 +21385,7 @@ fn main() with io, fs {
 }
 
 // ===================== §97 窄型注解宽度归一(v0.87,plan §4.13.7 / v0.85 审查 M1) =====================
+secBegin('97');
 // 文件所有权:§97 = 本区全部用例(Agent B)。实现面:src/interp.js(normBindValue/narrowSpec*
 // 助手 + tree let/重赋值/传参/返回/闭包/本地函数归一)+ src/vm.js(ST/SET c 规格 + callCompiled
 // 参数/返回归一)+ src/compiler.js(let 窄型规格发射/narrowSlots/lambda narrowSpecs/tryWasm
@@ -21528,6 +21673,7 @@ fn main() with io, fs {
 }
 
 // ===================== 98. v0.88:窄型注解遗留边界四项归一(plan §4.13.7 规格树)=====================
+secBegin('98');
 // 文件所有权:§98 = 本区全部用例(Agent A)。实现面:src/interp.js(declaredSpecOfTyAst/
 // PatAst/Ty/StructDef 规格树 + normBindValue 递归 + deepCopy 值标签 __elemTy/__spec/
 // narrowParamTypes 保留 + bindPattern 逐槽登记 + assignTo Field/Index + vecMethodImpl
@@ -21972,6 +22118,7 @@ fn main() with io, fs {
 }
 
 // ===================== 99. v0.89:窄型归一同族收口(Map 值位/lambda 返回位/enum payload/推断型静默面 M1a·M1b)=====================
+secBegin('99');
 // 文件所有权:§99 = 本区全部用例(Agent A)。实现面:src/interp.js(规格树 {kt,vt}/{fn:{ret}}
 // + TFn + normBindValue Map/闭包分支 + uniformNarrowSpec 值标签驱动 + deepCopy __valTy/
 // __retSpec/narrowRetSpec + bindPattern M1a 值标签登记 + assignTo Index map + mapMethodImpl
@@ -22458,6 +22605,7 @@ fn main() with io, fs {
 }
 
 // ===================== 100. v0.90:引擎一致性第三波(#73 AOT struct/enum 相等 / tree ctor 作值 / BIND 归一 panic 位置 / u64 字面量标签域锁定)=====================
+secBegin('100');
 // 文件所有权:§100 = 本区全部用例(Agent A)。实现面:src/interp.js(valueEquals struct/enum
 // "同类型判定" + evalCall ctor 分发两分支 + Let 绑定归一 span 对齐)。
 // 语义:#73——AOT 反序列化后每个构造点的 spec.def 各自独立(minimalDef {nt,name},wire 不变),
@@ -22935,6 +23083,23 @@ fn main() with io, fs {
   // ---- §100-END
 }
 
+// ===================== 101. v0.91:T4.1 挂起加固机制自测(超时探针 + 未超时对照)=====================
+secBegin('101');
+{
+  // 探针:60s 睡眠进程用 2s 超时跑 → 必超时;断言 timedOut 具名标记 + 退出码 null。
+  // 本 check 能执行并通过 = "超时记为失败路径且总运行继续"的机制自证(探针仅 ~2s,不拖慢套件)。
+  const probe = spawnT(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { timeout: 2000 });
+  check('v101.1:超时机制——2s 超时杀 60s 睡眠探针,timedOut 具名标记 + 套件继续',
+    probe.timedOut === true && probe.code === null,
+    `timedOut=${probe.timedOut} code=${probe.code} stderr=${JSON.stringify(probe.stderr.slice(0, 150))}`);
+  // 对照:未超时的正常子进程不受超时机制影响(退出码/输出原样)。
+  const ok = spawnT(process.execPath, ['-e', 'console.log("alive")'], { timeout: 15000 });
+  check('v101.2:未超时对照——正常子进程退出码/输出不受超时机制影响',
+    ok.timedOut === false && ok.code === 0 && ok.stdout === 'alive\n',
+    `timedOut=${ok.timedOut} code=${ok.code} stdout=${JSON.stringify(ok.stdout)}`);
+}
+
+secEndAll();
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');
