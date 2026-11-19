@@ -111,10 +111,10 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 | v0.73.0 | 2026-11-15 | Tech debt & observability: deep-nesting guards, coverage re-measurement, GUIDE cross-refs | 1141 |
 | v0.72.0 | 2026-11-15 | Diagnostic quality follow-up: if-branch taint symmetry, M3049 remedy precision | 1132 |
 | v0.71.0 | 2026-11-15 | Diagnostic cleanup: salvage refinement, valBrace ownership, nested taint M3049 | 1124 |
-| v0.70.0 | 2026-11-15 | Diagnostic calibration II: parser cascade suppression (#63) | — |
-| v0.69.0 | 2026-11-15 | `eval` runtime compile-and-run (`with eval`, ADR-005) + serve exit-code idiom | — |
-| v0.68.0 | 2026-11-15 | `Untrusted[Json]` carrier (serve payload taint protection, ADR-004) | — |
-| v0.67.0 | 2026-11-15 | Diagnostic protocol calibration (poisoning convergence / M3012 context / M3015 nearest) | — |
+| v0.70.0 | 2026-11-15 | Diagnostic calibration II: parser cascade suppression (#63) | 1103 |
+| v0.69.0 | 2026-11-15 | `eval` runtime compile-and-run (`with eval`, ADR-005) + serve exit-code idiom | 1091 |
+| v0.68.0 | 2026-11-15 | `Untrusted[Json]` carrier (serve payload taint protection, ADR-004) | 1066 |
+| v0.67.0 | 2026-11-15 | Diagnostic protocol calibration (poisoning convergence / M3012 context / M3015 nearest) | 1049 |
 | v0.66.0 | 2026-11-14 | Observation & feedback pure-calibration release (no semantic changes) | 1035 |
 | v0.65.0 | 2026-11-14 | wasm guard closure slice 3: five shapes actually run through wasm; nested stack frames | 1035 |
 
