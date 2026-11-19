@@ -828,7 +828,8 @@ export class VMInterp extends Interp {
             break;
           }
           if (recv && recv.t === 'ctor') {
-            stack.push(this.constructVariant(recv, args, this.spanOf(frame, ins)));
+            // v0.90 审查 MAJOR-1:同 callValue ctor 分发——实参深拷贝(对齐 MAKEENUM 先例)。
+            stack.push(this.constructVariant(recv, args.map(a => deepCopy(a)), this.spanOf(frame, ins)));
             break;
           }
           stack.push(this.callMethod(recv, name, args, null, { span: this.spanOf(frame, ins) }, null));
@@ -1131,7 +1132,9 @@ export class VMInterp extends Interp {
       case 'typeobj':
         return this.typeLevelValue(callee.prim, callee.name ?? '', span);
       case 'ctor':
-        return this.constructVariant(callee, args, span);
+        // v0.90 审查 MAJOR-1:ctor 分发与 MAKEENUM/ST 等构造边界同口径——实参深拷贝,
+        // 消除"构造点快照 vs 栈上别名"的双引擎值分歧(同表达式后置变异形态)。
+        return this.constructVariant(callee, args.map(a => deepCopy(a)), span);
       default:
         throw new Panic('M4001', '内部错误:调用目标不是函数', span);
     }

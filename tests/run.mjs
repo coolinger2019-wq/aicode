@@ -22457,6 +22457,484 @@ fn main() with io, fs {
   // ---- §99-END
 }
 
+// ===================== 100. v0.90:引擎一致性第三波(#73 AOT struct/enum 相等 / tree ctor 作值 / BIND 归一 panic 位置 / u64 字面量标签域锁定)=====================
+// 文件所有权:§100 = 本区全部用例(Agent A)。实现面:src/interp.js(valueEquals struct/enum
+// "同类型判定" + evalCall ctor 分发两分支 + Let 绑定归一 span 对齐)。
+// 语义:#73——AOT 反序列化后每个构造点的 spec.def 各自独立(minimalDef {nt,name},wire 不变),
+// valueEquals 恒等判定曾使 dist 中同类型构造值相等恒 false;改为 def 同对象或(name+字段名集合
+// /enum name)一致后逐位比较。tree ctor 作值——let c = E.A; c(250) checker 合法(callCtor),
+// VM callValue 'ctor' 正常构造,tree evalCall 曾漏分发误报 M4001(双引擎分歧)。BIND 归一
+// panic 位置——VM ST/BIND span = 模式节点(PIdent = 绑定名 token),tree 曾传 Let 语句 span,
+// 列位差数列(消息逐字相同)。u64 字面量标签域——定向狩猎(tree/wasm/VM/no-wasm/AOT dist
+// 五腿 + 架构师 p3a–p3o 15 探针 + §100 q1–q24 追加 24 形态)未达活复现,按"当前统一行为"
+// 锁定固化(不许发明修复;探针清单见 §100 尾注)。
+{
+  const dir100 = path.join(TMP, 'v90');
+  fs.mkdirSync(dir100, { recursive: true });
+  const m100 = (name, src) => { const f = path.join(dir100, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const flags100 = ['', '--no-wasm', '--tree'];
+  const runAll100 = (p) => flags100.map((fl) => runMing(fl ? ['run', p, fl] : ['run', p]));
+  const firstLine100 = (r) => (r.stderr ?? '').split('\n')[0] ?? '';
+  const fmtRuns100 = (runs) => runs.map((r) => `${r.code}:${JSON.stringify((r.stdout ?? '').slice(0, 40))}/${JSON.stringify(firstLine100(r).slice(0, 100))}`).join(' | ');
+  const panics100 = (runs, msg) => runs.every((r) => r.code === 101 && firstLine100(r).includes(msg));
+  const aotProj100 = (name, src) => {
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-v90-'));
+    fs.writeFileSync(path.join(proj, 'ming.toml'), `[project]\nname = "${name}"\nversion = "0.1.0"\nentry = "main.ming"\n`);
+    fs.writeFileSync(path.join(proj, 'main.ming'), src, 'utf8');
+    return proj;
+  };
+
+  // ---- v100.1:#73 源码三腿——struct 同构造相等 true / 同名字段不同值 false /
+  //      enum 同构造 true / 不同载荷 false / 无载荷变体 true(修复前后源码均 true,
+  //      本条是 #73 修复的零回归锚) ----
+  {
+    const p = m100('v100_1_eqsrc.ming', [
+      'struct P { a: i64, b: i64 }',
+      'enum E { A(i64), B }',
+      'fn main() with io {',
+      '    let x = P { a: 1, b: 2 };',
+      '    let y = P { a: 1, b: 2 };',
+      '    print(x == y);',
+      '    let z = P { a: 1, b: 3 };',
+      '    print(x == z);',
+      '    let e1 = E.A(1);',
+      '    let e2 = E.A(1);',
+      '    print(e1 == e2);',
+      '    let e3 = E.A(2);',
+      '    print(e1 == e3);',
+      '    let b1 = E.B;',
+      '    let b2 = E.B;',
+      '    print(b1 == b2);',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.1:#73 源码三腿——struct 相等 true/不同值 false + enum 相等 true/不同载荷 false/无载荷变体 true(true/false/true/false/true,修复前后零变化)',
+      runs.every((r) => r.code === 0 && r.stdout === 'true\nfalse\ntrue\nfalse\ntrue\n'),
+      fmtRuns100(runs));
+  }
+
+  // ---- v100.2:#73 AOT dist——同项目 ming build 后 dist 中同类型构造值相等 true
+  //      (修复前 dist 恒 false:minimalDef 拆 def 对象,a.def !== b.def 短路) ----
+  {
+    const proj = aotProj100('v90eq', [
+      'struct P { a: i64, b: i64 }',
+      'enum E { A(i64), B }',
+      'fn main() with io {',
+      '    let x = P { a: 1, b: 2 };',
+      '    let y = P { a: 1, b: 2 };',
+      '    print(x == y);',
+      '    let z = P { a: 1, b: 3 };',
+      '    print(x == z);',
+      '    let e1 = E.A(1);',
+      '    let e2 = E.A(1);',
+      '    print(e1 == e2);',
+      '    let e3 = E.A(2);',
+      '    print(e1 == e3);',
+      '    let b1 = E.B;',
+      '    let b2 = E.B;',
+      '    print(b1 == b2);',
+      '}',
+    ].join('\n'));
+    const build = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const run = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    check('v100.2:#73 AOT dist——build 真字节码产物,dist 相等结果与源码一致 true/false/true/false/true(修复前 false/false/false/false/false)',
+      build.status === 0 && run.status === 0 && run.stdout === 'true\nfalse\ntrue\nfalse\ntrue\n',
+      `build=${build.status} run=${run.status}:${JSON.stringify(run.stdout)}`);
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+
+  // ---- v100.3:#73 白盒 valueEquals——"同类型判定"判定面:def 同对象 / 异 def 同名
+  //      同字段集合(AOT 形态)/ 异名 false / 同名不同字段名 false / 字段数不同 false /
+  //      同名同字段不同值 false;enum 异 def 同名 true / 异名 false / tag/载荷差异 false;
+  //      builtin Option 同字符串 def true ----
+  {
+    const { valueEquals, V } = await import('../src/interp.js');
+    const f = (pairs) => new Map(pairs);
+    const defA = { nt: 'StructDecl', name: 'P' };
+    const defB = { nt: 'StructDecl', name: 'P' }; // AOT 形态:异对象同 minimal 内容
+    const cases = [];
+    const p1 = V.struct(defA, f([['a', V.int(1)], ['b', V.int(2)]]));
+    cases.push(valueEquals(p1, V.struct(defA, f([['a', V.int(1)], ['b', V.int(2)]]))) === true);   // 同 def
+    cases.push(valueEquals(p1, V.struct(defB, f([['a', V.int(1)], ['b', V.int(2)]]))) === true);   // 异 def 同名同字段(#73)
+    cases.push(valueEquals(p1, V.struct({ nt: 'StructDecl', name: 'Q' }, f([['a', V.int(1)], ['b', V.int(2)]]))) === false); // 异名
+    cases.push(valueEquals(p1, V.struct(defB, f([['a', V.int(1)], ['c', V.int(2)]]))) === false);  // 同名不同字段名
+    cases.push(valueEquals(p1, V.struct(defB, f([['a', V.int(1)]]))) === false);                   // 字段数不同
+    cases.push(valueEquals(p1, V.struct(defB, f([['a', V.int(1)], ['b', V.int(3)]]))) === false);  // 同字段不同值
+    const eA = { nt: 'EnumDecl', name: 'E' };
+    const eB = { nt: 'EnumDecl', name: 'E' };
+    cases.push(valueEquals(V.enumv(eA, 'A', [V.int(1)]), V.enumv(eB, 'A', [V.int(1)])) === true);  // 异 def 同名(#73)
+    cases.push(valueEquals(V.enumv(eA, 'A', [V.int(1)]), V.enumv({ nt: 'EnumDecl', name: 'F' }, 'A', [V.int(1)])) === false); // 异名
+    cases.push(valueEquals(V.enumv(eA, 'A', [V.int(1)]), V.enumv(eB, 'A', [V.int(2)])) === false); // 载荷不同
+    cases.push(valueEquals(V.enumv(eA, 'A', [V.int(1)]), V.enumv(eB, 'B', [])) === false);         // tag 不同
+    cases.push(valueEquals(V.enumv('builtin-opt', 'Some', [V.int(1)]), V.enumv('builtin-opt', 'Some', [V.int(1)])) === true); // builtin 同字符串 def
+    cases.push(valueEquals(V.enumv('builtin-opt', 'Some', [V.int(1)]), V.enumv('builtin-opt', 'None', [])) === false);
+    check('v100.3:#73 白盒 valueEquals——同类型判定 12 形态(异 def 同名同字段 struct/enum → true;异名/不同字段/不同值 → false;builtin Option 不回归)',
+      cases.every(Boolean), JSON.stringify(cases));
+  }
+
+  // ---- v100.4:tree ctor 作值——let c = E.A; c(250) 三腿 250(修复前 tree M4001
+  //      "c 不是函数",VM/wasm 250)+ Option.Some 部分构造器值 s(5) 三腿 5 ----
+  {
+    const p = m100('v100_4_ctor.ming', [
+      'enum E { A(i64), B }',
+      'fn main() with io {',
+      '    let c = E.A;',
+      '    let v = c(250);',
+      '    match v {',
+      '        E.A(x) => { print(x); }',
+      '        E.B => { print(-1); }',
+      '    }',
+      '    let s = Option.Some;',
+      '    print(s(5).unwrap());',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.4:tree ctor 作值——let c = E.A; c(250) 三腿 250 + Option.Some 部分构造器 s(5).unwrap() 三腿 5(修复前 tree M4001)',
+      runs.every((r) => r.code === 0 && r.stdout === '250\n5\n'),
+      fmtRuns100(runs));
+  }
+
+  // ---- v100.5:ctor 值存 Vec 后下标调用(arr[1](7))三腿一致(经 evalCall "其他"
+  //      分支的 ctor 分发;VM callValue 'ctor' 同构) ----
+  {
+    const p = m100('v100_5_ctorvec.ming', [
+      'enum E { A(i64), B }',
+      'fn main() with io {',
+      '    let c = E.A;',
+      '    let arr = [c, c];',
+      '    let w = arr[1](7);',
+      '    match w {',
+      '        E.A(x) => { print(x); }',
+      '        E.B => { print(-1); }',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.5:ctor 值存 Vec 下标调用——arr[1](7) 三腿 7(tree "其他" 分支 ctor 分发与 VM callValue 同构)',
+      runs.every((r) => r.code === 0 && r.stdout === '7\n'),
+      fmtRuns100(runs));
+  }
+
+  // ---- v100.6:无载荷变体作值(E.B 是完整枚举值非 ctor)——match 归属三腿 -2;
+  //      ctor 值作变体构造的位数契约(变体 E.A 需要 1 个值)checker 层不变 ----
+  {
+    const p = m100('v100_6_noctor.ming', [
+      'enum E { A(i64), B }',
+      'fn main() with io {',
+      '    let b = E.B;',
+      '    match b {',
+      '        E.A(x) => { print(x); }',
+      '        E.B => { print(-2); }',
+      '    }',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.6:无载荷变体作值零回归——let b = E.B 是完整枚举值(非 ctor),match 三腿 -2',
+      runs.every((r) => r.code === 0 && r.stdout === '-2\n'),
+      fmtRuns100(runs));
+  }
+
+  // ---- v100.7:BIND 归一 panic 位置三腿逐字 3:9——p2c 形态(i32 槽;修复前 tree
+  //      报 Let 语句 span 3:5,VM 报 BIND 模式节点 3:9;消息逐字相同) ----
+  {
+    const p = m100('v100_7_bindpos.ming', [
+      'fn main() with io {',
+      '    let v = [2147483647i32, 5, 2147483647];',
+      '    let y: i32 = v[2] + 1i32;',
+      '    print(y);',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.7:BIND 归一 panic 位置——三腿 stderr 首行逐字 3:9(绑定名 PIdent span;修复前 tree 3:5)',
+      runs.every((r) => r.code === 101 && firstLine100(r) === `${p}:3:9: error M4002[integer-overflow]: 整数溢出:2147483648 超出 i32 范围(绑定归一)`),
+      fmtRuns100(runs));
+  }
+
+  // ---- v100.8:BIND 归一 panic 位置 u8 槽同口径——裸字面量 Vec 元素(引擎 i64 标签,
+  //      checker u8 语义)+ 加法静默后绑定归一越界;三腿 3:9(绑定名 b) ----
+  {
+    const p = m100('v100_8_bindu8.ming', [
+      'fn main() with io {',
+      '    let v = [255u8, 5];',
+      '    let b: u8 = v[1] + 255u8;',
+      '    print(str(b));',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.8:BIND 归一 u8 槽——裸字面量元素静默加法后绑定归一越界,三腿 stderr 首行逐字 3:9(整数溢出:260 超出 i8u 范围(绑定归一))',
+      runs.every((r) => r.code === 101 && firstLine100(r) === `${p}:3:9: error M4002[integer-overflow]: 整数溢出:260 超出 i8u 范围(绑定归一)`),
+      fmtRuns100(runs));
+  }
+
+  // ---- v100.9:u64 边界值全形态统一锁定(架构师 p3b–p3i 关键形态 + 追加边界)——
+  //      BIND 2^63/u64 max、参数、返回、struct 字段、Vec 字面量/元素写、Map 值、
+  //      Vec[u64] 元素窄槽算术;三腿 + strict-wasm exit 0(真实 wasm 执行,无回落) ----
+  {
+    const p = m100('v100_9_u64val.ming', [
+      'struct S { x: u64 }',
+      'fn id(x: u64) -> u64 {',
+      '    return x;',
+      '}',
+      'fn ret() -> u64 {',
+      '    return 18446744073709551615;',
+      '}',
+      'fn main() with io {',
+      '    let a: u64 = 9223372036854775808;',
+      '    print(a);',
+      '    let b: u64 = 18446744073709551615;',
+      '    print(b);',
+      '    print(id(18446744073709551615));',
+      '    print(ret());',
+      '    let s = S { x: 18446744073709551615 };',
+      '    print(s.x);',
+      '    let v: Vec[u64] = [18446744073709551615];',
+      '    print(v[0]);',
+      '    let mut w = [0u64, 0];',
+      '    w[0] = 10000000000000000000;',
+      '    print(w[0]);',
+      '    let m: Map[str, u64] = {"k": 18446744073709551615};',
+      '    print(m["k"]);',
+      '    let mut st: u64 = 5;',
+      '    st = 10000000000000000000;',
+      '    print(st);',
+      '    let q = [18446744073709551615u64, 1];',
+      '    let y: u64 = q[1] + 1u64;',
+      '    print(y);',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    const strict = runMing(['run', p, '--strict-wasm'], { env: { MING_WASM_STRICT: '1' } });
+    const want9 = '9223372036854775808\n18446744073709551615\n18446744073709551615\n18446744073709551615\n18446744073709551615\n18446744073709551615\n10000000000000000000\n18446744073709551615\n10000000000000000000\n2\n';
+    check('v100.9:u64 边界值全形态统一——BIND 2^63/u64max/参数/返回/struct/Vec 字面量+元素写/Map/ST/Vec 元素算术,三腿逐字 + strict-wasm exit 0(wasm 真实执行面 = id/ret 纯函数;main 本体不 eligible)',
+      runs.every((r) => r.code === 0 && r.stdout === want9)
+        && strict.code === 0 && strict.stdout === want9,
+      `runs=${fmtRuns100(runs)} strict=${strict.code}:${JSON.stringify((strict.stderr ?? '').slice(0, 80))}`);
+  }
+
+  // ---- v100.10:u64 算术溢出消息统一(i64u 标签)——+/-/* 三算子三腿逐字,
+  //      含 wasm-eligible 纯函数形态(操作数 u64 max/2^63 字面量入槽;修复候选假设
+  //      "tree i64 vs wasm i64u"未达活复现,此为统一行为锁定) ----
+  {
+    const p1 = m100('v100_10a_add.ming', [
+      'fn main() with io {',
+      '    let a = 18446744073709551615u64;',
+      '    let b = a + 1u64;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const p2 = m100('v100_10b_fnadd.ming', [
+      'fn calc(a: u64, b: u64) -> u64 {',
+      '    return a + b;',
+      '}',
+      'fn main() with io {',
+      '    print(calc(9223372036854775808u64, 9223372036854775808u64));',
+      '}',
+    ].join('\n'));
+    const p3 = m100('v100_10c_fsub.ming', [
+      'fn calc(a: u64, b: u64) -> u64 {',
+      '    return a - b;',
+      '}',
+      'fn main() with io {',
+      '    print(calc(5u64, 10u64));',
+      '}',
+    ].join('\n'));
+    const p4 = m100('v100_10d_mul.ming', [
+      'fn main() with io {',
+      '    let a = 9223372036854775808u64;',
+      '    let b = a * 2u64;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const p5 = m100('v100_10e_under.ming', [
+      'fn main() with io {',
+      '    let a = 0u64;',
+      '    let b = a - 1u64;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const r1 = runAll100(p1);
+    const r2 = runAll100(p2);
+    const r3 = runAll100(p3);
+    const r4 = runAll100(p4);
+    const r5 = runAll100(p5);
+    const strict2 = runMing(['run', p2, '--strict-wasm'], { env: { MING_WASM_STRICT: '1' } });
+    const strict3 = runMing(['run', p3, '--strict-wasm'], { env: { MING_WASM_STRICT: '1' } });
+    check('v100.10:u64 算术溢出消息统一——+(-)/* 三算子 + 下溢五程序三腿 M4002 i64u 逐字(18446744073709551615 + 1 / 9223372036854775808 + 9223372036854775808 / 5 - 10 / 9223372036854775808 * 2 / 0 - 1 超出 i64u 范围)+ 纯函数 strict exit 101(wasm 真实执行)',
+      panics100(r1, '整数+溢出:18446744073709551615 + 1 超出 i64u 范围')
+        && panics100(r2, '整数+溢出:9223372036854775808 + 9223372036854775808 超出 i64u 范围')
+        && panics100(r3, '整数-溢出:5 - 10 超出 i64u 范围')
+        && panics100(r4, '整数*溢出:9223372036854775808 * 2 超出 i64u 范围')
+        && panics100(r5, '整数-溢出:0 - 1 超出 i64u 范围')
+        && strict2.code === 101 && (strict2.stderr ?? '').includes('整数+溢出:9223372036854775808 + 9223372036854775808 超出 i64u 范围')
+        && strict3.code === 101 && (strict3.stderr ?? '').includes('整数-溢出:5 - 10 超出 i64u 范围'),
+      `r1=${fmtRuns100(r1)} | r2=${fmtRuns100(r2)} | r3=${fmtRuns100(r3)} | r4=${fmtRuns100(r4)} | r5=${fmtRuns100(r5)} strict2=${strict2.code} strict3=${strict3.code}`);
+  }
+
+  // ---- v100.11:u64 移位统一——1u64 << 63 值正确(strict 真实 wasm)、左移丢位
+  //      M4002 i64u、位数越界、逻辑右移;三腿逐字 ----
+  {
+    const p1 = m100('v100_11a_shl.ming', [
+      'fn calc(a: u64, s: u64) -> u64 {',
+      '    return a << s;',
+      '}',
+      'fn main() with io {',
+      '    print(calc(1u64, 63u64));',
+      '}',
+    ].join('\n'));
+    const p2 = m100('v100_11b_shlovf.ming', [
+      'fn main() with io {',
+      '    let a = 9223372036854775808u64;',
+      '    let b = a << 1u64;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const p3 = m100('v100_11c_amt.ming', [
+      'fn main() with io {',
+      '    let b = 1u64 << 64;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const p4 = m100('v100_11d_shr.ming', [
+      'fn main() with io {',
+      '    let b = 18446744073709551615u64 >> 1;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const r1 = runAll100(p1);
+    const r2 = runAll100(p2);
+    const r3 = runAll100(p3);
+    const r4 = runAll100(p4);
+    const strict1 = runMing(['run', p1, '--strict-wasm'], { env: { MING_WASM_STRICT: '1' } });
+    check('v100.11:u64 移位统一——1u64 << 63 三腿 9223372036854775808 + strict exit 0(真实 wasm 移位)/左移丢位三腿 M4002 i64u 逐字/位数越界 0..63/逻辑右移 max>>1',
+      r1.every((r) => r.code === 0 && r.stdout === '9223372036854775808\n')
+        && panics100(r2, '整数<<溢出:9223372036854775808 << 1 超出 i64u 范围')
+        && panics100(r3, '移位位数 64 越界(必须在 0..63)')
+        && r4.every((r) => r.code === 0 && r.stdout === '9223372036854775807\n')
+        && strict1.code === 0 && strict1.stdout === '9223372036854775808\n',
+      `r1=${fmtRuns100(r1)} | r2=${fmtRuns100(r2)} | r3=${fmtRuns100(r3)} | r4=${fmtRuns100(r4)} strict1=${strict1.code}`);
+  }
+
+  // ---- v100.12:u64 字面量标签域静态拒绝面统一(编译期拒绝,引擎不达)——const u64
+  //      装 i64 字面量 M3002 / match 模式字面量 i64 vs u64 M3013 / 混符号运算 M3013 /
+  //      无符号取负 M3008 / Vec 元素字面量越界 M3002 / u64 max+1 字面量 M3002 ----
+  {
+    const p1 = m100('v100_12a_const.ming', 'const C: u64 = 18446744073709551615;\nfn main() with io { let x = C + 1u64; print(x); }\n');
+    const p2 = m100('v100_12b_match.ming', [
+      'fn main() with io {',
+      '    let x = 18446744073709551615u64;',
+      '    match x {',
+      '        18446744073709551615 => { print(1); }',
+      '        _ => { print(0); }',
+      '    }',
+      '}',
+    ].join('\n'));
+    const p3 = m100('v100_12c_mixed.ming', 'fn main() with io { let a: u64 = 18446744073709551615; let b = a + 1; print(b); }\n');
+    const p4 = m100('v100_12d_neg.ming', 'fn main() with io { let z = -1u64; print(z); }\n');
+    const p5 = m100('v100_12e_veclit.ming', 'fn main() with io { let v = [255u8, 300]; print(str(v[0])); }\n');
+    const p6 = m100('v100_12f_u64max.ming', 'fn main() with io { let a: u64 = 18446744073709551616; print(a); }\n');
+    const c = (p) => runMing(['check', p]);
+    const checks = [p1, p2, p3, p4, p5, p6].map(c);
+    check('v100.12:u64 静态拒绝面统一——const M3002/match 模式 M3013/混符号 M3013/取负 M3008/Vec 元素字面量越界 M3002/u64 max+1 M3002(六形态 check exit 1)',
+      checks.every((r) => r.code === 1)
+        && checks[0].stderr.includes('M3002') && checks[1].stderr.includes('M3013')
+        && checks[2].stderr.includes('M3013') && checks[3].stderr.includes('M3008')
+        && checks[4].stderr.includes('M3002') && checks[5].stderr.includes('M3002'),
+      checks.map((r, i) => `${i}:${r.code}:${JSON.stringify((r.stderr ?? '').split('\n')[0].slice(0, 90))}`).join(' | '));
+  }
+
+  // ---- v100.13:u64 AOT dist 统一——u64 max/2^63 值经池 wire 往返(dist 字面量
+  //      标签域)+ 算术溢出 dist panic 消息体 i64u 逐字 ----
+  {
+    const proj = aotProj100('v90u64', [
+      'fn main() with io {',
+      '    let b: u64 = 18446744073709551615;',
+      '    print(b);',
+      '    let c: u64 = 9223372036854775808;',
+      '    print(c);',
+      '}',
+    ].join('\n'));
+    const build = spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const run1 = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    fs.writeFileSync(path.join(proj, 'ovf.ming'), [
+      'fn main() with io {',
+      '    let a = 18446744073709551615u64;',
+      '    let b = a + 1u64;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v90u64"\nversion = "0.1.0"\nentry = "ovf.ming"\n');
+    spawnSync(process.execPath, [MING, 'build'], { encoding: 'utf8', cwd: proj, timeout: 120000 });
+    const run2 = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000 });
+    check('v100.13:u64 AOT dist 统一——u64 max/2^63 池 wire 往返 dist 逐字 + 溢出 dist panic 消息体 i64u(18446744073709551615 + 1 超出 i64u 范围)exit 101',
+      build.status === 0 && run1.status === 0 && run1.stdout === '18446744073709551615\n9223372036854775808\n'
+        && run2.status === 101 && (run2.stderr ?? '').includes('整数+溢出:18446744073709551615 + 1 超出 i64u 范围'),
+      `build=${build.status} r1=${run1.status}:${JSON.stringify(run1.stdout)} r2=${run2.status}:${JSON.stringify((run2.stderr ?? '').split('\n')[0])}`);
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+  // ---- v100.14:v0.90 审查 MAJOR-1 回归锚——ctor 分发实参深拷贝(struct 载荷 + 同表
+  //      达式变异窗口)。修复前 VM callValue/CALLMETHOD 'ctor' 传操作数栈裸引用,构造出
+  //      的枚举别名同表达式内后置变异的局部 → 静默双引擎值分歧(tree 1/2/2 vs VM 2/2/2);
+  //      修复 = args.map(deepCopy)(对齐 MAKEENUM 先例)。期望 = 构造点快照口径 1/2/2。
+  //      探针逐字取自独立审查 .zcode/review90/p3_ctor_alias.ming。
+  {
+    const p = m100('v100_14_ctor_mut.ming', [
+      'struct P { x: i64 }',
+      'trait Bump {',
+      '    fn bump(mut self) -> P;',
+      '}',
+      'impl Bump for P {',
+      '    fn bump(mut self) -> P with io {',
+      '        self.x = self.x + 1;',
+      '        return self;',
+      '    }',
+      '}',
+      'enum E { A(P), B }',
+      'fn main() with io {',
+      '    let mut p = P { x: 1 };',
+      '    let c = E.A;',
+      '    match (c(p), p.bump()) {',
+      '        (E.A(q), z) => { print(q.x); print(z.x); }',
+      '        _ => { print(-1); }',
+      '    }',
+      '    print(p.x);',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.14:审查 MAJOR-1——ctor 分发实参深拷贝,struct 载荷 + 同表达式变异窗口三腿逐字(构造点快照 1/2/2;修复前 VM 2/2/2 静默分歧)',
+      runs.every((r) => r.code === 0 && r.stdout === '1\n2\n2\n'),
+      fmtRuns100(runs));
+  }
+  // ---- v100.15:同审查 MAJOR-1——Vec 载荷 + push 变异窗口(构造点快照 2/3;修复前
+  //      VM 3/3 静默分歧)。探针逐字取自 .zcode/review90/p3c_ctor_vecalias.ming。
+  {
+    const p = m100('v100_15_ctor_vec.ming', [
+      'enum E { A(Vec[i64]), B }',
+      'fn main() with io {',
+      '    let mut v = [1, 2];',
+      '    let c = E.A;',
+      '    match (c(v), v.push(99)) {',
+      '        (E.A(q), _) => { print(q.len()); }',
+      '        _ => { print(-1); }',
+      '    }',
+      '    print(v.len());',
+      '}',
+    ].join('\n'));
+    const runs = runAll100(p);
+    check('v100.15:审查 MAJOR-1——ctor 分发实参深拷贝,Vec 载荷 + push 变异窗口三腿逐字(构造点快照 2/3;修复前 VM 3/3 静默分歧)',
+      runs.every((r) => r.code === 0 && r.stdout === '2\n3\n'),
+      fmtRuns100(runs));
+  }
+  // §100 尾注(缺陷 4 狩猎记录):u64 无后缀字面量溢出消息(tree i64 vs wasm i64u)未达
+  // 活复现——架构师 p3a–p3o 15 形态(其中 p3j 系语法笔误未运行,p3l/p3m/p3n/p3o 为静态
+  // 拒绝)+ 本节追加 24 形态(q1–q24:BIND 2^63/u64max、参数/返回/struct/Vec/Map/ST/
+  // const/match 模式/混算/取负/移位/裸字面量 Vec 元素/AOT dist 五腿)全部统一。
+  // 假设域核实:wasm 路径无 BIND/ST/参数/MAKEVEC 归一 panic 模板(归一在编译期字面量
+  // narrow,运行期 M4002 仅 panic_m4002_op kind 0–5,kind 由槽符号性选择,u64 槽恒 kind 1
+  // = i64u 模板);tree panicOverflow 标签取左操作数值标签,混合符号运算被 M3013 静态拒绝,
+  // 同型运算标签恒一致。登记关闭,交架构师复核。
+  // ---- §100-END
+}
+
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

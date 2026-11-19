@@ -345,14 +345,35 @@ export function valueEquals(a, b) {
       return true;
     }
     case 'struct': {
-      if (a.def !== b.def) return false;
+      // #73(v0.90):AOT 反序列化后每个构造点的 spec.def 各自独立对象(minimalDef 只保
+      // {nt,name},wire 不变),`a.def !== b.def` 曾使 dist 中同类型构造值相等恒 false——
+      // 源码/VM 路径池条目共享 checker decl 对象,无此问题。改为"同类型判定"后逐字段
+      // 比较:def 同对象(源码/VM 快路径)或 name 相同且字段名集合一致。
+      // 判定依据:checker 的 == 只在同一 struct 类型上合法(decl 恒等;def.name 无模块
+      // 限定,跨模块同名 struct 不 unify、不可能进入比较),AOT 下 def 身份不可靠,
+      // name+字段名集合是保守替身——同名不同布局(字段数/字段名不同)判 false。字段类型
+      // 不可得(AOT def 是 minimal {nt,name}),同名同布局但来源不同模块的值在合法程序
+      // 中不可比较,不构成误 true 面;字段级比较兜住字段值类型差异。字段名字面量必须
+      // 写全(M3027),集合判定不依赖字面量书写序(fields 插入按字面量序)。
+      if (a.def !== b.def) {
+        if (a.name !== b.name || a.fields.size !== b.fields.size) return false;
+        for (const k of a.fields.keys()) if (!b.fields.has(k)) return false;
+      }
       for (const [k, v] of a.fields) {
         if (!valueEquals(v, b.fields.get(k))) return false;
       }
       return true;
     }
-    case 'enum': return a.def === b.def && a.tag === b.tag
-      && a.vals.length === b.vals.length && a.vals.every((x, i) => valueEquals(x, b.vals[i]));
+    // #73(v0.90):enum 同根因——AOT 下每个构造点的 enumspec.def 各自独立(minimalDef
+    // {nt,name}),恒等判定曾使同枚举构造值相等恒 false(实测 E.A(1)==E.A(1) dist=false)。
+    // 同改"同类型判定":def 同对象或 name 相同(builtin Option/Result 的 def 是同一字符串
+    // 常量,恒等成立);tag 与载荷逐位比较兜住变体/载荷差异。与 struct 同依据:跨模块
+    // 同名枚举不 unify,合法程序不可能比较。
+    case 'enum': {
+      if (a.def !== b.def && a.name !== b.name) return false;
+      return a.tag === b.tag
+        && a.vals.length === b.vals.length && a.vals.every((x, i) => valueEquals(x, b.vals[i]));
+    }
     case 'range': return a.lo.v === b.lo.v && a.hi.v === b.hi.v;
     case 'json': return jsonEquals(a, b);
     default: return false;
@@ -1085,7 +1106,11 @@ export class Interp {
           // 见 declaredNarrowTy)。PWild 丢弃全部绑定 → 不归一(与 VM POP 路径一致;
           // 归一的唯一可见效果是防御性 panic,丢弃位无绑定语义)。
           const spec = s.pat.nt === 'PWild' ? null : declaredSpecOfPatAst(s.pat, s.type);
-          this.bindPattern(s.pat, spec ? normBindValue(v, spec, s.span) : v, env, spec);
+          // v0.90(引擎一致性第三波):归一 panic 位置对齐 VM——VM ST/BIND 的 span 是
+          // 模式节点(编译器 emitBinds/compileLetPattern 以 pat.span 发射,PIdent = 绑定名
+          // token);tree 曾传 Let 语句 span,同一程序 panic 列位差数列(实测 p2c:tree 3:5
+          // vs VM 3:9,消息逐字相同)。改传 s.pat.span 与 VM 指令 span 同源。
+          this.bindPattern(s.pat, spec ? normBindValue(v, spec, s.pat.span) : v, env, spec);
         }
         return;
       }
@@ -1649,6 +1674,10 @@ export class Interp {
         const args = e.args.map(a => deepCopy(this.evalExpr(a, env)));
         // v0.59(#44):localfn 形态(本地函数作值 let g = twice; g(3))加入可调用集
         if (f.t === 'closure' || f.t === 'fnref' || f.t === 'localfn') return this.callClosure(f, args, e.span);
+        // v0.90(引擎一致性第三波):枚举构造器值作可调用(let c = E.A; c(250))——
+        // checker 按 ctor 类型合法化(callCtor 位数检查),VM 经 callValue 'ctor' 正常
+        // 构造;tree 曾漏分发误报 M4001 "不是函数"(双引擎分歧)。与 VM callValue 同构。
+        if (f.t === 'ctor') return this.constructVariant(f, args, e.span);
         throw new Panic('M4001', `${name} 不是函数`, e.span);
       }
       if (found?.kind === 'localfn') {
@@ -1694,6 +1723,9 @@ export class Interp {
     const f = this.evalExpr(callee, env);
     const args = e.args.map(a => deepCopy(this.evalExpr(a, env)));
     if (f.t === 'closure' || f.t === 'fnref' || f.t === 'localfn') return this.callClosure(f, args, e.span);
+    // v0.90(引擎一致性第三波):ctor 值经表达式形态到达(如 ctor 存入 Vec 后 v[0](250))
+    // ——VM callValue 'ctor' 同构;非可调目标维持既有 M4001 消息(与 VM default 逐字一致)。
+    if (f.t === 'ctor') return this.constructVariant(f, args, e.span);
     throw new Panic('M4001', '内部错误:调用目标不是函数', e.span);
   }
 

@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v0.90.0 | 2026-11-19 | 引擎一致性第三波 | 13 |
 | v0.89.0 | 2026-11-19 | 窄型归一同族收口 | 1524 |
 | v0.88.0 | 2026-11-19 | 窄型注解遗留边界四项归一扩展 | 1506 |
 | v0.87.0 | 2026-11-19 | ADR-009 S2:Slice[u8] 只读视图 + 窄型注解宽度归一 | 1488 |
@@ -154,8 +155,9 @@ Windows 下也可以用 `bin\ming.cmd`。
 | v0.43 | 2026-11-10 | ffi 字符串桥 | — |
 
 <details>
-<summary><b>展开:逐版详细修订记录(v0.89 → v0.43)</b></summary>
+<summary><b>展开:逐版详细修订记录(v0.90 → v0.43)</b></summary>
 
+- **v0.90.0** — **引擎一致性第三波(预存分歧清账;零新增 M 码;无新语言面)**:**#73 AOT struct 相等分歧修复**(valueEquals 同类型判定;wire 不变)+ **tree ctor 作值对齐 VM**(p1_ctor 形态三腿一致)+ **BIND 归一 panic 位置列统一**(tree 向 VM 对齐 3:5→3:9;PIdent 口径;i32/u8 同族)+ **u64 字面量消息未达活复现登记关闭**(架构师 15 探针 + 实现 q1–q24 四腿统一,§100 v100.9–v100.13 锁定)。独立基线审计:纯净副本 31 探针 × 三腿(+AOT)逐字基线(审计脚本一键复跑,集成后对照零漂移)。独立审查 REQUEST_CHANGES（1 MAJOR——VM ctor 分发缺深拷贝：callValue/CALLMETHOD 两处裸引用传 constructVariant，同表达式后置变异形态静默双引擎值分歧——修复 = vm.js 两处 args.map(deepCopy) 对齐 MAKEENUM 先例 + §100 v100.14/15 回归锚（构造点快照 1/2/2、2/3 三腿逐字）；NOTE-1/2 登记 #74/#75、NOTE-3 v100.9 措辞收窄）修复后通过。**§100 15 check;1539 项 0 失败;fuzz 三种子 ×40 0 分歧;proof_fuzz 0 误报**。
 - **v0.89.0** — **窄型归一同族收口(零新增 M 码;双引擎对称)**:**Map 值位**(第五同族缺口:规格树 `{kt,vt}`/MapLit 递归/`__valTy` 打标/set·下标写归一;键位守门在 checker,kt-only 资格排除取舍登记)+ **lambda 返回位**(双通道正交:checker 统一回写 `narrowRetSpec`/`narrowParamTypes` + 值标签 `__retSpec` 打标——通道①独立面 checker 合法程序内不可达,纵深防御口径如实)+ **enum payload**(def 驱动构造位归一,VM MAKEENUM 全 6 发射点 normSpecs,artifact wire 兼容)+ **推断型静默面 M1a/M1b**(值标签驱动:bindPattern 窄标签登记/uniformNarrowSpec 统一打标——**fuzz 对该面结构性失明,以定向断言补覆盖**)。审查 APPROVE-with-minor(2 MAJOR 预存登记级:tree ctor 作值 M4001 分歧/绑定归一位置列分歧;5 MINOR 全落实)。**§99 18 check;1524 项 0 失败;fuzz 三种子 ×40 0 分歧;proof_fuzz 0 误报**。
 - **v0.88.0** — **窄型注解遗留边界四项归一扩展(规格树声明驱动;零新增 M 码)**:**规格树**(declaredSpecOfTyAst/PatAst/Ty/StructDef + normBindValue 递归 + `__elemTy`/`__spec` 打标)——① struct ctor+字段写 ② Vec 标注初始化/push/元素写 ③ 无标注 lambda 形参(checkLambda 统一回写 `narrowParamTypes`)④ 元组模式绑定——四边界静默回绕收敛 M4002 双引擎对称;**AOT 兼容方案 a**(wire normSpec 序列化 + validateArtifact BIND/ST/SET 界检查);**wasm 资格面扩展**(declHasNarrowLet 匹配 Vec[窄]/元组标注);**独立基线审计**(16 探针纯净副本三腿逐字 0 分歧——标签位驱动异质面) + **fuzz 5 窄型 shape 差分探测器**(突变实验实证抓分歧)。审查 APPROVE-with-minor(放行条件:M1a/M1b 推断型静默面登记 + **#73 预存 AOT struct 相等分歧登记**——poolAdd structspec 不去重→跨构造点 dist 恒 false,worktree 实锤归属 HEAD,均落实)。**§98 18 check;1506 项 0 失败;fuzz 三种子 ×40 0 分歧;proof_fuzz 0 误报**。
 - **v0.87.0** — **ADR-009 S2:Slice[u8] 只读视图 + 窄型注解宽度归一(零破坏窗口;零新增 M 码——M3051 新登记)**:**`Slice[u8]`**(ADR-009 §2.2:`v.view(start, len)` 仅非 mut Vec[u8] 绑定;越界 M4003 视图变体三引擎逐字;方法面 len/get/at;**块内线性**——return/容器/传参/再绑定/lambda 块尾与捕获 → M3051[slice-escape] 编译期拒绝;运行时零拷贝 base 同一性白盒;wasm 具名不资格/cc C1;证明面接入延后)+ **窄型注解宽度归一**(let/重赋值/传参/返回四边界按声明类型重标 V.int,tree/VM 双引擎对称——M1 预存语义缺口收口:`let a: i32 = 2147483647; a + 1i32` 从静默收敛为 M4002;wasm 窄型 let 门禁 analyze 具名条款 + clone 纵深防御;**闭包捕获归一三层断裂闭合**——snapshotEnv/deepCopy closure/compileLambda 透传,审查 MAJOR-2 追踪修复)。审查 REQUEST_CHANGES(2 MAJOR 定向修复;事故复核通过)后通过。**§96 18 check + §97 14 check;1488 项 0 失败;fuzz 双种子 0 分歧;proof_fuzz 0 误报**。
@@ -246,7 +248,7 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 | 项 | 值 |
 |----|----|
 | 当前版本 | **v0.89.0**(2026-11-19) |
-| 回归测试 | **1524 项全绿**(§1–§99;每次全量运行) |
+| 回归测试 | **1539 项全绿**(§1–§100;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.0% 行 / 90.3% 函数**(v0.84 复测;vm.js 函数 76.2%;v0.85–v0.89 五版大改后复测待 v0.91) |
 | 自举工具 | **14 个**(Ming 自写;`ming tools` 统一入口) |
