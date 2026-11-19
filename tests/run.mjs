@@ -1706,7 +1706,13 @@ secBegin('34b');
   check('v40:str main 正向(cc = run)', rccS.status === 0 && rccS.stdout === rjS.stdout, 'cc=' + JSON.stringify(rccS.stdout) + ' js=' + JSON.stringify(rjS.stdout) + ' build=' + rs.status);
   fs.writeFileSync(path.join(cdir, 'interp.ming'), 'fn main() with io { print("x=\\{1}"); }');
   const ri = spawnSync(process.execPath, [MING, 'cc', path.join(cdir, 'interp.ming'), '--out', path.join(cdir, 'out')], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
-  check('v40:AOT 形态外拒绝(插值串属 C3)', ri.status === 1 && (ri.stderr ?? '').includes('不支持'), 'status=' + ri.status + ' stderr=' + (ri.stderr ?? '').slice(0, 120));
+  // v0.92(T5.2)重校准:print 插值串由 C4 具名拒绝解锁为 C 面支持(逐段 printf,displayStr
+  // 对齐;plan §4.15 T5.2)——原断言"插值串属 C3 → cc 拒绝"随合法解锁翻转,正向断言
+  // cc = run 逐字;插值段的其余不支持形态(非标量段等)仍具名拒绝(见 §103)。
+  const rjI = runMing(['run', path.join(cdir, 'interp.ming')]);
+  check('v40:print 插值串入 C 面(T5.2 解锁;cc = run 逐字;原 C3 拒绝断言随合法解锁翻转)',
+    ri.status === 0 && rjI.code === 0 && ri.stdout === rjI.stdout && rjI.stdout === 'x=1\n',
+    'cc=' + ri.status + '/' + JSON.stringify(ri.stdout) + ' js=' + rjI.code + '/' + JSON.stringify(rjI.stdout));
 
   const ccBin = detectCC39();
   if (ccBin) {
@@ -4350,7 +4356,7 @@ secBegin('58');
   // v0.83 再校准(c18cc21f… → d60e3c89…):#58 收口——ming_vec_set 写 flavor 去"(用 .get(i)
   // 返回 Option)"读后缀(interp.js:889 单一事实;读 flavor ming_vec_get 保持后缀)。
   // 运行时助手是静态前导文本,指纹随合法语义统一变化;markers 与 cc==VM 两断言不受影响。
-  const BASE_C_SHA = 'd60e3c8987799679e4eb0bcd31a8c771d16bacf2f2f0debab8e14759891fdab5';
+  const BASE_C_SHA = 'd8623cd92cfb0132d1b5608f324587d54219c9787fef4c2c23b6590a8cce21a3'; /* v0.92 重校准理由化:ming_float_str 负零归一(审查 M1,-0.0 → +0.0 对齐 JS toFixed)——语义统一先例 v0.81/v0.83;原值 d60e3c8987799679e4eb0bcd31a8c771d16bacf2f2f0debab8e14759891fdab5 */
   if (hasCC58) {
     const baseC = ccRun58(baseU, path.join(dir, 'c5-baseline-run'));
     check('v58.11:既有 C 输出不变抽查(非 unsafe 程序不发射 ming_mem_alloc/std.mem;cc 输出与 VM 逐字一致;渲染 C 指纹逐字节不变)',
@@ -4686,7 +4692,8 @@ secBegin('58');
   let b5MemCcDetail = 'no-cc';
   if (hasCC58) {
     const b5MemCc = ccRun58(b5MemU, path.join(dir, 'b5-mem-cc'));
-    b5MemCcOk = b5MemCc.status === 0 && (b5MemCc.stderr ?? '') === '';
+    // v0.92 m2:wrapper 转发 main→i64 返回值为退出码——夹具 store/load 9 → return 9 → exit 9(修复前恒 0)
+    b5MemCcOk = b5MemCc.status === 9 && (b5MemCc.stderr ?? '') === '';
     b5MemCcDetail = 'cc=' + b5MemCc.status + '/' + JSON.stringify((b5MemCc.stderr ?? '').slice(0, 160));
   }
   check('v58.20:B5 use std.mem/std.math 短名(#27):mem 三路一致(tree/VM M4016,cc 跑通)+ math tree/VM 5.0',
@@ -23097,6 +23104,266 @@ secBegin('101');
   check('v101.2:未超时对照——正常子进程退出码/输出不受超时机制影响',
     ok.timedOut === false && ok.code === 0 && ok.stdout === 'alive\n',
     `timedOut=${ok.timedOut} code=${ok.code} stdout=${JSON.stringify(ok.stdout)}`);
+}
+
+// ===================== 103. v0.92:T5.2 C 后端 I/O 面(print 插值串 + 函数体块尾表达式)=====================
+// 文件所有权:§103 = 本区全部用例(Agent A)。实现面:src/cbackend.js——emitPrintInterp/
+// collectDisplaySegs/evalDisplaySeg(print 插值逐段 printf,displayStr 逐字节对齐:lit 原样/
+// i64·u64 十进制/f64 ming_float_str/bool true-false;先全段求值入临时再统一输出)+ emitBlock
+// opts.isBody(函数体块尾 = 返回值 return <尾>;unit 尾仅 Call 求值后丢弃;契约+块尾具名拒绝)。
+// 零新增 M 码;不支持形态继续具名拒绝。cc 腿沿用 §58 hasCC 探测 + skip 口径;
+// 三腿 = tree / vm(--no-wasm) / cc 实跑 stdout 逐字。既有 C 指纹(v58.11 BASE_C_SHA)零变化
+// ——本区全部为"此前被拒形态"的解锁,不改任何已编译程序的发射文本(实现 diff 逐行核对)。
+secBegin('103');
+{
+  const dir = path.join(TMP, 'v103');
+  fs.mkdirSync(dir, { recursive: true });
+  const mkU103 = (name, src) => { const f = path.join(dir, name); fs.writeFileSync(f, src); return f; };
+  const detectCC103 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const hasCC103 = !!detectCC103();
+  const ccRun103 = (file, out) => spawnT(process.execPath, [MING, 'cc', file, '--out', out], { timeout: 180000 });
+  const legTree = (f) => runMing(['run', f, '--tree']);
+  const legVM = (f) => runMing(['run', f, '--no-wasm']);
+  // 三腿对照:tree/vm 恒跑;cc 腿有编译器才跑。返回 { tree, vm, cc, ok }。
+  const threeLeg = (f, outDir) => {
+    const tree = legTree(f);
+    const vm = legVM(f);
+    const cc = hasCC103 ? ccRun103(f, path.join(dir, outDir)) : null;
+    return { tree, vm, cc };
+  };
+  const legOk = (r) => r.code === 0 && (r.stderr ?? '') === '';
+  const allOk = (legs) => legOk(legs.tree) && legOk(legs.vm) && (!legs.cc || legOk(legs.cc));
+  const allStdout = (legs) => legs.tree.stdout === legs.vm.stdout && (!legs.cc || legs.cc.stdout === legs.tree.stdout);
+
+  // 1) hello 三腿逐字(§1 黄金同源)
+  {
+    const legs = threeLeg(path.join(ROOT, 'examples', 'hello.ming'), 'cc-hello');
+    const golden = '你好, 世界!\n1..11 的和是 55\n';
+    check('v103.1:hello 插值 print 三腿逐字(tree/vm/cc stdout 全等 + 黄金两行;无编译器腿自动跳过)',
+      allOk(legs) && allStdout(legs) && legs.tree.stdout === golden
+      && (!hasCC103 || legs.cc.stdout === golden),
+      `tree=${legs.tree.code}/${JSON.stringify(legs.tree.stdout)} vm=${legs.vm.code}/${JSON.stringify(legs.vm.stdout)}`
+      + ` cc=${legs.cc ? legs.cc.code + '/' + JSON.stringify(legs.cc.stdout) : 'skip'}`);
+  }
+
+  // 2) fib 三腿逐字(eligible 递归函数 × 插值段调用 × 函数体块尾)
+  {
+    const legs = threeLeg(path.join(ROOT, 'examples', 'fib.ming'), 'cc-fib');
+    const golden = Array.from({ length: 11 }, (_, i) => `fib(${i}) = ${[0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55][i]}`).join('\n') + '\n';
+    check('v103.2:fib 三腿逐字(fib_loop 块尾 return + 插值段 eligible 调用;黄金 12 行)',
+      allOk(legs) && allStdout(legs) && legs.tree.stdout === golden
+      && (!hasCC103 || legs.cc.stdout === golden),
+      `tree=${legs.tree.code}/${legs.tree.stdout.length}b vm=${legs.vm.code}/${legs.vm.stdout.length}b`
+      + ` cc=${legs.cc ? legs.cc.code + '/' + legs.cc.stdout.length + 'b' : 'skip'}`
+      + ` treeEqGolden=${legs.tree.stdout === golden}`);
+  }
+
+  // 3) 插值段类型面:str/i64(负)/u64 后缀/f64(toFixed(1) 与 JS 指数两分支)/bool/嵌套插值展平/
+  //    str(...) 内建段/转义(\t \" \\)/lit 段含 %/相邻双表达式段
+  {
+    const segU = mkU103('seg_types.ming', [
+      'fn main() with io {',
+      '    let s = "世界";',
+      '    let i = -42;',
+      '    let u = 9223372036854775808u64;',
+      '    let f = 3.5;',
+      '    let g = 10.0;',
+      '    let b = true;',
+      '    print("s=\\{s} i=\\{i} u=\\{u}");',
+      '    print("f=\\{f} g=\\{g} b=\\{b} c=\\{false}");',
+      '    print("exp=\\{1.0e21} small=\\{1.5e-7}");',
+      '    print("nested=\\{"x\\{i}y"} end");',
+      '    print("built=\\{str(i)}|\\{str(u)}|\\{str(f)}|\\{str(b)}");',
+      '    print("100\\{i}%");',
+      '    print("T\\tU\\"V\\\\W\\{i}");',
+      '    print("\\{i}\\{s}双段");',
+      '}',
+      '',
+    ].join('\n'));
+    const legs = threeLeg(segU, 'cc-seg');
+    check('v103.3:print 插值段四类型 + 转义 + 嵌套展平 + str() 内建段三腿逐字(displayStr 对齐)',
+      allOk(legs) && allStdout(legs)
+      && legs.tree.stdout === 's=世界 i=-42 u=9223372036854775808\n'
+        + 'f=3.5 g=10.0 b=true c=false\n'
+        + 'exp=1e+21 small=1.5e-7\n'
+        + 'nested=x-42y end\n'
+        + 'built=-42|9223372036854775808|3.5|true\n'
+        + '100-42%\n'
+        + 'T\tU"V\\W-42\n'
+        + '-42世界双段\n',
+      `tree=${legs.tree.code}/${JSON.stringify(legs.tree.stdout.slice(0, 80))} vmEq=${legs.tree.stdout === legs.vm.stdout}`
+      + ` cc=${legs.cc ? legs.cc.code + '/eq=' + (legs.cc.stdout === legs.tree.stdout) : 'skip'}`);
+  }
+
+  // 4) 函数体块尾:eligible i64 函数(while + 尾表达式 = 返回值)/ unit main 尾裸 print /
+  //    unit eligible 函数尾 mut 方法调用(求值后丢弃)
+  {
+    const tailU = mkU103('fn_tail.ming', [
+      'fn sum_to(n: i64) -> i64 {',
+      '    let mut s = 0;',
+      '    let mut i = 0;',
+      '    while i < n {',
+      '        s += i;',
+      '        i += 1;',
+      '    }',
+      '    s',
+      '}',
+      '',
+      'fn zap() {',
+      '    let mut m: Map[str, i64] = {};',
+      '    m.set("a", 1)',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print("\\{sum_to(10)}");',
+      '    zap();',
+      '    print("done")',
+      '}',
+      '',
+    ].join('\n'));
+    const legs = threeLeg(tailU, 'cc-tail');
+    check('v103.4:函数体块尾三形态三腿逐字(i64 尾 = return;unit main 尾 print;unit fn 尾 mut 方法)',
+      allOk(legs) && allStdout(legs) && legs.tree.stdout === '45\ndone\n',
+      `tree=${legs.tree.code}/${JSON.stringify(legs.tree.stdout)} vmEq=${legs.tree.stdout === legs.vm.stdout}`
+      + ` cc=${legs.cc ? legs.cc.code + '/eq=' + (legs.cc.stdout === legs.tree.stdout) : 'skip'}`);
+  }
+
+  // 5) 既有具名拒绝回归:语句位块尾(if/while/for 体)消息逐字不变;tree 上该程序仍合法
+  {
+    const stmtTailU = mkU103('stmt_tail.ming', [
+      'fn bump(x: i64) -> i64 {',
+      '    return x + 1;',
+      '}',
+      '',
+      'fn main() with io {',
+      '    let mut i = 0;',
+      '    while i < 3 {',
+      '        i += 1;',
+      '        bump(i)',
+      '    }',
+      '    print(i);',
+      '}',
+      '',
+    ].join('\n'));
+    const tree = legTree(stmtTailU);
+    const rej = spawnT(process.execPath, [MING, 'cc', stmtTailU, '--no-run'], { timeout: 60000 });
+    check('v103.5:语句位块尾仍具名拒绝(C1 消息逐字"块尾表达式(语句位)";tree 合法 exit 0 输出 3)',
+      rej.code === 1 && (rej.stderr ?? '').includes('C1 不支持该程序形态:块尾表达式(语句位)')
+      && tree.code === 0 && tree.stdout === '3\n',
+      `cc=${rej.code}/${JSON.stringify((rej.stderr ?? '').slice(0, 120))} tree=${tree.code}/${JSON.stringify(tree.stdout)}`);
+  }
+
+  // 6) 契约 + 函数体块尾并用 → 具名拒绝(C 后端不发射契约,放行将静默跳过块尾 ensures)。
+  //    两形态:契约 eligible fn(资格面先拒 → 调用方"被调方不 eligible")+ 契约 main
+  //    (main 恒发射 → emitBlock 显式门"契约与函数体块尾表达式并用")。
+  {
+    const contractTailU = mkU103('contract_tail.ming', [
+      'fn f(a: i64) -> i64 requires a > 0 ensures result == a + 1 {',
+      '    let mut b = a;',
+      '    b + 1',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(str(f(3)));',
+      '}',
+      '',
+    ].join('\n'));
+    const chk = runMing(['check', contractTailU]);
+    const rej = spawnT(process.execPath, [MING, 'cc', contractTailU, '--no-run'], { timeout: 60000 });
+    const mainTailU = mkU103('contract_main_tail.ming', [
+      'fn main() with io ensures true {',
+      '    print("x")',
+      '}',
+      '',
+    ].join('\n'));
+    const chkM = runMing(['check', mainTailU]);
+    const rejM = spawnT(process.execPath, [MING, 'cc', mainTailU, '--no-run'], { timeout: 60000 });
+    check('v103.6:契约 + 块尾并用具名拒绝(契约 fn → 资格面"被调方不 eligible";契约 main → "契约与函数体块尾表达式并用";checker 均本 0 诊断)',
+      chk.code === 0 && (chk.stderr ?? '') === '' && chkM.code === 0 && (chkM.stderr ?? '') === ''
+      && rej.code === 1 && (rej.stderr ?? '').includes('C1 不支持该程序形态:被调方不 eligible: f')
+      && rejM.code === 1 && (rejM.stderr ?? '').includes('C1 不支持该程序形态:契约与函数体块尾表达式并用(C 后端不支持契约)'),
+      `check=${chk.code}/${chkM.code} ccF=${rej.code}/${JSON.stringify((rej.stderr ?? '').slice(0, 90))}`
+      + ` ccM=${rejM.code}/${JSON.stringify((rejM.stderr ?? '').slice(0, 110))}`);
+  }
+
+  // 7) debug(...) 插值段仍具名拒绝(C 后端无 debug 面,与既有 print(debug(x)) 同口径)
+  {
+    const debugSegU = mkU103('debug_seg.ming', [
+      'fn main() with io {',
+      '    let big = 300;',
+      '    print("x=\\{debug(big.to_u8())}");',
+      '}',
+      '',
+    ].join('\n'));
+    const rej = spawnT(process.execPath, [MING, 'cc', debugSegU, '--no-run'], { timeout: 60000 });
+    check('v103.7:debug(...) 插值段具名拒绝(C1 "print 插值段 Call(Vec/Map 形态属 C4)@ 行 3")',
+      rej.code === 1 && (rej.stderr ?? '').includes('C1 不支持该程序形态:print 插值段 Call(Vec/Map 形态属 C4)@ 行 3'),
+      `cc=${rej.code}/${JSON.stringify((rej.stderr ?? '').slice(0, 140))}`);
+  }
+
+  // 8) print(Vec) 检查器仍拒(M3002;C 面同名拒绝保持防御纵深,检查器先行)
+  {
+    const printVecU = mkU103('print_vec.ming', [
+      'fn main() with io {',
+      '    let v = [1, 2];',
+      '    print(v);',
+      '}',
+      '',
+    ].join('\n'));
+    const chk = runMing(['check', printVecU]);
+    const rej = spawnT(process.execPath, [MING, 'cc', printVecU, '--no-run'], { timeout: 60000 });
+    check('v103.8:print(Vec) 形态仍拒(check M3002 先行;cc 亦不发射)',
+      chk.code === 1 && (chk.stderr ?? '').includes('M3002[mismatched-types]')
+      && rej.code === 1,
+      `check=${chk.code}/${JSON.stringify((chk.stderr ?? '').slice(0, 120))} cc=${rej.code}/${JSON.stringify((rej.stderr ?? '').slice(0, 120))}`);
+  }
+
+  // 9) v0.92 审查 M1:f64 负零(-0.0)三腿归一——JS toFixed 负号仅 x<0(负零不加号),
+  //    ming_float_str 负零检测空体曾使 cc 输出 -0.0 与 tree/VM(0.0)分歧;修复 = 归一 +0.0。
+  //    直印 / str() 包裹 / 插值段三形态。
+  {
+    const p = mkU103('v103_9_negzero.ming', [
+      'fn main() with io {',
+      '    let a = -0.0;',
+      '    print(a);',
+      '    print(str(a));',
+      '    print("b=\\{-0.0} e=\\{1.0 / a < 0.0}");',
+      '}',
+    ].join('\n'));
+    const legs = { tree: legTree(p), vm: runMing(['run', p, '--no-wasm']) };
+    let cc = null;
+    if (hasCC103) cc = ccRun103(p, path.join(dir, 'cc-v103_9'));
+    const exp = '0.0\n0.0\nb=0.0 e=true\n';
+    check('v103.9:审查 M1——f64 负零三腿归一 +0.0(直印/str()/插值段逐字 0.0/0.0/b=0.0 e=true;修复前 cc -0.0 静默分歧)',
+      legs.tree.code === 0 && legs.vm.code === 0 && legs.tree.stdout === exp && legs.vm.stdout === exp
+        && (!cc || (cc.code === 0 && cc.stdout === exp)),
+      `tree=${legs.tree.code}/${JSON.stringify(legs.tree.stdout.slice(0, 60))} vmEq=${legs.tree.stdout === legs.vm.stdout}`
+      + ` cc=${cc ? cc.code + '/eq=' + (cc.stdout === legs.tree.stdout) : 'skip'}`);
+  }
+
+  // 10) v0.92 审查 m2:main -> i64 块尾返回值 = 进程退出码(tree/VM exit 3 == cc exit 3;
+  //     wrapper 曾丢弃 ming_main 返回值恒 0——pre-existing,块尾形态继承)。
+  {
+    const p = mkU103('v103_10_mret.ming', 'fn main() -> i64 { 3 }');
+    const t = runMing(['run', p, '--tree']);
+    const v = runMing(['run', p]);
+    let cc = null;
+    if (hasCC103) cc = ccRun103(p, path.join(dir, 'cc-v103_10'));
+    check('v103.10:审查 m2——main -> i64 块尾退出码三腿一致(exit 3;wrapper 曾丢弃返回值恒 0——v0.92 m2 修复后 ming cc 全量运行 exit 3)',
+      t.code === 3 && v.code === 3 && (!cc || cc.code === 3),
+      `tree=${t.code} vm=${v.code} cc=${cc ? cc.code : 'skip'}`);
+  }
 }
 
 secEndAll();

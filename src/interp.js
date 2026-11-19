@@ -70,7 +70,18 @@ export class V {
 
 export const UNIT = { t: 'unit' };
 
+// O0.1(plan §4.16,MING_STATS=1):deepCopy 入口计数器——VM 与 tree 共用同一实现,
+// 插桩一处。计数口径 = deepCopy 函数被调用的次数(含容器元素/闭包捕获递归产生的
+// 内层调用,即"入口"口径)。未开启 MING_STATS=1 时仅一次模块级布尔判断(启动时读
+// 一次 env,不在热路径上碰 process.env),零对象分配;读数经 getDeepCopyCount /
+// resetDeepCopyCount 导出,bin/ming.js 的 MING_STATS 出口消费。
+const DEEP_COPY_STATS = process.env.MING_STATS === '1';
+let deepCopyCount = 0;
+export function getDeepCopyCount() { return deepCopyCount; }
+export function resetDeepCopyCount() { deepCopyCount = 0; }
+
 export function deepCopy(v) {
+  if (DEEP_COPY_STATS) deepCopyCount++;
   switch (v.t) {
     case 'int': case 'float': case 'bool': case 'str': case 'unit': case 'range': case 'json': case 'handle':
       return v;

@@ -26,6 +26,11 @@
 //   (遍历全部字段的和式);对照组同形态无 invariant。10,000 次/轮 × 30 轮 = 300,000 次
 //   mut-self 退出,5 次交错取样中位——与第 5 项(单字段 `v >= 0`)同口径,直接回答
 //   "字段遍历形态成本是否随表达式线性放大"。
+//
+// O0.2(plan §4.16,2026-11-20):优化观测扩面——新增第 7–11 项(拷贝密集/Map 更新/
+// HOF 链/字符串构造/闭包调用),为后续优化 pass 提供"优化前"耗时锚点;全部确定性
+// 程序,tree/vm 两腿 3 次取最小;5 项经 ming cc 逐项实测均不达 C1/C2 资格(原因见
+// 各项注释),故为两腿口径。与 tests/opt_gate.mjs(MING_STATS=1 统计面)互为对照。
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -431,6 +436,105 @@ benchInvariant('契约 invariant 循环');
 //    4 字段和式 invariant vs 同形态无 invariant 对照,与第 5 项(单字段)同口径直接对比。
 benchInvariant('契约 invariant 字段遍历', true);
 
+// ─── O0.2(plan §4.16,2026-11-20):优化观测扩面 5 项 ───
+// 目标:为后续优化 pass 提供"优化前"的耗时锚点(与 MING_STATS=1 计数面/opt_gate 互为对照)。
+// 全部确定性(无时间/随机依赖);每项 tree/vm 两腿、3 次取最小,沿用 bench() 现有口径。
+// cc 腿:5 项实测均不可达 C1/C2 资格(2026-11-20 逐项 ming cc 实测原因,见各项注释),
+// 故 ccAble=false 不尝试 —— 与"cc 资格则三腿"口径一致(无资格即两腿)。
+//
+// 7) 拷贝密集循环:struct 3×i64 + Vec[i64]×8,10 万次 let 绑定/重赋值(值语义深拷贝热点)。
+//    cc 不资格:C1 let 推导 null(struct 局部变量,与 invariant 项同形态)。
+bench('拷贝密集 10 万绑定', `
+struct Rec {
+    a: i64,
+    b: i64,
+    c: i64,
+    tag: Vec[i64],
+}
+fn main() with io {
+    let mut r = Rec { a: 1, b: 2, c: 3, tag: [1, 2, 3, 4, 5, 6, 7, 8] };
+    let mut acc = 0;
+    let mut i = 0;
+    while i < 100000 {
+        let copy = r;
+        r = copy;
+        acc += copy.a + copy.tag[7];
+        i += 1;
+    }
+    print(str(acc));
+}
+`, '900000', false);
+
+// 8) Map 更新循环:64 个键,2 万次 set/get 混合(每次 set 后立即 get)。
+//    cc 不资格:C2 仅数值/str/Vec[i64](Map 局部变量在白名单外,未尝试)。
+bench('Map 更新 2 万混合', `
+fn main() with io {
+    let mut keys: Vec[str] = [];
+    let mut j = 0;
+    while j < 64 {
+        keys.push("k" + str(j));
+        j += 1;
+    }
+    let mut m: Map[str, i64] = [:];
+    let mut acc = 0;
+    let mut i = 0;
+    while i < 20000 {
+        let key = keys[i % 64];
+        m.set(key, i);
+        acc += m.get(key).unwrap_or(0);
+        i += 1;
+    }
+    print(str(acc));
+}
+`, '199990000', false);
+
+// 9) 方法调用密集 HOF:10 万元素 map→filter→map→filter→fold 五段链(每段一次 CALLMETHOD)。
+//    cc 不资格:C1 空 Vec 字面量(需标注,先赋非空再用;push 循环形态不可达,未深究)。
+bench('HOF 链 10 万元素', `
+fn main() with io {
+    let mut v: Vec[i64] = [];
+    let mut i = 0;
+    while i < 100000 {
+        v.push(i);
+        i += 1;
+    }
+    let sum = v.map((x) => x + 1).filter((x) => x % 2 == 0).map((x) => x * 3).filter((x) => x % 5 == 0).fold(0, (acc, x) => acc + x);
+    print(str(sum));
+}
+`, '1500150000', false);
+
+// 10) 字符串构造循环:1 万次 `+=` 拼接(每次 O(n) 拷贝的热点形态)+ Vec[str].join。
+//     cc 不资格:C2 仅数值/str/Vec[i64](let 标注 Vec[str] 出白名单,未深究)。
+bench('字符串构造 1 万次', `
+fn main() with io {
+    let mut s = "";
+    let mut i = 0;
+    while i < 10000 {
+        s += "ab";
+        i += 1;
+    }
+    let parts: Vec[str] = ["a", "b", "c"];
+    let joined = parts.join("-");
+    print(str(s.byte_len()) + ":" + joined);
+}
+`, '20000:a-b-c', false);
+
+// 11) 闭包调用循环:单参数闭包(捕获外层局部)10 万次直调(调用开销热点)。
+//     cc 不资格:C1 let 推导 null(闭包值局部变量,未深究)。
+bench('闭包调用 10 万次', `
+fn main() with io {
+    let d = 7;
+    let f = (x: i64) => x + d;
+    let mut acc = 0;
+    let mut i = 0;
+    while i < 100000 {
+        acc += f(i);
+        i += 1;
+    }
+    print(str(acc));
+}
+`, '5000650000', false);
+
 const invSingle = RESULTS.find((r) => r.name === '契约 invariant 循环')?.invariant;
 const invFields = RESULTS.find((r) => r.name === '契约 invariant 字段遍历')?.invariant;
 if (invSingle && invFields) {
@@ -462,7 +566,8 @@ if (WRITE_BASELINE) {
       note: '同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)'
         + '(两项契约 invariant 均为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;'
         + 'invariant.shape 记录形态 single/fields4;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);'
-        + 'cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。',
+        + 'cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。'
+        + '2026-11-20 刷新,含 O0.2 新项(plan §4.16 第 7–11 项:拷贝密集/Map 更新/HOF 链/字符串构造/闭包调用;5 项均不达 cc 资格,原因见 bench.mjs 各项注释)。',
     },
     items,
   };

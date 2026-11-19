@@ -30,6 +30,11 @@ export function resolveConst(c) {
 
 const BIN2OP = Object.entries(BIN).reduce((m, [k, v]) => (m[v] = k, m), {});
 const TRACE = process.env.MING_TRACE === '1';
+// O0.1(plan §4.16,MING_STATS=1):CONCAT/CALLMETHOD opcode case 计数开关。
+// 启动时读一次 env(同 TRACE 口径,不在执行循环里碰 process.env);未开启时 case 臂
+// 仅一次布尔判断。口径:wasm 真实执行段不计入(eligible 函数在 wasm 内原生执行,
+// 不经过这些 JS case 臂)——统计只反映 JS-VM 字节码执行面。
+const STATS_ON = process.env.MING_STATS === '1';
 const ITER_VAL = { done: false, value: null }; // 迭代器复用的结果对象(同步执行安全)
 const ITER_DONE = { done: true }; // 启动时读一次:每指令访问 process.env 是性能陷阱
 
@@ -57,6 +62,10 @@ export class VMInterp extends Interp {
     super(checkResult, opts);
     this.tree = opts.tree ?? false; // 对照模式:仍用树引擎
     this.noWasm = opts.noWasm ?? false;
+    // O0.1(MING_STATS=1):CONCAT/CALLMETHOD opcode 计数器(见模块头 STATS_ON 注)。
+    // tree 对照模式不进 execLoop,恒 0;初始化在 tree 早退之前,保证字段恒存在。
+    this.statsConcat = 0;
+    this.statsCallMethod = 0;
     if (this.tree) { this.compiled = null; return; }
     this.compiled = opts.precompiled ?? compile(checkResult);
     // 预解析常量池:避免每条 CONST 都做 __tag 解包
@@ -814,6 +823,7 @@ export class VMInterp extends Interp {
           break;
         }
         case OP.CALLMETHOD: {
+          if (STATS_ON) this.statsCallMethod++;
           const argc = ins[2];
           const name = pool[ins[1]].v;
           const args = argc ? stack.splice(stack.length - argc, argc) : [];
@@ -927,6 +937,7 @@ export class VMInterp extends Interp {
           break;
         }
         case OP.CONCAT: {
+          if (STATS_ON) this.statsConcat++;
           const n = ins[1];
           const parts = stack.splice(stack.length - n, n);
           let s = '';

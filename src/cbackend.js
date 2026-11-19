@@ -1246,19 +1246,45 @@ class CEmit {
     return `__asm__ volatile("${cstr(tpl)}"${sections.length ? ' : ' + sections.join(' : ') : ''});`;
   }
 
-  emitBlock(block, ctx) {
+  // 块发射。opts.isBody = 函数体位:块尾表达式 = 返回值(fib.ming 的 fib_loop 形态,
+  // tree execBlock/VM compileBlock 以块尾值为函数返回值)→ return <尾表达式>;
+  // unit 返回的函数体尾仅放行 Call 形态(求值后丢弃,与 ExprStmt 同路径)。
+  // 语句位块(if/while/for/unsafe 体)的块尾表达式维持具名拒绝(消息逐字不变——
+  // tree/VM 对该形态"求值后丢弃",C 面本版不放行,具名登记见 plan T5.2)。
+  // 契约(requires/ensures)与函数体尾并用具名拒绝:C 后端不发射契约,放行将静默
+  // 跳过 tree/VM 在块尾值上执行的 ensures 检查(interp.js execBlock isBody)——新增
+  // 分歧面,不许;既有无尾契约 main 的行为本版不动(不扩大范围)。
+  emitBlock(block, ctx, opts = {}) {
     ctx.pushScope();
     for (const st of block.stmts) this.emitStmt(st, ctx);
-    if (block.tail) throw new Unsupported('块尾表达式(语句位)');
+    if (block.tail) {
+      if (!opts.isBody) throw new Unsupported('块尾表达式(语句位)');
+      if (opts.hasContract) throw new Unsupported('契约与函数体块尾表达式并用(C 后端不支持契约)');
+      if (ctx.retTy !== null) {
+        ctx.line(`return ${this.emitExpr(block.tail, ctx.retTy, ctx)};`);
+      } else if (block.tail.nt === 'Call') {
+        if (ctx.isMain && block.tail.callee.nt === 'Ident' && block.tail.callee.name === 'print') {
+          this.emitPrint(block.tail, ctx);
+        } else {
+          const { call, retTy } = this.emitCallRef(block.tail, ctx);
+          ctx.line(retTy === null ? `${call};` : `(void)(${call});`);
+        }
+      } else {
+        throw new Unsupported('块尾表达式(unit 返回 ' + block.tail.nt + ')');
+      }
+    }
     ctx.popScope();
   }
 
-  // print:整数、str、f64(floatStr 对齐);插值/Vec/Map → C4
+  // print:整数、str、f64(floatStr 对齐)、插值串(T5.2:逐段 displayStr 对齐);Vec/Map → C4
   emitPrint(e, ctx) {
     if (e.args.length !== 1) throw new Unsupported('print 参数数');
     const a = e.args[0];
     if (a.nt === 'StrLit') {
-      if (!(a.parts.length === 1 && 'lit' in a.parts[0])) throw new Unsupported('print 插值串(C4)');
+      if (!(a.parts.length === 1 && 'lit' in a.parts[0])) {
+        this.emitPrintInterp(a, ctx);
+        return;
+      }
       const name = this.strLitName(a.parts[0].lit);
       const n = Buffer.byteLength(a.parts[0].lit, 'utf8');
       ctx.line(`printf("%.*s\\n", (int)${n}, ${name});`);
@@ -1311,6 +1337,62 @@ class CEmit {
       return;
     }
     throw new Unsupported('print ' + (t ?? a.nt) + '(Vec/Map 形态属 C4)');
+  }
+
+  // ---- print 插值串(T5.2)----
+  // 逐段 printf,末尾补 '\n'。每段渲染与 tree/VM displayStr(interp.js:121)逐字节一致:
+  //   str 原样 / i64·u64 十进制(%lld·%llu)/ f64 ming_float_str(v0.42 floatStr 对齐)/
+  //   bool true-false(f64 负零归一 +0.0 对齐 JS toFixed——审查 M1);lit 段经静态字节数组按 %.*s 传参输出(内容含 % 亦安全)。
+  // 求值序:先左→右把全部表达式段求值入临时,再按段序统一输出——与 tree/VM "先求值
+  // 后拼串"一致(段表达式若为 extern fn 等效应调用,其副作用整体先于本 print 的输出)。
+  emitPrintInterp(a, ctx) {
+    const segs = [];
+    this.collectDisplaySegs(a.parts, ctx, segs);
+    for (const s of segs) {
+      if ('lit' in s) {
+        const n = Buffer.byteLength(s.lit, 'utf8');
+        if (n > 0) ctx.line(`printf("%.*s", (int)${n}, ${this.strLitName(s.lit)});`);
+        continue;
+      }
+      if (s.ty === 'i64' || s.ty === 'u64') { ctx.line(`printf("${FMT[s.ty]}", ${s.tmp});`); continue; }
+      if (s.ty === 'str') { ctx.line(`printf("%.*s", (int)${s.tmp}.n, ${s.tmp}.p);`); continue; }
+      if (s.ty === 'f64') { ctx.line(`{ unsigned char __fb[340]; printf("%.*s", (int)ming_float_str(${s.tmp}, __fb), __fb); }`); continue; }
+      ctx.line(`printf("%s", (${s.tmp}) ? "true" : "false");`);
+    }
+    ctx.line(`printf("\\n");`);
+  }
+
+  // 插值段收集:lit 段与表达式段依序入 out;嵌套插值展平(displayStr 对 str 恒等,展平
+  // 不改变求值序与输出字节,probe2 实测 "x\{"in\{y}ner"}z" 三引擎逐字)。
+  collectDisplaySegs(parts, ctx, out) {
+    for (const p of parts) {
+      if ('lit' in p) { out.push({ lit: p.lit }); continue; }
+      const e = p.expr;
+      if (e.nt === 'StrLit' && !(e.parts.length === 1 && 'lit' in e.parts[0])) {
+        this.collectDisplaySegs(e.parts, ctx, out);
+        continue;
+      }
+      out.push(this.evalDisplaySeg(e, ctx));
+    }
+  }
+
+  // 表达式段求值:求值一次入临时,返回 { ty, tmp }。str(...) 内建段按内层类型渲染
+  // (displayStr(str(x)) 与 displayStr(x) 同字节,与既有 print str(...) 面同口径);
+  // 其余形态具名拒绝(Vec/Map/Option/Result 显示形态属 C4)。
+  evalDisplaySeg(e, ctx) {
+    if (e.nt === 'Call' && e.callee.nt === 'Ident' && e.callee.name === 'str' && e.args.length === 1) {
+      const it = this.inferTy(e.args[0], ctx);
+      if (!it) throw new Unsupported('print 插值段 str(...)(C4)@ 行 ' + (e.span?.line ?? '?'));
+      return this.evalDisplaySeg(e.args[0], ctx);
+    }
+    const t = this.inferTy(e, ctx);
+    if (t === 'i64' || t === 'u64' || t === 'f64' || t === 'str') {
+      return { ty: t, tmp: this.newTmp(ctx, t, this.emitExpr(e, t, ctx)) };
+    }
+    if (t === 'bool') {
+      return { ty: t, tmp: this.newTmp(ctx, 'bool', this.emitExpr(e, 'bool', ctx)) };
+    }
+    throw new Unsupported('print 插值段 ' + (t ?? e.nt) + '(Vec/Map 形态属 C4)@ 行 ' + (e.span?.line ?? '?'));
   }
 
   // ---- 字面量收集(str → 全局静态字节数组;C 转义用八进制,避免 \x 的贪婪十六进制)----
@@ -1392,7 +1474,9 @@ class CEmit {
         return `${CTYPE[pt]} ${ctx.declare(p.name, pt)}`;
       });
       ctx.open(`${retTy ? CTYPE[retTy] : 'void'} m${fi}(${params.join(', ')}) {`);
-      this.emitBlock(f.entry.decl.body, ctx);
+      // T5.2:isBody 开启函数体块尾(return <尾>);eligible 函数无契约(analyze 拒收),
+      // hasContract 为防御位。契约函数 + 块尾在 emitBlock 内具名拒绝。
+      this.emitBlock(f.entry.decl.body, ctx, { isBody: true, hasContract: !!(f.entry.decl.requires || f.entry.decl.ensures) });
       // 检查器保证必然 return;此处为 C 需要的防御零值
       if (retTy) {
         ctx.line(retTy === 'str' ? 'return (ming_str){0, 0};'
@@ -1409,7 +1493,9 @@ class CEmit {
     // main AOT 形态
     const mctx = this.fnCtx(this.check.entry?.file, mainRet, true);
     mctx.open(`${mainRet ? 'int' : 'void'} ming_main(void) {`);
-    this.emitBlock(mainFn.entry.decl.body, mctx);
+    // T5.2:main 同为函数体位(块尾 = main 返回值;unit main 的块尾 Call 求值后丢弃)。
+    // 契约 main + 块尾具名拒绝(避免静默跳过 ensures)。
+    this.emitBlock(mainFn.entry.decl.body, mctx, { isBody: true, hasContract: !!(mainFn.entry.decl.requires || mainFn.entry.decl.ensures) });
     if (mainRet) mctx.line('return 0;');
     mctx.close('}');
     const mainBody = mctx.lines.join('\n');
@@ -1789,7 +1875,7 @@ class CEmit {
       '/* ---- floatStr 对齐(interp floatStr 语义)+ JS Number::toString 格式化 ---- */',
       'static long long ming_float_str(double x, unsigned char* out) {',
       '    if (x != x) { memcpy(out, "NaN", 3); return 3; }',
-      '    if (x > 1.7976931348623157e308 || (x == 0.0 && 1.0 / x < 0)) { }',
+      '    if (x == 0.0 && 1.0 / x < 0) { x = 0.0; } /* v0.92 审查 M1:-0.0 归一 +0.0(JS toFixed 负号仅 x<0,负零不加号);原行为空体死代码,cc 曾输出 -0.0 与 tree/VM 分歧 */',
       '    if (x == INFINITY) { memcpy(out, "Infinity", 8); return 8; }',
       '    if (x == -INFINITY) { memcpy(out, "-Infinity", 9); return 9; }',
       '    long long w = 0;',
@@ -1913,8 +1999,9 @@ class CEmit {
       '    _setmode(_fileno(stderr), _O_BINARY);',
       '#endif',
       ...ffiBinds,
-      '    ming_main();',
-      '    return 0;',
+      ...(mainRet
+        ? ['    return ming_main(); /* v0.92 m2:main 返回值 = 进程退出码(对齐 tree/VM;i64→int 截断与 OS 退出码语义一致) */']
+        : ['    ming_main();', '    return 0;']),
       '}',
       '',
     ];

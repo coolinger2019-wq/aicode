@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v0.92.0 | 2026-11-20 | C 后端 I/O 面 + O0 优化观测基线 | 1551 |
 | v0.91.0 | 2026-11-20 | 工程收口:套件超时隔离 + 支持矩阵 + 文档校验 | 1541 |
 | v0.90.0 | 2026-11-19 | 引擎一致性第三波 | 1539 |
 | v0.89.0 | 2026-11-19 | 窄型归一同族收口 | 1524 |
@@ -158,6 +159,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 <details>
 <summary><b>展开:逐版详细修订记录(v0.91 → v0.43)</b></summary>
 
+- **v0.92.0** — **C 后端 I/O 面 + O0 优化观测**:**T5.2**(print 插值串放行——段类型 str/i64/u64/f64/bool 与 displayStr 逐字节、先求值后输出保序;函数体块尾表达式放行;契约+块尾具名拒绝;C 指纹零变化;hello/fib 三腿逐字;wordcount 三缺口如实具名拒绝)+ **O0 优化观测**(MING_STATS 统计面/bench 扩 5 项基线刷新/opt_gate 44 断言/opt-baseline 优化前基线——拷贝密集 deepCopy 270 万次/10 万迭代实证 O2 靶点)。独立审查 REQUEST_CHANGES(1 MAJOR——f64 负零 -0.0 三腿分歧,ming_float_str 空体死代码已修归一 +0.0;m2 main→i64 块尾退出码 wrapper 丢弃已修;#76 登记)修复后通过。**§103 10 check;1551 项 0 失败;fuzz 三种子 ×40 0 分歧**。
 - **v0.91.0** — **工程收口(纯工具/文档面;零语义改动)**:**T4.1 套件超时/隔离**(spawnT 统一出口默认 120s 超时杀树/唯一无界 spawn 补界/102 处分节计时/挂起未复现如实记录;§101 机制自测)+ **T4.3 支持矩阵**(21 形态×5 后端=105 格机器可验证表,harness 即真相源,期望≠实际 exit 1;cc 腿参与)+ **T4.4 docs_check**(5 项 14 断言,首跑即抓三语 README 当前版本漂移并修复)+ **CI docs-and-matrix job**(v53.20 校准理由化:uses 计数→官方白名单)。**§101 2 check;1541 项 0 失败;fuzz 三种子 ×40 0 分歧**。
 - **v0.90.0** — **引擎一致性第三波(预存分歧清账;零新增 M 码;无新语言面)**:**#73 AOT struct 相等分歧修复**(valueEquals 同类型判定;wire 不变)+ **tree ctor 作值对齐 VM**(p1_ctor 形态三腿一致)+ **BIND 归一 panic 位置列统一**(tree 向 VM 对齐 3:5→3:9;PIdent 口径;i32/u8 同族)+ **u64 字面量消息未达活复现登记关闭**(架构师 15 探针 + 实现 q1–q24 四腿统一,§100 v100.9–v100.13 锁定)。独立基线审计:纯净副本 31 探针 × 三腿(+AOT)逐字基线(审计脚本一键复跑,集成后对照零漂移)。独立审查 REQUEST_CHANGES（1 MAJOR——VM ctor 分发缺深拷贝：callValue/CALLMETHOD 两处裸引用传 constructVariant，同表达式后置变异形态静默双引擎值分歧——修复 = vm.js 两处 args.map(deepCopy) 对齐 MAKEENUM 先例 + §100 v100.14/15 回归锚（构造点快照 1/2/2、2/3 三腿逐字）；NOTE-1/2 登记 #74/#75、NOTE-3 v100.9 措辞收窄）修复后通过。**§100 15 check;1539 项 0 失败;fuzz 三种子 ×40 0 分歧;proof_fuzz 0 误报**。
 - **v0.89.0** — **窄型归一同族收口(零新增 M 码;双引擎对称)**:**Map 值位**(第五同族缺口:规格树 `{kt,vt}`/MapLit 递归/`__valTy` 打标/set·下标写归一;键位守门在 checker,kt-only 资格排除取舍登记)+ **lambda 返回位**(双通道正交:checker 统一回写 `narrowRetSpec`/`narrowParamTypes` + 值标签 `__retSpec` 打标——通道①独立面 checker 合法程序内不可达,纵深防御口径如实)+ **enum payload**(def 驱动构造位归一,VM MAKEENUM 全 6 发射点 normSpecs,artifact wire 兼容)+ **推断型静默面 M1a/M1b**(值标签驱动:bindPattern 窄标签登记/uniformNarrowSpec 统一打标——**fuzz 对该面结构性失明,以定向断言补覆盖**)。审查 APPROVE-with-minor(2 MAJOR 预存登记级:tree ctor 作值 M4001 分歧/绑定归一位置列分歧;5 MINOR 全落实)。**§99 18 check;1524 项 0 失败;fuzz 三种子 ×40 0 分歧;proof_fuzz 0 误报**。
@@ -249,8 +251,8 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v0.91.0**(2026-11-20) |
-| 回归测试 | **1541 项全绿**(§1–§101;每次全量运行) |
+| 当前版本 | **v0.92.0**(2026-11-20) |
+| 回归测试 | **1551 项全绿**(§1–§103;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.0% 行 / 90.3% 函数**(v0.84 复测;vm.js 函数 76.2%;v0.85–v0.89 五版大改后复测待 v0.91) |
 | 自举工具 | **14 个**(Ming 自写;`ming tools` 统一入口) |

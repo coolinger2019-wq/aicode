@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.91.0';
+export const VERSION = '0.92.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -34,6 +34,7 @@ try {
 // run/check/test/tools/build/cc 共用;doc/fmt 只需其中子集,但编译缓存命中后全图
 // 加载仅数 ms,不再细拆。绑定全部走这些 let,调用面在 main() 之后必然已加载完成。
 let Checker, Interp, Panic, VMInterp, parse, attachDocsImpl;
+let getDeepCopyCount, resetDeepCopyCount; // O0.1:MING_STATS deepCopy 计数(interp.js 导出)
 let Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY, diagJson;
 let compile, CompileError, serializeArtifact, deserializeArtifact, makeCheckLike;
 let Unsupported, wasmLayerStatus;
@@ -51,7 +52,7 @@ async function loadCore() {
     import('../src/wasm.js'),
   ]);
   Checker = mChecker.Checker;
-  ({ Interp, Panic } = mInterp);
+  ({ Interp, Panic, getDeepCopyCount, resetDeepCopyCount } = mInterp);
   VMInterp = mVm.VMInterp;
   parse = mParser.parse;
   attachDocsImpl = mParser.attachDocs;
@@ -203,6 +204,37 @@ function strictWasmConflict(flags) {
 const STRICT_WASM_CONFLICT_MSG = '--strict-wasm 与 --tree/--no-wasm 互斥(strict 模式观测的正是 wasm 分层本身;先去掉 --tree/--no-wasm)';
 
 // ---------- run ----------
+// O0.1(plan §4.16,MING_STATS=1):run 结束后的观测出口——向 stderr 打一行 JSON。
+// 不带 MING_STATS=1 时零输出;stdout 与退出码不受影响(逐字一致)。
+// 字段口径:
+//   instr      = 编译器函数表指令总数(compileResult 汇总;tree 引擎无字节码 → null)
+//   steps      = 引擎既有 this.steps(tree 与 VM 同口径;wasm 循环头/调用按 +50 计)
+//   deepCopy   = interp.js deepCopy 入口计数(双引擎共用同一实现;含容器递归内层调用)
+//   alloc      = 引擎累计分配(allocBytes 终值,Vec/Map 按元素、str 按字符;tree 引擎 N/A → null)
+//   concat     = VM CONCAT opcode case 计数;callMethod = CALLMETHOD 同(tree 恒 0)
+// wasm 真实执行段不计入(eligible 函数在 wasm 内原生执行,不经过 JS 执行循环)。
+// 范围:走 cmdRun 的执行(= `ming run`,以及共用该入口的 `ming tools` 工具执行——strict-wasm 回落路径(exit 2,未运行)不发射,审查 NOTE-1 登记;
+// 工具是真实工作负载,同为优化观测对象);test/fmt/doc/check 等不输出。
+function emitRunStats(interp) {
+  if (process.env.MING_STATS !== '1') return;
+  let instr = null;
+  const fns = interp?.compiled?.functions;
+  if (Array.isArray(fns)) {
+    instr = 0;
+    for (const f of fns) instr += f?.code?.length ?? 0;
+  }
+  const isTree = !interp?.compiled; // tree 引擎(纯 Interp 或 VMInterp tree 对照)无字节码
+  const line = JSON.stringify({
+    instr,
+    steps: interp?.steps ?? 0,
+    deepCopy: getDeepCopyCount(),
+    alloc: isTree ? null : (interp?.allocBytes ?? 0),
+    concat: interp?.statsConcat ?? 0,
+    callMethod: interp?.statsCallMethod ?? 0,
+  });
+  process.stderr.write(line + '\n');
+}
+
 // v0.57 tools AOT:prebuilt 非空(缓存命中)时跳过 loadAndCheck 与 interp 构造,
 // 直接用调用方装配好的 VMInterp 运行;其余 runMain/panic/RangeError/内部错误路径
 // 与原逻辑完全共用 —— 输出与退出码逐字一致。
@@ -218,6 +250,9 @@ async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
     return 1;
   }
   const result = c.result;
+  // O0.1:MING_STATS=1 时清零 deepCopy 计数(统计本次 run 的编译+执行;loadCore 此刻已完成,
+  // 绑定可用;未开启 MING_STATS=1 时零开销)
+  if (process.env.MING_STATS === '1') resetDeepCopyCount();
 
   // v0.53 strict:先判定 wasm 分层,回落 → 退出码 2(不运行);预编译产物传给 VM 避免双份 compile。
   // 非 strict 不进入此分支 —— 现状静默回落行为逐字不变。
@@ -273,6 +308,7 @@ async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
       if (ws) out.wasm_status = ws;
       process.stdout.write(JSON.stringify(out, null, 2) + '\n');
     }
+    emitRunStats(interp);
     return exitCode;
   } catch (e) {
     if (e instanceof Panic) {
@@ -309,6 +345,7 @@ async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
           }
         }
       }
+      emitRunStats(interp);
       return 101;
     }
     if (e instanceof RangeError) {
@@ -325,6 +362,7 @@ async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
       } else {
         process.stderr.write('M4005[stack-overflow]: 调用栈过深(递归或嵌套过深);提示:改写为循环\n');
       }
+      emitRunStats(interp);
       return 101;
     }
     if (json) {
@@ -336,6 +374,7 @@ async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
     } else {
       process.stderr.write(`内部错误(这是 Ming 工具链的 bug,请报告):${e?.stack ?? e}\n`);
     }
+    emitRunStats(interp);
     return 2;
   }
 }

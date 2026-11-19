@@ -454,7 +454,7 @@ fn main() with io, fs {
       tree: ok('n=3, n+1=4\n'),
       vmOnly: ok('n=3, n+1=4\n'),
       vm: ok('n=3, n+1=4\n'),
-      cc: reject('C1', 'C1 不支持该程序形态:print 插值串(C4)'),
+      cc: ok('n=3, n+1=4\n'), // v0.92 T5.2 解锁(原 C1 拒绝期望随合法解锁更新)
       aot: aotOk('bytecode', 'n=3, n+1=4\n'),
     },
   },

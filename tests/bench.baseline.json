@@ -1,43 +1,43 @@
 {
   "meta": {
-    "date": "2026-11-18",
+    "date": "2026-11-19",
     "node": "v24.11.0",
     "platform": "win32-x64",
-    "ming": "0.83.0",
-    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)(两项契约 invariant 均为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;invariant.shape 记录形态 single/fields4;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。"
+    "ming": "0.91.0",
+    "note": "同机 + 同 Node 主版本对比口径;跨机不承诺。信息性基线,不阻断 CI;每项为 3 次运行最小值(ms)(两项契约 invariant 均为 5 次交错取样:headline 用中位差 vmUsMedian/treeUsMedian,min 口径 vmUs/treeUs 保留作单次取样敏感参照;invariant.shape 记录形态 single/fields4;invariant.cc 记录 cc 腿跳过/失败的真实原因,如 skipped:C1 不支持该程序形态:let 推导 null);cc/vm 加速比回退 >20% 时 tests/bench.mjs 运行打印 WARN(仍 exit 0)。重写基线:node tests/bench.mjs --write-baseline。2026-11-20 刷新,含 O0.2 新项(plan §4.16 第 7–11 项:拷贝密集/Map 更新/HOF 链/字符串构造/闭包调用;5 项均不达 cc 资格,原因见 bench.mjs 各项注释)。"
   },
   "items": {
     "fib(24) 递归": {
-      "treeMs": 222,
-      "vmMs": 97,
-      "speedup": 2.3,
-      "ccMs": 10.15,
-      "ccPerVm": 9.5
+      "treeMs": 235,
+      "vmMs": 100,
+      "speedup": 2.4,
+      "ccMs": 10.67,
+      "ccPerVm": 9.3
     },
     "循环累加 100 万": {
-      "treeMs": 247,
-      "vmMs": 172,
-      "speedup": 1.4,
-      "ccMs": 9.43,
-      "ccPerVm": 18.3
+      "treeMs": 288,
+      "vmMs": 197,
+      "speedup": 1.5,
+      "ccMs": 14.62,
+      "ccPerVm": 13.5
     },
     "高阶方法 10 万元素": {
-      "treeMs": 215,
-      "vmMs": 190,
+      "treeMs": 244,
+      "vmMs": 215,
       "speedup": 1.1,
       "ccMs": null,
       "ccPerVm": null
     },
     "词频统计 2 万词": {
-      "treeMs": 119,
-      "vmMs": 127,
-      "speedup": 0.9,
+      "treeMs": 138,
+      "vmMs": 140,
+      "speedup": 1,
       "ccMs": null,
       "ccPerVm": null
     },
     "契约 invariant 循环": {
-      "treeMs": 342,
-      "vmMs": 290,
+      "treeMs": 370,
+      "vmMs": 299,
       "speedup": 1.2,
       "ccMs": null,
       "ccPerVm": null,
@@ -46,23 +46,23 @@
         "rounds": 30,
         "exits": 300000,
         "shape": "single",
-        "vmUs": 0.25,
-        "treeUs": 0.29,
-        "vmPct": 25.8,
-        "treePct": 25.3,
-        "vmUsMedian": 0.26,
-        "treeUsMedian": 0.25,
-        "vmPctMedian": 25.8,
-        "treePctMedian": 21.4,
-        "controlVmMs": 215,
-        "controlTreeMs": 256,
+        "vmUs": 0.17,
+        "treeUs": 0.25,
+        "vmPct": 17.1,
+        "treePct": 20.4,
+        "vmUsMedian": 0.23,
+        "treeUsMedian": 0.32,
+        "vmPctMedian": 21.2,
+        "treePctMedian": 24.3,
+        "controlVmMs": 248,
+        "controlTreeMs": 294,
         "samples": 5,
         "cc": "skipped:C1 不支持该程序形态:let 推导 null"
       }
     },
     "契约 invariant 字段遍历": {
-      "treeMs": 528,
-      "vmMs": 426,
+      "treeMs": 554,
+      "vmMs": 477,
       "speedup": 1.2,
       "ccMs": null,
       "ccPerVm": null,
@@ -71,19 +71,54 @@
         "rounds": 30,
         "exits": 300000,
         "shape": "fields4",
-        "vmUs": 0.45,
-        "treeUs": 0.56,
-        "vmPct": 31.4,
-        "treePct": 31.7,
-        "vmUsMedian": 0.43,
-        "treeUsMedian": 0.52,
-        "vmPctMedian": 28.8,
-        "treePctMedian": 29.2,
-        "controlVmMs": 293,
-        "controlTreeMs": 361,
+        "vmUs": 0.4,
+        "treeUs": 0.36,
+        "vmPct": 25.3,
+        "treePct": 19.6,
+        "vmUsMedian": 0.4,
+        "treeUsMedian": 0.46,
+        "vmPctMedian": 24.7,
+        "treePctMedian": 23,
+        "controlVmMs": 357,
+        "controlTreeMs": 446,
         "samples": 5,
         "cc": "skipped:C1 不支持该程序形态:let 推导 null"
       }
+    },
+    "拷贝密集 10 万绑定": {
+      "treeMs": 225,
+      "vmMs": 192,
+      "speedup": 1.2,
+      "ccMs": null,
+      "ccPerVm": null
+    },
+    "Map 更新 2 万混合": {
+      "treeMs": 140,
+      "vmMs": 144,
+      "speedup": 1,
+      "ccMs": null,
+      "ccPerVm": null
+    },
+    "HOF 链 10 万元素": {
+      "treeMs": 275,
+      "vmMs": 234,
+      "speedup": 1.2,
+      "ccMs": null,
+      "ccPerVm": null
+    },
+    "字符串构造 1 万次": {
+      "treeMs": 118,
+      "vmMs": 129,
+      "speedup": 0.9,
+      "ccMs": null,
+      "ccPerVm": null
+    },
+    "闭包调用 10 万次": {
+      "treeMs": 180,
+      "vmMs": 161,
+      "speedup": 1.1,
+      "ccMs": null,
+      "ccPerVm": null
     }
   }
 }
