@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.93.0';
+export const VERSION = '0.94.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -77,10 +77,10 @@ const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
-  ming run   [file.ming] [--json] [--tree] [--no-wasm] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
+  ming run   [file.ming] [--json] [--tree] [--no-wasm] [--no-opt] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
   ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]
-  ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
-  ming build [--json] [--clean-cache] [--with-source] [--no-dist]
+  ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--no-opt] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
+  ming build [--json] [--clean-cache] [--with-source] [--no-dist] [--no-opt]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
   ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
   ming init  [项目名]
@@ -240,6 +240,10 @@ function emitRunStats(interp) {
 // 与原逻辑完全共用 —— 输出与退出码逐字一致。
 async function cmdRun(file, flags, opts, programArgs, prebuilt = null) {
   const json = flags.has('json');
+  // O1(plan §4.16.3):--no-opt 关闭字节码优化管线(默认开)。经 env 传入 compile()
+  // 单点钩子(VMInterp 内部编译 / strict 预编译 / build / tools 全部 compile() 调用点
+  // 统一生效);env 被子进程继承(spawn worker 从源码编译,保持同一优化口径)。
+  if (flags.has('no-opt')) process.env.MING_NO_OPT = '1';
   if (!file) return fail('run 需要一个 .ming 文件', json);
   if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
   const c = prebuilt ? { ok: true, result: prebuilt.result, diags: [] } : await loadAndCheck(file, { json, silent: true });
@@ -514,6 +518,8 @@ function collectProofs(checked) {
 // ---------- test ----------
 async function cmdTest(files, flags, opts) {
   await loadCore();
+  // O1(plan §4.16.3):--no-opt 关闭字节码优化管线(与 run 同口径,env 传入 compile() 单点钩子)
+  if (flags.has('no-opt')) process.env.MING_NO_OPT = '1';
   const json = flags.has('json');
   const filter = opts.filter ?? null;
   if (!files.length) return fail('test 需要至少一个 .ming 文件', json);
@@ -1033,6 +1039,9 @@ function toolCacheKey(toolFile, src) {
     v: VERSION,
     node: process.versions.node.split('.')[0],
     compiler: compilerSourceHash(),
+    // v0.94(O1 审查 m2):优化开关进键——MING_NO_OPT=1 时编译产物与默认不同,
+    // 两态必须各自寻址,避免 --no-opt 命中优化产物(或反之)。
+    noOpt: process.env.MING_NO_OPT === '1',
     tool: path.basename(toolFile),
     src,
   })).digest('hex');
@@ -1165,6 +1174,9 @@ async function tryToolRun(file, flags, opts, programArgs) {
 
 async function cmdTools(rest, flags, opts, dashRest) {
   await loadCore();
+  // O1(v0.94 审查 m2):--no-opt 与 run/test 同口径(env 传入 compile() 单点钩子),
+  // 且进 tools 缓存键(见 toolCacheKey)——命中/写入的产物与优化口径一一对应。
+  if (flags.has('no-opt')) process.env.MING_NO_OPT = '1';
   if (!rest.length || rest[0] === 'list' || flags.has('list')) {
     process.stdout.write(toolsUsage + '\n');
     return (flags.has('list') || rest.length) ? 0 : 1;
@@ -1187,6 +1199,9 @@ async function cmdTools(rest, flags, opts, dashRest) {
 
 async function cmdBuild(flags) {
   await loadCore();
+  // O1(v0.94 审查 m2):--no-opt 关闭字节码优化管线(与 run/test/tools 同口径;
+  // env 传入 compile() 单点钩子),并进入构建键——优化/未优化 dist 不互相假命中。
+  if (flags.has('no-opt')) process.env.MING_NO_OPT = '1';
   const json = flags.has('json');
   const { files, proj, error } = await projectEntry('build', [], json);
   if (error) return fail(error, json);
@@ -1226,7 +1241,10 @@ async function cmdBuild(flags) {
   const sources = collectProjectSources(projectRoot);
   const compilerHash = compilerSourceHash();
   const buildKey = createHash('sha256').update(JSON.stringify({
-    v: VERSION, node: process.versions.node.split('.')[0], compiler: compilerHash, manifest: proj.project ?? null, withSource: !!flags.has('with-source'), sources,
+    v: VERSION, node: process.versions.node.split('.')[0], compiler: compilerHash, manifest: proj.project ?? null, withSource: !!flags.has('with-source'),
+    // v0.94(O1 审查 m2):优化开关进构建键——同一源在优化开/关下产出不同字节码,
+    // 缓存命中必须同口径(dist 内容不同,键不同)。
+    noOpt: process.env.MING_NO_OPT === '1', sources,
   })).digest('hex').slice(0, 32);
   let prevCache = null;
   try { prevCache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); } catch { prevCache = null; }
@@ -1273,7 +1291,8 @@ async function cmdBuild(flags) {
     fs.rmSync(distDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
     fs.writeFileSync(path.join(distDir, '.ming-dist.json'), JSON.stringify({ tool: 'ming', version: VERSION }) + String.fromCharCode(10));
-    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js', 'prover.js']) {
+    // O1(plan §4.16.3):opt.js 随 compiler.js 进 dist runtime(compiler.js 已 import 它)
+    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js', 'prover.js', 'opt.js']) {
       fs.copyFileSync(path.join(__dirname, '..', 'src', m), path.join(distDir, 'runtime', m));
     }
     // AOT 资格:无 sync(spawn 子任务需源码编译)、无用户 trait/impl 方法分发

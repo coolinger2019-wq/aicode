@@ -71,6 +71,9 @@ function runMing(args, opts = {}) {
   // 会被当成 strict 模式(回落 exit 2)而大面积假失败。需要注入的用例显式传 env。
   const env = { ...process.env, ...(opts.env ?? {}) };
   if (!opts.env || !Object.prototype.hasOwnProperty.call(opts.env, 'MING_WASM_STRICT')) delete env.MING_WASM_STRICT;
+  // v0.94(O1 审查 m3):MING_NO_OPT 同款剥离——开发者 shell 导出时默认腿会误跑
+  // 未优化字节码,§104 的 on 腿断言(折叠/裁剪生效)全部失真。需要 off 态显式传 env。
+  if (!opts.env || !Object.prototype.hasOwnProperty.call(opts.env, 'MING_NO_OPT')) delete env.MING_NO_OPT;
   const r = spawnT(process.execPath, [MING, ...args], { ...opts, env });
   return { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut };
 }
@@ -23363,6 +23366,422 @@ secBegin('103');
     check('v103.10:审查 m2——main -> i64 块尾退出码三腿一致(exit 3;wrapper 曾丢弃返回值恒 0——v0.92 m2 修复后 ming cc 全量运行 exit 3)',
       t.code === 3 && v.code === 3 && (!cc || cc.code === 3),
       `tree=${t.code} vm=${v.code} cc=${cc ? cc.code : 'skip'}`);
+  }
+}
+
+// ===================== 104. O1:字节码优化管线(常量折叠 → 分支裁剪+跳转线程 → DCE)=====================
+// 文件所有权:§104 = 本区全部用例(Agent A,plan §4.16.3)。实现面:src/opt.js(新模块,
+// compile() 单点钩子)+ bin/ming.js --no-opt 旗标(env MING_NO_OPT=1 等价)。口径:
+//   * 语义保真 = 默认腿(优化开)与 --no-opt 腿(逐字节未优化)stdout/stderr 逐字一致,
+//     关键面再加 --tree 腿(优化只作用于字节码,树引擎是语义参照);
+//   * panic 保真 = 溢出/除零/移位越界不折叠(intBin throw → BIN 原样保留),
+//     on/off 两态 stderr(含位置与消息)逐字一致;
+//   * pass 生效面 = MING_STATS=1 的 instr 字段(函数表指令总数,on < off);
+//   * 确定性 = 同程序两次优化运行 stdout+instr 一致;
+//   * 产物合同 = serializeArtifact→deserializeArtifact(validateArtifact)→fromArtifact
+//     进程内执行,优化后字节码的跳转目标/池下标/span 下标界检查全绿;
+//   * v0.94 审查修复回归:浮点常量 AOT wire 无损(v104.14 真实 build+dist)、
+//     str `+` 不折叠/分配计费四腿一致(v104.13)、build --no-opt 与缓存键分离(v104.15)。
+secBegin('104');
+{
+  const dir104 = path.join(TMP, 'v104');
+  fs.mkdirSync(dir104, { recursive: true });
+  const mk104 = (name, src) => { const f = path.join(dir104, name); fs.writeFileSync(f, src); return f; };
+  const runOpt104 = (f, extra = []) => runMing(['run', f, ...extra]);
+  const runNoOpt104 = (f, extra = []) => runMing(['run', f, '--no-opt', ...extra]);
+  const runStats104 = (f, extra = []) => runMing(['run', f, ...extra], { env: { MING_STATS: '1' } });
+  const statsOf104 = (r) => {
+    const lines = (r.stderr ?? '').split('\n').filter((l) => l.trim() !== '');
+    const last = lines[lines.length - 1];
+    if (last && last.startsWith('{')) { try { return JSON.parse(last); } catch { return null; } }
+    return null;
+  };
+  const mkProj104 = (name, src) => {
+    const d = path.join(dir104, name);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'ming.toml'), `[project]\nname = "${name}"\nversion = "0.1.0"\nentry = "main.ming"\n`);
+    fs.writeFileSync(path.join(d, 'main.ming'), src);
+    return d;
+  };
+  // build/dist 直连 spawn 的洁净 env(v0.94 审查 m3 同款剥离;需要注入的用例显式传)
+  const baseEnv104 = { ...process.env };
+  delete baseEnv104.MING_NO_OPT;
+  delete baseEnv104.MING_WASM_STRICT;
+
+  // 1) 折叠矩阵:整数/f64/字符串/比较/一元/&&与|| 字面量/跨 Call 不折叠 × 12 形态,
+  //    默认(优化开)/--no-opt/--tree 三腿 stdout 逐字一致且等于黄金期望。
+  {
+    const f = mk104('v104_fold.ming', [
+      'fn main() with io {',
+      '    print(1 + 2 * 3);',
+      '    print(10 - 4 / 2);',
+      '    print(1.5 + 2.5);',
+      '    print(2.0 * 3.5);',
+      '    print("a" + "b");',
+      '    print(1 < 2);',
+      '    print(3 == 3);',
+      '    print(-(5));',
+      '    print(!true);',
+      '    print(true && false);',
+      '    print(false || true);',
+      '    print(str(2 * 21) + "!");',
+      '}',
+    ].join('\n'));
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    const tree = runOpt104(f, ['--tree']);
+    const golden = '7\n8\n4.0\n7.0\nab\ntrue\ntrue\n-5\nfalse\nfalse\ntrue\n42!\n';
+    check('v104.1:折叠矩阵 12 形态三腿逐字(int 算术/f64/str 拼接/比较/一元/&&|| 字面量/跨 Call 不折叠;on=off=tree=黄金)',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === golden && off.stdout === golden && tree.stdout === golden,
+      `on=${on.code}/${JSON.stringify(on.stdout.slice(0, 40))} offEq=${off.stdout === on.stdout} treeEq=${tree.stdout === on.stdout}`);
+  }
+
+  // 2) 溢出不折叠:2147483647i32 + 1i32 仍 M4002,on/off stderr(位置+消息)逐字一致。
+  {
+    const f = mk104('v104_ovf.ming', [
+      'fn main() with io {',
+      '    let a = 2147483647i32 + 1i32;',
+      '    print(str(a));',
+      '}',
+    ].join('\n'));
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    check('v104.2:溢出不折叠——2147483647i32+1i32 两态均 exit 101 M4002 且 stderr 逐字(位置 2:27 含消息)',
+      on.code === 101 && off.code === 101 && on.stderr === off.stderr && on.stderr.includes('M4002') && on.stderr.includes('整数+溢出:2147483647 + 1 超出 i32 范围'),
+      `on=${on.code}/${JSON.stringify(on.stderr.split('\n')[0])} offEq=${off.stderr === on.stderr}`);
+  }
+
+  // 3) 除零不折叠(两形态):1 / 0 与 7 % 0 仍 M4004,位置逐字。
+  {
+    const f = mk104('v104_div0.ming', 'fn main() with io { let a = 1 / 0; print(str(a)); }');
+    const f2 = mk104('v104_mod0.ming', 'fn main() with io { let a = 7 % 0; print(str(a)); }');
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    const on2 = runOpt104(f2);
+    const off2 = runNoOpt104(f2);
+    check('v104.3:除零/模零不折叠——两态均 exit 101 M4004 且 stderr 逐字(整数除零:1 / 0;整数取模零:7 % 0)',
+      on.code === 101 && off.code === 101 && on.stderr === off.stderr && on.stderr.includes('整数除零:1 / 0')
+      && on2.code === 101 && off2.code === 101 && on2.stderr === off2.stderr && on2.stderr.includes('整数取模零:7 % 0'),
+      `div=${on.code}/${JSON.stringify(on.stderr.split('\n')[0])} mod=${on2.code}/${JSON.stringify(on2.stderr.split('\n')[0])}`);
+  }
+
+  // 4) 移位越界不折叠:1i64 << 100 仍 M4002(移位位数 100 越界),位置逐字。
+  {
+    const f = mk104('v104_shift.ming', 'fn main() with io { let a = 1i64 << 100; print(str(a)); }');
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    check('v104.4:移位越界不折叠——两态均 exit 101 M4002 且 stderr 逐字(移位位数 100 越界(必须在 0..63))',
+      on.code === 101 && off.code === 101 && on.stderr === off.stderr && on.stderr.includes('移位位数 100 越界(必须在 0..63)'),
+      `on=${on.code}/${JSON.stringify(on.stderr.split('\n')[0])}`);
+  }
+
+  // 5) 分支裁剪:if false/true 两分支 + while false,on/off/tree 输出逐字一致
+  //    且 MING_STATS instr 减少(死分支指令被 P2/P3 删除)。
+  {
+    const f = mk104('v104_prune.ming', [
+      'fn main() with io {',
+      '    if false { print("dead"); } else { print(1); }',
+      '    if true { print(2); } else { print("dead2"); }',
+      '    while false { print("dead3"); }',
+      '    print("end");',
+      '}',
+    ].join('\n'));
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    const tree = runOpt104(f, ['--tree']);
+    const sOn = statsOf104(runStats104(f));
+    const sOff = statsOf104(runStats104(f, ['--no-opt']));
+    check('v104.5:分支裁剪——输出三腿逐字(1\\n2\\nend\\n)且 instr(on) < instr(off)(P2 裁剪 + P3 死分支删除:JUMP 终结可达性使恒假分支体真被删)',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '1\n2\nend\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr < sOff.instr,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr}`);
+  }
+
+  // 6) DCE:return/break 之后(及 JUMP 终结可达性)、while false 体的死代码删除,输出与 panic 面
+  //    逐字,instr 减少(v0.94 审查 m1:JUMP 终结;m3:补 return 形态;NOTE-1:panic 是 builtin
+  //    CALL 非 PANICX——panic 调用后的死代码保守保留,不在本测试断言内)。
+  {
+    const f = mk104('v104_dce.ming', [
+      'fn early(n: i64) -> i64 with io {',
+      '    if n > 0 {',
+      '        return 1;',
+      '        print("dead-after-return");',
+      '    }',
+      '    2',
+      '}',
+      'fn main() with io {',
+      '    while false { print("dead"); }',
+      '    let mut i = 0;',
+      '    while true {',
+      '        i += 1;',
+      '        break;',
+      '        print("dead-after-break");',
+      '    }',
+      '    print("a" + str(i));',
+      '    print(str(early(1)));',
+      '    print(str(early(0)));',
+      '    panic("boom");',
+      '    print("dead2");',
+      '}',
+    ].join('\n'));
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    const sOn = statsOf104(runStats104(f));
+    const sOff = statsOf104(runStats104(f, ['--no-opt']));
+    check('v104.6:DCE——return/break/panic 后三个死打印零输出(stdout a1/1/2;M4001 boom 两态逐字)且 instr(on) < instr(off)',
+      on.code === 101 && off.code === 101 && on.stdout === 'a1\n1\n2\n' && off.stdout === on.stdout && on.stderr === off.stderr
+      && sOn !== null && sOff !== null && sOn.instr < sOff.instr,
+      `on=${on.code}/out=${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr}`);
+  }
+
+  // 7) 短路保真:常量左操作数裁剪(P2.b)不得丢失右段副作用——false && f() 不调用、
+  //    true || f() 不调用、true && f() 与 false || f() 必调用,三腿逐字。
+  {
+    const f = mk104('v104_shortcircuit.ming', [
+      'fn bump() -> bool with io {',
+      '    print("side");',
+      '    true',
+      '}',
+      'fn main() with io {',
+      '    let r1 = false && bump();',
+      '    let r2 = true || bump();',
+      '    print(str(r1) + str(r2));',
+      '    let r3 = true && bump();',
+      '    let r4 = false || bump();',
+      '    print(str(r3) + str(r4));',
+      '}',
+    ].join('\n'));
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    const tree = runOpt104(f, ['--tree']);
+    const golden = 'falsetrue\nside\nside\ntruetrue\n';
+    check('v104.7:短路保真——常量左操作数裁剪四形态副作用零丢失(跳过面不打印 side/执行面打印两次;falsetrue/side/side/truetrue 三腿逐字)',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === golden && off.stdout === golden && tree.stdout === golden,
+      `on=${on.code}/${JSON.stringify(on.stdout)} offEq=${off.stdout === on.stdout} treeEq=${tree.stdout === on.stdout}`);
+  }
+
+  // 8) 循环控制流保真:while true/loop/for-continue/while 1<2(on/off/tree 逐字;
+  //    回边指向被删条件起点等重映射形态全覆盖)。
+  {
+    const f = mk104('v104_loop.ming', [
+      'fn main() with io {',
+      '    let mut i = 0;',
+      '    while true {',
+      '        i += 1;',
+      '        if i >= 3 { break; }',
+      '    }',
+      '    print(str(i));',
+      '    let mut j = 0;',
+      '    loop {',
+      '        j += 1;',
+      '        if j >= 4 { break; }',
+      '    }',
+      '    print(str(j));',
+      '    let mut acc = 0;',
+      '    for x in 1..5 {',
+      '        if x % 2 == 0 { continue; }',
+      '        acc += x;',
+      '    }',
+      '    print(str(acc));',
+      '    while 1 < 2 { break; }',
+      '    print("done");',
+      '}',
+    ].join('\n'));
+    const on = runOpt104(f);
+    const off = runNoOpt104(f);
+    const tree = runOpt104(f, ['--tree']);
+    const golden = '3\n4\n4\ndone\n';
+    check('v104.8:循环控制流保真——while true/loop/for-continue/while 1<2 三腿逐字(3\\n4\\n4\\ndone\\n;回边重映射形态)',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === golden && off.stdout === golden && tree.stdout === golden,
+      `on=${on.code}/${JSON.stringify(on.stdout)} offEq=${off.stdout === on.stdout} treeEq=${tree.stdout === on.stdout}`);
+  }
+
+  // 9) 开关等价与全关回归:MING_NO_OPT=1(env)与 --no-opt(旗标)输出逐字一致;
+  //    off 腿即"全关回归"(未优化字节码 = 原语义)。
+  {
+    const f = mk104('v104_flag.ming', 'fn main() with io { print(str(2 * 21) + "!" ); print(str(1 < 2)); }');
+    const envRun = runMing(['run', f], { env: { MING_NO_OPT: '1' } });
+    const flagRun = runNoOpt104(f);
+    check('v104.9:开关等价——MING_NO_OPT=1 与 --no-opt stdout 逐字一致(42!\\ntrue\\n;--no-opt 全关回归面由 v104.1–v104.8 off 腿覆盖)',
+      envRun.code === 0 && flagRun.code === 0 && envRun.stdout === flagRun.stdout && envRun.stdout === '42!\ntrue\n',
+      `env=${envRun.code}/${JSON.stringify(envRun.stdout)} flagEq=${flagRun.stdout === envRun.stdout}`);
+  }
+
+  // 10) 确定性:同程序两次优化运行 stdout 与 MING_STATS instr 一致。
+  {
+    const f = mk104('v104_det.ming', 'fn main() with io { print(str(1 + 2 * 3)); print(str(true && false)); print(str("a" + "b")); }');
+    const d1 = runStats104(f);
+    const d2 = runStats104(f);
+    const s1 = statsOf104(d1);
+    const s2 = statsOf104(d2);
+    check('v104.10:确定性——两次优化运行 stdout 与 instr 逐字一致(无时间/随机/哈希序依赖)',
+      d1.code === 0 && d2.code === 0 && d1.stdout === d2.stdout && s1 !== null && s2 !== null && s1.instr === s2.instr,
+      `out=${JSON.stringify(d1.stdout)} instr=${s1?.instr}/${s2?.instr}`);
+  }
+
+  // 11) AOT 产物合同:优化后字节码 serialize→deserialize(validateArtifact 全界检查:
+  //     跳转目标/池下标/span 下标/opcode)→ fromArtifact 进程内执行,输出与直跑逐字一致。
+  {
+    const f = mk104('v104_aot.ming', [
+      'fn add(a: i64, b: i64) -> i64 { a + b }',
+      'fn main() with io {',
+      '    print(str(add(1 + 1, 2 * 2)));',
+      '    if false { print("dead"); }',
+      '    print("ok");',
+      '}',
+    ].join('\n'));
+    let aotOut = null, aotErr = '';
+    try {
+      const art104 = await import('../src/artifact.js');
+      const chk = new Checker(f).run();
+      const built = compile(chk);
+      const wire = JSON.parse(JSON.stringify(art104.serializeArtifact(built, { baseDir: ROOT })));
+      const vm = VMInterp.fromArtifact(wire, { capture: true });
+      const r = vm.runMain([]);
+      aotOut = vm.flushCaptured();
+      aotErr = 'exit=' + r.exitCode;
+    } catch (e) { aotErr = String((e && e.message) || e); }
+    const direct = runOpt104(f);
+    check('v104.11:AOT 产物合同——优化后字节码 serialize/deserialize(validateArtifact 界检查全绿)→ fromArtifact 执行输出与直跑逐字(6\\nok\\n)',
+      aotErr === 'exit=0' && aotOut === '6\nok\n' && direct.code === 0 && direct.stdout === aotOut,
+      `aot=${aotErr}/${JSON.stringify(aotOut ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout)}`);
+  }
+
+  // 12) ming test 两态一致:test 块经优化 VM 子实例执行,通过/失败计数与输出逐字一致。
+  {
+    const f = mk104('v104_test.ming', [
+      'fn add(a: i64, b: i64) -> i64 { a + b }',
+      'test add_basic { assert_eq(add(2, 3), 5); }',
+      'test add_fold { assert_eq(add(1 + 1, 2 * 2), 6); }',
+      'fn main() with io { print(str(add(1 + 1, 2))); }',
+    ].join('\n'));
+    const on = runMing(['test', f]);
+    const off = runMing(['test', f, '--no-opt']);
+    check('v104.12:ming test 两态一致——2 通过 0 失败,输出逐字(优化作用于 test 子实例编译)',
+      on.code === 0 && off.code === 0 && on.stdout === off.stdout && on.stdout.includes('2 通过,0 失败'),
+      `on=${on.code}/${JSON.stringify(on.stdout.slice(0, 60))} offEq=${off.stdout === on.stdout}`);
+  }
+
+  // 13) str 拼接不折叠(v0.94 审查 M1):运行时字符串 `+`(OP.BIN/binopValues)计入 --max-alloc(M4011;OP.CONCAT 插值不计费),
+  //     折叠会把计费抹掉 → 默认腿 exit 0 而 tree/wasm/--no-opt 腿 exit 101。
+  //     断言四腿配额行为逐字一致 + 两态 instr/alloc 相等(该程序无可折叠点)。
+  {
+    const f = mk104('v104_strfold.ming', [
+      'fn main() with io {',
+      '    let s = "aaaa" + "bbbb";',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    const legs = [
+      ['default', []],
+      ['tree', ['--tree']],
+      ['vm-only', ['--no-wasm']],
+      ['no-opt', ['--no-opt']],
+    ];
+    const runs = legs.map(([n, extra]) => [n, runMing(['run', f, '--max-alloc', '4', ...extra])]);
+    const allQuota = runs.every(([, r]) => r.code === 101 && r.stderr.includes('M4011') && r.stderr.includes('累计分配 8 超过上限 4'));
+    const sameErr = runs.every(([, r]) => r.stderr === runs[0][1].stderr);
+    const sOn = statsOf104(runStats104(f));
+    const sOff = statsOf104(runStats104(f, ['--no-opt']));
+    check('v104.13:str + 不折叠——--max-alloc 4 四腿(default/tree/vm-only/no-opt)全部 exit 101 M4011 且 stderr 逐字;instr/alloc 两态相等(折叠不抹掉分配计费)',
+      allQuota && sameErr && sOn !== null && sOff !== null && sOn.instr === sOff.instr && sOn.alloc === sOff.alloc && sOn.alloc === 8,
+      `legs=${runs.map(([n, r]) => n + ':' + r.code).join(',')} sameErr=${sameErr} instr=${sOn?.instr}/${sOff?.instr} alloc=${sOn?.alloc}/${sOff?.alloc}`);
+  }
+
+  // 14) O1 审查 B1:浮点常量 AOT wire 无损——真实 ming build + dist 执行覆盖
+  //     -0.0/±Inf/NaN/1.0e308*10/模块级 const 浮点表达式/1.0e400 字面量/f32 位宽。
+  //     产物内四种字符串标记在位、无 float null;负例:wire 值 null 被 validateArtifact 拒。
+  {
+    const proj = mkProj104('v104_float_aot', [
+      'const BIG: f64 = 1.0e308 * 10.0;',
+      'const NEG: f64 = -0.0;',
+      '',
+      'fn main() with io {',
+      '    let z = -0.0;',
+      '    print(1.0 / z);',
+      '    print(1.0e308 * 10.0);',
+      '    print(-(1.0e308 * 10.0));',
+      '    print(0.0 / 0.0);',
+      '    print(BIG);',
+      '    print(1.0 / NEG);',
+      '    print(1.0e400);',
+      '    print(1.0e308 * 10.0 - 1.0e308 * 10.0);',
+      '    print(1.5f32 + 2.5f32);',
+      '}',
+    ].join('\n'));
+    const main = path.join(proj, 'main.ming');
+    const golden = '-Infinity\nInfinity\n-Infinity\nNaN\nInfinity\n-Infinity\nInfinity\nNaN\n4.0\n';
+    const direct = runMing(['run', main]);
+    const tree = runMing(['run', main, '--tree']);
+    const bld = spawnSync(process.execPath, [MING, 'build', '--clean-cache'], { encoding: 'utf8', cwd: proj, timeout: 120000, env: baseEnv104 });
+    const dist = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000, env: baseEnv104 });
+    let wireOk = false;
+    let rejectOk = false;
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(proj, 'dist', 'app.bytecode.json'), 'utf8'));
+      const floats = raw.pool.filter((p) => p && p.w === 'float');
+      const marks = new Set(floats.map((p) => p.v).filter((x) => typeof x === 'string'));
+      wireOk = floats.every((p) => typeof p.v === 'number' || ['NaN', 'Infinity', '-Infinity', '-0'].includes(p.v))
+        && !floats.some((p) => p.v === null)
+        && ['NaN', 'Infinity', '-Infinity', '-0'].every((m) => marks.has(m))
+        && floats.some((p) => p.bits === 32);
+      const art = await import('../src/artifact.js');
+      const bad = JSON.parse(JSON.stringify(raw));
+      bad.pool[bad.pool.findIndex((p) => p && p.w === 'float')].v = null;
+      try { art.deserializeArtifact(bad); } catch (e) { rejectOk = String(e.message).includes('非法 float wire 值 null'); }
+    } catch { wireOk = false; }
+    check('v104.14:浮点 AOT wire 无损——build+dist 覆盖 -0.0/±Inf/NaN/1.0e308*10/const 浮点/1.0e400/f32;三腿=黄金、产物含四标记无 null、null wire 被拒',
+      bld.status === 0 && direct.code === 0 && tree.code === 0 && dist.status === 0
+      && direct.stdout === golden && tree.stdout === golden && dist.stdout === golden && wireOk && rejectOk,
+      `bld=${bld.status} direct=${direct.code} tree=${tree.code} dist=${dist.status} out=${JSON.stringify(dist.stdout.slice(0, 60))} wire=${wireOk} reject=${rejectOk}`);
+  }
+
+  // 15) O1 审查 m2:ming build --no-opt + 构建键/tools 键纳入 MING_NO_OPT。
+  //     优化开/关的构建键不同(不互相假命中);--no-opt 产物指令更多但输出一致;
+  //     env 形态与旗标同键;tools --no-opt 行为逐字。
+  {
+    const proj = mkProj104('v104_build_noopt', [
+      'fn main() with io {',
+      '    print(1 + 2 * 3);',
+      '    if false { print("dead"); }',
+      '    print("ok");',
+      '}',
+    ].join('\n'));
+    const main = path.join(proj, 'main.ming');
+    const bj = (extra = [], env = {}) => spawnSync(process.execPath, [MING, 'build', '--json', ...extra], { encoding: 'utf8', cwd: proj, timeout: 120000, env: { ...baseEnv104, ...env } });
+    const parseJ = (r) => { try { return JSON.parse(r.stdout); } catch { return null; } };
+    const codeLen = () => {
+      const a = JSON.parse(fs.readFileSync(path.join(proj, 'dist', 'app.bytecode.json'), 'utf8'));
+      return a.functions.reduce((s, f) => s + f.code.length / 5, 0);
+    };
+    const runDist = () => spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000, env: baseEnv104 });
+    const b1 = bj();
+    const j1 = parseJ(b1);
+    const l1 = codeLen();
+    const d1 = runDist();
+    const b1b = bj();
+    const j1b = parseJ(b1b);
+    const b2 = bj(['--no-opt']);
+    const j2 = parseJ(b2);
+    const l2 = codeLen();
+    const d2 = runDist();
+    const b2e = bj([], { MING_NO_OPT: '1' });
+    const j2e = parseJ(b2e);
+    const d3 = runDist();
+    const direct = runMing(['run', main]);
+    const toolOn = runMing(['tools', 'wc', main]);
+    const toolOff = runMing(['tools', 'wc', main, '--no-opt']);
+    check('v104.15:build --no-opt/键分离——两次构建键不同且不假命中、env 同键命中、未优化产物指令更多、dist 输出三态一致、tools --no-opt 逐字',
+      b1.status === 0 && b1b.status === 0 && b2.status === 0 && b2e.status === 0
+      && j1 && j1b && j2 && j2e
+      && j1.cache_hit === false && j1b.cache_hit === true && j1b.build_key === j1.build_key
+      && j2.cache_hit === false && j2.build_key !== j1.build_key
+      && j2e.cache_hit === true && j2e.build_key === j2.build_key
+      && l2 > l1
+      && d1.status === 0 && d2.status === 0 && d3.status === 0 && d1.stdout === '7\nok\n' && d2.stdout === d1.stdout && d3.stdout === d1.stdout
+      && direct.code === 0 && direct.stdout === d1.stdout
+      && toolOn.code === 0 && toolOff.code === 0 && toolOn.stdout === toolOff.stdout && toolOn.stdout.length > 0,
+      `keys=${j1?.build_key}/${j2?.build_key} hit=${j1?.cache_hit}/${j1b?.cache_hit}/${j2?.cache_hit}/${j2e?.cache_hit} instr=${l1}/${l2} out=${JSON.stringify(d2.stdout)} tools=${toolOn.code}/${toolOff.code} eq=${toolOn.stdout === toolOff.stdout}`);
   }
 }
 

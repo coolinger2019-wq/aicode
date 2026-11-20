@@ -13,6 +13,7 @@ import { V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue
 import { Interp } from './interp.js';
 import { resolveT, typeStr } from './checker.js';
 import { tryCompileWasm } from './wasm.js';
+import { optimize } from './opt.js';
 
 // v0.54 审查 B5:编译器内部可预期的"名字/结构体未解析"错误携带源码位置,
 // 由 CLI 渲染为 file:line:col 诊断(而不是 Node 裸栈)。其余异常仍按 bug 上抛。
@@ -86,6 +87,12 @@ export function compile(checkResult) {
   const c = new BytecodeCompiler(checkResult);
   const built = c.run();
   built.wasm = c.tryWasm(); // v0.11:纯数值/字符串函数分层编译(失败静默回落 JS VM)
+  // O1(plan §4.16.3):字节码优化管线 —— 常量折叠(P1)→ 分支裁剪+跳转线程(P2)→
+  // 死代码消除(P3),fixpoint ≤ 10,语义保持(合同见 src/opt.js 文件头)。
+  // 集成位置在 tryWasm 之后:wasm 层从 AST 独立发射、不经字节码管线,本钩子对其
+  // 零影响;wasm 导入引用的 spans 数组本管线只读不写(spanIdx 原样保留),panic
+  // 位置逐字不变。--no-opt / MING_NO_OPT=1 时逐字节原样返回(optimize 内判定)。
+  optimize(built);
   // v0.59 P1 审查 MINOR:删除死代码 `if (built.wasm && c.strConsts) ...`——
   // BytecodeCompiler 无 strConsts 字段;strConsts 已由 WasmCompiler.run() 随产物返回。
   return built;

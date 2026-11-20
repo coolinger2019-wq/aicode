@@ -4198,10 +4198,38 @@ function evalInner(host, args) {
 // ---------- 任务边界 wire 序列化(v0.14)----------
 // 支持跨任务类型:int/u64/float/bool/str/unit/Json/Vec/Map(递归)、Option/Result(标量成分);
 // 不支持:struct/enum(用户)/闭包/函数值/句柄(结构含 AST 引用,克隆后身份失效)。
+// v0.94(O1 审查 B1):float 值无损 wire 编码。有限值保留裸 number 形态(旧产物 /
+// 旧 worker 消息完全兼容);NaN/±Infinity/-0 是 JSON 不可表示值,用白名单字符串标记
+// (裸 number 经 JSON.stringify 会变成 null 或 0——AOT dist 曾把 1e308*10 变 null、
+// 把 -0.0 变 +0)。bits 随 wire 携带(f32 池常量 AOT 不再退化为 f64);缺省 64 兼容
+// 旧产物。注意 -0 与 0 的判定必须用 Object.is(x, -0),x === -0 恒真。
+const FLOAT_WIRE_SPECIALS = new Set(['NaN', 'Infinity', '-Infinity', '-0']);
+function floatToWire(x) {
+  if (Number.isNaN(x)) return 'NaN';
+  if (x === Infinity) return 'Infinity';
+  if (x === -Infinity) return '-Infinity';
+  if (Object.is(x, -0)) return '-0';
+  return x;
+}
+function floatFromWire(x) {
+  if (typeof x === 'number') return x;
+  switch (x) {
+    case 'NaN': return NaN;
+    case 'Infinity': return Infinity;
+    case '-Infinity': return -Infinity;
+    case '-0': return -0;
+    default: throw new Error('非法 float wire 值: ' + String(x));
+  }
+}
+// artifact.js validateArtifact 消费(值域单一事实来源,避免两处白名单漂移)
+export function isWireFloatValue(x) {
+  return typeof x === 'number' || FLOAT_WIRE_SPECIALS.has(x);
+}
+
 export function vToWire(v) {
   switch (v.t) {
     case 'int': return { w: 'int', bits: v.bits, signed: v.signed, v: v.v.toString() };
-    case 'float': return { w: 'float', v: v.v };
+    case 'float': return { w: 'float', bits: v.bits, v: floatToWire(v.v) };
     case 'bool': return { w: 'bool', v: v.v };
     case 'str': return { w: 'str', v: v.v };
     case 'unit': return { w: 'unit' };
@@ -4236,14 +4264,14 @@ function jsonWireOf(v) {
 function wireKey(k) {
   if (typeof k === 'bigint') return { w: 'int', v: k.toString() };
   if (typeof k === 'boolean') return { w: 'bool', v: k };
-  if (typeof k === 'number') return { w: 'float', v: k };
+  if (typeof k === 'number') return { w: 'float', v: floatToWire(k) };
   return { w: 'str', v: k };
 }
 
 export function wireToV(w) {
   switch (w.w) {
     case 'int': return V.int(BigInt(w.v), w.bits, w.signed);
-    case 'float': return V.float(w.v, 64);
+    case 'float': return V.float(floatFromWire(w.v), w.bits ?? 64);
     case 'bool': return V.bool(w.v);
     case 'str': return V.str(w.v);
     case 'unit': return UNIT;
@@ -4293,7 +4321,7 @@ function kindOfJson(v) {
 function unwireKey(k) {
   if (k.w === 'int') return BigInt(k.v);
   if (k.w === 'bool') return k.v;
-  if (k.w === 'float') return k.v;
+  if (k.w === 'float') return floatFromWire(k.v);
   return k.v;
 }
 

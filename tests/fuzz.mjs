@@ -81,6 +81,7 @@ const CCBIN = detectCC();
 // v0.56(#25):同样剥离 MING_WASM_DEBUG——调试输出只在 wasm 存活断言子进程显式注入。
 const CHILD_ENV = { ...process.env };
 delete CHILD_ENV.MING_WASM_STRICT;
+delete CHILD_ENV.MING_NO_OPT; // v0.94 审查 MINOR-1:门禁必须覆盖优化腿
 delete CHILD_ENV.MING_WASM_DEBUG;
 
 // ---- 表达式生成:纯 i64;允许 panic(各后端须一致地 panic)----

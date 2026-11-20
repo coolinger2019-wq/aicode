@@ -179,6 +179,9 @@ function reportBaseline(name, tree, vm, speedup, ccPerVm, extraMetrics = null) {
   if (base.vmMs > 0) parts.push(`vm ${round2(vm / base.vmMs)}x`);
   if (base.speedup > 0) parts.push(`提速 ${round2(speedup / base.speedup)}x`);
   let warned = false;
+  // v0.94 审查 m4:vm/tree 绝对耗时回退 >20% 也告警(WARN_RATIO 对称:当前 > 基线 / WARN_RATIO)
+  if (base.treeMs > 0 && tree > base.treeMs / WARN_RATIO) { warned = true; warnCount++; parts.push(`WARN tree 回退 ${round2(tree / base.treeMs)}x`); }
+  if (base.vmMs > 0 && vm > base.vmMs / WARN_RATIO) { warned = true; warnCount++; parts.push(`WARN vm 回退 ${round2(vm / base.vmMs)}x`); }
   if (ccPerVm !== null && base.ccPerVm > 0) {
     parts.push(`cc/vm ${round2(ccPerVm / base.ccPerVm)}x`);
     if (ccPerVm < base.ccPerVm * WARN_RATIO) {

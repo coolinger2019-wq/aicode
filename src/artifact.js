@@ -9,13 +9,13 @@
 //   - 无用户 trait/impl 方法分发(methodImpls 为空)
 //   - 树引擎(--tree)不支持产物加载(树引擎需要完整 AST)
 import * as path from 'node:path';
-import { vToWire, wireToV } from './interp.js';
+import { vToWire, wireToV, isWireFloatValue } from './interp.js';
 // v0.64(#56/S14):操作码集合取自 compiler.js 的 OP(单一事实来源)——artifact.js 只在
 // 产物加载路径被引用(vm.js/bin/ming.js 均已加载 compiler),无新增加载开销,无循环导入。
 import { OP } from './compiler.js';
 
 export const ARTIFACT_FORMAT = 'ming-bytecode';
-export const ARTIFACT_VERSION = 2; // v0.51.2:sig 改为纯 wire 类型(不再内嵌 AST/mod)
+export const ARTIFACT_VERSION = 3; // v0.94:float wire 无损编码(-0/±Inf/NaN 白名单字符串 + bits);v2 产物仍可读(版本检查接受 2/3)
 
 // 常量池条目可能是带 __tag 的编译器内部包装(str 键/匹配模式/数组等),
 // vToWire 只认 V 值 → 包装层单独编码为 {w:'tag',k,v}(v 本身为 JSON 安全的普通数据)
@@ -166,6 +166,44 @@ function validateArtifact(a) {
   if (!int(a.mainFnIdx) || a.mainFnIdx < 0 || a.mainFnIdx >= nFns) {
     bad(`mainFnIdx 越界(${a.mainFnIdx},functions=${nFns})`);
   }
+  // v0.94(O1 审查 B1):wire 值类型校验。float 的 v 必须是 number 或白名单字符串
+  // ('NaN'/'Infinity'/'-Infinity'/'-0')——null 必拒(旧损坏产物:JSON.stringify 把
+  // Infinity/NaN 写成 null 的形态,运行期曾静默变成 0);bits 缺省 64,出现时必须
+  // 是 32/64。容器递归校验(vec/map/opt/res/tuple);'tag' 包装与 'json' 载荷是普通
+  // 数据,不在此面。
+  const checkWire = (w, at) => {
+    if (!w || typeof w !== 'object' || Array.isArray(w)) bad(`非法 wire 值(${at})`);
+    switch (w.w) {
+      case 'float':
+        if (!isWireFloatValue(w.v)) bad(`非法 float wire 值 ${JSON.stringify(w.v)}(${at})`);
+        if (w.bits !== undefined && w.bits !== 32 && w.bits !== 64) bad(`非法 float 位宽 ${JSON.stringify(w.bits)}(${at})`);
+        return;
+      case 'vec':
+        if (!Array.isArray(w.a)) bad(`vec wire 缺少元素数组(${at})`);
+        w.a.forEach((x, i) => checkWire(x, `${at}.a[${i}]`));
+        return;
+      case 'map':
+        if (!Array.isArray(w.e)) bad(`map wire 缺少条目数组(${at})`);
+        w.e.forEach((pair, i) => {
+          if (!Array.isArray(pair) || pair.length !== 2) bad(`map wire 条目非二元组(${at}.e[${i}])`);
+          checkWire(pair[0], `${at}.e[${i}].k`);
+          checkWire(pair[1], `${at}.e[${i}].v`);
+        });
+        return;
+      case 'opt': case 'res':
+        if (w.v !== null && w.v !== undefined) checkWire(w.v, `${at}.v`);
+        return;
+      case 'tuple':
+        if (!Array.isArray(w.a)) bad(`tuple wire 缺少元素数组(${at})`);
+        w.a.forEach((x, i) => checkWire(x, `${at}.a[${i}]`));
+        return;
+      case 'int': case 'bool': case 'str': case 'unit': case 'json': case 'tag':
+        return;
+      default:
+        bad(`未知 wire 类型 ${JSON.stringify(w.w)}(${at})`);
+    }
+  };
+  for (let pi = 0; pi < a.pool.length; pi++) checkWire(a.pool[pi], `池条目 #${pi}`);
   const opSet = new Set(Object.values(OP));
   const poolSlot = new Map([ // 操作数是常量池下标的指令(口径 = compiler.js OP 注释与发射点)
     [OP.CONST, 1], [OP.GETFIELD, 1], [OP.SETFIELD, 1], [OP.CALLMETHOD, 1],
@@ -220,7 +258,7 @@ function validateArtifact(a) {
 // JSON 对象 → 运行时 compiled 形态(含最小 entry 对象)
 export function deserializeArtifact(a) {
   if (!a || a.format !== ARTIFACT_FORMAT) throw new Error('不是 Ming 字节码产物');
-  if (a.version !== ARTIFACT_VERSION) throw new Error(`产物版本不支持: ${a.version}(本工具链支持 ${ARTIFACT_VERSION})`);
+  if (a.version !== 2 && a.version !== ARTIFACT_VERSION) throw new Error(`产物版本不支持: ${a.version}(本工具链支持 2..${ARTIFACT_VERSION})`);
   validateArtifact(a);
   const functions = a.functions.map((f) => {
     const code = [];
