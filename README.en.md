@@ -80,7 +80,7 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 | Current version | **v0.96.0** (2026-11-20) |
 | Regression suite | **1586 checks, all green** (§1–§106; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
-| Coverage | **95.0% lines / 90.3% functions** (v0.84 refresh; vm.js 76.2%; re-measurement after v0.85–v0.89 is scheduled for v0.91) |
+| Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
 | Capability matrix | 55 rows ≈85% ([docs/capabilities.md](docs/capabilities.md)) |
 | Requirements | Node.js ≥ 18, zero third-party deps; C backend needs gcc/clang |
