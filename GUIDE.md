@@ -1487,7 +1487,7 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 ### v0.94.0(2026-11-20)
 
-- **O1 字节码优化管线(首批:常量折叠 / 分支裁剪 / 跳转线程 / DCE;零新语言面)**:编译期在字节码上做语义保持优化,默认开启,`--no-opt` / `MING_NO_OPT=1` 关闭(`run/test/build/tools` 同口径;优化开关进构建键与工具 AOT 缓存键,两态不互相假命中)。**审查修复**:浮点常量 AOT wire 无损修复(`-0.0/±Infinity/NaN/1.0e308*10/const 浮点表达式/1.0e400` 经 `ming build` 后 dist 与源码运行逐字一致;f32 位宽随 wire 保留;`validateArtifact` 拒绝 null/非法 float wire)——见 §19 工具链条目与 docs/opt-baseline.md;字符串 `+` 不折叠(运行时字符串 `+`(OP.BIN)计入 `--max-alloc`,OP.CONCAT 插值不计费;折叠会破坏三腿一致);DCE 补 JUMP 终结可达性(break/continue/常量假分支后的死代码真删除)。
+- **O1 字节码优化管线(首批:常量折叠 / 分支裁剪 / 跳转线程 / DCE;零新语言面;三 pass 作为单一提交单元——fixpoint 顺序耦合 fold→prune→dce + 共用 rebuild/span 基础设施,拆分会产不可独立编译中间态;架构师裁决已登记 plan §4.16.5)**:编译期在字节码上做语义保持优化,默认开启,`--no-opt` / `MING_NO_OPT=1` 关闭(`run/test/build/tools` 同口径;优化开关进构建键与工具 AOT 缓存键,两态不互相假命中)。**审查修复**:浮点常量 AOT wire 无损修复(`-0.0/±Infinity/NaN/1.0e308*10/const 浮点表达式/1.0e400` 经 `ming build` 后 dist 与源码运行逐字一致;f32 位宽随 wire 保留;`validateArtifact` 拒绝 null/非法 float wire)——见 §19 工具链条目与 docs/opt-baseline.md;字符串 `+` 不折叠(运行时字符串 `+`(OP.BIN)计入 `--max-alloc`,OP.CONCAT 插值不计费;折叠会破坏三腿一致);DCE 补 JUMP 终结可达性(break/continue/常量假分支后的死代码真删除)。
 
 ### v0.93.0(2026-11-20)
 
