@@ -122,7 +122,28 @@ export function deepCopy(v) {
       // v0.89(§4.13.7):narrowRetSpec(checker 统一后的返回类型)与 __retSpec(传参
       // 边界按 fn(ret 窄) 规格打标)同样随拷贝保留——返回位归一不断档。
       const tys = v.env.tys ? new Map(v.env.tys) : undefined;
+      // v0.97(#82,v0.97 审查 B1 回退):parent 浅拷贝保留——递归 snapshotEnv 实现呈 2^n 复制
+      // (22 层嵌套块合法程序 4GB OOM exit 134;1M 次 let 复制 tree +55%)。语义方向正确但实现
+      // 需 free-variable 捕获计划(对齐 VM capture plan)或持久化 env/COW——登记 #82 开放 P1,
+      // 待专门设计批次。tree 与 VM 在"闭包复制后 parent 链共享"形态的已知分歧如实登记。
       return { t: 'closure', params: v.params, body: v.body, env: { vars: env, parent: v.env.parent, mod: v.env.mod, localFns: v.env.localFns, tys }, fnType: v.fnType, narrowParamTypes: v.narrowParamTypes, narrowRetSpec: v.narrowRetSpec, __retSpec: v.__retSpec };
+    }
+    // v0.97(#81):VM 闭包值(OP.LDFN/OP.CLOSURE 产出的 { t:'vclose', fnIdx, captures })。
+    // 此前缺本分支走 default 恒等 → `let f2 = f` / HOF 传参后两个值别名共享同一
+    // captures 数组;调用任一方对捕获变量的写(帧 captures 原地写)穿透另一方 =
+    // 双引擎值语义分歧(tree `1/2/1/0` vs VM `1/2/3/0`)。值语义下闭包复制 = 捕获
+    // 状态快照(tree case 'closure' 同口径)——captures 元素逐个深拷贝(嵌套闭包/
+    // 容器捕获递归快照;CLOSURE 构造时已有一次捕获拷贝,此处是绑定/传参边界的
+    // 第二次,非冗余:构造拷贝防构造点后调用方变异穿透,此处拷贝防两个闭包值共享
+    // 捕获后互写)。__retSpec(v0.89 传参边界按 fn(ret 窄) 打标)随拷贝保留——返回位
+    // 归一规格不得因一次 let 绑定丢失。fnIdx 指向同一 compiled.functions 表,索引
+    // 本身是规格数据无需复制。
+    case 'vclose': {
+      // v0.97 审查 m2:字段扩展保留({...v} 而非白名单重建,未来新标签不丢失);
+      // 空捕获(模块函数值)归一为新 vclose(新对象 + 空 captures 数组,计 1 entry)——
+      // 语义上可复用原对象,但白盒契约(v108.7)锁定"captures 恒为数组"的归一形态。
+      if (!v.captures || v.captures.length === 0) return { ...v, captures: [] };
+      return { ...v, captures: v.captures.map(deepCopy) };
     }
     case 'fnref': return v;
     default: return v;

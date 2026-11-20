@@ -826,7 +826,7 @@ export class VMInterp extends Interp {
           if (STATS_ON) this.statsCallMethod++;
           const argc = ins[2];
           const name = pool[ins[1]].v;
-          const args = argc ? stack.splice(stack.length - argc, argc) : [];
+          let args = argc ? stack.splice(stack.length - argc, argc) : [];
           let recv = stack.pop();
           // 前置分派:模块/类型接收者(树引擎在 evalCall Field 分支处理,这里等价)
           if (recv && recv.t === 'stdmod') {
@@ -841,6 +841,20 @@ export class VMInterp extends Interp {
             // v0.90 审查 MAJOR-1:同 callValue ctor 分发——实参深拷贝(对齐 MAKEENUM 先例)。
             stack.push(this.constructVariant(recv, args.map(a => deepCopy(a)), this.spanOf(frame, ins)));
             break;
+          }
+          // v0.97(#79 P1 值语义):builtin 方法实参深拷贝——树引擎在调用点先做
+          // args.map(deepCopy)(interp.js:1715 起 Field 分支),VM 曾把操作数栈实参原样
+          // 交给内建实现:vec.push/insert/extend 与 map.set 直接存入接收者(调用方后续
+          // 变异穿透容器,破坏"赋值/传参深拷贝"合同),树/VM 双引擎分歧。
+          // 用户方法(命中 methodImpls 的 struct/enum)不在此拷贝——tree callUser 绑定拷贝(VM 方法分发当前回落 tree)
+          // 形参绑定已逐参 deepCopy(vm.js:657),再拷即双重拷贝。接收者永不拷贝
+          // (mut self 原地修改语义)。判定见 methodArgsNeedCopy。
+          if (recv && args.length > 0 && this.methodArgsNeedCopy(recv, name)) {
+            // v0.97 审查 m1:恒等类型跳过 deepCopy(int/float/bool/str/json/handle/fnref——
+            // deepCopy 对这些本就原样返回,跳过使 MING_STATS 计数与修复前口径对齐
+            // (1M push: 1,000,002→2);墙钟回收 ~1–2%,残余 +9% 来自 args.map 数组分配本身);
+            // argc===0 短路避免空 map 分配。
+            args = args.map(a => (a && (a.t === 'int' || a.t === 'float' || a.t === 'bool' || a.t === 'str' || a.t === 'json' || a.t === 'handle' || a.t === 'fnref')) ? a : deepCopy(a));
           }
           stack.push(this.callMethod(recv, name, args, null, { span: this.spanOf(frame, ins) }, null));
           break;
@@ -1153,6 +1167,20 @@ export class VMInterp extends Interp {
 
   builtinImpl(name) {
     return BUILTIN_IMPLS[name];
+  }
+
+  // v0.97(#79):CALLMETHOD 实参深拷贝判定(注见 OP.CALLMETHOD 分支)。
+  // 树引擎对所有方法调用先 args.map(deepCopy) 再分派;VM 只为"内建实现"路径补拷贝。
+  //   用户方法:struct/enum 且 methodImpls 命中 → callUser 形参绑定已 deepCopy → false
+  //   内建实现:vec/slice/map/str/json/bool/int/float → true;
+  //            enum 无用户实现(Option/Result)→ true(对齐 tree 调用点拷贝);
+  //            struct 无用户实现 → callMethod 抛 M4001,实参不被保留 → false。
+  methodArgsNeedCopy(recv, name) {
+    if (recv.t === 'struct' || recv.t === 'enum') {
+      if (this.methodImpls?.get(recv.def)?.get(name)) return false;
+      return recv.t === 'enum';
+    }
+    return true;
   }
 
   makeIterator(it) {

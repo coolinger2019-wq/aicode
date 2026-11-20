@@ -24442,6 +24442,475 @@ secBegin('106');
   }
 }
 
+// ===================== 107. #79:VM builtin 方法实参深拷贝(值语义)=====================
+// 文件所有权:§107 = 本区全部用例(Agent E,v0.97 P1 缺陷 #79)。
+// 缺陷:VM CALLMETHOD 把操作数栈实参原样交给内建方法实现(vec.push/insert/extend、
+// map.set 直接存入接收者),调用方后续变异穿透容器(别名);tree 在调用点先做
+// args.map(deepCopy)(interp.js evalCall Field 分支)→ 双引擎值语义分歧(HEAD 预存)。
+// 修复:src/vm.js CALLMETHOD builtin 分派点对非接收者实参 deepCopy;用户方法
+// (methodImpls 命中的 struct/enum)不动——tree callUser 绑定拷贝(VM 方法分发当前回落 tree) 形参绑定已逐参
+// deepCopy(避免双重拷贝);接收者保持引用(mut self 原地修改语义)。
+// 口径:
+//   * 四腿逐字 = 默认(VM+wasm)/--no-wasm/--no-opt/--tree stdout 一致、exit 0;
+//   * 拷贝恰好一次 = 同程序 push(w[5])/push(e[空]) 的 MING_STATS deepCopy 差 = 5
+//     (tree/VM 同为 5;漏拷 = 0,双拷 = 10);
+//   * 用户方法对照 = VM 差 = 5(仅形参绑定一次;tree 调用点+绑定两次 = 10)——
+//     证明修复未在用户方法路径叠加第二份拷贝;
+//   * 配额 = deepCopy 不计费:--max-alloc 2 在 push 处三腿 M4011 逐字,
+//     --max-alloc 3 三腿通过(alloc 3 = VecLit 2 + push 1);
+//   * AOT = 优化态产物 serialize→fromArtifact 执行同输出(同一 execLoop 路径)。
+secBegin('107');
+{
+  const dir107 = path.join(TMP, 'v107');
+  fs.mkdirSync(dir107, { recursive: true });
+  const mk107 = (name, src) => { const f = path.join(dir107, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const legsOf107 = (f) => [
+    ['默认', runMing(['run', f])],
+    ['no-wasm', runMing(['run', f, '--no-wasm'])],
+    ['no-opt', runMing(['run', f, '--no-opt'])],
+    ['tree', runMing(['run', f, '--tree'])],
+  ];
+  const legsOk107 = (legs, out) => legs.every(([, r]) => r.code === 0 && r.stdout === out);
+  const legsBrief107 = (legs) => legs.map(([n, r]) => `${n}:${r.code}/${JSON.stringify(r.stdout)}`).join(' ');
+  const statsOf107 = (r) => {
+    const lines = (r.stderr ?? '').split('\n').filter((l) => l.trim() !== '');
+    const last = lines[lines.length - 1];
+    if (last && last.startsWith('{')) { try { return JSON.parse(last); } catch { return null; } }
+    return null;
+  };
+  const dc107 = (f, extra) => {
+    const s = statsOf107(runMing(['run', f, ...extra], { env: { MING_STATS: '1' } }));
+    return s ? s.deepCopy : null;
+  };
+
+  // 1) #79 原探针(架构师实证):push(Vec) 后调用方变异不得穿透 v[0]。
+  const probe107 = mk107('v107_probe.ming', [
+    'fn main() with io {',
+    '    let mut w: Vec[i64] = [1];',
+    '    let mut v: Vec[Vec[i64]] = [];',
+    '    v.push(w);',
+    '    w.push(2);',
+    '    print(v[0].len());',
+    '    print(w.len());',
+    '}',
+  ].join('\n'));
+  const legsProbe107 = legsOf107(probe107);
+  check('v107.1:#79 原探针——push(Vec) 后 w.push(2) 不穿透 v[0](四腿输出 1/2 逐字)',
+    legsOk107(legsProbe107, '1\n2\n'), legsBrief107(legsProbe107));
+
+  // 2) push(Map):Map 实参同样按值入容器。
+  {
+    const f = mk107('v107_push_map.ming', [
+      'fn main() with io {',
+      '    let mut m: Map[str, i64] = { "a": 1 };',
+      '    let mut v: Vec[Map[str, i64]] = [];',
+      '    v.push(m);',
+      '    m.set("b", 2);',
+      '    print(v[0].len());',
+      '    print(m.len());',
+      '}',
+    ].join('\n'));
+    const legs = legsOf107(f);
+    check('v107.2:push(Map) 后调用方 m.set 不穿透 v[0](四腿输出 1/2 逐字)',
+      legsOk107(legs, '1\n2\n'), legsBrief107(legs));
+  }
+
+  // 3) Map.set(str, Vec) 值位隔离:调用方变异 Vec 不穿透 Map 值位。
+  {
+    const f = mk107('v107_map_set.ming', [
+      'fn main() with io {',
+      '    let mut w: Vec[i64] = [7];',
+      '    let mut mm: Map[str, Vec[i64]] = {};',
+      '    mm.set("k", w);',
+      '    w.push(8);',
+      '    print(mm.get("k").unwrap().len());',
+      '    print(w.len());',
+      '}',
+    ].join('\n'));
+    const legs = legsOf107(f);
+    check('v107.3:Map.set(str, Vec) 值位隔离——w.push(8) 不穿透 mm["k"](四腿输出 1/2 逐字)',
+      legsOk107(legs, '1\n2\n'), legsBrief107(legs));
+  }
+
+  // 4) 同类漏拷贝面:insert / extend(元素引用入容器)+ 接收者原地语义对照。
+  {
+    const f = mk107('v107_insert_extend.ming', [
+      'fn main() with io {',
+      '    let mut w: Vec[i64] = [3];',
+      '    let mut v: Vec[Vec[i64]] = [[9]];',
+      '    v.insert(1, w);',
+      '    w.push(4);',
+      '    print(v[1].len());',
+      '    print(w.len());',
+      '    let mut src: Vec[Vec[i64]] = [[5]];',
+      '    let mut dst: Vec[Vec[i64]] = [];',
+      '    dst.extend(src);',
+      '    src[0].push(6);',
+      '    print(dst[0].len());',
+      '    print(src[0].len());',
+      '    let mut r: Vec[i64] = [1];',
+      '    r.push(2);',
+      '    print(r.len());',
+      '    print(r[1]);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf107(f);
+    check('v107.4:insert(Vec)/extend(Vec[Vec]) 实参隔离 + 接收者仍原地修改(四腿输出 1/2/1/2/2/2 逐字)',
+      legsOk107(legs, '1\n2\n1\n2\n2\n2\n'), legsBrief107(legs));
+  }
+
+  // 5) 用户方法对照:mut self 原地修改生效、非 self 实参隔离(修复不改用户方法路径)。
+  {
+    const f = mk107('v107_user_method.ming', [
+      'struct Box { v: Vec[i64] }',
+      'trait Grow {',
+      '    fn add(mut self, x: Vec[i64]) -> i64;',
+      '}',
+      'impl Grow for Box {',
+      '    fn add(mut self, x: Vec[i64]) -> i64 {',
+      '        self.v.push(x[0]);',
+      '        return self.v.len();',
+      '    }',
+      '}',
+      'fn main() with io {',
+      '    let mut b = Box { v: [1] };',
+      '    let mut arg: Vec[i64] = [2];',
+      '    let n = b.add(arg);',
+      '    print(n);',
+      '    arg.push(3);',
+      '    print(b.v.len());',
+      '    print(arg.len());',
+      '}',
+    ].join('\n'));
+    const legs = legsOf107(f);
+    check('v107.5:用户方法对照——mut self 原地修改(self.v 长 2)+ 非 self 实参隔离(arg 长 2,四腿 2/2/2 逐字)',
+      legsOk107(legs, '2\n2\n2\n'), legsBrief107(legs));
+  }
+
+  // 6) 拷贝恰好一次(内建方法):push(w[5]) 与 push(e[空]) 除实参外逐语句相同,
+  //    deepCopy 差 = w 元素数 5(tree/VM 同口径;漏拷 = 0,双拷 = 10)。
+  {
+    const head = [
+      'fn main() with io {',
+      '    let mut w: Vec[i64] = [1, 2, 3, 4, 5];',
+      '    let mut e: Vec[i64] = [];',
+      '    let mut v: Vec[Vec[i64]] = [];',
+    ];
+    const tail = ['    print(w.len());', '    print(e.len());', '    print(v[0].len());', '}'];
+    const pushW = mk107('v107_push_w.ming', [...head, '    v.push(w);', ...tail].join('\n'));
+    const pushE = mk107('v107_push_e.ming', [...head, '    v.push(e);', ...tail].join('\n'));
+    const treeW = dc107(pushW, ['--tree']), treeE = dc107(pushE, ['--tree']);
+    const vmW = dc107(pushW, ['--no-wasm']), vmE = dc107(pushE, ['--no-wasm']);
+    const dTree = treeW !== null && treeE !== null ? treeW - treeE : null;
+    const dVm = vmW !== null && vmE !== null ? vmW - vmE : null;
+    check('v107.6:内建方法实参拷贝恰好一次——push(w[5])/push(e[空]) deepCopy 差 = 5(tree/VM 同;漏拷=0/双拷=10)',
+      dTree === 5 && dVm === 5, `tree=${treeW}/${treeE} d=${dTree} vm=${vmW}/${vmE} d=${dVm}`);
+  }
+
+  // 7) 用户方法对照(deepCopy 口径):VM 用户方法经 tree callUser 绑定拷贝(方法分发当前回落 tree)(差 = 5);
+  //    tree 调用点 evalCall + callUser 绑定两次(差 = 10,pre-existing 参考口径)。
+  //    若修复在用户方法路径叠加第二份拷贝,VM 差会变成 10。
+  {
+    const head = [
+      'struct Box { v: Vec[i64] }',
+      'trait T {',
+      '    fn m(self, x: Vec[i64]) -> i64;',
+      '}',
+      'impl T for Box {',
+      '    fn m(self, x: Vec[i64]) -> i64 { return x.len(); }',
+      '}',
+      'fn main() with io {',
+      '    let b = Box { v: [] };',
+      '    let mut w: Vec[i64] = [1, 2, 3, 4, 5];',
+      '    let mut e: Vec[i64] = [];',
+    ];
+    const tail = ['    print(w.len());', '    print(e.len());', '}'];
+    const mW = mk107('v107_user_w.ming', [...head, '    print(b.m(w));', ...tail].join('\n'));
+    const mE = mk107('v107_user_e.ming', [...head, '    print(b.m(e));', ...tail].join('\n'));
+    const treeW = dc107(mW, ['--tree']), treeE = dc107(mE, ['--tree']);
+    const vmW = dc107(mW, ['--no-wasm']), vmE = dc107(mE, ['--no-wasm']);
+    const dTree = treeW !== null && treeE !== null ? treeW - treeE : null;
+    const dVm = vmW !== null && vmE !== null ? vmW - vmE : null;
+    check('v107.7:用户方法实参不双拷——VM deepCopy 差 = 5(仅形参绑定一次;tree 两次 = 10)',
+      dVm === 5 && dTree === 10, `tree=${treeW}/${treeE} d=${dTree} vm=${vmW}/${vmE} d=${dVm}`);
+  }
+
+  // 8) 配额对照:deepCopy 不计费(修复前 push 不拷贝、修复后拷贝但都不落 alloc 记账),
+  //    同一 --max-alloc 下三腿退出码/stderr 逐字一致。
+  {
+    const qf = mk107('v107_quota.ming', [
+      'fn main() with io {',
+      '    let mut w: Vec[i64] = [1, 2];',
+      '    let mut v: Vec[Vec[i64]] = [];',
+      '    v.push(w);',
+      '    print(v[0].len());',
+      '}',
+    ].join('\n'));
+    const t1 = runMing(['run', qf, '--max-alloc', '2', '--tree']);
+    const t2 = runMing(['run', qf, '--max-alloc', '2', '--no-wasm']);
+    const t3 = runMing(['run', qf, '--max-alloc', '2', '--no-opt']);
+    const ok1 = runMing(['run', qf, '--max-alloc', '3', '--tree']);
+    const ok2 = runMing(['run', qf, '--max-alloc', '3', '--no-wasm']);
+    const ok3 = runMing(['run', qf, '--max-alloc', '3', '--no-opt']);
+    check('v107.8:deepCopy 不计费——--max-alloc 2 三腿在 push 处 M4011 逐字(alloc 3=VecLit 2+push 1),--max-alloc 3 三腿通过输出 2',
+      t1.code === 101 && t2.code === 101 && t3.code === 101
+      && t1.stderr === t2.stderr && t2.stderr === t3.stderr
+      && t1.stderr.includes('M4011') && t1.stderr.includes('累计分配 3 超过上限 2')
+      && ok1.code === 0 && ok2.code === 0 && ok3.code === 0
+      && ok1.stdout === '2\n' && ok2.stdout === ok1.stdout && ok3.stdout === ok1.stdout,
+      `tight=${t1.code}/${t2.code}/${t3.code} sameErr=${t1.stderr === t2.stderr && t2.stderr === t3.stderr} loose=${ok1.code}/${ok2.code}/${ok3.code}/${JSON.stringify(ok1.stdout)}`);
+  }
+
+  // 9) AOT 产物合同:方法实参拷贝在 execLoop(同一 VM 路径),fromArtifact 执行同输出。
+  {
+    let aotOut = null, aotErr = '';
+    try {
+      const art107 = await import('../src/artifact.js');
+      const saved = process.env.MING_NO_OPT;
+      let built;
+      try {
+        delete process.env.MING_NO_OPT;
+        built = compile(new Checker(probe107).run());
+      } finally {
+        if (saved === undefined) delete process.env.MING_NO_OPT;
+        else process.env.MING_NO_OPT = saved;
+      }
+      const wire = JSON.parse(JSON.stringify(art107.serializeArtifact(built, { baseDir: ROOT })));
+      const vm = VMInterp.fromArtifact(wire, { capture: true });
+      const r = vm.runMain([]);
+      aotOut = vm.flushCaptured();
+      aotErr = 'exit=' + r.exitCode;
+    } catch (e) { aotErr = String((e && e.message) || e); }
+    check('v107.9:AOT 产物合同——serialize→fromArtifact 执行 #79 探针输出 1/2 与直跑逐字(同一 execLoop 路径)',
+      aotErr === 'exit=0' && aotOut === '1\n2\n' && legsProbe107[0][1].stdout === aotOut,
+      `aot=${aotErr}/${JSON.stringify(aotOut ?? '')}`);
+  }
+}
+
+// ===================== 108. #81:VM 闭包值(vclose)deepCopy 捕获快照(值语义)=====================
+// 文件所有权:§108 = 本区全部用例(Agent G,v0.97 P1 缺陷 #81)。
+// 缺陷:src/interp.js deepCopy 有 tree 闭包分支(case 'closure')但缺 VM 闭包值分支
+// (case 'vclose':{ t:'vclose', fnIdx, captures })→ 走 default 恒等。`let f2 = f` /
+// HOF 传参 / 容器存取把同一 vclose 交给两个绑定后,双方共享同一 captures 数组;调用
+// 任一方对捕获变量的写(OP.ST 的 frame.captures 原地写)穿透另一方 —— tree(闭包
+// 复制 = 捕获状态快照)与 VM 双引擎值语义分歧(架构师探针:tree 1/2/1/0 vs VM 1/2/3/0)。
+// 修复:deepCopy 增 case 'vclose'——captures 元素逐个 deepCopy(嵌套闭包/容器捕获
+// 递归快照),fnIdx 保持(compiled.functions 表索引是规格数据),__retSpec(v0.89
+// 传参边界按 fn(ret 窄) 打标)随拷贝保留。CLOSURE 指令构造时的捕获拷贝保留——
+// 构造拷贝防构造点后调用方变异穿透,绑定/传参拷贝防两个闭包值共享捕获后互写,非冗余。
+// 口径:
+//   * 四腿逐字 = 默认(VM+wasm)/--no-wasm/--no-opt/--tree stdout 一致、exit 0;
+//   * 捕获快照双向隔离:被调方写不回调用方(③)/调用方已推进的状态不回流拷贝(④);
+//   * 容器捕获(Vec)深拷贝 = 元素级快照(⑤;浅拷贝会让共享 Vec 继续互写);
+//   * __retSpec 保真 = 窄返回闭包经 let 绑定后调用仍归一(⑥a:M4002 不静默回绕)+
+//     白盒字段集锁(⑥b:fnIdx/captures 深拷贝/__retSpec/嵌套 vclose/空捕获);
+//   * AOT dist = build 源码模式回退产物执行同输出(⑦;含 lambda 程序按既有合同
+//     AOT 字节码序列化具名回退,dist 权重路径不受 #81 修复影响)。
+secBegin('108');
+{
+  const dir108 = path.join(TMP, 'v108');
+  fs.mkdirSync(dir108, { recursive: true });
+  const mk108 = (name, src) => { const f = path.join(dir108, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const legsOf108 = (f) => [
+    ['默认', runMing(['run', f])],
+    ['no-wasm', runMing(['run', f, '--no-wasm'])],
+    ['no-opt', runMing(['run', f, '--no-opt'])],
+    ['tree', runMing(['run', f, '--tree'])],
+  ];
+  const legsOk108 = (legs, out) => legs.every(([, r]) => r.code === 0 && r.stdout === out);
+  const legsBrief108 = (legs) => legs.map(([n, r]) => `${n}:${r.code}/${JSON.stringify(r.stdout)}`).join(' ');
+  const firstLine108 = (r) => (r.stderr ?? '').split('\n')[0] ?? '';
+
+  // 1) #81 原探针(架构师实证):闭包经 let 绑定后再调用,两个值各自持有捕获快照。
+  //    f2 独立计数 1/2;f 自己的计数仍从 0 起步 → 1;main 的 c 始终 0。
+  const srcVclose108 = [
+    'fn main() with io {',
+    '    let mut c = 0;',
+    '    let f = (x: i64) => { c = c + 1; x + c };',
+    '    let f2 = f;',
+    '    print(f2(0));',
+    '    print(f2(0));',
+    '    print(f(0));',
+    '    print(c);',
+    '}',
+  ].join('\n');
+  {
+    const f = mk108('v108_vclose.ming', srcVclose108);
+    const legs = legsOf108(f);
+    check('v108.1:#81 原探针——let f2 = f 后捕获快照隔离,四腿逐字 1/2/1/0(修复前 VM 1/2/3/0 别名共享)',
+      legsOk108(legs, '1\n2\n1\n0\n'), legsBrief108(legs));
+  }
+
+  // 2) HOF 重复 map 形态:同一闭包两次传入 map/HOF,每次调用边界拷贝一次捕获
+  //    (两个 r 各自 11/22;Map 捕获的 set 不回流 main 的 m → 1/1/2)。
+  {
+    const f = mk108('v108_hof.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let f = (x: i64) => { c = c + 1; x + c };',
+      '    let r1 = [10, 20].map(f);',
+      '    let r2 = [10, 20].map(f);',
+      '    print(r1[0]);',
+      '    print(r1[1]);',
+      '    print(r2[0]);',
+      '    print(r2[1]);',
+      '    let mut m: Map[str, i64] = { "k": 1 };',
+      '    let g = (x: i64) => { m.set("k", m.get("k").unwrap() + x); x };',
+      '    let r3 = [1, 2].map(g);',
+      '    print(m.get("k").unwrap());',
+      '    print(r3[0]);',
+      '    print(r3[1]);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf108(f);
+    check('v108.2:HOF 重复 map 形态——两次 map(f) 各自捕获快照 11/22/11/22,Map 捕获 set 不回流 main(1/1/2),四腿逐字',
+      legsOk108(legs, '11\n22\n11\n22\n1\n1\n2\n'), legsBrief108(legs));
+  }
+
+  // 3) 闭包作实参:被调方内的两次调用共享同一个形参值(捕获状态延续),但调用
+  //    边界是快照——被调方的写不回流调用方的 f(f 自己的计数 1→2;main 的 c=0)。
+  //    修复前 VM 形参别名 f → 被调方调用推进调用方捕获(末位 print(f(0)) = 4)。
+  {
+    const f = mk108('v108_arg.ming', [
+      'fn call2(g: (i64) -> i64) -> i64 {',
+      '    let a = g(0);',
+      '    let b = g(0);',
+      '    a * 100 + b',
+      '}',
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let f = (x: i64) => { c = c + 1; x + c };',
+      '    print(f(0));',
+      '    let r = call2(f);',
+      '    print(r);',
+      '    print(f(0));',
+      '    print(c);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf108(f);
+    check('v108.3:闭包传参快照——call2 内 g 两次调用为 1/2(共享形参捕获),不回流调用方 f(1/203/2/0 四腿逐字;修复前 VM 1/203/4/0)',
+      legsOk108(legs, '1\n203\n2\n0\n'), legsBrief108(legs));
+  }
+
+  // 4) 工厂返回闭包 + 绑定拷贝:make 每次返回独立捕获(g1/g2 起点不同),g3 = g1
+  //    再取一次快照——三个值互不干扰(修复前 VM g3 别名 g1:1/2/101/3/4/102)。
+  {
+    const f = mk108('v108_ret.ming', [
+      'fn make(start: i64) -> (i64) -> i64 {',
+      '    let mut n = start;',
+      '    return (x: i64) => { n = n + x; n };',
+      '}',
+      'fn main() with io {',
+      '    let g1 = make(0);',
+      '    let g2 = make(100);',
+      '    let g3 = g1;',
+      '    print(g1(1));',
+      '    print(g3(1));',
+      '    print(g2(1));',
+      '    print(g1(1));',
+      '    print(g3(1));',
+      '    print(g2(1));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf108(f);
+    check('v108.4:闭包返回再调用隔离——工厂独立捕获 + g3 = g1 快照,1/1/101/2/2/102 四腿逐字(修复前 VM 1/2/101/3/4/102)',
+      legsOk108(legs, '1\n1\n101\n2\n2\n102\n'), legsBrief108(legs));
+  }
+
+  // 5) 容器捕获(Vec)深拷贝:绑定拷贝后两个闭包各持一份 Vec 元素级快照
+  //    (f 长 2/3,g 长 2/3;main 的 v 始终长 1)。浅拷贝/恒等会让共享 Vec 继续互写
+  //    (修复前 VM 2/3/4/5/1)。
+  {
+    const f = mk108('v108_vec_cap.ming', [
+      'fn main() with io {',
+      '    let mut v: Vec[i64] = [1];',
+      '    let f = (x: i64) => { v.push(x); v.len() };',
+      '    let g = f;',
+      '    print(f(2));',
+      '    print(g(3));',
+      '    print(f(4));',
+      '    print(g(5));',
+      '    print(v.len());',
+      '}',
+    ].join('\n'));
+    const legs = legsOf108(f);
+    check('v108.5:嵌套捕获容器(Vec)深拷贝——f/g 各持元素级快照 2/2/3/3,main 的 v 长 1(四腿逐字;修复前 VM 2/3/4/5)',
+      legsOk108(legs, '2\n2\n3\n3\n1\n'), legsBrief108(legs));
+  }
+
+  // 6a) __retSpec/窄返回保真(黑盒):窄返回闭包经 let 绑定(触发 vclose 深拷贝)
+  //     后调用仍按声明返回类型 u8 归一,读后算术 M4002 三腿逐字(不静默回绕 260)。
+  {
+    const f = mk108('v108_retspec.ming', [
+      'fn main() with io {',
+      '    let f: () -> u8 = () => 250;',
+      '    let g = f;',
+      '    let x = g() + 10u8;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const runs = ['', '--no-wasm', '--tree'].map((fl) => runMing(fl ? ['run', f, fl] : ['run', f]));
+    check('v108.6:__retSpec 保真(黑盒)——窄返回闭包绑定后调用仍归一,三腿 M4002 逐字(整数+溢出:250 + 10 超出 i8u 范围;不静默 260)',
+      runs.every((r) => r.code === 101 && firstLine108(r).includes('M4002') && firstLine108(r).includes('整数+溢出:250 + 10 超出 i8u 范围')),
+      runs.map((r) => `${r.code}:${JSON.stringify(firstLine108(r).slice(0, 100))}`).join(' | '));
+  }
+
+  // 6b) 白盒字段集锁:deepCopy(vclose) 的字段保真(值载体按 interp.js 的 VM 形状
+  //     构造)——fnIdx 保持、captures 数组与元素对象为新副本(标量不可变恒等)、
+  //     __retSpec 保留、无 __retSpec 时字段不出现、缺 captures 的空捕获形态兜底。
+  {
+    let ok = false, detail = '';
+    try {
+      const { V, deepCopy } = await import('../src/interp.js');
+      const spec = { bits: 8, signed: false };
+      const inner = V.vec([V.int(1)]);
+      const clo = { t: 'vclose', fnIdx: 42, captures: [V.int(7), inner], __retSpec: spec };
+      const cp = deepCopy(clo);
+      const nested = { t: 'vclose', fnIdx: 3, captures: [V.int(9)] };
+      const outerCp = deepCopy({ t: 'vclose', fnIdx: 4, captures: [nested] });
+      const cpNoSpec = deepCopy({ t: 'vclose', fnIdx: 1, captures: [] });
+      const cpNoCap = deepCopy({ t: 'vclose', fnIdx: 2 });
+      ok = cp !== clo && cp.t === 'vclose' && cp.fnIdx === 42
+        && cp.captures !== clo.captures && cp.captures.length === 2
+        && cp.captures[0] === clo.captures[0]
+        && cp.captures[1] !== inner && cp.captures[1].a !== inner.a
+        && cp.captures[1].a.length === 1 && cp.captures[1].a[0] === inner.a[0]
+        && cp.__retSpec === spec
+        && outerCp.captures[0] !== nested && outerCp.captures[0].t === 'vclose'
+        && outerCp.captures[0].captures !== nested.captures && outerCp.captures[0].fnIdx === 3
+        && cpNoSpec.t === 'vclose' && cpNoSpec.fnIdx === 1
+        && Array.isArray(cpNoSpec.captures) && cpNoSpec.captures.length === 0
+        && !('__retSpec' in cpNoSpec)
+        && cpNoCap.t === 'vclose' && cpNoCap.fnIdx === 2
+        && Array.isArray(cpNoCap.captures) && cpNoCap.captures.length === 0;
+      detail = `cp=${cp.t}/${cp.fnIdx}/${cp.captures?.length} retSpec=${cp.__retSpec === spec} nested=${outerCp.captures?.[0] !== nested} noSpec=${!('__retSpec' in cpNoSpec)} noCap=${Array.isArray(cpNoCap.captures)}`;
+    } catch (e) { detail = String((e && e.message) || e); }
+    check('v108.7:deepCopy(vclose) 白盒字段集——fnIdx/captures 深拷贝(元素级)/__retSpec 保留/嵌套 vclose 递归快照/空捕获与缺省 captures 兜底',
+      ok, detail);
+  }
+
+  // 7) AOT dist 权重回归:含 lambda 程序按既有合同回退源码模式(AOT 字节码序列化
+  //    对 <闭包> 缺签名具名拒绝),dist 产物执行输出与直跑逐字一致(#81 修复不改
+  //    build/dist 管线;权重路径一条)。
+  {
+    const proj = path.join(dir108, 'aotproj');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v108_aot"\nversion = "0.1.0"\nentry = "main.ming"\n');
+    fs.writeFileSync(path.join(proj, 'main.ming'), srcVclose108);
+    const env108 = { ...process.env };
+    delete env108.MING_NO_OPT;
+    delete env108.MING_WASM_STRICT;
+    const bld = spawnSync(process.execPath, [MING, 'build', '--clean-cache'], { encoding: 'utf8', cwd: proj, timeout: 120000, env: env108 });
+    const dist = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000, env: env108 });
+    const direct = runMing(['run', path.join(proj, 'main.ming')]);
+    check('v108.8:AOT dist 权重回归——build(源码模式回退)+ dist 产物输出 1/2/1/0 与直跑逐字一致',
+      bld.status === 0 && dist.status === 0 && dist.stdout === '1\n2\n1\n0\n'
+      && direct.code === 0 && direct.stdout === dist.stdout,
+      `bld=${bld.status} dist=${dist.status}/${JSON.stringify(dist.stdout ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout ?? '')}`);
+  }
+
+}
+
 secEndAll();
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
