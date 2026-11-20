@@ -17,7 +17,7 @@ import { completionFor, definitionFor, documentSymbolsFor } from '../src/lsp.js'
 import { VMInterp } from '../src/vm.js';
 import { fits } from '../src/interp.js';
 import { Checker } from '../src/checker.js';
-import { compile, CompileError } from '../src/compiler.js';
+import { compile, CompileError, OP } from '../src/compiler.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
@@ -23782,6 +23782,328 @@ secBegin('104');
       && direct.code === 0 && direct.stdout === d1.stdout
       && toolOn.code === 0 && toolOff.code === 0 && toolOn.stdout === toolOff.stdout && toolOn.stdout.length > 0,
       `keys=${j1?.build_key}/${j2?.build_key} hit=${j1?.cache_hit}/${j1b?.cache_hit}/${j2?.cache_hit}/${j2e?.cache_hit} instr=${l1}/${l2} out=${JSON.stringify(d2.stdout)} tools=${toolOn.code}/${toolOff.code} eq=${toolOn.stdout === toolOff.stdout}`);
+  }
+}
+
+// 文件所有权:§105 = 本区全部用例(Agent A2,v0.95 O1b 通用窥孔 peepholePass)。口径:
+//   * 语义保真 = 默认腿(优化开)/--no-opt/--tree(/--no-wasm)stdout 逐字一致;
+//   * pass 生效面 = MING_STATS=1 instr 字段(peephole 只减不增)与 in-process 字节码形状
+//     (无可删 [CONST|LD];POP 对、无全字面量 CONCAT、跳转目标 POP 与自赋值 LD;SET 保留);
+//   * 跳过候选锚 = LD+SET 自赋值**不消除**(窄型绑定归一可 throw M4002 + deepCopy 观测,
+//     见 src/opt.js P4 头注):同程序 instr 两态相等;
+//   * fixpoint 链 = 语句位 `"x\{1 + 2}y";` 需 fold(BIN)→peephole(CONCAT)→peephole(POP)
+//     三轮收敛,no-opt 9 条 → 优化态 2 条(CONST unit;RET);
+//   * AOT 合同 = peephole 产出的新池串/删除指令经 serialize→validateArtifact→fromArtifact
+//     执行,输出与直跑逐字。
+secBegin('105');
+{
+  const dir105 = path.join(TMP, 'v105');
+  fs.mkdirSync(dir105, { recursive: true });
+  const mk105 = (name, src) => { const f = path.join(dir105, name); fs.writeFileSync(f, src); return f; };
+  const runOpt105 = (f, extra = []) => runMing(['run', f, ...extra]);
+  const runNoOpt105 = (f, extra = []) => runMing(['run', f, '--no-opt', ...extra]);
+  const runStats105 = (f, extra = []) => runMing(['run', f, ...extra], { env: { MING_STATS: '1' } });
+  const statsOf105 = (r) => {
+    const lines = (r.stderr ?? '').split('\n').filter((l) => l.trim() !== '');
+    const last = lines[lines.length - 1];
+    if (last && last.startsWith('{')) { try { return JSON.parse(last); } catch { return null; } }
+    return null;
+  };
+  // 洁净编译:显式控制 MING_NO_OPT(开发者 shell 导出时不污染两态),返回 raw/opt 产物。
+  const compile105 = (file) => {
+    const saved = process.env.MING_NO_OPT;
+    let raw, opt;
+    try {
+      delete process.env.MING_NO_OPT;
+      opt = compile(new Checker(file).run());
+      process.env.MING_NO_OPT = '1';
+      raw = compile(new Checker(file).run());
+    } finally {
+      if (saved === undefined) delete process.env.MING_NO_OPT;
+      else process.env.MING_NO_OPT = saved;
+    }
+    return { raw, opt };
+  };
+  const instrOf105 = (built) => built.functions.reduce((s, f) => s + (f?.code?.length ?? 0), 0);
+  const isJump105 = (op) => op === OP.JUMP || op === OP.JUMPFALSE || op === OP.JUMPNONE || op === OP.ITERNEXT;
+  const constCell105 = (pool, idx) => {
+    const c = pool[idx];
+    return !!(c && typeof c === 'object' && !c.__tag && ['int', 'float', 'bool', 'str'].includes(c.t));
+  };
+  // 扫描优化后字节码:返回可删 POP 对与全字面量 CONCAT 的残留计数(应恒 0)。
+  const residual105 = (built) => {
+    let popPairs = 0, concats = 0;
+    for (const f of built.functions) {
+      if (!f || !Array.isArray(f.code)) continue;
+      const code = f.code;
+      const targets = new Set();
+      for (const ins of code) if (isJump105(ins[0])) targets.add(ins[1]);
+      for (let i = 1; i < code.length; i++) {
+        if (code[i][0] !== OP.POP) continue;
+        const p = code[i - 1];
+        if ((p[0] === OP.CONST || p[0] === OP.LD) && !targets.has(i) && !targets.has(i - 1)) popPairs++;
+      }
+      for (let i = 0; i < code.length; i++) {
+        if (code[i][0] !== OP.CONCAT) continue;
+        const k = code[i][1];
+        if (!(k >= 1) || i - k < 0 || targets.has(i)) continue;
+        let allConst = true;
+        for (let j = i - k; j < i; j++) {
+          if (code[j][0] !== OP.CONST || targets.has(j) || !constCell105(built.pool, code[j][1])) { allConst = false; break; }
+        }
+        if (allConst) concats++;
+      }
+    }
+    return { popPairs, concats };
+  };
+
+  // 1) 纯值语句 POP 消除:const/局部名/字面量插值语句的 [CONST|LD];POP 双删;
+  //    on/off/tree 输出逐字(5\n)且 instr(on) < instr(off)。
+  {
+    const f = mk105('v105_pop.ming', [
+      'fn main() with io {',
+      '    let x = 5;',
+      '    x;',
+      '    42;',
+      '    "lit";',
+      '    "a\\{1 + 2}b";',
+      '    true;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const on = runOpt105(f);
+    const off = runNoOpt105(f);
+    const tree = runOpt105(f, ['--tree']);
+    const sOn = statsOf105(runStats105(f));
+    const sOff = statsOf105(runStats105(f, ['--no-opt']));
+    check('v105.1:语句值 POP 消除——纯值语句(CONST/LD/全字面量插值)双删,三腿输出逐字 5\\n 且 instr(on) < instr(off)',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '5\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr < sOff.instr,
+      `on=${on.code}/${JSON.stringify(on.stdout)} offEq=${off.stdout === on.stdout} treeEq=${tree.stdout === on.stdout} instr=${sOn?.instr}/${sOff?.instr}`);
+  }
+
+  // 2) panic 值语句保留(负向锚):`1 / 0;` 与 `2147483647i32 + 1i32;` 语句位的 BIN
+  //    不可删——两态均 exit 101 且 stderr(位置+消息)逐字一致。
+  {
+    const f = mk105('v105_panic.ming', 'fn main() with io { 1 / 0; print("unreachable"); }');
+    const f2 = mk105('v105_panic_ovf.ming', 'fn main() with io { 2147483647i32 + 1i32; print("unreachable"); }');
+    const on = runOpt105(f);
+    const off = runNoOpt105(f);
+    const on2 = runOpt105(f2);
+    const off2 = runNoOpt105(f2);
+    check('v105.2:panic 值语句保留——除零语句仍 M4004(整数除零:1 / 0)、溢出语句仍 M4002,两态 exit 101 且 stderr 逐字',
+      on.code === 101 && off.code === 101 && on.stderr === off.stderr && on.stderr.includes('M4004') && on.stderr.includes('整数除零:1 / 0')
+      && on2.code === 101 && off2.code === 101 && on2.stderr === off2.stderr && on2.stderr.includes('M4002') && on2.stderr.includes('整数+溢出'),
+      `div=${on.code}/${JSON.stringify(on.stderr.split('\n')[0])} ovf=${on2.code}/${JSON.stringify(on2.stderr.split('\n')[0])}`);
+  }
+
+  // 3) 全字面量 CONCAT 折叠:插值段经 fold 后全常量的 `"a\{1 + 2}b"` → 单 CONST "a3b";
+  //    三腿输出逐字且 instr(on) < instr(off);--max-alloc 0 下两腿仍 exit 0
+  //    (CONCAT 不计费——折叠对分配配额零影响)。
+  {
+    const f = mk105('v105_concat.ming', [
+      'fn main() with io {',
+      '    print("a\\{1 + 2}b");',
+      '    print("x\\{2 * 3}y");',
+      '}',
+    ].join('\n'));
+    const on = runOpt105(f);
+    const off = runNoOpt105(f);
+    const tree = runOpt105(f, ['--tree']);
+    const sOn = statsOf105(runStats105(f));
+    const sOff = statsOf105(runStats105(f, ['--no-opt']));
+    const qOn = runOpt105(f, ['--max-alloc', '0']);
+    const qOff = runNoOpt105(f, ['--max-alloc', '0']);
+    check('v105.3:全字面量 CONCAT 折叠——a3b/x6y 三腿逐字,instr(on) < instr(off),--max-alloc 0 两态 exit 0(折叠不改配额)',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === 'a3b\nx6y\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr < sOff.instr
+      && qOn.code === 0 && qOff.code === 0 && qOn.stdout === on.stdout && qOff.stdout === on.stdout,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} quota=${qOn.code}/${qOff.code}`);
+  }
+
+  // 4) 含表达式段 CONCAT 保留:插值引用局部变量时不得静态拼接——instr/concat 两态相等,
+  //    输出逐字 a7b(负向锚:只有全常量段才折叠)。
+  {
+    const f = mk105('v105_concat_mixed.ming', [
+      'fn main() with io {',
+      '    let n = 7;',
+      '    print("a\\{n}b");',
+      '}',
+    ].join('\n'));
+    const on = runOpt105(f);
+    const off = runNoOpt105(f);
+    const sOn = statsOf105(runStats105(f));
+    const sOff = statsOf105(runStats105(f, ['--no-opt']));
+    check('v105.4:含表达式段 CONCAT 保留——a\\{n}b 两态 instr 与 concat 计数相等、输出 a7b(非全常量段不折叠)',
+      on.code === 0 && off.code === 0 && on.stdout === 'a7b\n' && off.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr && sOn.concat === sOff.concat && sOn.concat === 1,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} concat=${sOn?.concat}/${sOff?.concat}`);
+  }
+
+  // 5) 跳过候选锚:LD+SET 自赋值不消除(int/str/Vec/u8 窄型)——三腿输出逐字且
+  //    instr(on) === instr(off)(SET 的 deepCopy 与窄型绑定归一 M4002 面原样保留)。
+  {
+    const f = mk105('v105_selfassign.ming', [
+      'fn main() with io {',
+      '    let mut x = 5;',
+      '    x = x;',
+      '    let mut s = "ab";',
+      '    s = s;',
+      '    let mut v = [1, 2, 3];',
+      '    v = v;',
+      '    let mut u: u8 = 7;',
+      '    u = u;',
+      '    print(str(x));',
+      '    print(s);',
+      '    print(str(v.len()));',
+      '    print(str(u));',
+      '}',
+    ].join('\n'));
+    const on = runOpt105(f);
+    const off = runNoOpt105(f);
+    const tree = runOpt105(f, ['--tree']);
+    const sOn = statsOf105(runStats105(f));
+    const sOff = statsOf105(runStats105(f, ['--no-opt']));
+    const golden = '5\nab\n3\n7\n';
+    const { opt } = compile105(f);
+    // 字节码留存锚:优化态仍存在 LD k,i 紧跟 SET k,i 的同槽对(x = x 形态)。
+    let selfPair = 0;
+    for (const fn of opt.functions) {
+      if (!fn || !Array.isArray(fn.code)) continue;
+      for (let i = 1; i < fn.code.length; i++) {
+        const a = fn.code[i - 1], b = fn.code[i];
+        if (a[0] === OP.LD && b[0] === OP.SET && a[1] === b[1] && a[2] === b[2]) selfPair++;
+      }
+    }
+    check('v105.5:LD+SET 自赋值不消除(跳过候选锚)——int/str/Vec/u8 四形态三腿逐字,instr 两态相等且优化态 LD;SET 同槽对留存 4 处',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === golden && off.stdout === golden && tree.stdout === golden
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr && selfPair === 4,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} selfPair=${selfPair}`);
+  }
+
+  // 6) 窥孔后跨引擎全等矩阵:循环/if/match/短路语句/插值混合段/纯值语句,
+  //    default(--no-wasm 亦覆盖)/--no-opt/--tree 四腿 stdout 逐字。
+  {
+    const f = mk105('v105_matrix.ming', [
+      'fn bump(n: i64) -> i64 { n + 1 }',
+      'fn main() with io {',
+      '    let x = 5;',
+      '    x;',
+      '    42;',
+      '    "lit";',
+      '    if x > 0 { print("pos"); } else { print("neg"); }',
+      '    let mut i = 0;',
+      '    while i < 3 { i += 1; }',
+      '    print("i=\\{i}");',
+      '    let m = match i { 3 => "three", _ => "other" };',
+      '    print(m);',
+      '    let s = "a\\{1 + 2}b";',
+      '    print(s);',
+      '    let t = "a\\{x}b";',
+      '    print(t);',
+      '    false && (x > 0);',
+      '    print(str(bump(2 * 3)));',
+      '}',
+    ].join('\n'));
+    const legs = [['default', []], ['vm-only', ['--no-wasm']], ['no-opt', ['--no-opt']], ['tree', ['--tree']]];
+    const runs = legs.map(([n, extra]) => [n, runOpt105(f, extra)]);
+    const golden = 'pos\ni=3\nthree\na3b\na5b\n7\n';
+    const allOk = runs.every(([, r]) => r.code === 0 && r.stdout === golden);
+    check('v105.6:跨引擎全等矩阵——循环/if/match/短路语句/混合插值四腿(default/vm-only/no-opt/tree)逐字一致(pos/i=3/three/a3b/a5b/7)',
+      allOk,
+      `legs=${runs.map(([n, r]) => n + ':' + r.code + '/' + JSON.stringify(r.stdout.slice(0, 24))).join(',')}`);
+  }
+
+  // 7) fixpoint 收敛与形状不变式:语句位 `"x\{1 + 2}y";` 需 fold→CONCAT→POP 三轮
+  //    收敛(no-opt 9 条 → 优化态 2 条 CONST unit;RET);优化态无残留可删 POP 对/
+  //    全字面量 CONCAT;短路假标签的 POP(跳转目标)与自赋值 LD;SET 均保留。
+  {
+    const f = mk105('v105_chain.ming', 'fn main() with io { "x\\{1 + 2}y"; }');
+    const { raw, opt } = compile105(f);
+    const nRaw = instrOf105(raw);
+    const mainOpt = opt.functions.find((fn) => fn.name === 'main');
+    const res = residual105(opt);
+    const chainOk = nRaw === 9 && mainOpt.code.length === 2 && mainOpt.code[0][0] === OP.CONST && mainOpt.code[1][0] === OP.RET;
+    const f2 = mk105('v105_targets.ming', [
+      'fn main() with io {',
+      '    let a = false;',
+      '    let b = true;',
+      '    a && b;',
+      '    match 1 { 1 => 10, _ => 20 };',
+      '    let mut x = 5;',
+      '    x = x;',
+      '    print(str(x));',
+      '}',
+    ].join('\n'));
+    const { opt: opt2 } = compile105(f2);
+    let targetPop = 0, selfPair = 0, concatLeft = 0;
+    for (const fn of opt2.functions) {
+      if (!fn || !Array.isArray(fn.code)) continue;
+      const targets = new Set();
+      for (const ins of fn.code) if (isJump105(ins[0])) targets.add(ins[1]);
+      for (let i = 0; i < fn.code.length; i++) {
+        if (fn.code[i][0] === OP.POP && targets.has(i)) targetPop++;
+        if (fn.code[i][0] === OP.CONCAT) concatLeft++;
+        if (i > 0 && fn.code[i][0] === OP.SET && fn.code[i - 1][0] === OP.LD
+            && fn.code[i - 1][1] === fn.code[i][1] && fn.code[i - 1][2] === fn.code[i][2]) selfPair++;
+      }
+    }
+    const run2 = runOpt105(f2);
+    const run2off = runNoOpt105(f2);
+    check('v105.7:fixpoint 链与形状不变式——三层链 9→2 条、优化态残留 POP 对/全字面量 CONCAT 均为 0、跳转目标 POP 与自赋值 LD;SET 保留、两态输出逐字',
+      chainOk && res.popPairs === 0 && res.concats === 0
+      && targetPop >= 2 && selfPair === 1 && concatLeft === 0
+      && run2.code === 0 && run2off.code === 0 && run2.stdout === '5\n' && run2.stdout === run2off.stdout,
+      `chain=${nRaw}->${mainOpt?.code?.length} res=${res.popPairs}/${res.concats} targetPop=${targetPop} selfPair=${selfPair} concatLeft=${concatLeft} out=${JSON.stringify(run2.stdout)}`);
+  }
+
+  // 8) AOT 产物合同:peephole 的新池串/删除指令经 serialize→deserialize
+  //    (validateArtifact 界检查)→fromArtifact 进程内执行,输出与直跑逐字。
+  {
+    const f = mk105('v105_aot.ming', [
+      'fn main() with io {',
+      '    let x = 5;',
+      '    x;',
+      '    "lit";',
+      '    print("a\\{1 + 2}b");',
+      '    print("a\\{x}b");',
+      '}',
+    ].join('\n'));
+    let aotOut = null, aotErr = '';
+    try {
+      const art105 = await import('../src/artifact.js');
+      const built = compile105(f).opt; // 显式优化态(不受开发者 shell 的 MING_NO_OPT 影响)
+      const wire = JSON.parse(JSON.stringify(art105.serializeArtifact(built, { baseDir: ROOT })));
+      const vm = VMInterp.fromArtifact(wire, { capture: true });
+      const r = vm.runMain([]);
+      aotOut = vm.flushCaptured();
+      aotErr = 'exit=' + r.exitCode;
+    } catch (e) { aotErr = String((e && e.message) || e); }
+    const direct = runOpt105(f);
+    check('v105.8:AOT 产物合同(peephole 后)——serialize/validateArtifact/fromArtifact 输出与直跑逐字(a3b\\na5b\\n)',
+      aotErr === 'exit=0' && aotOut === 'a3b\na5b\n' && direct.code === 0 && direct.stdout === aotOut,
+      `aot=${aotErr}/${JSON.stringify(aotOut ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout)}`);
+  }
+
+  // v105.9(v0.95 审查 MINOR-5):LD-only 语句窥孔有效性硬断言——`x;` 纯 LD;POP 双删,
+  //   防"LD 分支删除被移除"回归仅靠 readiness 探针静默放行。
+  {
+    const f = mk105('v105_ldonly.ming', [
+      'fn main() with io {',
+      '    let x = 5;',
+      '    x;',
+      '    x;',
+      '    print(x);',
+      '}',
+    ].join('\n'));
+    const on = runOpt105(f);
+    const off = runNoOpt105(f);
+    const sOn = statsOf105(runStats105(f));
+    const sOff = statsOf105(runStats105(f, ['--no-opt']));
+    check('v105.9:LD-only 语句窥孔有效——`x;` 纯 LD;POP 双删(instr 严格下降)且两态输出逐字',
+      on.code === 0 && off.code === 0 && on.stdout === off.stdout
+        && sOn && sOff && sOn.instr < sOff.instr,
+      `on=${on.code}/${sOn && sOn.instr} off=${off.code}/${sOff && sOff.instr}`);
   }
 }
 

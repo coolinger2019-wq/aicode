@@ -178,10 +178,11 @@ function reportBaseline(name, tree, vm, speedup, ccPerVm, extraMetrics = null) {
   if (base.treeMs > 0) parts.push(`tree ${round2(tree / base.treeMs)}x`);
   if (base.vmMs > 0) parts.push(`vm ${round2(vm / base.vmMs)}x`);
   if (base.speedup > 0) parts.push(`提速 ${round2(speedup / base.speedup)}x`);
-  let warned = false;
+  let warned = false;   // cc/vm 加速比回退(v0.94)
+  let warnedAbs = false; // vm/tree 绝对耗时回退(v0.95 修复:v0.94 误复用 warned——cc 腿 N/A 时收尾 WARN 解引用 null 崩溃)
   // v0.94 审查 m4:vm/tree 绝对耗时回退 >20% 也告警(WARN_RATIO 对称:当前 > 基线 / WARN_RATIO)
-  if (base.treeMs > 0 && tree > base.treeMs / WARN_RATIO) { warned = true; warnCount++; parts.push(`WARN tree 回退 ${round2(tree / base.treeMs)}x`); }
-  if (base.vmMs > 0 && vm > base.vmMs / WARN_RATIO) { warned = true; warnCount++; parts.push(`WARN vm 回退 ${round2(vm / base.vmMs)}x`); }
+  if (base.treeMs > 0 && tree > base.treeMs / WARN_RATIO) { warnedAbs = true; warnCount++; parts.push(`WARN tree 回退 ${round2(tree / base.treeMs)}x`); }
+  if (base.vmMs > 0 && vm > base.vmMs / WARN_RATIO) { warnedAbs = true; warnCount++; parts.push(`WARN vm 回退 ${round2(vm / base.vmMs)}x`); }
   if (ccPerVm !== null && base.ccPerVm > 0) {
     parts.push(`cc/vm ${round2(ccPerVm / base.ccPerVm)}x`);
     if (ccPerVm < base.ccPerVm * WARN_RATIO) {
@@ -202,6 +203,9 @@ function reportBaseline(name, tree, vm, speedup, ccPerVm, extraMetrics = null) {
   if (parts.length > 0) console.log(`    Δ基线(${BASELINE.meta?.date ?? '?'}): ${parts.join('  ')}`);
   if (warned) {
     console.log(`    ⚠ WARN: cc/vm 加速比回退 >20%(基线 ${base.ccPerVm}x → 当前 ${ccPerVm.toFixed(1)}x);信息性,不阻断`);
+  }
+  if (warnedAbs) {
+    console.log(`    ⚠ WARN: vm/tree 绝对耗时回退 >20%(基线 tree ${base.treeMs}ms/vm ${base.vmMs}ms → 当前 tree ${tree.toFixed(0)}ms/vm ${vm.toFixed(0)}ms);信息性,不阻断`);
   }
 }
 

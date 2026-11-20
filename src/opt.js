@@ -1,7 +1,7 @@
 // src/opt.js — 字节码优化管线(O1,plan §4.16.3)。
 //
 // 职责:在 BytecodeCompiler.run() 产出 built 之后(compiler.js compile() 单点钩子)对
-// **字节码**做语义保持优化。三个 pass,fixpoint 迭代上限 10,每 pass 独立函数:
+// **字节码**做语义保持优化。四个 pass,fixpoint 迭代上限 10,每 pass 独立函数:
 //   P1 foldPass   常量折叠 —— 相邻纯常量模式就地折叠:[CONST a, CONST b, BIN] →
 //                 [CONST a+b](操作数 CONST 删除,结果 CONST 落在原 BIN 地址);
 //                 [CONST e, UN] → [CONST 结果]。收集-重建制(操作数删除经统一
@@ -12,6 +12,8 @@
 //                 恒跳 JUMPFALSE(target=下一条)→ POP、无操作 JUMP 删除;
 //   P3 dcePass    死代码消除 —— 从函数入口做可达性分析,删除不可达指令
 //                 (有副作用也删:已被证明不可达,删除不改任何可观察行为)。
+//   P4 peepholePass 通用窥孔(v0.95 O1b)——语句值 POP 消除与全字面量 CONCAT 折叠
+//                 (逐项裁决与跳过候选见 pass 头注)。
 //
 // 语义保真合同(硬规则 1:三引擎输出必须一致):
 //   * 整数折叠复用运行时 intBin(interp.js 单一事实来源)——溢出/除零/模零/移位越界
@@ -27,6 +29,23 @@
 //     (树引擎短路求值与优化后字节码逐字同输出,§104 短路保真用例锁定)。
 //   * spans 数组只读不写:指令 spanIdx 原样保留(结果 CONST 继承被替换指令的
 //     spanIdx),panic 位置逐字不变;wasm 层引用的 span 下标永不失效。
+//   * 窥孔保真(P4):POP 消除只删 [CONST|LD][POP] 纯压栈对(CONST 仅压池值、LD 仅压
+//     槽值,无 panic/无副作用/不计费),且两地址均非跳转目标——POP 是跳转目标时入边
+//     弹出的值并非前置 CONST 所压(`a && b;` 的短路假标签落点就是 `CONST false; POP`,
+//     跳边直接落到 POP 弹条件值),删除会漏弹;CONCAT 折叠要求 n 段全为池内纯常量、
+//     段内与 CONCAT 均非跳转目标,结果串 = 运行时同一 displayStr 逐段拼接(vm.js
+//     case OP.CONCAT 同调用);OP.CONCAT 不计 --max-alloc(仅 statsConcat++),折叠
+//     对分配配额零影响,只改常量池布局(结果 CONST 走带值去重 adder)。
+//     --max-steps 面与其他 pass 同理:指令数减少会改变配额观测(非语义面,已登记);
+//     MING_STATS 的 steps/concat 计数同属观测量,随指令数/折叠变化。
+//   * 跳过候选(实证裁决,不再实现):[LD][SET 同槽] 自赋值——SET 携带窄型绑定归一
+//     (v0.87–v0.89,spec 下标/normBySlotTag),归一路径可 throw M4002,删除会抹掉
+//     该 panic 面,且 SET 的 deepCopy 计入 MING_STATS deepCopy 观测;实际发射形态是
+//     SET(赋值)而非 ST(let 绑定),同槽 LD+ST 在语料中零出现。[DUP][ST] 折叠——
+//     DUP 仅出现在 ensures/return 契约(resultSlot 在失败路径被 LD 读取)与 match
+//     宗量,两者均载荷关键,不可删。`!`+JUMPFALSE 反转——无 JUMPTRUE opcode,
+//     用两跳表达反而增指令,O1 不新增 opcode。相邻 CONST+CONST——无消费者关系,
+//     仅随 POP 消除整体删除,其余不动。
 //   * 只用既有 opcode(wire 不变);pool 只追加不移动,既有池下标零位移。
 //   * 确定性:扫描序 = 地址序,池追加序 = 首次折叠序,无时间/随机/哈希序依赖。
 //
@@ -46,7 +65,7 @@
 // 开关:默认开;`MING_NO_OPT=1` 或 `--no-opt`(bin/ming.js 置 env)或显式
 // `optimize(built, { enabled: false })` 时逐字节原样返回。
 
-import { V, fits, intBin, valueEquals } from './interp.js';
+import { V, fits, intBin, valueEquals, displayStr } from './interp.js';
 import { OP, BIN } from './compiler.js';
 
 // ---------- lazy memo(见文件头 ESM 循环导入说明;顶层不读 OP/BIN)----------
@@ -409,7 +428,74 @@ function dcePass(code) {
   return { code: r.newCode, count: deleted.size };
 }
 
-// ---------- 单函数管线(fold → prune → thread → dce,fixpoint ≤ 10)----------
+// ---------- P4:通用窥孔 ----------
+
+// 两类变换(同一扫描,先 POP 后 CONCAT,一次重建落地):
+//   P4.a 语句值 POP 消除 —— [CONST|LD][POP] 纯压栈对双删:
+//     CONST 只压池值(resolveConst 对纯常量原样返回,无 panic/无计费),LD 只压槽值
+//     (无 deepCopy——vm.js case OP.LD 直接 push.locals,无分配/panicking 面),
+//     压后即弹对本程序零可观察效果;净栈效果 0,删除后入边经线性后继映射落点不变。
+//     守卫:两个地址都不得是跳转目标——POP 作为跳转目标时入边弹出的值并非前置
+//     CONST 所压(`a && b;` 的短路假标签即 `CONST false; POP`,跳边直接落在 POP 上
+//     弹条件值;删除该对会漏弹一个值,栈形被破坏)。
+//   P4.b 全字面量 CONCAT 折叠 —— [CONST×n][CONCAT n] → [CONST 拼接串]:
+//     n 段全为池内纯常量(constCellOf:int/float/bool/str)时,结果串按运行时同一
+//     displayStr 逐段拼接——与 vm.js case OP.CONCAT 的执行式逐字同源(顺序、浮点
+//     floatStr、bool/str 显示全同);字符串构造本身不计 --max-alloc(CONCAT case 仅
+//     statsConcat++,CONST 压栈不计费),故折叠不改任何腿的配额行为。含表达式段的
+//     CONCAT(任一操作数非 CONST/非常量池项)一律不动——表达式求值可能有副作用/
+//     panic,静态拼接就是错的。
+//     守卫:段内地址与 CONCAT 地址均非跳转目标(跳入段内会改变"弹 n 段"的栈对应)。
+function peepholePass(code, pool, addConst) {
+  const n = code.length;
+  if (n < 2) return { code, count: 0 };
+  const targets = new Set();
+  for (let i = 0; i < n; i++) {
+    if (isJumpOp(code[i][0])) targets.add(code[i][1]);
+  }
+  const deleted = new Set();
+  const replace = new Map();
+  let count = 0;
+
+  // P4.a:纯值语句 POP 消除。
+  for (let i = 1; i < n; i++) {
+    if (code[i][0] !== OP.POP) continue;
+    const p = code[i - 1];
+    if (p[0] !== OP.CONST && p[0] !== OP.LD) continue;
+    if (targets.has(i) || targets.has(i - 1)) continue;
+    deleted.add(i - 1);
+    deleted.add(i);
+    count++;
+  }
+
+  // P4.b:全字面量 CONCAT 折叠。
+  for (let i = 0; i < n; i++) {
+    if (code[i][0] !== OP.CONCAT || deleted.has(i)) continue;
+    const k = code[i][1];
+    if (!(k >= 1) || i - k < 0) continue;
+    if (targets.has(i)) continue;
+    let ok = true;
+    const parts = [];
+    for (let j = i - k; j < i; j++) {
+      if (code[j][0] !== OP.CONST || deleted.has(j) || targets.has(j)) { ok = false; break; }
+      const c = constCellOf(pool[code[j][1]]);
+      if (!c) { ok = false; break; }
+      parts.push(c);
+    }
+    if (!ok) continue;
+    let s = '';
+    for (const c of parts) s += displayStr(c);
+    for (let j = i - k; j < i; j++) deleted.add(j);
+    replace.set(i, [OP.CONST, addConst(V.str(s)), 0, 0, code[i][4]]); // spanIdx 继承 CONCAT
+    count++;
+  }
+
+  if (!count) return { code, count: 0 };
+  const r = rebuild(code, deleted, replace);
+  return { code: r.newCode, count };
+}
+
+// ---------- 单函数管线(fold → prune → thread → dce → peephole,fixpoint ≤ 10)----------
 
 function optimizeFunction(f, pool, addConst) {
   let code = f.code;
@@ -428,8 +514,11 @@ function optimizeFunction(f, pool, addConst) {
     const d = dcePass(code);
     const c5 = d.count;
     if (d.code !== code) code = d.code;
-    total += c2 + c3 + c4 + c5;
-    if (!(c2 || c3 || c4 || c5)) break;
+    const ph = peepholePass(code, pool, addConst);
+    const c6 = ph.count;
+    if (ph.code !== code) code = ph.code;
+    total += c2 + c3 + c4 + c5 + c6;
+    if (!(c2 || c3 || c4 || c5 || c6)) break;
   }
   f.code = code;
   return total;

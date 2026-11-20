@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v0.94.0** (2026-11-20) |
-| Regression suite | **1566 checks, all green** (§1–§104; full run every time) |
+| Current version | **v0.95.0** (2026-11-20) |
+| Regression suite | **1575 checks, all green** (§1–§105; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.0% lines / 90.3% functions** (v0.84 refresh; vm.js 76.2%; re-measurement after v0.85–v0.89 is scheduled for v0.91) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v0.95.0 | 2026-11-20 | O1b peephole pass (2/4) | 1575 |
 | v0.94.0 | 2026-11-20 | O1 bytecode optimization wave 1 (folding/pruning/threading/DCE) | 1566 |
 | v0.93.0 | 2026-11-20 | Cross-language benchmark report (T5.1) | 1551 |
 | v0.92.0 | 2026-11-20 | C backend I/O surface + O0 optimization observation baseline | 1551 |

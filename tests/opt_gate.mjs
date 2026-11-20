@@ -35,6 +35,15 @@
 //      D3(m2)build --no-opt(--no-opt 与 MING_NO_OPT=1 产物逐字节一致 + build_key 含
 //      opt 状态、缓存不得跨态命中);D4(m1)JUMP 终结 DCE(break/continue 后死代码删除)。
 //      四类均为硬断言(修复已落地并经独立验证);仅 --no-opt 未注册时 D2/D3/D4 pending。
+//   7. O1b 通用窥孔闸门(Agent B2):10 个窥孔形态程序(纯值语句/panic 值语句 × 2/
+//      全字面量 CONCAT/混合 CONCAT/LD+ST 自赋值/嵌套折叠链/CONCAT 值语句循环/
+//      循环内纯值+块值/短路跳转目标守卫)× 优化开/--no-opt 两态 × 三腿。断言:
+//      ① 语义闸门(stdout 逐字 + panic 首行逐字);② instr 不增(opt ≤ no-opt);
+//      ③ 有效性(纯值语句/全字面量 CONCAT 两形态 opt instr 严格下降);
+//      ④ panic 值语句保留(1/0; 与 1%0; 两态 101 + 首行逐字);⑤ 确定性(两次 opt
+//      逐字节)。就绪判定三级:src/opt.js 含 peephole 迹象 + --no-opt 已注册 +
+//      行为探测(O1a 中性的 LD;POP 语句 instr 严格下降)。未就绪 → pending(0 项
+//      执行、退出码不因此失败),逐次重跑本脚本即轮询。
 //
 // 用法:node tests/opt_gate.mjs [--write-doc] [--opt-off]
 // 退出码:全部断言通过 → 0;任何三腿不一致/cc 失败/期望输出不符/O1 断言失败 → 1(错误走 stderr)。
@@ -52,6 +61,15 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-optgate-'));
 const WRITE_DOC = process.argv.includes('--write-doc');
 // --opt-off(O0.3 预留挂点):解析保留;当前无优化 pass,恒 default 行为(见文件头注释 4)。
 const OPT_OFF = process.argv.includes('--opt-off');
+
+// 洁净基线 env(v0.94 审查 MINOR-1;v0.95 O1b 修为**模块级单一事实来源**——
+// 旧版误把声明放在 runLeg 体内,runO1/dSpawn/O1b 在模块级解引用时 ReferenceError):
+// 开发者 shell 导出的 MING_NO_OPT / MING_WASM_STRICT 不得污染"优化开"腿;所有
+// spawn 统一走 BASE_ENV_O1(需注入开关的腿显式展开覆盖)。
+const BASE_ENV_O1 = { ...process.env };
+delete BASE_ENV_O1.MING_NO_OPT;
+delete BASE_ENV_O1.MING_WASM_STRICT;
+delete BASE_ENV_O1.MING_STATS;
 
 // ---------- 程序集 ----------
 // 生成程序:与 tests/bench.mjs 第 7–11 项同源(拷贝,改动需两处同步;bench 负责耗时,
@@ -192,9 +210,7 @@ function writeProgram(name, src) {
 // 并在 default 腿额外做一次不带 env 的逐字复核,见 runProgram 的 noEnvCheck)。
 // 返回 { ok, stdout, stats, ms }。
 function runLeg(file, args) {
-  const BASE_ENV_O1 = { ...process.env };
-delete BASE_ENV_O1.MING_NO_OPT; // v0.94 审查 MINOR-1:开发者 shell 导出时不得污染 on 腿
-const env = { ...BASE_ENV_O1, MING_STATS: '1' };
+  const env = { ...BASE_ENV_O1, MING_STATS: '1' };
   const r = spawnSync(process.execPath, [MING, 'run', file, ...args], { encoding: 'utf8', cwd: ROOT, env, timeout: 120000 });
   let stats = null;
   const lines = (r.stderr || '').split('\n').filter((l) => l.trim() !== '');
@@ -757,6 +773,280 @@ const D3_SRC = 'fn main() with io {\n    print(1 + 2 * 3);\n    print("aaaa" + "
   }
 }
 
+// ============================================================
+// O1b 通用窥孔闸门(v0.95;Agent B2 维护,plan §4.16.3 第 4 项)
+// ============================================================
+// 程序集 = 10 个窥孔形态程序,每个都只依赖确定性求值(无时间/随机/文件系统)。
+// 设计依据(v0.94 HEAD 字节码实测):
+//   纯值语句 = [CONST|LD][POP] 对(P4.a 目标);panic 值语句 = CONST/CONST/BIN/POP
+//   (BIN 必须保留,窥孔不得吃掉 panic);全字面量 CONCAT = [CONST×n][CONCAT n]
+//   (P4.b 目标;O1a 不折叠 CONCAT);混合 CONCAT = 含 LD/CALL 段(不可折叠);
+//   LD+ST 自赋值 = [LD][SET] 同槽(A2 头注登记跳过——语义/归一面保留,只锁不增);
+//   嵌套折叠链 = O1a fixpoint 多层级联;短路语句 = `a && b;` 的假标签 CONST 是
+//   跳转目标(P4.a 守卫必须跳过,否则漏弹栈值)。
+// 就绪判定三级(缺一 pending):(a) src/opt.js 含 peephole 迹象(`peephole|窥孔`
+//   或第 5 个 `*Pass(` 函数);(b) O1_NOOPT 已注册(O1 节探测);(c) 行为探测——
+//   O1a 中性的 LD;POP 语句程序优化后 instr 严格下降。未就绪 → 本节 0 项执行、
+//   退出码不因此失败;逐次重跑本脚本即轮询(A2 交付后自动转硬断言)。
+const O1B_PROGS = [
+  {
+    key: 'pure-value',
+    name: '纯值语句',
+    effective: true,
+    src: [
+      'fn main() with io {',
+      '    let mut a = 3;',
+      '    a;',
+      '    a + 0;',
+      '    1 + 2;',
+      '    print(str(a));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '3\n',
+  },
+  {
+    key: 'panic-div',
+    name: 'panic 值语句 1/0',
+    panic: 'M4004',
+    src: [
+      'fn main() with io {',
+      '    let a = 1;',
+      '    1 / 0;',
+      '    print(str(a));',
+      '}',
+      '',
+    ].join('\n'),
+  },
+  {
+    key: 'panic-mod',
+    name: 'panic 值语句 1%0',
+    panic: 'M4004',
+    src: [
+      'fn main() with io {',
+      '    let a = 1;',
+      '    1 % 0;',
+      '    print(str(a));',
+      '}',
+      '',
+    ].join('\n'),
+  },
+  {
+    key: 'concat-all',
+    name: '全字面量 CONCAT',
+    effective: true,
+    src: [
+      'fn main() with io {',
+      '    let s = "\\{"ab"}\\{"cd"}";',
+      '    print(s);',
+      '    "\\{"x"}\\{1 + 2}";',
+      '}',
+      '',
+    ].join('\n'),
+    expect: 'abcd\n',
+  },
+  {
+    key: 'concat-mixed',
+    name: '混合 CONCAT',
+    src: [
+      'fn main() with io {',
+      '    let b = "cd";',
+      '    let s = "\\{"ab"}\\{b}";',
+      '    print(s);',
+      '    print("\\{"x"}\\{str(1 + 2)}");',
+      '}',
+      '',
+    ].join('\n'),
+    expect: 'abcd\nx3\n',
+  },
+  {
+    key: 'self-assign',
+    name: 'LD+ST 自赋值',
+    src: [
+      'fn main() with io {',
+      '    let mut a = 41;',
+      '    a = a;',
+      '    a = a;',
+      '    print(str(a + 1));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '42\n',
+  },
+  {
+    key: 'fold-chain',
+    name: '嵌套折叠链',
+    src: [
+      'fn main() with io {',
+      '    print(str(((1 + 2) * (3 + 4)) - (5 + 6)));',
+      '    print(str((((10 - 2) * (3 + 1)) / 4) % 7));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '10\n1\n',
+  },
+  {
+    key: 'concat-stmt-loop',
+    name: 'CONCAT 值语句循环',
+    src: [
+      'fn main() with io {',
+      '    "\\{"a"}\\{"b"}";',
+      '    let mut i = 0;',
+      '    while i < 3 {',
+      '        "\\{"x"}\\{str(i)}";',
+      '        i += 1;',
+      '    }',
+      '    print("ok");',
+      '}',
+      '',
+    ].join('\n'),
+    expect: 'ok\n',
+  },
+  {
+    key: 'pure-loop-block',
+    name: '循环内纯值语句 + 块值',
+    src: [
+      'fn main() with io {',
+      '    let mut i = 0;',
+      '    let mut acc = 0;',
+      '    while i < 1000 {',
+      '        i;',
+      '        1 + 2;',
+      '        i + 0;',
+      '        if i % 2 == 0 { i; } else { 0; }',
+      '        acc += i;',
+      '        i += 1;',
+      '    }',
+      '    print(str(acc));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '499500\n',
+  },
+  {
+    key: 'shortcircuit-guard',
+    name: '短路语句跳转目标守卫',
+    src: [
+      'fn side() -> bool with io {',
+      '    print("side");',
+      '    true',
+      '}',
+      'fn main() with io {',
+      '    let a = false;',
+      '    let b = true;',
+      '    a && b;',
+      '    a || side();',
+      '    b && side();',
+      '    print("done");',
+      '}',
+      '',
+    ].join('\n'),
+    expect: 'side\nside\ndone\n',
+  },
+];
+
+function probePeephole() {
+  let src = '';
+  try { src = fs.readFileSync(path.join(ROOT, 'src', 'opt.js'), 'utf8'); } catch {
+    return { ready: false, reason: 'src/opt.js 不可读' };
+  }
+  const passCount = (src.match(/function\s+\w*Pass\s*\(/g) ?? []).length;
+  const sign = /peephole|窥孔/i.test(src) || passCount >= 5;
+  if (!sign) return { ready: false, reason: 'src/opt.js 尚无 peephole 迹象(A2 未就绪)' };
+  if (!O1_NOOPT) return { ready: false, reason: '--no-opt/MING_NO_OPT 未注册(O1 未交付)' };
+  // 行为探测:O1a 中性的形态——`a;` 编译为 LD;POP(O1a 折叠/裁剪/DCE 均不动),
+  // 只有窥孔的语句值 POP 消除会让 instr 严格下降(且与 O1a 收益可区分)。
+  const probeFile = path.join(TMP, 'o1b-probe-pop.ming');
+  fs.writeFileSync(probeFile, 'fn main() with io {\n    let mut a = 1;\n    a;\n    print(str(a));\n}\n', 'utf8');
+  const on = runO1(probeFile, ['--no-wasm'], ROOT, false);
+  const off = runO1(probeFile, ['--no-wasm'], ROOT, true);
+  const iOn = on.stats ? on.stats.instr : null;
+  const iOff = off.stats ? off.stats.instr : null;
+  if (on.ok && off.ok && typeof iOn === 'number' && typeof iOff === 'number' && iOn < iOff) {
+    return { ready: true, reason: `行为探测 LD;POP instr ${iOff}→${iOn}` };
+  }
+  return { ready: false, reason: `源码有窥孔迹象但行为探测未观察到 instr 下降(opt=${iOn} no-opt=${iOff};A2 可能仍在编辑)` };
+}
+
+const O1B_READY = probePeephole();
+let o1bChecks = 0;
+const o1bFailures = [];
+let o1bStatus = O1B_READY.ready
+  ? 'ready'
+  : `pending(${O1B_READY.reason};0 项 O1b 断言执行,旧断言不受影响)`;
+
+if (O1B_READY.ready) {
+  const firstLine = (r) => (r.stderr || '').split('\n')[0] ?? '';
+  for (const prog of O1B_PROGS) {
+    const f = path.join(TMP, 'o1b-' + prog.key + '.ming');
+    fs.writeFileSync(f, prog.src, 'utf8');
+    const on = {}, off = {};
+    for (const leg of LEGS) {
+      on[leg.key] = runO1(f, leg.args, ROOT, false);
+      off[leg.key] = runO1(f, leg.args, ROOT, true);
+    }
+    const wantExit = prog.panic ? 101 : 0;
+    // ① 两态 × 三腿:退出码符合(panic 程序恒 101)+ stats 存在(instr 断言用)
+    for (const leg of LEGS) {
+      for (const [label, r] of [['优化开', on[leg.key]], ['--no-opt', off[leg.key]]]) {
+        o1bChecks++;
+        if (r.exit !== wantExit) {
+          o1bFailures.push(`O1b ${prog.name}[${leg.key}] ${label}: 退出码 ${r.exit} ≠ ${wantExit}(stderr 首=${firstLine(r).slice(0, 100)})`);
+        }
+      }
+    }
+    // ① 两态 × 三腿 stdout 归一化(此处程序无计时 token,直接逐字)一致
+    o1bChecks++;
+    const outs = [...LEGS.map((l) => on[l.key].stdout), ...LEGS.map((l) => off[l.key].stdout)];
+    if (new Set(outs).size !== 1) {
+      o1bFailures.push(`O1b ${prog.name}: 优化开/--no-opt × 三腿 stdout 不一致=${JSON.stringify(outs.map((o) => o.slice(0, 40)))}`);
+    }
+    if (prog.panic) {
+      // ④ panic 值语句保留:stdout 必须为空 + 六腿 stderr 首行逐字且含期望码
+      o1bChecks++;
+      if (outs[0] !== '') o1bFailures.push(`O1b ${prog.name}: panic 前 stdout 非空 ${JSON.stringify(outs[0].slice(0, 60))}(窥孔吞掉了求值/panic 顺序)`);
+      o1bChecks++;
+      const firsts = [...LEGS.map((l) => firstLine(on[l.key])), ...LEGS.map((l) => firstLine(off[l.key]))];
+      if (new Set(firsts).size !== 1 || !firsts[0].includes(prog.panic)) {
+        o1bFailures.push(`O1b ${prog.name}: panic 首行不逐字/缺 ${prog.panic}(${JSON.stringify(firsts.map((s) => s.slice(0, 80)))})`);
+      }
+    } else {
+      // 期望输出精确断言(防"两态一致但全错")
+      o1bChecks++;
+      if (outs[0] !== prog.expect) {
+        o1bFailures.push(`O1b ${prog.name}: 输出与期望不符 got=${JSON.stringify(outs[0].slice(0, 60))} want=${JSON.stringify(prog.expect)}`);
+      }
+    }
+    // ② instr 不增(优化开 vm-only ≤ --no-opt vm-only;instr 为编译期指标,两 VM 腿同值)
+    const iOn = on['vm-only'].stats ? on['vm-only'].stats.instr : null;
+    const iOff = off['vm-only'].stats ? off['vm-only'].stats.instr : null;
+    o1bChecks++;
+    if (typeof iOn !== 'number' || typeof iOff !== 'number') {
+      o1bFailures.push(`O1b ${prog.name}: instr 缺失(优化开=${iOn}, --no-opt=${iOff})`);
+    } else if (iOn > iOff) {
+      o1bFailures.push(`O1b ${prog.name}: 窥孔增指令 instr 优化开=${iOn} > --no-opt=${iOff}`);
+    }
+    // ③ 窥孔有效性(至少两形态):纯值语句 / 全字面量 CONCAT opt instr 严格下降
+    if (prog.effective) {
+      o1bChecks++;
+      if (!(typeof iOn === 'number' && typeof iOff === 'number' && iOn < iOff)) {
+        o1bFailures.push(`O1b ${prog.name}: 窥孔未生效 instr 优化开=${iOn} 未严格小于 --no-opt=${iOff}`);
+      }
+    }
+    // ⑤ 确定性:优化开默认腿再跑一次,stdout/panic 首行/instr 逐字节一致
+    o1bChecks++;
+    const again = runO1(f, [], ROOT, false);
+    const sameOut = again.stdout === on['vm+wasm'].stdout;
+    const sameFirst = firstLine(again) === firstLine(on['vm+wasm']);
+    const sameInstr = again.stats && on['vm+wasm'].stats ? again.stats.instr === on['vm+wasm'].stats.instr : false;
+    if (again.exit !== wantExit || !sameOut || !sameFirst || !sameInstr) {
+      o1bFailures.push(`O1b ${prog.name}: 优化开默认腿两次运行不一致(确定性;exit=${again.exit} out=${sameOut} first=${sameFirst} instr=${sameInstr})`);
+    }
+  }
+  o1bStatus = `ready(${O1B_READY.reason})`;
+}
+
+
 // ---------- 文档(--write-doc 时刷新 docs/opt-baseline.md) ----------
 // O1 标记区保留(Agent B 维护:O1 优化前基线 + O1 后对照两节)。
 // --write-doc 只重写生成区;标记区按"整行锚定"定位(标记必须是独立行——防文档其他
@@ -844,12 +1134,13 @@ if (WRITE_DOC) {
 console.log(`opt_gate: ${results.length} 程序,${checks} 项断言,失败 ${failures.length}${OPT_OFF ? '(--opt-off: 预留挂点,当前恒 default 行为)' : ''}`);
 console.log(`O1 优化语义闸门: ${o1Status};${O1_NOOPT ? `${o1Checks} 项断言,失败 ${o1Failures.length}` : '0 项执行(逐次重跑本脚本即轮询)'}`);
 console.log(`O1 修复回归锚(B1/M1/m2/m1): ${dStatus.join(';')};${dChecks} 项断言,失败 ${dFailures.length}`);
-const allFailures = failures.concat(o1Failures, dFailures);
+console.log(`O1b 通用窥孔闸门: ${o1bStatus};${O1B_READY.ready ? `${o1bChecks} 项断言,失败 ${o1bFailures.length}` : '0 项执行(逐次重跑本脚本即轮询)'}`);
+const allFailures = failures.concat(o1Failures, dFailures, o1bFailures);
 if (allFailures.length) {
   for (const f of allFailures) process.stderr.write(`✗ ${f}\n`);
   process.exitCode = 1;
 } else if (O1_NOOPT) {
-  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 两态(stdout/instr/panic 首行/确定性)断言全绿;B1/M1/m2/m1 修复回归锚全绿。');
+  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 两态(stdout/instr/panic 首行/确定性)断言全绿;B1/M1/m2/m1 修复回归锚全绿;O1b 通用窥孔闸门全绿(10 形态 × 两态 × 三腿 + panic 值语句 + 确定性)。');
 } else {
-  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 节 pending(旗标未就绪)。');
+  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1/O1b 节 pending(旗标未就绪)。');
 }
