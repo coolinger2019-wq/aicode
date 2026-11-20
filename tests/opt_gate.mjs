@@ -44,6 +44,13 @@
 //      逐字节)。就绪判定三级:src/opt.js 含 peephole 迹象 + --no-opt 已注册 +
 //      行为探测(O1a 中性的 LD;POP 语句 instr 严格下降)。未就绪 → pending(0 项
 //      执行、退出码不因此失败),逐次重跑本脚本即轮询。
+//   8. O1c 常量传播闸门(Agent B3):8 个自建靶点(有效性链 × 2 / 放弃锚 mut·捕获·
+//      形参 / 值语义 Vec·循环 let·str)+ panic 保留锚。断言:传播+折叠严格下降、
+//      放弃锚两态 instr 相等、值语义精确输出(按 A3 裁决校准容器/str 两态关系)、
+//      四腿 stdout(优化开/--no-opt × 三腿 + HEAD golden)逐字、确定性。就绪判定
+//      三级:src/opt.js 含 constProp 迹象 + --no-opt 注册 + 行为探测(cp1 链下降)。
+//      未就绪 → pending(0 项执行),逐次重跑即轮询。基线见 docs/opt-baseline.md
+//      "O1c 常量传播前基线"(HEAD 6758123)。
 //
 // 用法:node tests/opt_gate.mjs [--write-doc] [--opt-off]
 // 退出码:全部断言通过 → 0;任何三腿不一致/cc 失败/期望输出不符/O1 断言失败 → 1(错误走 stderr)。
@@ -1046,6 +1053,291 @@ if (O1B_READY.ready) {
   o1bStatus = `ready(${O1B_READY.reason})`;
 }
 
+// ============================================================
+// O1c 常量传播闸门(v0.96;Agent B3 维护,plan §4.16 O1c)
+// ============================================================
+// 程序集 = 8 个自建靶点(确定性输出;HEAD 6758123 纯净副本采集 golden 见
+// docs/opt-baseline.md "O1c 常量传播前基线"),按裁决面分组:
+//   有效性 cp1 链(let a=2; b=a+3)/cp2 深链(a*3+4-1 多级);
+//   放弃锚 cp3 mut 重赋值 / cp4 闭包捕获 / cp5 形参(三形态两态 instr 必须相等——
+//          "宁少勿错"硬锚:传播越过边界即 instr 不等);
+//   值语义 cp6 Vec 常量 → let mut 深拷贝后 push × 3 次调用(变异隔离/重复执行)/
+//          cp7 循环体内 let 每轮重绑定 / cp8 str 常量 + mut 拼接(不可变源不被改写);
+//   附加 panic 保留锚:let z = 0; 1 / z —— 传播后 CONST 0 仍不得折叠,运行时 M4004。
+// 断言:
+//   ① 传播+下游折叠有效性:cp1/cp2 优化开 vm-only instr 严格 < --no-opt;
+//   ② 放弃锚:cp3/cp4/cp5 两态 instr 相等(不得传播);
+//   ③ 值语义(与 A3 裁决对齐):cp6/cp7/cp8 stdout 精确 + 重复执行/变异隔离正确;
+//      标量-only 裁决下 cp6/cp8(容器/str 形态)额外断言两态 instr 相等,容器也传播
+//      的裁决下由值语义断言接管(见 O1C_CONTAINER_PROP,已按 A3 P5 实测校准);
+//   ④ 四腿 stdout 逐字:优化开/--no-opt × 三腿(tree/vm-only/vm+wasm)+ HEAD golden
+//      (HEAD 6758123 实跑记录,8 程序 16 行)全同——HEAD 腿以采集时点 golden 落地
+//      (当前 CLI 无法内嵌旧版二进制),防"两态一致但相对基线漂移";
+//   ⑤ 确定性:优化开默认腿两次 stdout/instr 一致。
+// 就绪判定三级(缺一 pending):(a) src/opt.js 含 constProp/常量传播/propagat 迹象;
+//   (b) --no-opt/MING_NO_OPT 已注册(O1_NOOPT);(c) 行为探测 cp1 链 opt instr < no-opt。
+//   未就绪 → 本节 0 项执行、退出码不因此失败;逐次重跑本脚本即轮询(A3 交付后自动转
+//   硬断言)。
+const O1C_PROGS = [
+  {
+    key: 'cp1-chain',
+    name: 'cp1 链(有效性)',
+    group: 'effective',
+    src: [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let b = a + 3;',
+      '    print(str(b));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '5\n',
+    headExpect: '5\n',
+  },
+  {
+    key: 'cp2-deep',
+    name: 'cp2 深链(有效性)',
+    group: 'effective',
+    src: [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let b = a * 3;',
+      '    let c = b + 4;',
+      '    let d = c - 1;',
+      '    print(str(d));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '9\n',
+    headExpect: '9\n',
+  },
+  {
+    key: 'cp3-mut',
+    name: 'cp3 mut 重赋值(放弃锚)',
+    group: 'anchor',
+    src: [
+      'fn main() with io {',
+      '    let mut a = 2;',
+      '    a = 7;',
+      '    print(str(a + 3));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '10\n',
+    headExpect: '10\n',
+  },
+  {
+    key: 'cp4-capture',
+    name: 'cp4 闭包捕获(放弃锚)',
+    group: 'anchor',
+    // 捕获发生在外层绑定 a 上,且外层另有可折叠读 a + 3:若捕获计划扫描失败、
+    // 传播误入该槽,main 的 LD a 会变 CONST 并折掉 a+3 → instr 下降(锚可观测)。
+    src: [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let f = () => a;',
+      '    print(str(a + 3));',
+      '    print(str(f()));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '5\n2\n',
+    headExpect: '5\n2\n',
+  },
+  {
+    key: 'cp5-param',
+    name: 'cp5 形参(放弃锚)',
+    group: 'anchor',
+    src: [
+      'fn g(a: i64) -> i64 {',
+      '    a + 3',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(str(g(2)));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '5\n',
+    headExpect: '5\n',
+  },
+  {
+    key: 'cp6-vec',
+    name: 'cp6 Vec 常量值语义',
+    group: 'value',
+    container: true,
+    src: [
+      'fn mk() -> i64 {',
+      '    let v: Vec[i64] = [1, 2, 3];',
+      '    let mut w = v;',
+      '    w.push(4);',
+      '    v.len() * 10 + w.len()',
+      '}',
+      '',
+      'fn main() with io {',
+      '    print(str(mk()));',
+      '    print(str(mk()));',
+      '    print(str(mk()));',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '34\n34\n34\n',
+    headExpect: '34\n34\n34\n',
+  },
+  {
+    key: 'cp7-loop-let',
+    name: 'cp7 循环 let 值语义',
+    group: 'value',
+    container: false,
+    src: [
+      'fn main() with io {',
+      '    let mut i = 0;',
+      '    while i < 3 {',
+      '        let k = 4;',
+      '        print(str(k * i));',
+      '        i += 1;',
+      '    }',
+      '}',
+      '',
+    ].join('\n'),
+    expect: '0\n4\n8\n',
+    headExpect: '0\n4\n8\n',
+  },
+  {
+    key: 'cp8-str',
+    name: 'cp8 str 常量值语义',
+    group: 'value',
+    container: true,
+    src: [
+      'fn main() with io {',
+      '    let s = "ab";',
+      '    let mut t = s;',
+      '    t += "cd";',
+      '    print(s);',
+      '    print(t);',
+      '}',
+      '',
+    ].join('\n'),
+    expect: 'ab\nabcd\n',
+    headExpect: 'ab\nabcd\n',
+  },
+];
+
+// A3 裁决(src/opt.js P5 constPropPass 实测校准,2026-11-20):false = 只传标量
+// (类型白名单 int/float/bool/str;Vec/Map/tuple/struct/enum 的 ST 是真实深拷贝,
+// 传播会让池对象被变异面改写 → 一律放弃)。cp6(Vec)/cp8(str 载体)两态 instr 必须
+// 相等;若未来裁决翻转为容器也传播,置 true 后由值语义断言接管。
+const O1C_CONTAINER_PROP = false;
+
+function probeConstProp() {
+  let src = '';
+  try {
+    src = fs.readFileSync(path.join(ROOT, 'src', 'opt.js'), 'utf8');
+  } catch {
+    return { ready: false, reason: 'src/opt.js 不可读' };
+  }
+  if (!/constProp|常量传播|propagat/i.test(src)) {
+    return { ready: false, reason: 'src/opt.js 尚无 constProp 迹象(A3 未就绪)' };
+  }
+  if (!O1_NOOPT) return { ready: false, reason: '--no-opt/MING_NO_OPT 未注册(O1 未交付)' };
+  // 行为探测:cp1 链在传播前两态 instr 相等(HEAD 基线 14/14),传播 + 下游折叠
+  // 必须让优化态严格下降;仅源码迹象不足以防"已接线但未生效"。
+  const probeFile = path.join(TMP, 'o1c-probe-chain.ming');
+  fs.writeFileSync(probeFile, O1C_PROGS[0].src, 'utf8');
+  const on = runO1(probeFile, ['--no-wasm'], ROOT, false);
+  const off = runO1(probeFile, ['--no-wasm'], ROOT, true);
+  const iOn = on.stats ? on.stats.instr : null;
+  const iOff = off.stats ? off.stats.instr : null;
+  if (on.ok && off.ok && typeof iOn === 'number' && typeof iOff === 'number' && iOn < iOff) {
+    return { ready: true, reason: `行为探测 cp1 链 instr ${iOff}→${iOn}` };
+  }
+  return { ready: false, reason: `源码有 constProp 迹象但行为探测未见 instr 下降(opt=${iOn} no-opt=${iOff};A3 可能仍在编辑)` };
+}
+
+const O1C_READY = probeConstProp();
+let o1cChecks = 0;
+const o1cFailures = [];
+let o1cStatus = O1C_READY.ready
+  ? 'ready'
+  : `pending(${O1C_READY.reason};0 项 O1c 断言执行,旧断言不受影响)`;
+
+if (O1C_READY.ready) {
+  const firstLine = (r) => (r.stderr || '').split('\n')[0] ?? '';
+  for (const prog of O1C_PROGS) {
+    const f = path.join(TMP, 'o1c-' + prog.key + '.ming');
+    fs.writeFileSync(f, prog.src, 'utf8');
+    const on = {}, off = {};
+    for (const leg of LEGS) {
+      on[leg.key] = runO1(f, leg.args, ROOT, false);
+      off[leg.key] = runO1(f, leg.args, ROOT, true);
+    }
+    // ① 两态 × 三腿:退出码 0(靶点均无 panic 面;panic 保留锚单列)
+    for (const leg of LEGS) {
+      for (const [label, r] of [['优化开', on[leg.key]], ['--no-opt', off[leg.key]]]) {
+        o1cChecks++;
+        if (r.exit !== 0) {
+          o1cFailures.push(`O1c ${prog.name}[${leg.key}] ${label}: 退出码 ${r.exit} ≠ 0(stderr 首=${firstLine(r).slice(0, 100)})`);
+        }
+      }
+    }
+    // ② 四腿逐字:优化开 × 三腿 + --no-opt × 三腿 + HEAD golden 全同
+    o1cChecks++;
+    const outs = [...LEGS.map((l) => on[l.key].stdout), ...LEGS.map((l) => off[l.key].stdout)];
+    const four = new Set([...outs, prog.headExpect]);
+    if (four.size !== 1) {
+      o1cFailures.push(`O1c ${prog.name}: 四腿 stdout 不一致(含 HEAD golden)=${JSON.stringify([...four].map((o) => o.slice(0, 40)))}`);
+    }
+    // ③ 期望输出精确(防"所有腿一致但全错")
+    o1cChecks++;
+    if (outs[0] !== prog.expect) {
+      o1cFailures.push(`O1c ${prog.name}: 输出与期望不符 got=${JSON.stringify(outs[0].slice(0, 60))} want=${JSON.stringify(prog.expect)}`);
+    }
+    // ④ 裁决面:有效性严格下降 / 放弃锚两态相等 / 值语义不增 + 标量-only 相等
+    const iOn = on['vm-only'].stats ? on['vm-only'].stats.instr : null;
+    const iOff = off['vm-only'].stats ? off['vm-only'].stats.instr : null;
+    o1cChecks++;
+    if (typeof iOn !== 'number' || typeof iOff !== 'number') {
+      o1cFailures.push(`O1c ${prog.name}: instr 缺失(优化开=${iOn}, --no-opt=${iOff})`);
+    } else if (prog.group === 'effective') {
+      if (!(iOn < iOff)) o1cFailures.push(`O1c ${prog.name}: 传播+折叠未生效 instr 优化开=${iOn} 未严格小于 --no-opt=${iOff}`);
+    } else if (prog.group === 'anchor') {
+      if (iOn !== iOff) o1cFailures.push(`O1c ${prog.name}: 放弃锚被传播越过 instr 优化开=${iOn} ≠ --no-opt=${iOff}(mut/捕获/形参必须放弃)`);
+    } else {
+      if (iOn > iOff) o1cFailures.push(`O1c ${prog.name}: 常量传播增指令 instr 优化开=${iOn} > --no-opt=${iOff}`);
+      else if (!O1C_CONTAINER_PROP && prog.container && iOn !== iOff) {
+        o1cFailures.push(`O1c ${prog.name}: 标量-only 裁决下容器/str 形态两态 instr 应相等(开=${iOn} 关=${iOff})`);
+      }
+    }
+    // ⑤ 确定性:优化开默认腿再跑一次,stdout/instr 逐字节一致
+    o1cChecks++;
+    const again = runO1(f, [], ROOT, false);
+    const sameOut = again.stdout === on['vm+wasm'].stdout;
+    const sameInstr = again.stats && on['vm+wasm'].stats ? again.stats.instr === on['vm+wasm'].stats.instr : false;
+    if (again.exit !== 0 || !sameOut || !sameInstr) {
+      o1cFailures.push(`O1c ${prog.name}: 优化开默认腿两次运行不一致(确定性;exit=${again.exit} out=${sameOut} instr=${sameInstr})`);
+    }
+  }
+  // 附加 panic 保留锚:传播把 LD z 换成 CONST 0 后,折叠不得吃掉除零 panic
+  const panicFile = path.join(TMP, 'o1c-panic-propagated-div.ming');
+  fs.writeFileSync(panicFile, 'fn main() with io {\n    let z = 0;\n    print(str(1 / z));\n}\n', 'utf8');
+  const pa = runO1(panicFile, [], ROOT, false);
+  const pb = runO1(panicFile, [], ROOT, true);
+  o1cChecks++;
+  if (pa.exit !== 101 || pa.stdout !== '') {
+    o1cFailures.push(`O1c panic 保留:优化开期望 exit 101 + 空 stdout,got exit=${pa.exit} stdout=${JSON.stringify(pa.stdout.slice(0, 40))}`);
+  }
+  o1cChecks++;
+  if (pb.exit !== 101 || pb.stdout !== '') {
+    o1cFailures.push(`O1c panic 保留:--no-opt 期望 exit 101 + 空 stdout,got exit=${pb.exit} stdout=${JSON.stringify(pb.stdout.slice(0, 40))}`);
+  }
+  o1cChecks++;
+  const fa = firstLine(pa), fb = firstLine(pb);
+  if (fa === '' || fa !== fb || !fa.includes('M4004')) {
+    o1cFailures.push(`O1c panic 保留:首行不逐字或缺 M4004(开=${JSON.stringify(fa.slice(0, 100))} 关=${JSON.stringify(fb.slice(0, 100))})`);
+  }
+  o1cStatus = `ready(${O1C_READY.reason};裁决=${O1C_CONTAINER_PROP ? '容器/str 也传播(值语义断言接管)' : '标量-only(cp6/cp8 两态 instr 相等)'})`;
+}
+
 
 // ---------- 文档(--write-doc 时刷新 docs/opt-baseline.md) ----------
 // O1 标记区保留(Agent B 维护:O1 优化前基线 + O1 后对照两节)。
@@ -1135,12 +1427,13 @@ console.log(`opt_gate: ${results.length} 程序,${checks} 项断言,失败 ${fai
 console.log(`O1 优化语义闸门: ${o1Status};${O1_NOOPT ? `${o1Checks} 项断言,失败 ${o1Failures.length}` : '0 项执行(逐次重跑本脚本即轮询)'}`);
 console.log(`O1 修复回归锚(B1/M1/m2/m1): ${dStatus.join(';')};${dChecks} 项断言,失败 ${dFailures.length}`);
 console.log(`O1b 通用窥孔闸门: ${o1bStatus};${O1B_READY.ready ? `${o1bChecks} 项断言,失败 ${o1bFailures.length}` : '0 项执行(逐次重跑本脚本即轮询)'}`);
-const allFailures = failures.concat(o1Failures, dFailures, o1bFailures);
+console.log(`O1c 常量传播闸门: ${o1cStatus};${O1C_READY.ready ? `${o1cChecks} 项断言,失败 ${o1cFailures.length}` : '0 项执行(逐次重跑本脚本即轮询)'}`);
+const allFailures = failures.concat(o1Failures, dFailures, o1bFailures, o1cFailures);
 if (allFailures.length) {
   for (const f of allFailures) process.stderr.write(`✗ ${f}\n`);
   process.exitCode = 1;
 } else if (O1_NOOPT) {
-  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 两态(stdout/instr/panic 首行/确定性)断言全绿;B1/M1/m2/m1 修复回归锚全绿;O1b 通用窥孔闸门全绿(10 形态 × 两态 × 三腿 + panic 值语句 + 确定性)。');
+  console.log(`全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 两态(stdout/instr/panic 首行/确定性)断言全绿;B1/M1/m2/m1 修复回归锚全绿;O1b 通用窥孔闸门全绿(10 形态 × 两态 × 三腿 + panic 值语句 + 确定性);O1c ${O1C_READY.ready ? '常量传播闸门全绿(8 靶点 + panic 保留锚 × 两态 × 四腿 + 确定性)' : '节 pending(A3 未就绪)'}。`);
 } else {
-  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1/O1b 节 pending(旗标未就绪)。');
+  console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1/O1b/O1c 节 pending(旗标未就绪)。');
 }

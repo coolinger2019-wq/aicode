@@ -1,7 +1,7 @@
 // src/opt.js — 字节码优化管线(O1,plan §4.16.3)。
 //
 // 职责:在 BytecodeCompiler.run() 产出 built 之后(compiler.js compile() 单点钩子)对
-// **字节码**做语义保持优化。四个 pass,fixpoint 迭代上限 10,每 pass 独立函数:
+// **字节码**做语义保持优化。五个 pass,fixpoint 迭代上限 10,每 pass 独立函数:
 //   P1 foldPass   常量折叠 —— 相邻纯常量模式就地折叠:[CONST a, CONST b, BIN] →
 //                 [CONST a+b](操作数 CONST 删除,结果 CONST 落在原 BIN 地址);
 //                 [CONST e, UN] → [CONST 结果]。收集-重建制(操作数删除经统一
@@ -14,6 +14,9 @@
 //                 (有副作用也删:已被证明不可达,删除不改任何可观察行为)。
 //   P4 peepholePass 通用窥孔(v0.95 O1b)——语句值 POP 消除与全字面量 CONCAT 折叠
 //                 (逐项裁决与跳过候选见 pass 头注)。
+//   P5 constPropPass 常量传播(v0.96 O1c)——不可变 let 的常量绑定把后续 LD 替换为
+//                 同一池下标 CONST(int/float/bool/str;容器/结构体/枚举不传播),
+//                 暴露下游 fold 折叠链;放弃条件与支配性证明见 pass 头注。
 //
 // 语义保真合同(硬规则 1:三引擎输出必须一致):
 //   * 整数折叠复用运行时 intBin(interp.js 单一事实来源)——溢出/除零/模零/移位越界
@@ -495,7 +498,136 @@ function peepholePass(code, pool, addConst) {
   return { code: r.newCode, count };
 }
 
-// ---------- 单函数管线(fold → prune → thread → dce → peephole,fixpoint ≤ 10)----------
+// ---------- P5:常量传播 ----------
+
+// 不可变 let 绑定的常量值替换:候选槽 = 恰一处 [CONST c][ST slot],该槽的全部
+// LD(kind=0)原地替换为 [CONST c](复用同一池下标)。益处是**下游折叠成链**而不是
+// 指令数本身(LD→CONST 同数、同栈效果):`let a = 2; let b = a + 3;` 传播后
+// [CONST 2][CONST 3][BIN] 由下一轮 foldPass 折成 CONST 5。
+//
+// 值语义裁决(为什么只传播 int/float/bool/str):
+//   * ST 对绑定值做 deepCopy;interp.js deepCopy 对 int/float/bool/str 原样返回**同一
+//     对象**(不可变标量/JS 字符串)——故槽值与池值本就同源,LD 取值与 CONST 压池值
+//     逐位相等,替换是恒等保持,不新增任何别名面。
+//   * Vec/Map/tuple/struct/enum 池常量的 ST 是**真实拷贝**(deepCopy 新建),LD→CONST
+//     会让后续变异面(SETFIELD/SETINDEX/vec 方法)直接改写池对象——池跨执行复用,
+//     污染会跨语句/跨次执行观察 → 一律不传播(constCellOf 类型白名单已把这类挡在
+//     候选外,本注记是裁决理由)。
+//
+// 放弃条件(任一命中 → 该槽的全部 LD 原样保留;规则编号对应 plan §4.16.3 O1c 合同):
+//   1. 槽有任何 ST 之外的写:SET kind=0(重赋值)、ADDI/BINSETI/BINSET2(融合自增/
+//      自 op 写槽 ins[1])、BIND(元组解构逐槽写);同槽多处 ST 也放弃(编译器每声明
+//      恰一处 ST,防御)。mut 声明必有 SET/ADDI → 由本条覆盖(合同规则 1/5)。
+//   2. 槽被本函数 CLOSURE 的捕获计划引用(plan 池条目 {local: slot})——闭包创建点
+//      读 frame.locals 做快照,保守不传播(合同规则 2)。只扫本函数 code 里的 CLOSURE
+//      指令:内层 lambda 的 {cap: i} 指向外层闭包捕获下标,不直接引用本帧槽。
+//   3. 形参槽(slot < f.nParams)——调用方值不可知(合同规则 4)。
+//   4. ST 携带窄型归一规格(ins[3] ≠ 0):绑定处 normBindValue 会重标位型、可 throw
+//      M4002,CONST 原始池值绕过归一会改变后续 fits 门面 → 不传播(合同规则 6)。
+//   5. ST 是跳转目标:入边可能不经前一条 CONST,绑定值不可证(合同规则 6)。
+//   6. ST 不支配某个 LD:按 CFG(与 dcePass 同一边口径)从入口 BFS,屏蔽 ST 后若仍能
+//      到达该槽任一 LD,说明存在未执行绑定就读槽的路径 → 不传播(合同规则 6)。合法
+//      程序(词法作用域 + 检查器初始化检查)下 ST 恒支配后续 LD;本检查把"支配"从
+//      语言结构假设变成可证明性质,防编译器重排/新语法形态漏网。
+//
+// 只做原地替换:无删除 → 无跳转重映射;池只引用既有下标(addConst 不参与),池布局
+// 零变化;spanIdx 继承被替换 LD。确定性:扫描序 = 地址序,Map 插入序 = 首见序。
+// 长链收敛:每轮 fixpoint 传播一层、下一轮 fold 折一层;管线上限 10 轮,超长常量链
+// (11 层以上)只优化前 10 层——剩余 LD 原样保留(正确但不优化),不提高上限。
+function reachesWithoutSt(code, stIdx, ldSites) {
+  const n = code.length;
+  const seen = new Uint8Array(n);
+  const work = [0];
+  seen[0] = 1;
+  while (work.length) {
+    const i = work.pop();
+    const op = code[i][0];
+    if (isJumpOp(op)) {
+      const t = code[i][1];
+      if (t >= 0 && t < n && t !== stIdx && !seen[t]) { seen[t] = 1; work.push(t); }
+    }
+    const term = op === OP.JUMP || op === OP.RET || op === OP.PANICX || op === OP.ASM;
+    if (!term && i + 1 < n && i + 1 !== stIdx && !seen[i + 1]) { seen[i + 1] = 1; work.push(i + 1); }
+  }
+  for (const a of ldSites) if (seen[a]) return true;
+  return false;
+}
+
+function constPropPass(code, pool, f) {
+  const n = code.length;
+  if (n < 2) return { code, count: 0 };
+  // 形参槽不能传播(规则 4)。nParams 缺失的函数形态(理论上不存在:build 只对
+  // 编译器产物调用本管线)按"无法证明槽语义"整体放弃,而不是默认 0 误传播形参。
+  const nParams = f?.nParams;
+  if (typeof nParams !== 'number' || nParams < 0) return { code, count: 0 };
+  const targets = new Set();
+  for (let i = 0; i < n; i++) if (isJumpOp(code[i][0])) targets.add(code[i][1]);
+  const written = new Set();     // ST 之外的写槽(SET/ADDI/BINSETI/BINSET2/BIND)
+  const stSites = new Map();     // slot -> [ST 地址...]
+  const ldSites = new Map();     // slot -> [LD 地址...]
+  for (let i = 0; i < n; i++) {
+    const ins = code[i];
+    switch (ins[0]) {
+      case OP.SET:
+        if (ins[1] === 0) written.add(ins[2]);
+        break;
+      case OP.ADDI:
+      case OP.BINSETI:
+      case OP.BINSET2:
+        written.add(ins[1]);
+        break;
+      case OP.BIND: {
+        const slots = pool[ins[1]]?.v;
+        if (Array.isArray(slots)) for (const s of slots) if (typeof s === 'number') written.add(s);
+        break;
+      }
+      case OP.ST:
+        if (ins[1] === 0) {
+          const a = stSites.get(ins[2]);
+          if (a) a.push(i); else stSites.set(ins[2], [i]);
+        }
+        break;
+      case OP.LD:
+        if (ins[1] === 0) {
+          const a = ldSites.get(ins[2]);
+          if (a) a.push(i); else ldSites.set(ins[2], [i]);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  if (!stSites.size || !ldSites.size) return { code, count: 0 };
+  const captured = new Set();
+  for (let i = 0; i < n; i++) {
+    if (code[i][0] !== OP.CLOSURE) continue;
+    const plan = pool[code[i][2]]?.v;
+    if (Array.isArray(plan)) for (const p of plan) if (p && typeof p.local === 'number') captured.add(p.local);
+  }
+  const replace = new Map();
+  let count = 0;
+  for (const [slot, sites] of stSites) {
+    if (slot < nParams || written.has(slot) || captured.has(slot)) continue;
+    if (sites.length !== 1) continue;
+    const si = sites[0];
+    if (si < 1 || targets.has(si)) continue;
+    if (code[si][3]) continue; // 窄型归一规格:归一可 throw / 改位标签,不可绕过
+    const prev = code[si - 1];
+    if (prev[0] !== OP.CONST) continue;
+    const pi = prev[1];
+    if (!(pi >= 0 && pi < pool.length) || !constCellOf(pool[pi])) continue;
+    const lds = ldSites.get(slot);
+    if (!lds || !lds.length) continue;
+    if (reachesWithoutSt(code, si, lds)) continue;
+    for (const li of lds) replace.set(li, [OP.CONST, pi, 0, 0, code[li][4]]); // spanIdx 继承 LD
+    count += lds.length;
+  }
+  if (!count) return { code, count: 0 };
+  for (const [i, ins] of replace) code[i] = ins;
+  return { code, count };
+}
+
+// ---------- 单函数管线(fold → prune → thread → dce → peephole → constProp,fixpoint ≤ 10)----------
 
 function optimizeFunction(f, pool, addConst) {
   let code = f.code;
@@ -517,8 +649,11 @@ function optimizeFunction(f, pool, addConst) {
     const ph = peepholePass(code, pool, addConst);
     const c6 = ph.count;
     if (ph.code !== code) code = ph.code;
-    total += c2 + c3 + c4 + c5 + c6;
-    if (!(c2 || c3 || c4 || c5 || c6)) break;
+    const cp = constPropPass(code, pool, f);
+    const c7 = cp.count;
+    if (cp.code !== code) code = cp.code;
+    total += c2 + c3 + c4 + c5 + c6 + c7;
+    if (!(c2 || c3 || c4 || c5 || c6 || c7)) break;
   }
   f.code = code;
   return total;

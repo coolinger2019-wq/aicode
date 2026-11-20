@@ -23923,10 +23923,15 @@ secBegin('105');
 
   // 4) 含表达式段 CONCAT 保留:插值引用局部变量时不得静态拼接——instr/concat 两态相等,
   //    输出逐字 a7b(负向锚:只有全常量段才折叠)。
+  //    v0.96 O1c 重校准:原 `let n = 7` 是不可变常量绑定,constPropPass 会把 LD n 替换为
+  //    CONST 7(该程序因此变为全常量段并由 P4.b 折叠——这是 O1c 的预期收益,不是 P4 守卫
+  //    失效)。为继续锁定"非常量段不折叠",n 改为调用结果(绑定来源 CALL,不可传播;
+  //    值仍是 7,黄金输出不变)。
   {
     const f = mk105('v105_concat_mixed.ming', [
+      'fn seven() -> i64 { 7 }',
       'fn main() with io {',
-      '    let n = 7;',
+      '    let n = seven();',
       '    print("a\\{n}b");',
       '}',
     ].join('\n'));
@@ -24017,6 +24022,10 @@ secBegin('105');
   // 7) fixpoint 收敛与形状不变式:语句位 `"x\{1 + 2}y";` 需 fold→CONCAT→POP 三轮
   //    收敛(no-opt 9 条 → 优化态 2 条 CONST unit;RET);优化态无残留可删 POP 对/
   //    全字面量 CONCAT;短路假标签的 POP(跳转目标)与自赋值 LD;SET 均保留。
+  //    v0.96 O1c 重校准:原 `let a = false; let b = true;` 是不可变常量绑定,
+  //    constPropPass 会把 `a && b` 整体折成 CONST false(O1c 预期收益),短路假标签的
+  //    跳转目标 POP 形态随语句消失。a/b 改为调用结果(不可传播,值不变)以继续锁定
+  //    P4 的"跳转目标 POP 不删"守卫。
   {
     const f = mk105('v105_chain.ming', 'fn main() with io { "x\\{1 + 2}y"; }');
     const { raw, opt } = compile105(f);
@@ -24025,9 +24034,10 @@ secBegin('105');
     const res = residual105(opt);
     const chainOk = nRaw === 9 && mainOpt.code.length === 2 && mainOpt.code[0][0] === OP.CONST && mainOpt.code[1][0] === OP.RET;
     const f2 = mk105('v105_targets.ming', [
+      'fn idb(x: bool) -> bool { x }',
       'fn main() with io {',
-      '    let a = false;',
-      '    let b = true;',
+      '    let a = idb(false);',
+      '    let b = idb(true);',
       '    a && b;',
       '    match 1 { 1 => 10, _ => 20 };',
       '    let mut x = 5;',
@@ -24104,6 +24114,331 @@ secBegin('105');
       on.code === 0 && off.code === 0 && on.stdout === off.stdout
         && sOn && sOff && sOn.instr < sOff.instr,
       `on=${on.code}/${sOn && sOn.instr} off=${off.code}/${sOff && sOff.instr}`);
+  }
+}
+
+// ===================== 106. O1c:常量传播(constPropPass)=====================
+// 文件所有权:§106 = 本区全部用例(Agent A3,v0.96 O1 最后一个 pass,plan §4.16.3)。
+// 口径:
+//   * 语义保真 = 默认腿(优化开)/--no-opt/--tree 三腿 stdout 逐字一致;panic 形态
+//     两态 stderr(位置+消息)逐字一致;
+//   * 有效面 = MING_STATS=1 instr(传播本身同数——LD→CONST;收益来自下一轮 fold 成链)
+//     + in-process 优化态字节码形状(有效形态 LD 消失、放弃锚 LD 留存);
+//   * 放弃锚五类各一断言:mut(SET/ADDI)、闭包捕获(plan {local})、形参(slot < nParams)、
+//     窄型归一(ST c≠0)、容器/结构体池常量(值语义);
+//   * 值语义 = 容器池常量不传播:同一 VM 实例连跑两次,池对象不被变异污染
+//     (resolvedPool 元素仍为初值)、两次输出逐字;str 标量传播后重复执行同输出;
+//   * AOT 合同 = 优化态产物 serialize→validateArtifact→fromArtifact 执行输出与直跑逐字。
+secBegin('106');
+{
+  const dir106 = path.join(TMP, 'v106');
+  fs.mkdirSync(dir106, { recursive: true });
+  const mk106 = (name, src) => { const f = path.join(dir106, name); fs.writeFileSync(f, src); return f; };
+  const runOpt106 = (f, extra = []) => runMing(['run', f, ...extra]);
+  const runNoOpt106 = (f, extra = []) => runMing(['run', f, '--no-opt', ...extra]);
+  const runStats106 = (f, extra = []) => runMing(['run', f, ...extra], { env: { MING_STATS: '1' } });
+  const statsOf106 = (r) => {
+    const lines = (r.stderr ?? '').split('\n').filter((l) => l.trim() !== '');
+    const last = lines[lines.length - 1];
+    if (last && last.startsWith('{')) { try { return JSON.parse(last); } catch { return null; } }
+    return null;
+  };
+  // 洁净编译:显式控制 MING_NO_OPT(开发者 shell 导出时不污染两态),返回 raw/opt 产物。
+  const compile106 = (file) => {
+    const saved = process.env.MING_NO_OPT;
+    let raw, opt;
+    try {
+      delete process.env.MING_NO_OPT;
+      opt = compile(new Checker(file).run());
+      process.env.MING_NO_OPT = '1';
+      raw = compile(new Checker(file).run());
+    } finally {
+      if (saved === undefined) delete process.env.MING_NO_OPT;
+      else process.env.MING_NO_OPT = saved;
+    }
+    return { raw, opt };
+  };
+  const instrOf106 = (built) => built.functions.reduce((s, f) => s + (f?.code?.length ?? 0), 0);
+  const fn106 = (built, name) => built.functions.find((f) => f && f.name === name);
+  const countOp106 = (fn, op) => fn.code.reduce((s, ins) => s + (ins[0] === op ? 1 : 0), 0);
+  const countLd106 = (fn, slot) => fn.code.reduce((s, ins) => s + (ins[0] === OP.LD && ins[1] === 0 && ins[2] === slot ? 1 : 0), 0);
+
+  // 1) 传播+折叠成链(合同 ①):let a = 2; let b = a + 3; → 优化态 LD 全消、
+  //    [CONST 2][CONST 3][BIN] 由下一轮 fold 折成 CONST 5;三腿 5\n,instr 12→10。
+  {
+    const f = mk106('v106_chain.ming', [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let b = a + 3;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const tree = runOpt106(f, ['--tree']);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const { raw, opt } = compile106(f);
+    const m = fn106(opt, 'main');
+    check('v106.1:常量传播+折叠成链——let a=2;let b=a+3 优化态 LD/BIN 全消、三腿 5\\n,instr 12→10 严格下降',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '5\n' && off.stdout === '5\n' && tree.stdout === '5\n'
+      && sOn !== null && sOff !== null && sOn.instr < sOff.instr
+      && countLd106(m, 0) === 0 && countLd106(m, 1) === 0 && countOp106(m, OP.BIN) === 0
+      && instrOf106(raw) === 12 && instrOf106(opt) === 10,
+      `on=${on.code}/${JSON.stringify(on.stdout)} legsEq=${off.stdout === on.stdout}/${tree.stdout === on.stdout} instr=${sOn?.instr}/${sOff?.instr} raw/opt=${instrOf106(raw)}/${instrOf106(opt)} ld=${countLd106(m, 0)}/${countLd106(m, 1)}`);
+  }
+
+  // 2) mut 放弃锚(合同 ②):SET/ADDI 命中即不传播;两态 instr 相等、LD 留存 2 处。
+  {
+    const f = mk106('v106_mut.ming', [
+      'fn main() with io {',
+      '    let mut a = 2;',
+      '    a = a + 1;',
+      '    print(a);',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const tree = runOpt106(f, ['--tree']);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const m = fn106(compile106(f).opt, 'main');
+    check('v106.2:mut 放弃锚——let mut a=2;a=a+1 槽被 SET 写入不传播,两态 instr 相等、LD 留存 2 处、三腿 3\\n',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '3\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr
+      && countLd106(m, 0) === 2 && countOp106(m, OP.SET) === 1,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} ld=${countLd106(m, 0)} set=${countOp106(m, OP.SET)}`);
+  }
+
+  // 3) 捕获放弃锚(合同 ③):闭包 plan {local: 槽} 命中即不传播——main 内对外层
+  //    let 的读取 LD 留存,两态 instr 相等;闭包体按值捕获语义输出 2\n3\n。
+  {
+    const f = mk106('v106_capture.ming', [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let f = (x: i64) => x + a;',
+      '    print(str(a));',
+      '    print(str(f(1)));',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const tree = runOpt106(f, ['--tree']);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const m = fn106(compile106(f).opt, 'main');
+    check('v106.3:捕获放弃锚——闭包捕获的外层 let 不传播(main 内 LD a 留存、两态 instr 相等),三腿 2\\n3\\n',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '2\n3\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr && countLd106(m, 0) === 1,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} ld=${countLd106(m, 0)}`);
+  }
+
+  // 4) 参数放弃锚(合同 ④):形参槽(slot < nParams)不传播——add 内 LD a 留存,
+  //    两态 instr 相等,输出 3\n。
+  {
+    const f = mk106('v106_param.ming', [
+      'fn add(a: i64) -> i64 { a + 1 }',
+      'fn main() with io { print(str(add(2))); }',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const tree = runOpt106(f, ['--tree']);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const add = fn106(compile106(f).opt, 'add');
+    check('v106.4:参数放弃锚——形参槽(slot < nParams)不传播,add 内 LD 留存、两态 instr 相等、三腿 3\\n',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '3\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr && countLd106(add, 0) === 1 && add.nParams === 1,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} ld=${countLd106(add, 0)}`);
+  }
+
+  // 5) 值语义保真(合同 ⑤)+ 容器池常量裁决:const TABLE = [1,10,100]; let mut x = TABLE;
+  //    x[0] = 99 —— 若把容器 CONST 传播到 x 的 LD,SETINDEX 会原地改写常量池对象,同实例
+  //    第二次执行与 TABLE 读取都会被污染。断言:优化态 LD x 留存(不传播)、同实例连跑两次
+  //    均 1\n99\n、resolvedPool 首元素仍 1(SETINDEX 只改 x 的拷贝)。
+  {
+    const f = mk106('v106_vecconst.ming', [
+      'const TABLE = [1, 10, 100];',
+      'fn main() with io {',
+      '    let mut x = TABLE;',
+      '    x[0] = 99;',
+      '    print(str(TABLE[0]));',
+      '    print(str(x[0]));',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const tree = runOpt106(f, ['--tree']);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const { opt } = compile106(f);
+    const m = fn106(opt, 'main');
+    let vmOut1 = null, vmOut2 = null, poolFirst = null, vmErr = '';
+    try {
+      const vm = new VMInterp(new Checker(f).run(), { precompiled: opt, capture: true });
+      vm.runMain([]);
+      vmOut1 = vm.flushCaptured();
+      poolFirst = vm.resolvedPool[0]?.a?.[0]?.v ?? null;
+      vm.runMain([]);
+      vmOut2 = vm.flushCaptured();
+    } catch (e) { vmErr = String((e && e.message) || e); }
+    check('v106.5:值语义保真(容器池常量不传播)——LD x 留存,同实例连跑两次均 1\\n99\\n,resolvedPool 首元素仍 1(SETINDEX 未污染池),两态 instr 相等',
+      on.code === 0 && off.code === 0 && tree.code === 0 && on.stdout === '1\n99\n' && off.stdout === on.stdout && tree.stdout === on.stdout
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr
+      && vmErr === '' && vmOut1 === '1\n99\n' && vmOut2 === '1\n99\n' && String(poolFirst) === '1'
+      && countLd106(m, 0) === 2,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn?.instr}/${sOff?.instr} vm=${vmErr || JSON.stringify(vmOut1) + '/' + JSON.stringify(vmOut2)} pool0=${String(poolFirst)} ld=${countLd106(m, 0)}`);
+  }
+
+  // 6) 四腿全等矩阵+确定性(合同 ⑥):常量链/常量 bool 条件/循环计数器/str 传播混合;
+  //    default / --no-wasm / --no-opt / --tree 四腿输出逐字;默认腿两次 stdout+instr 一致,
+  //    两次编译字节码逐字节一致(扫描序=地址序,无哈希序依赖)。
+  {
+    const f = mk106('v106_matrix.ming', [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let b = a + 3;',
+      '    print(str(b));',
+      '    let t = true;',
+      '    if t { print("yes"); } else { print("no"); }',
+      '    let mut i = 0;',
+      '    while i < 2 { i += 1; }',
+      '    print(str(i));',
+      '    let s = "ab";',
+      '    let u = s;',
+      '    print(u);',
+      '}',
+    ].join('\n'));
+    const legs = [['default', []], ['vm-only', ['--no-wasm']], ['no-opt', ['--no-opt']], ['tree', ['--tree']]];
+    const runs = legs.map(([n, extra]) => [n, runOpt106(f, extra)]);
+    const golden = '5\nyes\n2\nab\n';
+    const allOk = runs.every(([, r]) => r.code === 0 && r.stdout === golden);
+    const r1 = runOpt106(f);
+    const r2 = runOpt106(f);
+    const s1 = statsOf106(runStats106(f));
+    const s2 = statsOf106(runStats106(f));
+    const b1 = compile106(f).opt;
+    const b2 = compile106(f).opt;
+    const det = JSON.stringify(b1.functions.map((x) => x?.code)) === JSON.stringify(b2.functions.map((x) => x?.code));
+    check('v106.6:四腿全等矩阵+确定性——常量链/bool 条件/循环/str 四腿逐字(5/yes/2/ab),两次运行 stdout+instr 一致,两次编译字节码逐字节一致',
+      allOk && r1.code === 0 && r2.code === 0 && r1.stdout === golden && r2.stdout === golden
+      && s1 !== null && s2 !== null && s1.instr === s2.instr && det,
+      `legs=${runs.map(([n, r]) => n + ':' + r.code + '/' + JSON.stringify(r.stdout)).join(',')} det=${det} instr=${s1?.instr}/${s2?.instr}`);
+  }
+
+  // 7) AOT 产物合同(合同 ⑦):传播后的字节码经 serialize→deserialize(validateArtifact
+  //    界检查,CONST 复用既有池下标)→fromArtifact 进程内执行,输出与直跑逐字。
+  {
+    const f = mk106('v106_aot.ming', [
+      'fn main() with io {',
+      '    let a = 2;',
+      '    let b = a + 3;',
+      '    print(b);',
+      '}',
+    ].join('\n'));
+    let aotOut = null, aotErr = '';
+    try {
+      const art106 = await import('../src/artifact.js');
+      const built = compile106(f).opt; // 显式优化态(不受开发者 shell 的 MING_NO_OPT 影响)
+      const wire = JSON.parse(JSON.stringify(art106.serializeArtifact(built, { baseDir: ROOT })));
+      const vm = VMInterp.fromArtifact(wire, { capture: true });
+      const r = vm.runMain([]);
+      aotOut = vm.flushCaptured();
+      aotErr = 'exit=' + r.exitCode;
+    } catch (e) { aotErr = String((e && e.message) || e); }
+    const direct = runOpt106(f);
+    check('v106.7:AOT 产物合同(传播后)——serialize/validateArtifact/fromArtifact 输出与直跑逐字(5\\n)',
+      aotErr === 'exit=0' && aotOut === '5\n' && direct.code === 0 && direct.stdout === aotOut,
+      `aot=${aotErr}/${JSON.stringify(aotOut ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout)}`);
+  }
+
+  // 8) 窄型归一放弃锚(合同规则 4):let a: u8 = 250 的 ST c≠0(normBindValue 绑定归一),
+  //    不传播——a + 10u8 仍按 u8 归一后溢出;两态 exit 101、stderr 逐字一致、LD a 留存、
+  //    instr 相等。
+  {
+    const f = mk106('v106_narrow.ming', [
+      'fn main() with io {',
+      '    let a: u8 = 250;',
+      '    let b = a + 10u8;',
+      '    print(str(b));',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const m = fn106(compile106(f).opt, 'main');
+    check('v106.8:窄型归一放弃锚——ST c≠0 不传播(归一可 throw/改位标签),两态 exit 101 M4002 且 stderr 逐字、LD a 留存、instr 相等',
+      on.code === 101 && off.code === 101 && on.stderr === off.stderr
+      && on.stderr.includes('M4002') && on.stderr.includes('超出 i8u 范围')
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr
+      && countLd106(m, 0) === 1 && m.code.some((ins) => ins[0] === OP.ST && ins[3] !== 0),
+      `on=${on.code}/${JSON.stringify(on.stderr.split('\n')[0])} offEq=${off.stderr === on.stderr} instr=${sOn?.instr}/${sOff?.instr} ld=${countLd106(m, 0)}`);
+  }
+
+  // 9) 传播生效但 panic 面原样:let a = 2147483647i32; let b = a + 1i32 —— LD a 被替换
+  //    为 CONST(优化态 LD=0),但折叠层捕获 intBin 溢出 throw 不折叠(BIN 留存),
+  //    两态 exit 101 M4002 且 stderr(位置+消息)逐字一致,instr 相等。
+  {
+    const f = mk106('v106_prop_ovf.ming', [
+      'fn main() with io {',
+      '    let a = 2147483647i32;',
+      '    let b = a + 1i32;',
+      '    print(str(b));',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    const m = fn106(compile106(f).opt, 'main');
+    check('v106.9:传播生效但 panic 面原样——LD a 被 CONST 替换(优化态 LD=0),溢出 BIN 留存,两态 exit 101 M4002 且 stderr 逐字、instr 相等',
+      on.code === 101 && off.code === 101 && on.stderr === off.stderr && on.stderr.includes('M4002') && on.stderr.includes('整数+溢出')
+      && sOn !== null && sOff !== null && sOn.instr === sOff.instr
+      && countLd106(m, 0) === 0 && countOp106(m, OP.BIN) === 1,
+      `on=${on.code}/${JSON.stringify(on.stderr.split('\n')[0])} offEq=${off.stderr === on.stderr} instr=${sOn?.instr}/${sOff?.instr} ld=${countLd106(m, 0)} bin=${countOp106(m, OP.BIN)}`);
+  }
+
+  // v106.10(v0.96 审查 MINOR-3):Map 池常量不传播——set 不发射 SET(SETINDEX 原地变异),
+  //   白名单必须拦住;断言 m.set 后 M.get 仍 1、两态 instr 相等。
+  {
+    const f = mk106('v106_mappool.ming', [
+      'const M: Map[str, i64] = { "a": 1 };',
+      'fn main() with io {',
+      '    let mut m = M;',
+      '    m.set("a", 99);',
+      '    print(m.get("a").unwrap());',
+      '    print(M.get("a").unwrap());',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    const sOn = statsOf106(runStats106(f));
+    const sOff = statsOf106(runStats106(f, ['--no-opt']));
+    check('v106.10:Map 池常量不传播——set 后 M.get 仍 1(白名单拦截),两态 instr 相等、输出 99/1 逐字',
+      on.code === 0 && off.code === 0 && on.stdout === '99\n1\n' && off.stdout === on.stdout
+        && sOn && sOff && sOn.instr === sOff.instr,
+      `on=${on.code}/${JSON.stringify(on.stdout)} instr=${sOn && sOn.instr}/${sOff && sOff.instr}`);
+  }
+
+  // v106.11(v0.96 审查 NOTE-1):ST 作为跳转目标的快速锚(不依赖超时)——if 表达式两分支的
+  //   ST 是 else 值落点,若被传播会造成错值;断言输出 1/4 两态逐字。
+  {
+    const f = mk106('v106_stjump.ming', [
+      'fn main() with io {',
+      '    let c = true;',
+      '    let x = if c { 1 } else { 2 };',
+      '    print(x);',
+      '    let c2 = false;',
+      '    let y = if c2 { 3 } else { 4 };',
+      '    print(y);',
+      '}',
+    ].join('\n'));
+    const on = runOpt106(f);
+    const off = runNoOpt106(f);
+    check('v106.11:ST 跳转目标守卫快速锚——if 表达式两分支 ST 落点不被传播,输出 1/4 两态逐字',
+      on.code === 0 && off.code === 0 && on.stdout === '1\n4\n' && off.stdout === on.stdout,
+      `on=${on.code}/${JSON.stringify(on.stdout)} off=${JSON.stringify(off.stdout)}`);
   }
 }
 
