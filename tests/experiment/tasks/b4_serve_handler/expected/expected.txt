@@ -1,0 +1,6 @@
+R1 -> 200 {"pong":true}
+R2 -> 200 {"sum":10}
+R3 -> 200 {"sum":0}
+R4 -> 400 {"code":"bad_request"}
+R5 -> 400 {"code":"bad_request"}
+R6 -> 404 {"code":"not_found"}

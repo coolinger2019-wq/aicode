@@ -1,0 +1,71 @@
+// A5 词频 Top-K — 参考实现(Ming)
+// 空白切词(换行归一为空格后按空格切,滤空);词过 sanitize_cli_path 作聚合键;
+// 插入排序(次数降序、词升序)输出前 5。
+use std.fs;
+
+fn before(ka: str, ca: i64, kb: str, cb: i64) -> bool {
+    if ca != cb {
+        return ca > cb;
+    }
+    return ka < kb;
+}
+
+fn sort_pairs(keys: Vec[str], counts: Vec[i64]) -> (Vec[str], Vec[i64]) {
+    let mut ks = keys;
+    let mut cs = counts;
+    let n = ks.len();
+    let mut i = 1;
+    while i < n {
+        let k = ks[i];
+        let c = cs[i];
+        let mut j = i - 1;
+        while j >= 0 && before(k, c, ks[j], cs[j]) {
+            ks[j + 1] = ks[j];
+            cs[j + 1] = cs[j];
+            j -= 1;
+        }
+        ks[j + 1] = k;
+        cs[j + 1] = c;
+        i += 1;
+    }
+    return (ks, cs);
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: 需要词频文件");
+        return 1;
+    }
+    let path = match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => p, Err(_) => { eprint("error: 非法路径参数"); return 1; } };
+    let content = match std.fs.read_file(path) { Ok(t) => t, Err(_) => { eprint("error: 无法读取 " + path); return 1; } };
+    let flat = content.replace("\n", " ");
+    let raw = flat.split(" ");
+    let mut counts: Map[str, i64] = {};
+    for tok in raw {
+        if tok.is_empty() {
+            continue;
+        }
+        match std.unstr.sanitize_cli_path(tok) {
+            Ok(w) => {
+                counts.set(w, counts.get(w).unwrap_or(0) + 1);
+            },
+            Err(_) => {
+                eprint("error: 词包含非法字符");
+                return 1;
+            },
+        }
+    }
+    let mut keys: Vec[str] = [];
+    let mut arr: Vec[i64] = [];
+    for (k, v) in counts {
+        keys.push(k);
+        arr.push(v);
+    }
+    let (ks, cs) = sort_pairs(keys, arr);
+    let mut t = 0;
+    while t < 5 && t < ks.len() {
+        print(ks[t] + " " + str(cs[t]));
+        t += 1;
+    }
+    return 0;
+}

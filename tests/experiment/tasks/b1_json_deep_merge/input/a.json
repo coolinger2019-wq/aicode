@@ -1,0 +1,1 @@
+{"name":"svc","version":1,"meta":{"retries":3,"tags":["x","y"],"nested":{"a":1,"b":2}},"debug":false}

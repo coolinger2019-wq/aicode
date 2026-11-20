@@ -1,0 +1,39 @@
+// B1 黑盒验收(Ming):运行被测 .ming 程序,stdout 与 expected 逐字节比对 + 退出码。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/tasks/b1_json_deep_merge/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.proc;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, proc {
+    let mut prog = "tests/experiment/tasks/b1_json_deep_merge/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let expected = match std.fs.read_file("tests/experiment/tasks/b1_json_deep_merge/expected/expected.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望输出: " + e); return 1; } };
+    let run = std.proc.exec("node", ["bin/ming.js", "run", prog, "--", "tests/experiment/tasks/b1_json_deep_merge/input/a.json", "tests/experiment/tasks/b1_json_deep_merge/input/b.json"]);
+    match run {
+        Ok(r) => {
+            let (code, out, _e) = r;
+            if code != 0 {
+                eprint("FAIL exit=" + str(code));
+                return 1;
+            }
+            if out == expected {
+                print("PASS");
+                return 0;
+            }
+            eprint("FAIL stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected.byte_len()));
+            return 1;
+        },
+        Err(e) => {
+            eprint("FAIL exec: " + e);
+            return 1;
+        },
+    }
+}

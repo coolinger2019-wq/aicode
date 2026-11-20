@@ -1,0 +1,11 @@
+servers.0.host = db1.local
+servers.1.port = 5433
+servers.2.host = MISSING
+servers.3 = MISSING
+user.name = ming
+user.age = 25
+user.tags = ["a","b"]
+user.profile.city = beijing
+flags.debug = false
+meta.x = MISSING
+found=7 missing=3

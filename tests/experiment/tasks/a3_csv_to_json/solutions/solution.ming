@@ -1,0 +1,71 @@
+// A3 CSV→JSON — 参考实现(Ming)
+// 方言:逗号逐字节分隔、无引号;坏行(字段数 != 表头)Err 化;输出单行紧凑 JSON。
+// 污点纪律:列名/字段值是污值,手写 JSON 拼串(污+污)后 print 出向透传,
+// 不走 std.json.stringify(污 Json → M3049)。
+use std.fs;
+
+fn row_json(cols: Vec[Untrusted[str]], fields: Vec[Untrusted[str]]) -> Untrusted[str] {
+    let mut out = std.unstr.mark("{");
+    let mut i = 0;
+    while i < cols.len() {
+        if i > 0 {
+            out = out + ",";
+        }
+        out = out + "\"" + cols[i] + "\":\"" + fields[i] + "\"";
+        i += 1;
+    }
+    return out + "}";
+}
+
+fn process(content: Untrusted[str]) with io {
+    let lines = content.split("\n");
+    let mut n = lines.len();
+    if n > 0 && lines[n - 1].is_empty() {
+        n = n - 1;
+    }
+    let mut rows_str = std.unstr.mark("");
+    let mut rows_n = 0;
+    let mut errs_str = std.unstr.mark("");
+    let mut errs_n = 0;
+    if n > 0 {
+        let cols = lines[0].split(",");
+        let want = cols.len();
+        let mut i = 1;
+        while i < n {
+            let fields = lines[i].split(",");
+            if fields.len() == want {
+                if rows_n > 0 {
+                    rows_str = rows_str + ",";
+                }
+                rows_str = rows_str + row_json(cols, fields);
+                rows_n += 1;} else {
+
+                if errs_n > 0 {
+                    errs_str = errs_str + ",";
+                }
+                errs_str = errs_str + "{\"line\":" + str(i + 1) + ",\"got\":" + str(fields.len()) + ",\"want\":" + str(want) + "}";
+                errs_n += 1;
+            }
+            i += 1;
+        }
+    }
+    print("{\"rows\":[" + rows_str + "],\"errors\":[" + errs_str + "]}");
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: 需要 CSV 文件路径");
+        return 1;
+    }
+    let path = match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => p, Err(_) => { eprint("error: 非法路径参数"); return 1; } };
+    match std.fs.read_file(path) {
+        Ok(content) => {
+            process(content);
+            return 0;
+        },
+        Err(_) => {
+            eprint("error: 无法读取 " + path);
+            return 1;
+        },
+    }
+}

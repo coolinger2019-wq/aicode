@@ -1,0 +1,141 @@
+// A2 黑盒验收(Ming):stdout 逐字节 + 输出目录集合 + 内容抽检。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/tasks/a2_batch_rename/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.proc;
+
+use std.unstr;
+
+use std.rand;
+
+fn read_expected_lines(path: str) -> Vec[Untrusted[str]] with fs {
+    match std.fs.read_file(path) {
+        Ok(t) => {
+            let lines = t.split("\n");
+            let mut n = lines.len();
+            if n > 0 && lines[n - 1].is_empty() {
+                n = n - 1;
+            }
+            let mut out: Vec[Untrusted[str]] = [];
+            let mut i = 0;
+            while i < n {
+                out.push(lines[i]);
+                i += 1;
+            }
+            return out;
+        },
+        Err(_) => {
+            return [];
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, proc, rand {
+    let mut prog = "tests/experiment/tasks/a2_batch_rename/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let expected = match std.fs.read_file("tests/experiment/tasks/a2_batch_rename/expected/expected.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望输出: " + e); return 1; } };
+    let rels = read_expected_lines("tests/experiment/tasks/a2_batch_rename/expected/expected_files.txt");
+    if rels.len() == 0 {
+        eprint("verify: expected_files 为空");
+        return 1;
+    }
+    let mut rels_c: Vec[str] = [];
+    for rel in rels {
+        match std.unstr.sanitize_cli_path(rel) {
+            Ok(rp) => {
+                rels_c.push(rp);
+            },
+            Err(_) => {
+                eprint("verify: 期望文件名非法");
+                return 1;
+            },
+        }
+    }
+    let mut out_dir = "";
+    let mut tries = 0;
+    while tries < 100 {
+        let cand = ".zcode/exp-a2-out-" + str(std.rand.range(0, 1000000));
+        if !std.fs.exists(cand) {
+            out_dir = cand;
+            break;
+        }
+        tries += 1;
+    }
+    if out_dir == "" {
+        eprint("verify: 无法选定临时目录");
+        return 1;
+    }
+    std.fs.make_dir(out_dir);
+    let run = std.proc.exec("node", ["bin/ming.js", "run", prog, "--", "tests/experiment/tasks/a2_batch_rename/input", out_dir]);
+    match run {
+        Ok(r) => {
+            let (code, out, _e) = r;
+            if code != 0 {
+                eprint("FAIL exit=" + str(code));
+                return 1;
+            }
+            if out != expected {
+                eprint("FAIL stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected.byte_len()));
+                return 1;
+            }
+            let mut top_files = 0;
+            let mut dirs: Vec[str] = [];
+            let mut dir_member_count: Map[str, i64] = {};
+            for rp in rels_c {
+                if !std.fs.exists(out_dir + "/" + rp) {
+                    eprint("FAIL 缺少输出文件 " + rp);
+                    return 1;
+                }
+                let segs = rp.split("/");
+                if segs.len() == 1 {
+                    top_files += 1;} else {
+
+                    let d = segs[0];
+                    let mut seen = false;
+                    for x in dirs {
+                        if x == d {
+                            seen = true;
+                        }
+                    }
+                    if !seen {
+                        dirs.push(d);
+                    }
+                    dir_member_count.set(d, dir_member_count.get(d).unwrap_or(0) + 1);
+                }
+            }
+            let top_list = match std.fs.list_dir(out_dir) { Ok(l) => l, Err(e) => { eprint("verify: " + e); return 1; } };
+            if top_list.len() != top_files + dirs.len() {
+                eprint("FAIL 顶层条目数不符 actual=" + str(top_list.len()) + " want=" + str(top_files + dirs.len()));
+                return 1;
+            }
+            for d in dirs {
+                let sub = match std.fs.list_dir(out_dir + "/" + d) { Ok(l) => l, Err(e) => { eprint("verify: " + e); return 1; } };
+                let want = dir_member_count.get(d).unwrap_or(0);
+                if sub.len() != want {
+                    eprint("FAIL 子目录条目数不符 " + d + " actual=" + str(sub.len()) + " want=" + str(want));
+                    return 1;
+                }
+            }
+            let got = match std.fs.read_file(out_dir + "/report-01.txt") { Ok(t) => t, Err(_) => { eprint("FAIL 内容抽检读取失败"); return 1; } };
+            let orig = match std.fs.read_file("tests/experiment/tasks/a2_batch_rename/input/report_1.txt") { Ok(t) => t, Err(_) => { eprint("verify: 输入抽检读取失败"); return 1; } };
+            if got != orig {
+                eprint("FAIL 改名文件内容与原文件不一致");
+                return 1;
+            }
+            print("PASS");
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL exec: " + e);
+            return 1;
+        },
+    }
+}

@@ -1,0 +1,18 @@
+R1 svc-5 ok
+R2 svc-9 ok
+R3 svc-13 ok
+R4 svc-17 ok
+R5 svc-21 ok
+R6 svc-25 ok
+R7 svc-29 ok
+R8 svc-33 ok
+R9 svc-37 ok
+R10 svc-41 ok
+R11 svc-45 ok
+R12 svc-49 ok
+R13 svc-53 ok
+R14 svc-57 ok
+R15 svc-61 ok
+R16 svc-65 ok
+quota exceeded at record 17: kept=94 need=6 budget=95
+summary processed=16 kept_chars=94

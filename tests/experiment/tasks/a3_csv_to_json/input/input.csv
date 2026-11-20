@@ -1,0 +1,6 @@
+id,name,age,city
+1,alice,30,beijing
+2,bob,25,
+3,carol,notanage,shanghai
+4,dave,41,xian,extra
+5,erin,28

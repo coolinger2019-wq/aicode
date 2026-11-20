@@ -1,0 +1,1 @@
+{"servers":[{"host":"db1.local","port":5432},{"host":"db2.local","port":5433},{"port":6000}],"user":{"name":"ming","age":25,"tags":["a","b"],"profile":{"city":"beijing"}},"flags":{"debug":false},"meta":{}}

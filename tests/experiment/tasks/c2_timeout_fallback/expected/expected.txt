@@ -1,0 +1,2 @@
+slow_child=timeout fallback=0
+fast_child=99

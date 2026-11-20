@@ -1,0 +1,5 @@
+alpha 5
+beta 4
+delta 3
+gamma 2
+chi 1

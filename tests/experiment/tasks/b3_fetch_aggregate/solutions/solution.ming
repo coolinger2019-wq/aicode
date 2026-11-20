@@ -1,0 +1,68 @@
+// B3 HTTP GET 汇总 — 参考实现(Ming)
+// 按参数序 http_get ×4;200 → 解析 items 长度与 total;非 200/网络失败 → failed 行;
+// 末行汇总。污点纪律:URL 过 sanitize_cli_path,body 经 json.parse(污) 投影消费。
+use std.net;
+
+fn fetch_one(url: str, idx: i64) -> (bool, i64) with net, io {
+    match std.net.http_get(url) {
+        Ok((status, body)) => {
+            if status == 200 {
+                match std.json.parse(body) {
+                    Ok(doc) => {
+                        let items_n = match doc.get("items") { Some(arr) => { match arr.as_arr() { Some(list) => list.len(), None => 0 } }, None => 0 };
+                        let total = match doc.get("total") { Some(n) => n.as_num().unwrap_or(0.0) as i64, None => 0 };
+                        print("src" + str(idx) + " ok code 200 items " + str(items_n) + " total " + str(total));
+                        return (true, total);
+                    },
+                    Err(_) => {
+                        print("src" + str(idx) + " failed code 200");
+                        return (false, 0);
+                    },
+                }
+            }
+            print("src" + str(idx) + " failed code " + str(status));
+            return (false, 0);
+        },
+        Err(_) => {
+            print("src" + str(idx) + " failed code 0");
+            return (false, 0);
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, net {
+    if args.len() < 4 {
+        eprint("error: 需要 4 个 URL 参数");
+        return 1;
+    }
+    let mut urls: Vec[str] = [];
+    let mut i = 0;
+    while i < 4 {
+        match std.unstr.sanitize_cli_path(args[i]) {
+            Ok(u) => {
+                urls.push(u);
+            },
+            Err(_) => {
+                eprint("error: 非法 URL 参数");
+                return 1;
+            },
+        }
+        i += 1;
+    }
+    let mut ok = 0;
+    let mut failed = 0;
+    let mut grand = 0;
+    let mut k = 0;
+    while k < 4 {
+        let (is_ok, total) = fetch_one(urls[k], k + 1);
+        if is_ok {
+            ok += 1;
+            grand += total;} else {
+
+            failed += 1;
+        }
+        k += 1;
+    }
+    print("summary ok=" + str(ok) + " failed=" + str(failed) + " grand_total=" + str(grand));
+    return 0;
+}

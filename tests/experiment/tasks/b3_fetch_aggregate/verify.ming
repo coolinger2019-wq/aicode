@@ -1,0 +1,120 @@
+// B3 黑盒验收(Ming):spawn+proc.exec 启动 mock 源,轮询 ready 文件取端口,运行被测
+// .ming 程序,http_get 关停 mock,stdout 逐字节比对。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/tasks/b3_fetch_aggregate/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.net;
+
+use std.proc;
+
+use std.sync;
+
+use std.time;
+
+use std.unstr;
+
+const READY = ".zcode/b3-ready-ming.txt";
+
+const MOCK = "tests/experiment/tasks/b3_fetch_aggregate/mock_server.mjs";
+
+fn run_mock() -> i64 with proc {
+    match std.proc.exec("node", [MOCK, "21031", READY]) {
+        Ok(r) => {
+            let (c, _o, _e) = r;
+            return c;
+        },
+        Err(_) => {
+            return -1;
+        },
+    }
+}
+
+fn read_ports() -> Vec[i64] with fs {
+    let mut out: Vec[i64] = [];
+    match std.fs.read_file(READY) {
+        Ok(t) => {
+            for tok in t.split(" ") {
+                match std.unstr.sanitize_cli_path(tok) {
+                    Ok(s) => {
+                        match s.parse_i64() {
+                            Ok(v) => {
+                                out.push(v);
+                            },
+                            Err(_) => {
+                            },
+                        }
+                    },
+                    Err(_) => {
+                    },
+                }
+            }
+        },
+        Err(_) => {
+        },
+    }
+    return out;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, net, proc, sync, time {
+    let mut prog = "tests/experiment/tasks/b3_fetch_aggregate/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let expected = match std.fs.read_file("tests/experiment/tasks/b3_fetch_aggregate/expected/expected.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望输出: " + e); return 1; } };
+    std.fs.make_dir(".zcode");
+    let _ = std.fs.remove_file(READY);
+    let h = std.sync.spawn(run_mock);
+    let mut ports: Vec[i64] = [];
+    let mut tries = 0;
+    while tries < 60 {
+        std.time.sleep(100);
+        ports = read_ports();
+        if ports.len() == 3 {
+            break;
+        }
+        tries += 1;
+    }
+    if ports.len() != 3 {
+        let _ = std.sync.cancel(h);
+        eprint("FAIL mock 服务器未就绪");
+        return 1;
+    }
+    let mut url_args: Vec[str] = [];
+    url_args.push("http://127.0.0.1:" + str(ports[0]) + "/source1");
+    url_args.push("http://127.0.0.1:" + str(ports[1]) + "/source2");
+    url_args.push("http://127.0.0.1:" + str(ports[2]) + "/source3");
+    url_args.push("http://127.0.0.1:" + str(ports[0]) + "/missing");
+    let mut run_code = -1;
+    let mut out = std.unstr.mark("");
+    match std.proc.exec("node", ["bin/ming.js", "run", prog, "--", url_args[0], url_args[1], url_args[2], url_args[3]]) {
+        Ok(r) => {
+            let (c, o, _e) = r;
+            run_code = c;
+            out = o;
+        },
+        Err(_) => {
+        },
+    }
+    let _shut = std.net.http_get("http://127.0.0.1:" + str(ports[0]) + "/__shutdown");
+    let mock_exit = match std.sync.join(h) { Ok(c) => c, Err(_) => -1 };
+    if run_code != 0 {
+        eprint("FAIL exit=" + str(run_code));
+        return 1;
+    }
+    if mock_exit != 0 {
+        eprint("FAIL mock 退出码=" + str(mock_exit));
+        return 1;
+    }
+    if out == expected {
+        print("PASS");
+        return 0;
+    }
+    eprint("FAIL stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected.byte_len()));
+    return 1;
+}

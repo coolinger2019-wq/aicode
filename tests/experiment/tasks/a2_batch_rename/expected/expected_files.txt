@@ -1,0 +1,5 @@
+logs/app.log
+logs/db.log
+report-01.txt
+report-03.txt
+report-12.txt

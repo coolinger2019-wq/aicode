@@ -1,0 +1,6 @@
+total=23
+unique=8
+repeated=6
+top1 evt-gamma-003 6
+top2 evt-alpha-001 4
+top3 evt-zeta-006 4

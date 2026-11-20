@@ -1,0 +1,119 @@
+// B2 数据校验管线 — 参考实现(Ming)
+// 污点纪律:parse(污) → Untrusted[Json];is_num/as_num(净 f64)与
+// is_str/as_str(污 str + contains/starts_with/char_len 谓词)消费;输出全净值。
+use std.fs;
+
+fn valid_id(rec: Untrusted[Json]) -> bool {
+    match rec.get("id") {
+        Some(v) => {
+            if v.is_num() {
+                return v.as_num().unwrap_or(0.0) >= 1.0;
+            }
+            return false;
+        },
+        None => {
+            return false;
+        },
+    }
+}
+
+fn valid_email(rec: Untrusted[Json]) -> bool {
+    match rec.get("email") {
+        Some(v) => {
+            if v.is_str() {
+                match v.as_str() {
+                    Some(s) => {
+                        return s.contains("@");
+                    },
+                    None => {
+                        return false;
+                    },
+                }
+            }
+            return false;
+        },
+        None => {
+            return false;
+        },
+    }
+}
+
+fn valid_age(rec: Untrusted[Json]) -> bool {
+    match rec.get("age") {
+        Some(v) => {
+            if v.is_num() {
+                let n = v.as_num().unwrap_or(0.0);
+                return n >= 0.0 && n <= 150.0;
+            }
+            return false;
+        },
+        None => {
+            return false;
+        },
+    }
+}
+
+fn exact_eq(s: Untrusted[str], name: str) -> bool {
+    return s.starts_with(name) && s.char_len() == name.char_len();
+}
+
+fn valid_role(rec: Untrusted[Json]) -> bool {
+    match rec.get("role") {
+        Some(v) => {
+            if v.is_str() {
+                match v.as_str() {
+                    Some(s) => {
+                        return exact_eq(s, "admin") || exact_eq(s, "user") || exact_eq(s, "guest");
+                    },
+                    None => {
+                        return false;
+                    },
+                }
+            }
+            return false;
+        },
+        None => {
+            return false;
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: 需要记录文件路径");
+        return 1;
+    }
+    let path = match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => p, Err(_) => { eprint("error: 非法路径参数"); return 1; } };
+    let content = match std.fs.read_file(path) { Ok(t) => t, Err(_) => { eprint("error: 无法读取 " + path); return 1; } };
+    let doc = match std.json.parse(content) { Ok(j) => j, Err(_) => { eprint("error: JSON 解析失败"); return 1; } };
+    let records = match doc.as_arr() { Some(arr) => arr, None => { eprint("error: 顶层必须是数组"); return 1; } };
+    let mut ok = 0;
+    let mut failed = 0;
+    let mut i = 0;
+    while i < records.len() {
+        let rec = records[i];
+        let mut parts: Vec[str] = [];
+        if !valid_id(rec) {
+            parts.push("id invalid");
+        }
+        if !valid_email(rec) {
+            parts.push("email invalid");
+        }
+        if !valid_age(rec) {
+            parts.push("age invalid");
+        }
+        if !valid_role(rec) {
+            parts.push("role invalid");
+        }
+        if parts.len() == 0 {
+            print("record " + str(i + 1) + " ok");
+            ok += 1;} else {
+
+            print("record " + str(i + 1) + " " + parts.join("; "));
+            failed += 1;
+        }
+        i += 1;
+    }
+    print("ok=" + str(ok) + " failed=" + str(failed));
+    return 0;
+}

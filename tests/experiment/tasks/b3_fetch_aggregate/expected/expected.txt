@@ -1,0 +1,5 @@
+src1 ok code 200 items 4 total 87
+src2 ok code 200 items 2 total 30
+src3 ok code 200 items 3 total 42
+src4 failed code 404
+summary ok=3 failed=1 grand_total=159

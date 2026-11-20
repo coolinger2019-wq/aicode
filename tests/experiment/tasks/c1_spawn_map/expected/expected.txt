@@ -1,0 +1,5 @@
+shard1=5525
+shard2=37400
+shard3=100525
+shard4=194900
+total=338350

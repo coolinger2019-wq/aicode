@@ -1,0 +1,6 @@
+record 1 ok
+record 2 id invalid
+record 3 email invalid; age invalid; role invalid
+record 4 age invalid
+record 5 email invalid
+ok=1 failed=4

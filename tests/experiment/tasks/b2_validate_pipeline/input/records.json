@@ -1,0 +1,7 @@
+[
+  {"id":1,"email":"a@x.com","age":30,"role":"admin"},
+  {"id":0,"email":"b@x.com","age":40,"role":"user"},
+  {"id":3,"email":"c#x.com","age":"abc","role":"root"},
+  {"id":4,"email":"d@x.com","age":200,"role":"guest"},
+  {"id":5,"age":22,"role":"user"}
+]

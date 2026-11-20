@@ -1,0 +1,5 @@
+shard1=2
+shard2=3
+shard3=3
+shard4=3
+total=11

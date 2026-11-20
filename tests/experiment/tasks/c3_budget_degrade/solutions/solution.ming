@@ -1,0 +1,23 @@
+// C3 资源配额降级 — 参考实现(Ming)
+// 程序内预算规则:记录 i 名称 "svc-(i*4+1)",成本 = 字符数;kept+cost > 95 →
+// 停在越界记录前,输出 quota 行 + summary。
+fn main() -> i64 with io {
+    let budget = 95;
+    let mut kept = 0;
+    let mut processed = 0;
+    let mut i = 1;
+    while i <= 30 {
+        let name = "svc-" + str(i * 4 + 1);
+        let cost = name.char_len();
+        if kept + cost > budget {
+            print("quota exceeded at record " + str(i) + ": kept=" + str(kept) + " need=" + str(cost) + " budget=" + str(budget));
+            break;
+        }
+        kept += cost;
+        processed += 1;
+        print("R" + str(i) + " " + name + " ok");
+        i += 1;
+    }
+    print("summary processed=" + str(processed) + " kept_chars=" + str(kept));
+    return 0;
+}

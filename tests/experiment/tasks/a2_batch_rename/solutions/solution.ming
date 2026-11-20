@@ -1,0 +1,114 @@
+// A2 批量改名 — 参考实现(Ming)
+// 排序后按 R1(report_ 补零改名)/R2(.log 入 logs/)/R3(nomatch)处理,
+// 目标相对路径占用登记跨规则共享;stdout 打印计划,文件内容字节不变落盘。
+use std.fs;
+
+fn zero_pad2(v: i64) -> str {
+    if v < 10 {
+        return "0" + str(v);
+    }
+    return str(v);
+}
+
+fn rule1_target(name: str) -> Option[str] {
+    let segs = name.split("_");
+    if segs.len() != 2 {
+        return None;
+    }
+    if segs[0] != "report" {
+        return None;
+    }
+    let t = segs[1].split(".");
+    if t.len() != 2 {
+        return None;
+    }
+    if t[1] != "txt" || t[0].char_len() < 1 || !t[0].is_digit() {
+        return None;
+    }
+    match t[0].parse_i64() {
+        Ok(v) => {
+            return Some("report-" + zero_pad2(v) + ".txt");
+        },
+        Err(_) => {
+            return None;
+        },
+    }
+}
+
+fn copy_file(src: str, dst: str) -> bool with fs {
+    match std.fs.read_file(src) {
+        Ok(content) => {
+            match std.fs.write_file(dst, content) {
+                Ok(_) => {
+                    return true;
+                },
+                Err(_) => {
+                    return false;
+                },
+            }
+        },
+        Err(_) => {
+            return false;
+        },
+    }
+}
+
+fn plan_and_run(names: Vec[str], input_dir: str, output_dir: str) with io, fs {
+    let mut claimed: Map[str, bool] = {};
+    for name in names {
+        match rule1_target(name) {
+            Some(target) => {
+                if claimed.has(target) {
+                    print("SKIP " + name + " conflict " + target);} else if copy_file(input_dir + "/" + name, output_dir + "/" + target) {
+
+                    claimed.set(target, true);
+                    print("OK " + name + " -> " + target);} else {
+
+                    print("SKIP " + name + " nomatch");
+                }
+            },
+            None => {
+                if name.ends_with(".log") {
+                    let target = "logs/" + name;
+                    if claimed.has(target) {
+                        print("SKIP " + name + " conflict " + target);} else {
+
+                        std.fs.make_dir(output_dir + "/logs");
+                        if copy_file(input_dir + "/" + name, output_dir + "/" + target) {
+                            claimed.set(target, true);
+                            print("DIR " + name + " -> " + target);} else {
+
+                            print("SKIP " + name + " nomatch");
+                        }
+                    }} else {
+
+                    print("SKIP " + name + " nomatch");
+                }
+            },
+        }
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: 需要 <输入目录> <输出目录>");
+        return 1;
+    }
+    let input_dir = match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => p, Err(_) => { eprint("error: 非法输入目录参数"); return 1; } };
+    let output_dir = match std.unstr.sanitize_cli_path(args[1]) { Ok(p) => p, Err(_) => { eprint("error: 非法输出目录参数"); return 1; } };
+    let entries = match std.fs.list_dir(input_dir) { Ok(list) => list, Err(_) => { eprint("error: 无法读取输入目录 " + input_dir); return 1; } };
+    let mut names: Vec[str] = [];
+    for e in entries {
+        match std.unstr.sanitize_cli_path(e) {
+            Ok(n) => {
+                names.push(n);
+            },
+            Err(_) => {
+            },
+        }
+    }
+    names.sort();
+    std.fs.make_dir(output_dir);
+    plan_and_run(names, input_dir, output_dir);
+    return 0;
+}

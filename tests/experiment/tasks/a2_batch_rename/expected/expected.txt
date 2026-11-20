@@ -1,0 +1,7 @@
+DIR app.log -> logs/app.log
+DIR db.log -> logs/db.log
+SKIP notes.md nomatch
+OK report_03.txt -> report-03.txt
+OK report_1.txt -> report-01.txt
+OK report_12.txt -> report-12.txt
+SKIP report_3.txt conflict report-03.txt

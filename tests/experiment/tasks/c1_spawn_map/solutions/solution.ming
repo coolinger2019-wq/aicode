@@ -1,0 +1,25 @@
+// C1 spawn 并行汇总 — 参考实现(Ming)
+// spawn_all 四分片并行平方和;父任务按输入序合并输出。
+use std.sync;
+
+fn shard_sum(lo: i64) -> i64 {
+    let mut s = 0;
+    for i in lo..lo + 25 {
+        s += i * i;
+    }
+    return s;
+}
+
+fn main() -> i64 with io, sync {
+    let all = std.sync.spawn_all(shard_sum, [1, 26, 51, 76]);
+    let mut total = 0;
+    let mut k = 0;
+    while k < 4 {
+        let v = all[k].unwrap();
+        print("shard" + str(k + 1) + "=" + str(v));
+        total += v;
+        k += 1;
+    }
+    print("total=" + str(total));
+    return 0;
+}

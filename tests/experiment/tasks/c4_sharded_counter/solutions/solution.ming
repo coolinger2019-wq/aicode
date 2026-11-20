@@ -1,0 +1,29 @@
+// C4 竞态防护:分片计数合并 — 参考实现(Ming)
+// spawn_all 四分片并行本地计数((s*13+j*7)%6==0 命中),父任务按序合并。
+// 值语义下子任务与父任务零共享,分片计数天然无竞态。
+use std.sync;
+
+fn count_hits(s: i64) -> i64 {
+    let mut hits = 0;
+    for j in 1..17 {
+        let v = (s * 13 + j * 7) % 6;
+        if v == 0 {
+            hits += 1;
+        }
+    }
+    return hits;
+}
+
+fn main() -> i64 with io, sync {
+    let all = std.sync.spawn_all(count_hits, [1, 2, 3, 4]);
+    let mut total = 0;
+    let mut k = 0;
+    while k < 4 {
+        let v = all[k].unwrap();
+        print("shard" + str(k + 1) + "=" + str(v));
+        total += v;
+        k += 1;
+    }
+    print("total=" + str(total));
+    return 0;
+}

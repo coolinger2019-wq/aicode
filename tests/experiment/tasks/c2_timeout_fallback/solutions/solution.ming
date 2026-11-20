@@ -1,0 +1,38 @@
+// C2 超时与降级 — 参考实现(Ming)
+// spawn + join_detailed 超时:慢子任务 400ms/上限 100ms → Err(M4010) → 默认值;
+// 快子任务 50ms/上限 2000ms → 取真值。
+use std.sync;
+
+use std.time;
+
+fn slow() -> i64 with time {
+    std.time.sleep(400);
+    return 99;
+}
+
+fn fast() -> i64 with time {
+    std.time.sleep(50);
+    return 99;
+}
+
+fn main() -> i64 with io, sync, time {
+    let h1 = std.sync.spawn(slow);
+    match std.sync.join_detailed(h1, 100) {
+        Ok(v) => {
+            print("slow_child=" + str(v));
+        },
+        Err(_) => {
+            print("slow_child=timeout fallback=0");
+        },
+    }
+    let h2 = std.sync.spawn(fast);
+    match std.sync.join_detailed(h2, 2000) {
+        Ok(v) => {
+            print("fast_child=" + str(v));
+        },
+        Err(_) => {
+            print("fast_child=timeout fallback=0");
+        },
+    }
+    return 0;
+}

@@ -1,0 +1,1 @@
+{"rows":[{"id":"1","name":"alice","age":"30","city":"beijing"},{"id":"2","name":"bob","age":"25","city":""},{"id":"3","name":"carol","age":"notanage","city":"shanghai"}],"errors":[{"line":5,"got":5,"want":4},{"line":6,"got":3,"want":4}]}

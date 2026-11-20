@@ -1,0 +1,3 @@
+alpha beta gamma alpha delta beta alpha gamma epsilon zeta
+beta alpha delta eta theta iota kappa lambda mu nu xi alpha
+omicron pi beta rho sigma tau upsilon phi chi psi omega delta

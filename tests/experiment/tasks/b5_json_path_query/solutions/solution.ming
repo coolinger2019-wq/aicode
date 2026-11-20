@@ -1,0 +1,166 @@
+// B5 嵌套 JSON 路径查询 — 参考实现(Ming)
+// 点路径逐段下钻(数字段仅对数组当下标);顶层渲染:字符串原样(污值出向透传)、
+// 数值整数十进制、布尔 true/false、容器走 json_text 手写紧凑序列化(字符串带引号);
+// MISSING 语义。
+use std.fs;
+
+fn num_text(v: Untrusted[Json]) -> Untrusted[str] {
+    let n = v.as_num().unwrap_or(0.0);
+    return std.unstr.mark(str(n as i64));
+}
+
+// JSON 语境渲染(容器内部):字符串带引号,其余紧凑
+fn json_text(v: Untrusted[Json]) -> Untrusted[str] {
+    if v.is_null() {
+        return std.unstr.mark("null");
+    }
+    if v.is_bool() {
+        match v.as_bool() {
+            Some(b) => {
+                return std.unstr.mark(str(b));
+            },
+            None => {
+                return std.unstr.mark("null");
+            },
+        }
+    }
+    if v.is_num() {
+        return num_text(v);
+    }
+    if v.is_str() {
+        match v.as_str() {
+            Some(s) => {
+                return "\"" + s + "\"";
+            },
+            None => {
+                return std.unstr.mark("\"\"");
+            },
+        }
+    }
+    if v.is_arr() {
+        match v.as_arr() {
+            Some(items) => {
+                let mut out = std.unstr.mark("[");
+                let mut i = 0;
+                while i < items.len() {
+                    if i > 0 {
+                        out = out + ",";
+                    }
+                    out = out + json_text(items[i]);
+                    i += 1;
+                }
+                return out + "]";
+            },
+            None => {
+                return std.unstr.mark("[]");
+            },
+        }
+    }
+    if v.is_obj() {
+        match v.as_obj() {
+            Some(m) => {
+                let mut out = std.unstr.mark("{");
+                let mut first = true;
+                for (k, sub) in m {
+                    if !first {
+                        out = out + ",";
+                    }
+                    first = false;
+                    out = out + "\"" + k + "\":" + json_text(sub);
+                }
+                return out + "}";
+            },
+            None => {
+                return std.unstr.mark("{}");
+            },
+        }
+    }
+    return std.unstr.mark("null");
+}
+
+// 顶层渲染:字符串原样,其余同 JSON 语境
+fn render_value(v: Untrusted[Json]) -> Untrusted[str] {
+    if v.is_str() {
+        match v.as_str() {
+            Some(s) => {
+                return s;
+            },
+            None => {
+                return std.unstr.mark("");
+            },
+        }
+    }
+    return json_text(v);
+}
+
+// 下钻一步:数字段且当前为数组 → 下标;否则对象键;失败 → None
+fn step(cur: Untrusted[Json], seg: str) -> Option[Untrusted[Json]] {
+    if cur.is_arr() {
+        match seg.parse_i64() {
+            Ok(idx) => {
+                return cur.at(idx);
+            },
+            Err(_) => {
+                return None;
+            },
+        }
+    }
+    if cur.is_obj() {
+        return cur.get(seg);
+    }
+    return None;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: 需要 <doc.json> <queries.txt>");
+        return 1;
+    }
+    let doc_path = match std.unstr.sanitize_cli_path(args[0]) { Ok(p) => p, Err(_) => { eprint("error: 非法路径参数"); return 1; } };
+    let q_path = match std.unstr.sanitize_cli_path(args[1]) { Ok(p) => p, Err(_) => { eprint("error: 非法路径参数"); return 1; } };
+    let doc_content = match std.fs.read_file(doc_path) { Ok(t) => t, Err(_) => { eprint("error: 无法读取 " + doc_path); return 1; } };
+    let doc = match std.json.parse(doc_content) { Ok(j) => j, Err(_) => { eprint("error: JSON 解析失败"); return 1; } };
+    if !doc.is_obj() {
+        eprint("error: 顶层必须是对象");
+        return 1;
+    }
+    let q_content = match std.fs.read_file(q_path) { Ok(t) => t, Err(_) => { eprint("error: 无法读取 " + q_path); return 1; } };
+    let qlines = q_content.split("\n");
+    let mut n = qlines.len();
+    if n > 0 && qlines[n - 1].is_empty() {
+        n = n - 1;
+    }
+    let mut found = 0;
+    let mut missing = 0;
+    let mut i = 0;
+    while i < n {
+        let qline = qlines[i];
+        let query = match std.unstr.sanitize_cli_path(qline) { Ok(s) => s, Err(_) => { eprint("error: 查询行含非法字符"); return 1; } };
+        let mut cur = Some(doc);
+        let segs = query.split(".");
+        let mut j = 0;
+        while j < segs.len() {
+            match cur {
+                Some(c) => {
+                    cur = step(c, segs[j]);
+                },
+                None => {
+                },
+            }
+            j += 1;
+        }
+        match cur {
+            Some(v) => {
+                print(query + " = " + render_value(v));
+                found += 1;
+            },
+            None => {
+                print(query + " = MISSING");
+                missing += 1;
+            },
+        }
+        i += 1;
+    }
+    print("found=" + str(found) + " missing=" + str(missing));
+    return 0;
+}

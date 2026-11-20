@@ -1,0 +1,6 @@
+alice login
+bob query
+carol write
+dave query
+alice logout
+summary INFO=3 WARN=1 ERROR=1 DEBUG=2 skipped=1

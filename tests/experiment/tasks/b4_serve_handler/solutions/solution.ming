@@ -1,0 +1,122 @@
+// B4 serve handler — 参考实现(Ming)
+// std.net.serve + 命名 handler;请求载荷整树污:get/as_str 投影 + sanitize_cli_path
+// 比较串;body 经 json.parse(污) 投影;响应体逐字固定。
+use std.net;
+
+use std.json;
+
+use std.unstr;
+
+fn respond(status: i64, body: str) -> Json {
+    let resp: Map[str, Json] = { "status": std.json.parse(std.json.stringify(status)).unwrap(), "headers": std.json.parse("{}").unwrap(), "body": std.json.parse(std.json.stringify(body)).unwrap() };
+    return std.json.parse(std.json.stringify(resp)).unwrap();
+}
+
+fn get_str(req: Untrusted[Json], key: str) -> str {
+    match req.get(key) {
+        Some(v) => {
+            match v.as_str() {
+                Some(u) => {
+                    match std.unstr.sanitize_cli_path(u) {
+                        Ok(s) => {
+                            return s;
+                        },
+                        Err(_) => {
+                            return "";
+                        },
+                    }
+                },
+                None => {
+                    return "";
+                },
+            }
+        },
+        None => {
+            return "";
+        },
+    }
+}
+
+fn get_raw(req: Untrusted[Json], key: str) -> Untrusted[str] {
+    match req.get(key) {
+        Some(v) => {
+            match v.as_str() {
+                Some(u) => {
+                    return u;
+                },
+                None => {
+                    return std.unstr.mark("");
+                },
+            }
+        },
+        None => {
+            return std.unstr.mark("");
+        },
+    }
+}
+
+fn handle_sum(raw_body: Untrusted[str]) -> Json {
+    match std.json.parse(raw_body) {
+        Ok(doc) => {
+            match doc.get("nums") {
+                Some(nv) => {
+                    match nv.as_arr() {
+                        Some(items) => {
+                            let mut total = 0;
+                            for it in items {
+                                match it.as_num() {
+                                    Some(n) => {
+                                        total += n as i64;
+                                    },
+                                    None => {
+                                        return respond(400, "{\"code\":\"bad_request\"}");
+                                    },
+                                }
+                            }
+                            return respond(200, "{\"sum\":" + str(total) + "}");
+                        },
+                        None => {
+                            return respond(400, "{\"code\":\"bad_request\"}");
+                        },
+                    }
+                },
+                None => {
+                    return respond(400, "{\"code\":\"bad_request\"}");
+                },
+            }
+        },
+        Err(_) => {
+            return respond(400, "{\"code\":\"bad_request\"}");
+        },
+    }
+}
+
+fn handler(req: Untrusted[Json]) -> Json {
+    let method = get_str(req, "method");
+    let path = get_str(req, "path");
+    if method == "GET" && path == "/ping" {
+        return respond(200, "{\"pong\":true}");
+    }
+    if method == "POST" && path == "/sum" {
+        return handle_sum(get_raw(req, "body"));
+    }
+    return respond(404, "{\"code\":\"not_found\"}");
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with net, io {
+    if args.len() < 1 {
+        eprint("error: 需要端口参数");
+        return 1;
+    }
+    let port = match args[0].parse_i64() { Ok(p) => p, Err(_) => { eprint("error: 端口参数非法"); return 1; } };
+    match std.net.serve(port, handler) {
+        Ok(_) => {
+            print("listening on " + str(port));
+            return 0;
+        },
+        Err(e) => {
+            eprint("error: serve 失败: " + e);
+            return 1;
+        },
+    }
+}
