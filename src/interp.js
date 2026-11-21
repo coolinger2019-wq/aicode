@@ -7,6 +7,9 @@
 
 import { err, diagJson, cacheSourceLines, Diagnostic, MingError } from './diag.js';
 import { Checker, PRIM_TYPES, INT_TYPES, typeStr, resolveT, unify, mkOpt, mkRes, T_UNIT, T_STR, T_BOOL } from './checker.js';
+// ADR-011 P0/P1(#82):自由变量分析单一事实来源(与 compiler compileLambda 捕获计划
+// 同源;本模块为零依赖叶模块,interp 导入无环)。
+import { collectFreeNames } from './freenames.js';
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 import * as nodeCrypto from 'node:crypto';
@@ -1601,12 +1604,15 @@ export class Interp {
       case 'TupleLit': return e.elems.length === 0 ? UNIT : V.tuple(e.elems.map(x => deepCopy(this.evalExpr(x, env))));
       case 'StructLit': return this.evalStructLit(e, env);
       case 'Lambda': {
-        // 值语义:创建闭包时对可见环境做深拷贝快照,捕获后与外部脱钩
+        // 值语义:创建闭包时快照可见环境,捕获后与外部脱钩
+        // ADR-011 P1(#82):快照改为自由变量过滤化(captureEnvFor)——只拷 body 按
+        // 名可达的绑定,未引用绑定不进闭包;"创建时快照"时点语义不变(与 VM 捕获计划
+        // 同一时刻、同一脱钩语义,§2.3)。
         // v0.88(§4.13.7):checker 统一后的形参类型随闭包携带(callClosure 据此构规格;
         // 深拷贝闭包分支同步保留)。
         // v0.89(§4.13.7):checker 统一后的返回类型随闭包携带(callClosure 返回归一
         // 优先级链第二位;深拷贝闭包分支同步保留)。
-        return V.closure(e.params, e.body, snapshotEnv(env), e.fnTypeHint ?? null, e.narrowParamTypes ?? null, e.narrowRetSpec ?? null);
+        return V.closure(e.params, e.body, captureEnvFor(e.body, e.params, env), e.fnTypeHint ?? null, e.narrowParamTypes ?? null, e.narrowRetSpec ?? null);
       }
       case 'BlockExpr': return this.execBlock(e.block, env, {});
       case 'LoopExpr': {
@@ -4344,6 +4350,71 @@ function unwireKey(k) {
   if (k.w === 'bool') return k.v;
   if (k.w === 'float') return floatFromWire(k.v);
   return k.v;
+}
+
+// ADR-011 P1(#82):创建点过滤化——闭包创建时的环境快照从"全链全量深拷"(snapshotEnv)
+// 改为"自由变量过滤快照":只深拷 body 求值时可经 env 链按名到达的绑定,未引用绑定
+// 不进闭包。语义等价(ADR-011 §2.1):闭包值的全部语言可观察面 = 调用它(body 求值);
+// body 求值只能经 lookupVar/declaredNarrowTy 按名触达 env 链,名字不在自由集的绑定
+// 不可达,拷贝与否/是否共享不可观察;可达绑定逐名深拷 → 逐名命中同值。
+// 成本 O(自由变量数 × 嵌套内容) + O(free × 链深) 的 owner 解析,与链上无关绑定
+// (如 p_big_parent 的 10000 元素 Vec)无关。
+function captureEnvFor(body, params, chain) {
+  // 步骤 1:自由变量集——frenames.js 单一事实来源,与 compiler compileLambda 捕获计划
+  // 同款调用(bound = 形参名;纯过近似语义原样:内层 let/嵌套 lambda 绑定名不排除,
+  // collectLambdaLocals 承重死代码勿修——ADR-011 M1 禁令)。结果缓存在 Lambda body
+  // AST 节点(创建/复制共用;AST 随 parse 生成、生命周期单次编译,无失效面)。
+  let free = body.__freeNames;
+  if (!free) {
+    const bound = new Set();
+    for (const p of params) bound.add(p.name);
+    const out = [];
+    collectFreeNames(body, bound, out, new Set());
+    free = new Set(out);
+    body.__freeNames = free;
+  }
+  // 步骤 2:owner 解析——逐名沿 chain 找最近绑定层(lookupVar 逐字口径:帧内先 vars
+  // 后 localFns,最近绑定层胜);命中帧认领该名;全链未命中(模块项/内建)→ 丢弃。
+  const claims = new Map();
+  for (const name of free) {
+    for (let e = chain; e; e = e.parent) {
+      if (e.vars.has(name) || e.localFns?.has(name)) {
+        let c = claims.get(e);
+        if (!c) { c = { vars: new Set(), localFns: new Set() }; claims.set(e, c); }
+        if (e.vars.has(name)) c.vars.add(name); else c.localFns.add(name);
+        break;
+      }
+    }
+  }
+  // 步骤 3:深度保持过滤重建——为链上每一帧建新帧(空壳也保留:遮蔽关系靠帧序不变性,
+  // 塌缩空帧的微优化登记不做——ADR-011 复核位 #4);新帧 vars = 该帧被认领绑定的深拷;
+  // tys = 认领名的相应子集(t1 锚:窄型捕获重赋值归一不断档);localFns = 命中条目浅拷
+  // (t4 锚;与 snapshotEnv/deepCopy 同口径,条目对象共享——A-LF 审计项维持现状);
+  // parent 逐层挂接;mod 共享引用。
+  const frames = [];
+  for (let e = chain; e; e = e.parent) frames.push(e);
+  let acc = null;
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const src = frames[i];
+    const claim = claims.get(src);
+    const vars = new Map();
+    let localFns, tys;
+    if (claim) {
+      for (const name of claim.vars) {
+        vars.set(name, deepCopy(src.vars.get(name)));
+        if (src.tys?.has(name)) {
+          if (!tys) tys = new Map();
+          tys.set(name, src.tys.get(name));
+        }
+      }
+      if (claim.localFns.size) {
+        localFns = new Map();
+        for (const name of claim.localFns) localFns.set(name, src.localFns.get(name));
+      }
+    }
+    acc = { vars, parent: acc, mod: src.mod, localFns, tys };
+  }
+  return acc;
 }
 
 function snapshotEnv(env) {
