@@ -4,7 +4,39 @@
 // 曾共用 34–38,现以 34b–38b 区分;§39 = v0.44,§40 = v0.45 契约系统(文档引用沿用)。
 // 后续新分节从 §60 起按序分配;`§N` 与 `N.` 是同一编号的两种写法,不另设第二套编号。
 // v0.91 T4.1(挂起加固):spawnT 统一超时(默认 120s)+ 超时杀进程树 + timedOut 具名标记;
-// secBegin 分节计时(每节一行 `§N x.xs` + 末尾总耗时);§101 机制自测(超时探针 + 未超时对照)。
+// secBegin 分节计时(每节一行 `§N x.xs pass=P fail=F` + 末尾总耗时);§101 机制自测(超时探针 + 未超时对照)。
+//
+// T2.4 分节并行(plan §4.18.4,2026-11-22):
+//   node tests/run.mjs --parallel [--jobs N]   分节分组并行(默认 4 组全并发;N 上限并发组数)
+//   node tests/run.mjs --groups                布局自检:生成各组子文件 + node --check 校验,不执行测试
+//   无旗标 = 全量串行,行为与并行机制引入前一致(CI 与默认调用不受影响)。
+// 机制:编排器把本文件按 secBegin 分节切成 chunk,每组拼装一个子文件(tests/.par-child-<pid>-<i>.mjs,
+// 临时文件,与 run.mjs 同目录以保持 '../src/...' 相对导入与 import.meta 语义;node --check 校验后
+// spawn,退出即删),子进程注入 MING_PAR_CHILD=1(MING_PAR_CHILD 为编排器内部注入,勿手动设置),
+// 在分节边界发 `@@SEC <节> <P> <F>` 行供编排器聚合;
+// 切分守卫口径:列 0 secBegin 正则切分 + 逐子文件 node --check 语法预检——切片错误不会静默
+// (--check 失败/超时 → 该组具名失败 → 套件 exit 1);不做全文括号深度分析(顶层性由一次性
+// 审计核验,运行期不重复付出该成本)。
+// 每个子进程有独立 mkdtemp TMP。组内分节按文件顺序串行执行;末尾总计口径与串行一致
+// (`${passed} 通过,${failed} 失败`,失败 > 0 → exit 1;编排配置错误 → exit 2)。
+// 分节计时行两种模式统一为 `§N x.xs pass=P fail=F`,P/F 为**本节自身**通过/失败数(串行为增量输出,断言零改动)。
+// 组布局(4 组,覆盖全部分节;组内顺序 = 文件顺序;定稿依据 = 串行基线逐节耗时 LPT 均衡 269.4–269.5s/组 + 依赖审计):
+//   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
+//   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
+//   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
+//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111
+// 依赖审计结论(分组依据,详见报告):
+//   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
+//   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
+//      /§88(xn 探针)/§89(net_e2e 子服务)——全部同组(组0)组内串行,沿用既有端口漂移,不新增机制。
+//      §70/§71/§72/§77 的 serve 形态为 ming check 静态检查,不起服务(无端口占用),不必入端口组。
+//   3) TMP:每子进程独立 mkdtemp;跨节静态名重叠(v81/v82/v89 目录)均为 mkdirSync recursive 幂等,
+//      无跨节读-后-写文件依赖。
+//   4) 仓库树写入:仅 .ming-cache/tools(临时文件 + rename 原子落盘,同键并发写内容一致、损坏自愈,
+//      bin/ming.js 注释明示)与 Node 编译缓存 .ming-cache/compile(多进程设计)——并行安全。
+//   5) process.env 写:全部"保存→设置→恢复"配对在单节内完成,组内顺序 = 串行顺序,无泄漏。
+//   6) git:§56 只读(git show/ls-tree);§109 worktree add/remove 用独立临时目录(含 pid+时间戳)。
+//   7) chunk 内动态 import('../src/...')要求子文件与 run.mjs 同目录(见上)。
 
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -22,6 +54,9 @@ import { compile, CompileError, OP } from '../src/compiler.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-tests-'));
+// T2.4 并行:子进程标记(编排器 spawn 时注入 MING_PAR_CHILD=1;串行/编排器进程未设 → 恒 false)。
+// 子文件由 run.mjs 源码分节切片拼装,本常量随切片进入子文件,仅用于分节边界 @@SEC 行发射。
+const PAR_CHILD = process.env.MING_PAR_CHILD === '1';
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -82,14 +117,19 @@ function runMing(args, opts = {}) {
 // (一行:`§N x.xs`);套件末尾 secEndAll() 打印末节耗时与总耗时。只增输出,不改断言。
 const suiteT0 = Date.now();
 let secT0 = suiteT0, secCur = null;
+let secP0 = 0, secF0 = 0; // T2.4:分节起点的累计计数基线——计时行/@@SEC 输出"本节自身"通过/失败数
 function secBegin(label) {
   const now = Date.now();
-  if (secCur !== null) process.stdout.write(`§${secCur} ${((now - secT0) / 1000).toFixed(1)}s\n`);
-  secCur = label; secT0 = now;
+  if (secCur !== null) {
+    // T2.4 并行:计时行统一附本节通过/失败计数(串行为增量输出;并行子进程另发 @@SEC 行供聚合)
+    process.stdout.write(`§${secCur} ${((now - secT0) / 1000).toFixed(1)}s pass=${passed - secP0} fail=${failed - secF0}\n`);
+    if (PAR_CHILD) process.stdout.write(`@@SEC ${secCur} ${passed - secP0} ${failed - secF0}\n`);
+  }
+  secCur = label; secT0 = now; secP0 = passed; secF0 = failed;
 }
 function secEndAll() {
   const now = Date.now();
-  if (secCur !== null) process.stdout.write(`§${secCur} ${((now - secT0) / 1000).toFixed(1)}s\n`);
+  if (secCur !== null) process.stdout.write(`§${secCur} ${((now - secT0) / 1000).toFixed(1)}s pass=${passed - secP0} fail=${failed - secF0}\n`);
   process.stdout.write(`总耗时 ${((now - suiteT0) / 1000).toFixed(1)}s\n`);
 }
 
@@ -97,6 +137,227 @@ function mingFile(name, src) {
   const p = path.join(TMP, name);
   fs.writeFileSync(p, src, 'utf8');
   return p;
+}
+
+// ==================== T2.4 并行编排(分节分组子进程;plan §4.18.4)====================
+// 串行模式(默认,无旗标)不进入本块,既有行为逐字节保持。用法/组布局/依赖审计结论见文件头注释。
+// 注意:本块位于 §1 之前的源码间隙——生成的并行子文件同样包含本块(子进程 argv 无 --parallel,
+// 守卫使之为惰性死代码,零行为影响)。
+const PAR_ARGV = process.argv.slice(2);
+const PARALLEL = PAR_ARGV.includes('--parallel');
+const PAR_DRY = PAR_ARGV.includes('--groups');
+// 编排器自身输出走 fs.writeSync(1/2)(同步落盘,process.exit 前不丢字节;串行路径不经此处)。
+const parOut = (s) => { try { fs.writeSync(1, s); } catch { /* EAGAIN 尽力而为 */ } };
+const parErr = (s) => { try { fs.writeSync(2, s); } catch { /* 尽力而为 */ } };
+// 子文件语法预检(v100.1 审查 MINOR-2):node --check 超时(进程被杀,status=null)单独具名,
+// 不与真实语法失败混报;ok=true 时 msg 为空串。dry 自检与并行 spawn 共用同一判定。
+const parCheckChild = (p) => {
+  const chk = spawnSync(process.execPath, ['--check', p], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+  if (chk.status === 0) return { ok: true, timeout: false, msg: '' };
+  if (chk.status === null) return { ok: false, timeout: true, msg: `子文件语法校验超时(60s,进程已终止): ${p}\n${chk.stderr || chk.stdout || ''}` };
+  return { ok: false, timeout: false, msg: `子文件语法校验失败(node --check, exit ${chk.status}):\n${chk.stderr || chk.stdout || ''}` };
+};
+// --jobs 解析(v100.1 审查 MINOR-1):存在即必须有效——等号形式/缺值/非正整数一律 parFail exit 2,
+// 不再静默回退默认并发(与布局错误同口径:配置错误必须具名,不许吞)。
+const PAR_JOBS = (() => {
+  const eq = PAR_ARGV.find((a) => a.startsWith('--jobs='));
+  if (eq !== undefined) {
+    parFail(2, `并行编排:不支持 '${eq}' 等号形式\n  Fix: 用空格形式 --jobs <N>(N 为 ≥1 的整数)。`, false);
+  }
+  const i = PAR_ARGV.indexOf('--jobs');
+  if (i < 0) return null;
+  const raw = PAR_ARGV[i + 1];
+  const v = Number(raw);
+  if (raw === undefined || !Number.isInteger(v) || v < 1) {
+    parFail(2, `并行编排:--jobs 的值无效(收到 ${raw === undefined ? '(缺值)' : `'${raw}'`})\n  Fix: 用 --jobs <N>,N 为 ≥1 的整数;省略 --jobs 则默认全部组并发。`, false);
+  }
+  return v;
+})();
+
+if (PAR_DRY || PARALLEL) {
+  // ---- 分节索引:chunk = secBegin 行 .. 下一 secBegin 行/tail(secEndAll)行。
+  // 切分守卫 = 列 0 secBegin 正则 + 逐子文件 node --check 语法预检(文件头注释"切分守卫口径");
+  // secBegin 全在顶层由一次性审计核验,运行期不重复做括号深度分析,切片错误经 --check 具名兜住 ----
+  const selfLines = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n');
+  const secIdx = [];
+  for (let i = 0; i < selfLines.length; i++) {
+    const m = selfLines[i].match(/^secBegin\('([^']+)'\);\s*$/);
+    if (m) secIdx.push({ label: m[1], line: i });
+  }
+  const tailStart = selfLines.findIndex((l) => /^secEndAll\(\);\s*$/.test(l));
+  if (tailStart < 0 || secIdx.length === 0) parFail(2, '并行编排:无法在自身源码定位分节边界(secBegin/secEndAll)');
+  const chunkOf = new Map();
+  for (let k = 0; k < secIdx.length; k++) {
+    chunkOf.set(secIdx[k].label, { from: secIdx[k].line, to: (k + 1 < secIdx.length ? secIdx[k + 1].line : tailStart) });
+  }
+  // ---- 组布局(文件头注释有完整说明;必须恰好覆盖全部分节,组内执行顺序 = 文件顺序) ----
+  const PAR_GROUPS = [
+    // 组0 = 端口组(26/66/68/79/88/89 全部在此,组内串行)+ LPT 均衡填充;基线 269.4s
+    ['10', '17', '18', '23', '26', '33', '35', '37', '42', '43', '44', '45', '51', '52', '54', '56', '60', '65', '66', '68', '72', '73', '74', '77', '79', '88', '89', '93', '95', '96', '99', '106', '107', '108'],
+    // 组1 = §5(fmt,250.7s 串行最大节)独占载体 + 小节填充;基线 269.5s
+    ['3', '5', '9', '12', '13', '15', '19', '20', '24', '36', '47', '53', '70', '84', '85', '92'],
+    // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
+    ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
+    // 组3 = 均衡填充;基线 269.4s
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111'],
+  ];
+  const parSeen = new Set();
+  for (const g of PAR_GROUPS) for (const lb of g) {
+    if (!chunkOf.has(lb)) parFail(2, `并行布局错误: 组含不存在的分节 '${lb}'(现有分节: ${secIdx.map((s) => s.label).join(' ')})`);
+    if (parSeen.has(lb)) parFail(2, `并行布局错误: 分节 '${lb}' 重复出现在多个组`);
+    parSeen.add(lb);
+  }
+  if (parSeen.size !== secIdx.length) {
+    const missing = secIdx.filter((s) => !parSeen.has(s.label)).map((s) => s.label);
+    parFail(2, `并行布局错误: 未覆盖分节 ${missing.join(' ')}(共 ${secIdx.length} 节,布局已覆盖 ${parSeen.size} 节)`);
+  }
+  // 子文件拼装:prologue(至首个 secBegin 前,含本编排块——子进程中惰性)+ 组内 chunk(文件序)+ tail。
+  const buildChild = (labels) => {
+    const ordered = [...labels].sort((a, b) => chunkOf.get(a).from - chunkOf.get(b).from);
+    const parts = [selfLines.slice(0, secIdx[0].line).join('\n')];
+    for (const lb of ordered) { const c = chunkOf.get(lb); parts.push(selfLines.slice(c.from, c.to).join('\n')); }
+    parts.push(selfLines.slice(tailStart).join('\n'));
+    return parts.join('\n');
+  };
+  if (PAR_DRY) {
+    parOut(`并行布局自检:${PAR_GROUPS.length} 组 / 分节 ${secIdx.length} 节 / --jobs ${PAR_JOBS ?? PAR_GROUPS.length}\n`);
+    for (let gi = 0; gi < PAR_GROUPS.length; gi++) {
+      const ordered = [...PAR_GROUPS[gi]].sort((a, b) => chunkOf.get(a).from - chunkOf.get(b).from);
+      const p = path.join(ROOT, 'tests', `.par-child-dry-${gi}.mjs`);
+      fs.writeFileSync(p, buildChild(PAR_GROUPS[gi]));
+      const c = parCheckChild(p);
+      parOut(`  组${gi}: node --check ${c.ok ? 'OK' : (c.timeout ? 'TIMEOUT' : 'FAIL')} ${String(ordered.length).padStart(2)} 节 [${ordered.join(' ')}]\n`);
+      if (!c.ok) parOut(c.msg + '\n');
+      try { fs.rmSync(p, { force: true }); } catch { /* 尽力而为 */ }
+    }
+    process.exit(0);
+  }
+  process.exit(await parRunSuite(PAR_GROUPS, buildChild, secIdx));
+}
+
+async function parRunSuite(groups, buildChild, secIdx) {
+  const t0 = Date.now();
+  const CHILD_TIMEOUT_MS = 30 * 60 * 1000; // 组级看门狗(串行全量实测 ~17.5 分钟;最重组预算 5 倍余量)
+  const jobs = Math.min(PAR_JOBS ?? groups.length, groups.length);
+  parOut(`并行模式:${groups.length} 组 / 并发 ${jobs}(子文件 = run.mjs 分节切片;组内分节按文件顺序串行)\n`);
+  const secRes = new Map(); // label -> { passed, failed, dur, group }
+  const groupStats = [];
+  let nextGroup = 0;
+  const collect = (out) => {
+    const secs = [...out.matchAll(/^@@SEC (\S+) (\d+) (\d+)$/gm)];
+    const durs = new Map();
+    for (const m of out.matchAll(/^§(\S+) ([0-9.]+)s pass=\d+ fail=\d+$/gm)) durs.set(m[1], Number(m[2]));
+    return { secs, durs, tot: out.match(/^@@TOT (\d+) (\d+)$/m) };
+  };
+  const runOne = (gi) => new Promise((resolve) => {
+    const childPath = path.join(ROOT, 'tests', `.par-child-${process.pid}-${gi}.mjs`);
+    const tg = Date.now();
+    let syntaxFail = false, timedOutG = false, out = '', err = '';
+    let child = null;
+    // v100.1 审查 NOTE-1:写入/语法预检/spawn 全程 try 包裹——任何同步异常都删子文件并具名 resolve,
+    // 不让编排器自身裸抛(异常路径子文件必须清理,不留 tests/ 残骸)。
+    try {
+      fs.writeFileSync(childPath, buildChild(groups[gi]));
+      const c = parCheckChild(childPath);
+      if (!c.ok) {
+        try { fs.rmSync(childPath, { force: true }); } catch { /* 尽力而为 */ }
+        resolve({ gi, code: -1, dur: 0, err: c.msg, out: '', timedOut: false, syntaxFail: true });
+        return;
+      }
+      child = spawn(process.execPath, [childPath], {
+        cwd: ROOT,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, MING_PAR_CHILD: '1' },
+      });
+    } catch (e) {
+      try { fs.rmSync(childPath, { force: true }); } catch { /* 尽力而为 */ }
+      resolve({ gi, code: -1, dur: 0, err: '子文件写入/spawn 失败(编排层异常): ' + String(e), out: '', timedOut: false, syntaxFail: true });
+      return;
+    }
+    const watchdog = setTimeout(() => { timedOutG = true; killTree(child.pid); }, CHILD_TIMEOUT_MS);
+    child.stdout.on('data', (d) => { out += d; if (out.length > 64 * 1024 * 1024) out = out.slice(-32 * 1024 * 1024); });
+    child.stderr.on('data', (d) => { err += d; if (err.length > 64 * 1024 * 1024) err = err.slice(-32 * 1024 * 1024); });
+    child.on('error', (e) => { err += `\n[orch] spawn error: ${String(e)}`; });
+    child.on('close', (c) => {
+      clearTimeout(watchdog);
+      try { fs.rmSync(childPath, { force: true }); } catch { /* 尽力而为 */ }
+      resolve({ gi, code: c, dur: (Date.now() - tg) / 1000, err, out, timedOut: timedOutG, syntaxFail: false });
+    });
+  });
+  const workers = Array.from({ length: jobs }, () => (async () => {
+    while (true) {
+      const gi = nextGroup++;
+      if (gi >= groups.length) break;
+      const r = await runOne(gi);
+      const { secs, durs, tot } = collect(r.out);
+      const anomalies = [];
+      const groupLabels = new Set(groups[r.gi]);
+      for (const m of secs) {
+        const lb = m[1];
+        if (!groupLabels.has(lb)) { anomalies.push(`组${r.gi} 发出未知分节 @@SEC ${lb}`); continue; }
+        if (secRes.has(lb)) anomalies.push(`分节 ${lb} 在组${r.gi} 重复上报`);
+        secRes.set(lb, { passed: Number(m[2]), failed: Number(m[3]), dur: durs.get(lb) ?? null, group: r.gi });
+      }
+      if (r.timedOut) anomalies.push(`组${r.gi} 触发组级看门狗(30 分钟)已杀进程树`);
+      // syntaxFail(写入/语法预检失败)时 code=-1 为编排层标记而非子进程真实退出码,细节已入 err 具名,不打泛化消息
+      if (r.code !== 0 && !r.timedOut && !r.syntaxFail) anomalies.push(`组${r.gi} 子进程退出码 ${r.code}`);
+      if (!tot) anomalies.push(`组${r.gi} 缺 @@TOT 总计行(子进程未跑完或崩溃)`);
+      const missing = groups[r.gi].filter((lb) => !secRes.has(lb));
+      if (missing.length) anomalies.push(`组${r.gi} 未上报分节: ${missing.join(' ')}`);
+      groupStats.push({
+        gi: r.gi, code: r.code, dur: r.dur, timedOut: r.timedOut, syntaxFail: r.syntaxFail,
+        tot: tot ? { passed: Number(tot[1]), failed: Number(tot[2]) } : null,
+        anomalies, err: r.err, nSections: groups[r.gi].length,
+      });
+    }
+  })());
+  await Promise.all(workers);
+  // ---- 汇总:逐分节行(文件顺序,可 grep)+ 组状态 + 总计(口径与串行一致) ----
+  const ordered = secIdx.map((s) => s.label);
+  let tPassed = 0, tFailed = 0, anomalies = 0;
+  parOut(`\n== 分节结果(${groups.length} 组并发 ${jobs};逐节行 = §<节> <耗时>s pass=<P> fail=<F> [组N]) ==\n`);
+  for (const lb of ordered) {
+    const r = secRes.get(lb);
+    if (!r) { parOut(`§${lb} (未执行) pass=0 fail=1 [?]\n`); tFailed++; anomalies++; continue; }
+    parOut(`§${lb} ${r.dur !== null ? r.dur.toFixed(1) + 's' : '(无计时)'} pass=${r.passed} fail=${r.failed} [组${r.group}]\n`);
+    tPassed += r.passed; tFailed += r.failed;
+  }
+  parOut('== 组状态 ==\n');
+  for (const g of groupStats.sort((a, b) => a.gi - b.gi)) {
+    const totS = g.tot ? `${g.tot.passed} 通过,${g.tot.failed} 失败` : '(无总计)';
+    parOut(`  组${g.gi}: exit=${g.code}${g.timedOut ? '(看门狗击杀)' : ''} ${g.dur.toFixed(1)}s ${g.nSections} 节 子进程总计 ${totS}${g.anomalies.length ? ' 异常:' + g.anomalies.join('; ') : ''}\n`);
+    anomalies += g.anomalies.length;
+  }
+  // 子进程总计与逐节合计交叉校验(编排正确性自检;不一致 = 聚合异常)
+  const gTot = groupStats.reduce((a, g) => g.tot ? { p: a.p + g.tot.passed, f: a.f + g.tot.failed } : a, { p: 0, f: 0 });
+  if (gTot.p !== tPassed || gTot.f !== tFailed) {
+    parErr(`[orch] 聚合交叉校验不一致: 逐节合计 ${tPassed}/${tFailed} vs 子进程总计 ${gTot.p}/${gTot.f}\n`);
+    anomalies++;
+  }
+  const wall = (Date.now() - t0) / 1000;
+  parOut(`\n并行总耗时 ${wall.toFixed(1)}s(墙钟)\n${tPassed} 通过,${tFailed} 失败\n`);
+  if (tFailed > 0) {
+    parOut('\n失败清单:\n');
+    for (const lb of ordered) {
+      const r = secRes.get(lb);
+      if (r && r.failed > 0) parOut(`  - §${lb}(fail=${r.failed},组${r.group};子进程 stderr 见下)\n`);
+      if (!r) parOut(`  - §${lb}(未执行)\n`);
+    }
+    for (const g of groupStats.sort((a, b) => a.gi - b.gi)) {
+      if ((g.tot && g.tot.failed > 0) || g.anomalies.length) {
+        parOut(`\n---- 组${g.gi} stderr(${g.err.split('\n').length} 行)----\n`);
+        parOut(g.err.length > 20000 ? g.err.slice(-20000) + '\n(已截断,仅尾部 20000 字符)\n' : g.err);
+      }
+    }
+  }
+  if (anomalies > 0) parErr(`[orch] 编排异常 ${anomalies} 项(见上方组状态);编排失败按失败处理 → exit 1\n`);
+  return (tFailed > 0 || anomalies > 0) ? 1 : 0;
+}
+
+function parFail(code, msg, hint = true) {
+  parErr(`Error: ${msg}\n`);
+  if (hint) parErr(`  Fix: 检查 tests/run.mjs 文件头的组布局注释(PAR_GROUPS),使分组恰好覆盖全部分节。\n`);
+  process.exit(code);
 }
 
 // ===================== 1. 示例黄金输出 =====================
@@ -26105,6 +26366,10 @@ secBegin('111');
 }
 
 secEndAll();
+// T2.4 并行:子进程末尾补发末节 @@SEC 与总计行(编排器聚合依据;串行模式 PAR_CHILD=false 零输出)。
+// @@SEC 为本节自身计数(passed-secP0);@@TOT 为子进程累计(与串行总计同口径)。
+if (PAR_CHILD && secCur !== null) process.stdout.write(`@@SEC ${secCur} ${passed - secP0} ${failed - secF0}\n`);
+if (PAR_CHILD) process.stdout.write(`@@TOT ${passed} ${failed}\n`);
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {
   process.stdout.write('\n失败清单:\n');

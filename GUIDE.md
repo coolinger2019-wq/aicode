@@ -1448,6 +1448,15 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
 
+### 测试基建:tests/run.mjs 分节并行(2026-11-22,非语言面,不升版本)
+
+- **tests/run.mjs 分节并行化(plan §4.18.4/T2.4;只改 tests/run.mjs,测试内容零改动——断言/期望输出/逐项 check 逐字节不变)**:
+  - **旗标**:`--parallel [--jobs N]`(默认关,无旗标 = 全量串行行为不变,CI 与默认调用不受影响;`--jobs` 缺值/非正整数/等号形式 → exit 2 具名)、`--groups`(布局自检:生成各组子文件 + node --check 校验,不执行测试)。
+  - **机制**:secBegin 分节切片 → 每组拼装子文件(与 run.mjs 同目录保持 '../src/...' 相对导入语义;node --check 预检后 spawn,退出即删)→ 子进程分节边界发 @@SEC 行供编排器聚合;逐分节行 `§N x.xs pass=P fail=F`(本节自身计数)两模式统一,串行计时行增计数为增量输出;布局未覆盖/重复分节 → exit 2 快速失败。
+  - **4 组布局与端口组**:真实监听端口的分节(§26 回显探针/§66 serve/§68 serve/§79 http 探针/§88 xn 探针/§89 net_e2e)同组组内串行,沿用既有端口漂移不新增机制;§1+§6 同组(GOLDEN 常量依赖);组耗时 LPT 均衡 269.4–269.5s/组;组级看门狗 30 分钟。
+  - **实测**:串行基线 1078.3s → 并行 320.5s(墙钟,3.36x),1644 项 0 失败,两模式 111 节逐节通过/失败计数完全一致,端口零冲突;docs_check 14/14。
+  - **独立审查 APPROVE(0 BLOCKER/0 MAJOR/2 MINOR/6 NOTE;MINOR 已收口)**。
+
 ### v0.100.0(2026-11-21)
 
 - **ADR-011 P2 复制点过滤(deepCopy closure → captureEnvFor 过滤重建;#82 关闭;零新语言面;§111 17 check)**:
