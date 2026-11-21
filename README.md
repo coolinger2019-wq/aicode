@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v0.100.0 | 2026-11-21 | ADR-011 P2 复制点过滤(#82 关闭;O1/O2 设计线全交付) | 1644 |
 | v0.99.0 | 2026-11-20 | ADR-011 P1 创建点过滤(captureEnvFor) | 1627 |
 | v0.98.0 | 2026-11-20 | ADR-011 P0 分析单源化(freenames.js) | 1612 |
 | v0.97.0 | 2026-11-20 | P1 #79 修复 + O2.1 设计预研(ADR-010) | 1603 |
@@ -169,6 +170,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 - **v0.98.0** — **ADR-011 P0 分析单源化(零行为;#82 修复第一期)**:collectFreeNames/collectLambdaLocals/addPatNames → src/freenames.js 叶模块(VM plan 与 tree captureEnvFor 单一事实来源);字节码 10 程序×两态逐字节等价;M1 禁令合规(死代码承重勿修,sha256 机械证明);§109 9 check;独立验证 PASS。
 - **v0.99.0** — **ADR-011 P1 创建点过滤(captureEnvFor)**:闭包创建只快照 body 自由变量可达的绑定(过滤重建,替代全链 snapshotEnv);**92/92 探针·腿零行为漂移**;性能门槛全达成(p_chain_22 deepCopy 435→181/p_big_parent −10,003/p_bind_closure_hot 不变);f8a 深链×pad 创建级联消除 −88%;变异实验 (i)(ii) 抓住/(iii) 定案。**§110 15 check;1627 项 0 失败**。
 - **v0.97.0** — **P1 修复 #79(VM builtin 方法实参不深拷贝;双引擎值语义分歧,HEAD 预存)**+ **O2.1 设计预研**:`v.push(w); w.push(2)` tree 1/2 vs VM 2/2 → 修复=builtin 分派 args.map(deepCopy)(用户方法零双重拷贝);独立验证 21 探针×四腿全绿。ADR-010 拷贝消除设计(freshness 格/O2a·b·c)+ 调研(**270 万 deepCopy 几乎全为标量 no-op;O2 热路径收益≈0;deepCopy 不计 --max-alloc**)——O2 降级待真实 workload;新登记 #80(Vec.slice/filter 返回值浅拷贝)与 #82(树引擎闭包复制 parent 链不完整——递归快照 2^n OOM,审查回退后登记开放 P1;同源 p_flat_80 在 HEAD 亦 OOM)。**并修复第二个 P1 #81**(deepCopy 缺 vclose 分支——闭包绑定/传参别名:tree 1/2/1/0 vs VM 1/2/3/0;修=captures 逐项深拷贝+__retSpec 保真;§108 8 check:绑定/HOF/传参/工厂/容器捕获/__retSpec 窄型/AOT)。**§107 9 + §108 8 check;1603 项 0 失败;fuzz 三种子 ×40 0 分歧**。
+- **v0.100.0** — **ADR-011 P2 复制点过滤(#82 关闭)**:deepCopy closure → captureEnvFor 过滤重建(创建点同款);**23 文件×4 腿全矩阵恰 7 槽翻绿=全部分歧锚至 VM 值**;间接引用链(g→h→c 三层)对抗实测——复制沿自由变量边单路径传递整链值快照,**无 v0.97 双路 2^n**;过近似边界实测(可观察通道全闭);snapshotEnv/__snapSeq 消亡;零自由快路径(1M 复制 810ms ≤850,计数逐字节恒等)。**§111 17 check;1644 项 0 失败;fuzz 三种子 ×40 0 分歧;opt_gate 374**。ADR-011 三期全交付。
 - **v0.96.0** — **O1c 常量传播(constPropPass;零新语言面;O1 四 pass 全部交付)**:不可变 let 标量/str 常量 LD→CONST(spanIdx 继承)使下游折叠成链;六放弃锚(SET/ADDI·复合赋值/闭包捕获/形参/窄型归一 ST/容器——`x[0]=99` 不发射 SET 的陷阱靠类型白名单拦截);ST 支配 CFG BFS 证明;实测 cp1 −16.7%/cp2 −27.3%/hello −10.7%(传播后触发全字面量 CONCAT 折叠);§105 两处校准理由化。**§106 11 check;1586 项 0 失败;opt_gate 374 断言;fuzz 三种子 ×40 0 分歧**。
 - **v0.95.0** — **O1b 通用窥孔(peepholePass;零新语言面)**:纯值语句 `[CONST|LD][POP]` 双删(跳转目标守卫防 `a && b;` 假标签漏弹)+ 全字面量 CONCAT 折叠(插值不计 --max-alloc 已核实);LD+ST/DUP+ST/`!`反转/相邻 CONST 四项裁决不做并登记;实测纯值语句 −22.2%/全字面量 CONCAT −42.9%/§104 死分支形态 −22.2%;panic 值语句 `1/0;` 两态逐字保留。**§105 9 check;1575 项 0 失败;opt_gate 291 断言;fuzz 三种子 ×40 0 分歧**。
 - **v0.94.0** — **O1 字节码优化首批(常量折叠/分支裁剪/跳转线程/DCE;语义保持;默认开,--no-opt/MING_NO_OPT 关)**:编译器在字节码上做常量折叠(不溢出才折:溢出/除零/模零/移位越界保留运行时 panic 逐字)、常量分支裁剪+跳转线程、DCE(JUMP terminal 后死代码真删);**审查 REQUEST_CHANGES 修复后通过**——B1 浮点常量 AOT wire 无损编码(-0.0/NaN/±Inf/1.0e400/const 浮点表达式 dist 与源码逐字;顺带治愈 HEAD 预存 AOT 缺陷)+ M1 str `+` 不折叠(保 --max-alloc 三腿一致)+ m1/m2(构建/工具缓存键含 opt 状态、build --no-opt);opt_gate 187 断言;instr 实测 fib −8.0%/fib_cc −11.8%/filescan −5.2%。**§104 15 check;1566 项 0 失败;fuzz 三种子 ×40 0 分歧**。
@@ -265,7 +267,7 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v0.99.0**(2026-11-20) |
+| 当前版本 | **v0.100.0**(2026-11-21) |
 | 回归测试 | **1627 项全绿**(§1–§110;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.1% 行 / 90.9% 函数**(v0.96 复测 2026-11-20;16 文件含 opt.js 99.3%/100%;vm.js 函数 76.6%) |

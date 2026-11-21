@@ -112,24 +112,23 @@ export function deepCopy(v) {
     }
     case 'enum': return { t: 'enum', def: v.def, name: v.name, tag: v.tag, vals: v.vals.map(deepCopy) };
     case 'closure': {
-      const env = new Map();
-      for (const [k, val] of v.env.vars) env.set(k, deepCopy(val));
-      // v0.59-B2:闭包快照除 vars/parent 外必须保留 mod 与 localFns——此前只复制 vars,
-      // 闭包经 let/实参深拷贝后 mod 丢失(lambda 体内 env.mod.items 取模块项 → TypeError;
-      // 引用外层本地函数时 localFns 也丢失)。localFns 表浅拷贝即可(与 snapshotEnv 同口径)。
-      // v0.87(审查 MAJOR-2 追踪):tys(窄型绑定规格)同样必须随快照保留——此前 deepCopy
-      // 重建 env 丢 tys,闭包经 let 绑定后捕获的窄型绑定重赋值/算术归一断档(let bump =
-      // <closure> 的 bindPattern 深拷贝即触发;trace 实证:L1 vars.has(a)=true/tys=none)。
-      // v0.88(§4.13.7):narrowParamTypes(checker 统一后的无标注形参类型)随拷贝
-      // 保留——闭包经 let/实参搬运后形参归一不断档(v0.87 MAJOR-2 同款教训)。
-      // v0.89(§4.13.7):narrowRetSpec(checker 统一后的返回类型)与 __retSpec(传参
-      // 边界按 fn(ret 窄) 规格打标)同样随拷贝保留——返回位归一不断档。
-      const tys = v.env.tys ? new Map(v.env.tys) : undefined;
-      // v0.97(#82,v0.97 审查 B1 回退):parent 浅拷贝保留——递归 snapshotEnv 实现呈 2^n 复制
-      // (22 层嵌套块合法程序 4GB OOM exit 134;1M 次 let 复制 tree +55%)。语义方向正确但实现
-      // 需 free-variable 捕获计划(对齐 VM capture plan)或持久化 env/COW——登记 #82 开放 P1,
-      // 待专门设计批次。tree 与 VM 在"闭包复制后 parent 链共享"形态的已知分歧如实登记。
-      return { t: 'closure', params: v.params, body: v.body, env: { vars: env, parent: v.env.parent, mod: v.env.mod, localFns: v.env.localFns, tys }, fnType: v.fnType, narrowParamTypes: v.narrowParamTypes, narrowRetSpec: v.narrowRetSpec, __retSpec: v.__retSpec };
+      // ADR-011 P2(#82):复制点过滤化——复制 = 对"body 求值时可经 env 链按名到达的
+      // 绑定状态"做值快照:用复制闭包 body 的自由集过滤重建 env 链(与创建点同款
+      // captureEnvFor,__freeNames 缓存创建/复制共用)。body 未引用的绑定不可经该闭包
+      // 观察(lookupVar/declaredNarrowTy 按**名**触达 env 链),拷贝与否/是否共享不可
+      // 观察(ADR-011 §2.1);修复一切"已存在闭包值被再复制"边界(let/实参/返回/
+      // Vec/Map/struct 字段)的 parent 帧共享分歧——n3 wrapA ≡ wrapB(块结构不可观察),
+      // 两个闭包值互写隔离(值语义;t2/t5/t6/v81_4/p_closure_in_vec 翻绿,§111 钉死)。
+      // 嵌套闭包值(自由变量的值本身是 closure)经 deepCopy 递归走同一函数——间接引用
+      // 链(g 捕获 h,h 捕获 x)按值快照逐层传递:collectFreeNames 只收 body 直接
+      // Ident(g),x 经 h 的值复制在 h 自己的链上再捕获——每个绑定值沿自由变量边恰复制
+      // 一次,无 v0.97 回退修法的"vars 内嵌闭包 + parent 链重走"双路重复(2^n OOM 根因;
+      // §111 间接链对抗实测钉死:共享形态 tree 10/20/30/40/50 → 快照形态 10/10/20/20/30)。
+      // 既有口径并入 captureEnvFor(v0.59-B2/v0.87/v0.88/v0.89):mod 共享引用、localFns
+      // 命中条目浅拷(条目对象共享——A-LF 审计项维持现状;本地 fn 的兄弟/递归解析经
+      // callLocalFn 的 sig.env.localFns 原表进行,不依赖复制帧的表)、tys/narrowParamTypes/
+      // narrowRetSpec/__retSpec 随拷贝保留(规格位归一不断档)。
+      return { t: 'closure', params: v.params, body: v.body, env: captureEnvFor(v.body, v.params, v.env), fnType: v.fnType, narrowParamTypes: v.narrowParamTypes, narrowRetSpec: v.narrowRetSpec, __retSpec: v.__retSpec };
     }
     // v0.97(#81):VM 闭包值(OP.LDFN/OP.CLOSURE 产出的 { t:'vclose', fnIdx, captures })。
     // 此前缺本分支走 default 恒等 → `let f2 = f` / HOF 传参后两个值别名共享同一
@@ -4352,11 +4351,15 @@ function unwireKey(k) {
   return k.v;
 }
 
-// ADR-011 P1(#82):创建点过滤化——闭包创建时的环境快照从"全链全量深拷"(snapshotEnv)
-// 改为"自由变量过滤快照":只深拷 body 求值时可经 env 链按名到达的绑定,未引用绑定
-// 不进闭包。语义等价(ADR-011 §2.1):闭包值的全部语言可观察面 = 调用它(body 求值);
-// body 求值只能经 lookupVar/declaredNarrowTy 按名触达 env 链,名字不在自由集的绑定
-// 不可达,拷贝与否/是否共享不可观察;可达绑定逐名深拷 → 逐名命中同值。
+// ADR-011 P1+P2(#82):自由变量过滤快照——闭包创建点(v0.99)与复制点(本版)共用的
+// 唯一环境快照路径,取代已删除的旧"全链全量深拷"快照函数(其创建点唯一调用点已于
+// P1 改线,函数本体连同其 env 门控的调试序号观测字段于 P2 删除——全仓零消费者,
+// 且序号变量从未声明,门控开启路径本就是 ReferenceError 隐患;精确名与裁决记录见
+// ADR-011 §6 P2 行):
+// 只深拷 body 求值时可经 env 链按名到达的绑定,未引用绑定不进闭包。语义等价
+// (ADR-011 §2.1):闭包值的全部语言可观察面 = 调用它(body 求值);body 求值只能经
+// lookupVar/declaredNarrowTy 按名触达 env 链,名字不在自由集的绑定不可达,拷贝与否/
+// 是否共享不可观察;可达绑定逐名深拷 → 逐名命中同值。
 // 成本 O(自由变量数 × 嵌套内容) + O(free × 链深) 的 owner 解析,与链上无关绑定
 // (如 p_big_parent 的 10000 元素 Vec)无关。
 function captureEnvFor(body, params, chain) {
@@ -4372,6 +4375,17 @@ function captureEnvFor(body, params, chain) {
     collectFreeNames(body, bound, out, new Set());
     free = new Set(out);
     body.__freeNames = free;
+  }
+  // 零自由变量快路径(free.size === 0):链上无可认领绑定——body 不引用任何链上名字,
+  // 帧内容(含 tys/localFns)按 §2.1 不可观察论证不可达,重建 = 等深空壳帧链(与一般
+  // 路径空 claims 的输出逐字段一致:vars 空 Map/localFns·tys undefined/mod 逐帧共享)。
+  // 省去 claims Map + frames 数组 + Set 迭代器三次分配——p_bind_closure_hot 形态
+  // (1M 次 let 复制零自由闭包)的热路径,ADR-011 §3.1.5"墙钟同量级"要求(实测无快路径
+  // P2 较 P1 +8~10%,快路径后平价;深度保持不变,复制计数仍 = 1 条目/次)。
+  if (free.size === 0) {
+    let acc0 = null;
+    for (let e = chain; e; e = e.parent) acc0 = { vars: new Map(), parent: acc0, mod: e.mod, localFns: undefined, tys: undefined };
+    return acc0;
   }
   // 步骤 2:owner 解析——逐名沿 chain 找最近绑定层(lookupVar 逐字口径:帧内先 vars
   // 后 localFns,最近绑定层胜);命中帧认领该名;全链未命中(模块项/内建)→ 丢弃。
@@ -4389,7 +4403,8 @@ function captureEnvFor(body, params, chain) {
   // 步骤 3:深度保持过滤重建——为链上每一帧建新帧(空壳也保留:遮蔽关系靠帧序不变性,
   // 塌缩空帧的微优化登记不做——ADR-011 复核位 #4);新帧 vars = 该帧被认领绑定的深拷;
   // tys = 认领名的相应子集(t1 锚:窄型捕获重赋值归一不断档);localFns = 命中条目浅拷
-  // (t4 锚;与 snapshotEnv/deepCopy 同口径,条目对象共享——A-LF 审计项维持现状);
+  // (t4 锚;条目对象共享——A-LF 审计项维持现状;兄弟/递归解析经 callLocalFn 的
+  // sig.env.localFns 原表进行,不依赖快照帧的表);
   // parent 逐层挂接;mod 共享引用。
   const frames = [];
   for (let e = chain; e; e = e.parent) frames.push(e);
@@ -4415,19 +4430,6 @@ function captureEnvFor(body, params, chain) {
     acc = { vars, parent: acc, mod: src.mod, localFns, tys };
   }
   return acc;
-}
-
-function snapshotEnv(env) {
-  const vars = new Map();
-  for (const [k, v] of env.vars) vars.set(k, deepCopy(v));
-  const localFns = env.localFns ? new Map(env.localFns) : undefined;
-  // v0.87(审查 MAJOR-2):窄型绑定规格(tys)随快照进入 lambda 帧——捕获的窄型绑定
-  // 重赋值时 declaredNarrowTy 才能在 lambda 帧内命中,归一不断档(否则闭包捕获的
-  // 窄型 += 静默回绕,三腿一致静默——v0.85 M1 族漏网面)。
-  const tys = env.tys ? new Map(env.tys) : undefined;
-  const out = { vars, parent: env.parent ? snapshotEnv(env.parent) : null, mod: env.mod, localFns, tys };
-  if (typeof process !== 'undefined' && process.env.MING_DBG_TYS) out.__dbgId = 'snap' + (++__snapSeq);
-  return out;
 }
 
 // 给 Lambda 记录类型提示(调用闭包时需要 ret 类型)

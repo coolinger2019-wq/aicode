@@ -155,6 +155,8 @@
 
 - **与全链快照等价**(P1–P6):可达绑定逐名深拷 ⇒ 任何 body 求值路径逐名命中同值;不可达绑定两侧都不可观察(§2.1)。
 - **与 VM 逐字**(三腿):自由名集合同源(§2.3 差异 1/3 对合法程序无行为差);localfn 差异(差异 2)是 tree 名字解析的既有事实(现状 snapshotEnv 也带 localFns),非新分歧。
+- **创建期快照也加深(v0.100 P2 实测知识)**:P1 的创建过滤使嵌套闭包快照停在首个空壳帧(与活值共享祖先帧)——P2 复制点过滤落地后,创建期认领值的 deepCopy 递归全链(对照 v110.2 校准 +72 增量逐项对账),#82 经创建路径的延续同被修复;
+- **创建期快照也加深(v0.100 P2 实测知识)**:P1 的创建过滤使嵌套闭包快照停在首个空壳帧(与活值共享祖先帧)——P2 复制点过滤落地后,创建期认领值的 deepCopy 递归全链(v110.2 校准 +72 增量逐项对账),#82 经创建路径的延续同被修复;
 - **无指数**:单遍过滤重建,绑定值沿自由变量边各拷一次;同一值被两个自由名引用(`f(v, v)` 式双名)会拷两份——**正确**(两名字本就该是两个私有值:值语义下 `let b = a` 已拷)且非指数(节点数 × 引用数,非 2^重走)。一次复制内的内部共享保留(memo)登记为可选精化,v1 不做。
 
 #### 3.1.4 实现面(函数级改动点)
@@ -273,7 +275,7 @@
 |---|---|---|
 | p_chain_22 总墙钟 | 167ms(deepCopy 435) | **≤ 250ms** 且无 OOM(d=22 无指数;允许创建侧低阶多项式量级波动) |
 | p_big_parent 总墙钟 | 170ms(deepCopy 36,009) | **≤ 250ms**,deepCopy **≤ 28,000 且比现状至少 −10,000**(big 快照消失;其余为循环恒等计数噪声) |
-| p_bind_closure_hot 总墙钟 | 803ms(deepCopy 5,000,004) | **≤ 850ms**(+6% 容差),deepCopy **≈5,000,004 不变**(±2%;零自由变量复制的 1 条目/iter 保留) |
+ (v0.97 审查 MINOR-1 注:846ms 实测距门 0.4%,机器敏感——CI 判定以 deepCopy 计数为准,墙钟仅参考) | p_bind_closure_hot 总墙钟 | 803ms(deepCopy 5,000,004) | **≤ 850ms**(+6% 容差),deepCopy **≈5,000,004 不变**(±2%;零自由变量复制的 1 条目/iter 保留) |
 | VM 腿三锚 deepCopy/instr | 595/200、4,005/43、3,000,003/30 | **逐字不变**(强不变量) |
 
 - 采集口径:`MING_STATS=1 node bin/ming.js run <探针> --tree|--no-wasm`,min-of-5;计数是方向断言,墙钟是门槛(ADR-010 §6.2 纪律:计数不做时间代理)。
@@ -293,7 +295,7 @@
 |---|---|---|---|
 | **P0 分析单源化** | collectFreeNames/collectLambdaLocals/addPatNames → `src/freenames.js`;compiler import;全量回归零校准 + VM 三锚逐字 | 零行为变化(移动) | ≈80 行移动。✅ 已交付（2026-11-20，v0.98.0；字节码等价 10/10；bin dist 清单补登记） |
 | **P1 创建点过滤化** | `captureEnvFor` + 1609 替换;A-deep容器链/A-let多层 入库;**回归锚零校准**(t1/t3/t4/e79/p_chain_22 等行为不变)、**分歧锚仍红**(n3/t2/t5/v81_4/p_closure_in_vec——复制未修,P2 翻绿);G2 创建侧门槛 | 三腿逐字 + §5.4 | src ≈80 行 + tests ≈120 行。✅ 已交付（2026-11-21，v0.99.0；92/92 零漂移；G2 全达成；§110 15 check；审查 APPROVE-with-minor） |
-| **P2 复制点过滤化** | deepCopy closure → captureEnvFor;删 snapshotEnv;n3/t2/t5/v81_4/p_closure_in_vec 翻绿;A-闭包数组/A-循环 入库;fuzz 双种子;G2 全门 | 全锚 + 1603 零校准 + 0 分歧 | src ≈40 行 + tests ≈150 行。P2 顺手项:snapshotEnv 的 __dbgId 调试字段(MING_DBG_TYS)随 captureEnvFor 重写定去留 |
+| **P2 复制点过滤化** | deepCopy closure → captureEnvFor;删 snapshotEnv;n3/t2/t5/v81_4/p_closure_in_vec 翻绿;A-闭包数组/A-循环 入库;fuzz 三种子;G2 全门 | 全锚 + 1603 零校准 + 0 分歧 | src ≈40 行 + tests ≈150 行。P2 顺手项:snapshotEnv 的 __dbgId 调试字段(MING_DBG_TYS)随 captureEnvFor 重写定去留 |
 | **P3 文档收口** | GUIDE §6 措辞校准(§7 边界 #4)+ plan #82 收口 + capabilities 值语义行 + opt 基线注记(tree 闭包计数口径变化) | docs_check | docs ≈30 行 |
 
 **不做清单(本 ADR 范围之外,维持登记)**:

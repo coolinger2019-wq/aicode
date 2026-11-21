@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v0.99.0** (2026-11-20) |
-| Regression suite | **1627 checks, all green** (§1–§110; full run every time) |
+| Current version | **v0.100.0** (2026-11-21) |
+| Regression suite | **1644 checks, all green** (§1–§111; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v0.100.0 | 2026-11-21 | ADR-011 P2 copy-point filtering (#82 closed; design line complete) | 1644 |
 | v0.99.0 | 2026-11-20 | ADR-011 P1 creation-point filtered capture (captureEnvFor) | 1627 |
 | v0.98.0 | 2026-11-20 | ADR-011 P0 analysis single-sourcing (freenames.js) | 1612 |
 | v0.97.0 | 2026-11-20 | P1 #79/#81 fixes + O2.1 copy-elision design (ADR-010); #80/#82 registered | 1603 |

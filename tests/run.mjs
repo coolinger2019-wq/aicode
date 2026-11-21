@@ -25215,6 +25215,17 @@ secBegin('109');
 //       VM 腿三锚 deepCopy 595/4,005/3,000,003 逐字不变(强不变量,v110.1 锁定一条)。
 //   * 计数口径提醒(ADR-010 §6.2 同款):计数是方向断言非时间代理;MING_STATS 计数
 //     同版本基线纪律,跨版本比较无意义——未来计数口径变化按重采纪律校准本区上界。
+// P2 复校准登记(v0.99.0 后续版,Agent P2-A;§110 头注预登记"P2 落地时本组按翻绿值
+//   校准"的兑现):ADR-011 P2(复制点过滤化,deepCopy closure → captureEnvFor)落地后,
+//   ① ②/⑤b 组的 6 条分歧锚(v110.5/v110.6/v110.11/v110.12/v110.13/v110.14)tree 腿按
+//     翻绿值校准——VM 腿期望值逐字零校准(强不变量);校准前 tree 现状值实测记录保留在
+//     各 check 名与 §111(P2 翻绿收官区);
+//   ② v110.2 计数门 900 → 1000(实测 925):P1 期 deepCopy(closure) 只拷重建链顶层帧
+//     (认领名住 parent 级帧,顶层空壳)——嵌套捕获值递归停在首个空壳帧,#82 缺陷经
+//     创建路径的嵌套值复制延续(祖父帧共享);P2 每个绑定边界对认领链完整快照
+//     (与 VM 递归 captures 深拷同语义),增量 +72 全部来自链长 O(d²) 合法快照,
+//     与 pad 尺寸无关(门槛区分度目的保持;3 层缩版逐层手数精确对账 P1 20/P2 32)。
+//   其余 §110 断言零校准(v110.1 计数门 1206 逐字不变——零自由变量复制仍计 1 条目/iter)。
 secBegin('110');
 {
   const dir110 = path.join(TMP, 'v110');
@@ -25287,10 +25298,18 @@ secBegin('110');
     const fb = mk110('v110_deep_pads.ming', b.join('\n'));
     const legs = legsOf110(fb);
     const st = statsTree110(fb);
+    // P2 复校准(计数门,ADR-011 §5.4/复核位 #8 纪律:门槛 = 区分度,按实测校准,
+    // "无指数"与"VM 逐字不变"不放宽):P1 期实测 853(上限 900)——P1 的复制路径
+    // deepCopy(closure) 只拷重建链顶层帧(认领名住在 parent 级帧,顶层为空壳),嵌套
+    // 捕获值递归停在首个空壳帧 = #82 缺陷在创建路径经嵌套值复制延续(祖父帧共享)。
+    // P2 复制点过滤化后每个绑定边界对认领链完整快照(每条自由变量边恰复制一次,
+    // 与 VM 递归 captures 深拷同语义)——实测 925(+72,3 层缩版逐层手数精确对账
+    // P1 20/P2 32):增量全部来自链长 O(d²) 的合法快照,与 pad 尺寸无关(pad 快照面
+    // 仍为 0,本门槛的区分度目的保持)。HEAD 4677 对照保留。
     check('v110.2:创建过滤有效性(深链 × 大容器)——8 层链每层 50 元素 pad(body 只引用上一层闭包):'
-      + ' 输出 8 三腿逐字;tree deepCopy ≤900(实测 853,HEAD 4677,−3824 = pad 快照面消失,'
-      + ' 计数不随 pad 尺寸乘开——A-deep容器链 P1 创建侧门槛)',
-      legsOk110(legs, '8\n') && st.deepCopy > 0 && st.deepCopy <= 900,
+      + ' 输出 8 三腿逐字;tree deepCopy ≤1000(实测 925;HEAD 4677;P1 期 853,P2 复制点'
+      + ' 全链快照语义修正 +72——增量随链长 O(d²) 非 pad 尺寸,计数不随 pad 尺寸乘开)',
+      legsOk110(legs, '8\n') && st.deepCopy > 0 && st.deepCopy <= 1000,
       `${legsBrief110(legs)} treeDeepCopy=${st.deepCopy}`);
   }
 
@@ -25338,9 +25357,9 @@ secBegin('110');
   }
   {
     // n1(#82 H 验语料):外层 lambda 体内块级 let h,h 捕获外层形参 g,let w2 = w1 复制。
-    // tree 1/2/3/1(共享:计数器在 h.env 的 parent 帧,deepCopy 只拷 h 自己的空 vars)
-    // vs VM 1/1/2/1(互隔离)——**P1 后保持现状值**(复制路径 P2 才修;创建侧过滤后
-    // h.env 顶层仍是空壳帧、g 仍在 parent 帧,共享形态不变)。
+    // P1 期 tree 1/2/3/1(parent 帧共享,#82 已知分歧,现状钉)——P2 复制点过滤化后翻绿:
+    // 三腿 1/1/2/1(计数器在 h.env 的 parent 帧,P2 经 captureEnvFor 按自由集重建,
+    // g 逐名快照不再共享;VM 腿期望值逐字零校准)。
     const f = mk110('v110_n1.ming', [
       'fn main() with io {',
       '    let mut c = 0;',
@@ -25358,17 +25377,14 @@ secBegin('110');
       '}',
     ].join('\n'));
     const legs = legsOf110(f);
-    check('v110.5:n1 锚——tree 1/2/3/1(parent 帧共享,#82 已知分歧 P1 保持)vs VM 1/1/2/1,三腿逐字(未提前翻绿)',
-      legs[0][1].code === 0 && legs[0][1].stdout === '1\n2\n3\n1\n'
-      && legs[1][1].code === 0 && legs[1][1].stdout === '1\n1\n2\n1\n'
-      && legs[2][1].code === 0 && legs[2][1].stdout === '1\n1\n2\n1\n',
-      legsBrief110(legs));
+    check('v110.5:n1 锚——复制后互隔离 1/1/2/1 三腿逐字(P2 翻绿校准,头注预登记;P1 期 tree 现状 1/2/3/1)',
+      legsOk110(legs, '1\n1\n2\n1\n'), legsBrief110(legs));
   }
   {
     // n3(决定性锚):wrapA(直接返回 lambda,g 落拷贝体自身 env.vars → 复制天然隔离)
-    // vs wrapB(块级 let h,g 在 parent 帧 → 复制共享)。tree 1/1/2·1/2/3 vs VM 双段
-    // 1/1/2——**P1 后 wrapB 未翻绿**(1/2/3 保持):共享点在复制路径 parent 浅拷,
-    // 创建侧过滤不改变它;翻绿提前 = 快照时点语义异常(实测未发生,如实钉现状值)。
+    // vs wrapB(块级 let h,g 在 parent 帧 → P1 期复制共享 1/2/3)。P2 复制点过滤化后
+    // wrapA ≡ wrapB(双段 1/1/2)——块结构不可观察(P3),tree = VM 三腿逐字
+    // (P2 翻绿校准,头注预登记;P1 期 tree 现状 1/1/2·1/2/3)。
     const f = mk110('v110_n3.ming', [
       'fn main() with io {',
       '    let mut c = 0;',
@@ -25391,11 +25407,8 @@ secBegin('110');
       '}',
     ].join('\n'));
     const legs = legsOf110(f);
-    check('v110.6:n3 决定性锚——tree wrapA 1/1/2(隔离)+ wrapB 1/2/3(共享,P1 保持现状)vs VM 双段 1/1/2,三腿逐字(未提前翻绿)',
-      legs[0][1].code === 0 && legs[0][1].stdout === '1\n1\n2\n1\n2\n3\n'
-      && legs[1][1].code === 0 && legs[1][1].stdout === '1\n1\n2\n1\n1\n2\n'
-      && legs[2][1].code === 0 && legs[2][1].stdout === '1\n1\n2\n1\n1\n2\n',
-      legsBrief110(legs));
+    check('v110.6:n3 决定性锚——wrapA ≡ wrapB 双段 1/1/2·1/1/2 三腿逐字(P2 翻绿校准,头注预登记;P1 期 tree wrapB 1/2/3)',
+      legsOk110(legs, '1\n1\n2\n1\n1\n2\n'), legsBrief110(legs));
   }
 
   // ---- ③ tys 保真(t1 锚):闭包捕获窄型绑定,经复制后 += 仍归一(6/6/7/5;
@@ -25499,9 +25512,10 @@ secBegin('110');
       legsOk110(legs, '107\n'), legsBrief110(legs));
   }
 
-  // ---- ⑤b 分歧锚现状保持(t2/t5/t6/p_closure_in_vec,.zcode 语料源码逐字入库):
-  //      P1 分歧锚仍红是设计预期(复制路径 deepCopy parent 浅拷未动)——锁现状值,
-  //      防创建侧过滤意外改变可观察行为;P2 落地时本组按翻绿值校准。
+  // ---- ⑤b 分歧锚翻绿(t2/t5/t6/p_closure_in_vec,.zcode 语料源码逐字入库):
+  //      P1 期本组锁现状红值(复制路径 parent 浅拷未动,头注预登记"P2 落地时本组按
+  //      翻绿值校准");P2 复制点过滤化后全部翻绿——容器/struct/Vec 边界的复制隔离
+  //      与 VM 逐字(P2 校准,tree 腿翻绿值见各 check;VM 腿零校准)。
   {
     const f = mk110('v110_t2.ming', [
       'fn main() with io {',
@@ -25522,11 +25536,8 @@ secBegin('110');
       '}',
     ].join('\n'));
     const legs = legsOf110(f);
-    check('v110.11:t2 容器存储锚保持现状——tree 1/1/1/2/3(Map 值与 v[0] 共享,#82 已知)vs VM 1/1/1/2/2,三腿逐字(未提前翻绿)',
-      legs[0][1].code === 0 && legs[0][1].stdout === '1\n1\n1\n2\n3\n'
-      && legs[1][1].code === 0 && legs[1][1].stdout === '1\n1\n1\n2\n2\n'
-      && legs[2][1].code === 0 && legs[2][1].stdout === '1\n1\n1\n2\n2\n',
-      legsBrief110(legs));
+    check('v110.11:t2 容器存储锚翻绿——Map 值与 v[0] 互隔离 1/1/1/2/2 三腿逐字(P2 翻绿校准,头注预登记;P1 期 tree 1/1/1/2/3)',
+      legsOk110(legs, '1\n1\n1\n2\n2\n'), legsBrief110(legs));
   }
   {
     const f = mk110('v110_t5.ming', [
@@ -25548,11 +25559,8 @@ secBegin('110');
       '}',
     ].join('\n'));
     const legs = legsOf110(f);
-    check('v110.12:t5 struct 字段锚保持现状——tree 1/2/3(共享)vs VM 1/1/2,三腿逐字(未提前翻绿)',
-      legs[0][1].code === 0 && legs[0][1].stdout === '1\n2\n3\n'
-      && legs[1][1].code === 0 && legs[1][1].stdout === '1\n1\n2\n'
-      && legs[2][1].code === 0 && legs[2][1].stdout === '1\n1\n2\n',
-      legsBrief110(legs));
+    check('v110.12:t5 struct 字段锚翻绿——整值复制后字段互隔离 1/1/2 三腿逐字(P2 翻绿校准,头注预登记;P1 期 tree 1/2/3)',
+      legsOk110(legs, '1\n1\n2\n'), legsBrief110(legs));
   }
   {
     const f = mk110('v110_t6.ming', [
@@ -25574,11 +25582,8 @@ secBegin('110');
       '}',
     ].join('\n'));
     const legs = legsOf110(f);
-    check('v110.13:t6 闭包数组互写锚保持现状——tree 1/2/3/4(两元素共享 parent 帧)vs VM 1/1/2/2,三腿逐字(未提前翻绿)',
-      legs[0][1].code === 0 && legs[0][1].stdout === '1\n2\n3\n4\n'
-      && legs[1][1].code === 0 && legs[1][1].stdout === '1\n1\n2\n2\n'
-      && legs[2][1].code === 0 && legs[2][1].stdout === '1\n1\n2\n2\n',
-      legsBrief110(legs));
+    check('v110.13:t6 闭包数组互写锚翻绿(A-闭包数组对抗)——同值双 push 互隔离 1/1/2/2 三腿逐字(P2 翻绿校准,头注预登记;P1 期 tree 1/2/3/4)',
+      legsOk110(legs, '1\n1\n2\n2\n'), legsBrief110(legs));
   }
   {
     const f = mk110('v110_piv.ming', [
@@ -25601,11 +25606,8 @@ secBegin('110');
       '}',
     ].join('\n'));
     const legs = legsOf110(f);
-    check('v110.14:p_closure_in_vec 锚保持现状——tree 1/2/1/2 vs VM 1/1/1/1,三腿逐字(未提前翻绿)',
-      legs[0][1].code === 0 && legs[0][1].stdout === '1\n2\n1\n2\n'
-      && legs[1][1].code === 0 && legs[1][1].stdout === '1\n1\n1\n1\n'
-      && legs[2][1].code === 0 && legs[2][1].stdout === '1\n1\n1\n1\n',
-      legsBrief110(legs));
+    check('v110.14:p_closure_in_vec 锚翻绿——Vec/Map 存取互隔离 1/1/1/1 三腿逐字(P2 翻绿校准,头注预登记;P1 期 tree 1/2/1/2)',
+      legsOk110(legs, '1\n1\n1\n1\n'), legsBrief110(legs));
   }
 
   // ---- ⑥ AOT dist 一条:含 lambda 程序按既有合同 AOT 字节码序列化具名回退源码模式,
@@ -25634,6 +25636,469 @@ secBegin('110');
     const direct = runMing(['run', path.join(proj, 'main.ming')]);
     check('v110.15:AOT dist 权重——t1 形态(窄型捕获闭包)build(源码模式回退)+ dist 产物 6/6/7/5 与直跑逐字一致',
       bld.status === 0 && dist.status === 0 && dist.stdout === '6\n6\n7\n5\n'
+      && direct.code === 0 && direct.stdout === dist.stdout,
+      `bld=${bld.status} dist=${dist.status}/${JSON.stringify(dist.stdout ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout ?? '')}`);
+  }
+}
+
+// ===================== 111. ADR-011 P2:复制点过滤化(#82 翻绿收官)=====================
+// 文件所有权:§111 = 本区全部用例(Agent P2-A,ADR-011 P2)。
+// 缺陷(#82 收官):tree 闭包复制点(deepCopy case 'closure')此前只深拷拷贝体自身
+// env.vars,parent 帧浅拷共享(v0.97 审查 B1 回退后现状)——一切"已存在闭包值被再
+// 复制"的边界(let/实参/返回/Vec/Map/struct 字段)上,两个闭包值经共享 parent 帧互写
+// 可见,块结构成为可观察语义(n3 的 wrapA ≡ wrapB 在 VM 成立、在 tree 不成立)。
+// P2 修复(src/interp.js):deepCopy closure 分支改用创建点同款 captureEnvFor
+// (v.body, v.params, v.env)——复制 = 对"body 求值时可经 env 链按名到达的绑定状态"
+// 做值快照(ADR-011 §2.1 语义等价论证:body 未引用的绑定不可经该闭包观察);嵌套
+// 闭包值(自由变量的值本身是 closure)经 deepCopy 递归走同一函数——间接引用链
+// (g 捕获 h,h 捕获 x)按值快照逐层传递:collectFreeNames 只收 body 直接 Ident(g),
+// x 经 h 的值复制在 h 自己的链上再捕获,每个绑定值沿自由变量边恰复制一次(无 v0.97
+// 回退修法的"vars 内嵌闭包 + parent 链重走"双路重复 2^n)。旧 snapshotEnv 删除
+// (P1 后零调用点);其 MING_DBG_TYS/__dbgId 调试字段不迁移(全仓零消费者,
+// __snapSeq 从未声明——MING_DBG_TYS=1 路径本就 ReferenceError 隐患,§111.15 grep 钉死)。
+// vclose(VM 平面捕获)分支保持 #81 现状不动(captureEnvFor 是树引擎 closure 专属);
+// 全部 VM 腿期望值零校准 = 强不变量(P2 不触 vm.js,任何 VM 漂移 = 实现越界)。
+// P2 行为面(实测钉死,2026-11-21):
+//   * 翻绿锚七条(§110 P1 期现状红值 → 本区翻绿值):n3/n1/t2/t5/t6/v81_4/
+//     p_closure_in_vec tree 腿翻绿与 VM 腿逐字(ADR-011 §4.1 "C1 后"列全部兑现);
+//     P1 期 tree 现状对照值保留在 §110 各 check 名(头注预登记的复校准)。
+//   * 间接引用链对抗(ADR-011 §3.1.3 关键风险):修复前 tree 10/20/30/40/50(共享
+//     计数器,git stash 实测)vs VM 10/10/20/20/30;修复后三腿 10/10/20/20/30/0。
+//   * 回归锚零校准:e79_vclose/e79_closure/t1/t4 三腿逐字与 §110 同值;A-循环内
+//     闭包复制(循环内 let 复制)修复前后双引擎一致(0/0/1/1/2/2)。
+//   * 性能门槛(ADR-011 §5.4 G2,P2 后 min-of-5 实测):p_chain_22 tree 138ms/deepCopy
+//     664(门 ≤250ms,多项式非指数)/p_big_parent 152ms、deepCopy 26,006(门 ≤250ms、
+//     ≤28,000)/p_bind_closure_hot 837ms(门 ≤850)、deepCopy 5,000,004 逐字;计数门
+//     v110.1/v110.2 与 P1 实测同值(零自由变量复制仍计 1 条目/iter)。
+secBegin('111');
+{
+  const dir111 = path.join(TMP, 'v111');
+  fs.mkdirSync(dir111, { recursive: true });
+  const mk111 = (name, src) => { const f = path.join(dir111, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const legsOf111 = (f) => [
+    ['tree', runMing(['run', f, '--tree'])],
+    ['默认', runMing(['run', f])],
+    ['no-wasm', runMing(['run', f, '--no-wasm'])],
+  ];
+  const legsOk111 = (legs, out) => legs.every(([, r]) => r.code === 0 && r.stdout === out);
+  const legsBrief111 = (legs) => legs.map(([n, r]) => `${n}:${r.code}/${JSON.stringify(r.stdout)}`).join(' ');
+
+  // ---- ① #82 翻绿锚组(.zcode 语料源码逐字;ADR-011 §4.1 "C1 后"列)。四态对照 =
+  //      三执行腿(tree/默认/no-wasm)stdout 逐字 + cc 具名拒绝面(v111.16 单独一条:
+  //      C1 门禁对闭包程序形态的具名拒绝是 pre-existing 强不变量,闭包程序无 cc 执行
+  //      腿,以"具名拒绝不变"为第四腿口径;四引擎执行差分由 fuzz 对可资格程序覆盖)。
+  {
+    // n3(决定性锚,.zcode/verify81/corpus/n3_tree_inconsistency.ming 逐字):
+    // wrapA/wrapB 双段同为快照语义——缺陷标题的直译(P3 块结构不可观察)。
+    const f = mk111('v111_n3.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrapA = (g: (i64) -> i64) => (x: i64) => g(x);',
+      '    let wrapB = (g: (i64) -> i64) => {',
+      '        let h = (x: i64) => g(x);',
+      '        h',
+      '    };',
+      '    let w1 = wrapA(a);',
+      '    let w2 = w1;',
+      '    print(w1(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    let u1 = wrapB(a);',
+      '    let u2 = u1;',
+      '    print(u1(0));',
+      '    print(u2(0));',
+      '    print(u1(0));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.1:n3 决定性翻绿锚——wrapA ≡ wrapB 双快照 1/1/2·1/1/2 三腿逐字'
+      + '(P1 期 tree wrapB 1/2/3;#82 标题"同一程序按块结构改变复制隔离性"翻绿)',
+      legsOk111(legs, '1\n1\n2\n1\n1\n2\n'), legsBrief111(legs));
+  }
+  {
+    // v81_4(.zcode/verify81/corpus/v81_4_nested.ming 逐字):嵌套闭包深拷链——
+    // H 验残余面翻绿;第 7 值 6(非 14)= w2 复制时对 w1 的捕获状态(含 a 的 c=1)
+    // 做值快照后互不穿透。
+    const f = mk111('v111_v81_4.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let b = (x: i64) => a(x) + a(x);',
+      '    let b2 = b;',
+      '    print(b2(0));',
+      '    print(b(0));',
+      '    print(a(0));',
+      '    print(c);',
+      '    let wrapped = (g: (i64) -> i64) => {',
+      '        let h = (y: i64) => g(y) + g(y + 1);',
+      '        h',
+      '    };',
+      '    let w1 = wrapped(a);',
+      '    let w2 = w1;',
+      '    print(w2(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    print(a(0));',
+      '    print(c);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.2:v81_4 翻绿锚——嵌套闭包深拷链 3/3/1/0/6/10/6/2/0 三腿逐字'
+      + '(P1 期 tree 第 7 值 14;H 验定案"失配行是 tree 违反自身值语义文档"翻绿)',
+      legsOk111(legs, '3\n3\n1\n0\n6\n10\n6\n2\n0\n'), legsBrief111(legs));
+  }
+  {
+    // t2(.zcode/adr011/t2_vec_of_closures.ming 同源):闭包经 Vec 字面量 + Map.set
+    // 两条容器边界复制——map 值与 v[0] 互隔离(P1 期 tree 1/1/1/2/3)。
+    const f = mk111('v111_t2.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrapB = (g: (i64) -> i64) => {',
+      '        let h = (x: i64) => g(x);',
+      '        h',
+      '    };',
+      '    let v: Vec[(i64) -> i64] = [wrapB(a), wrapB(a), wrapB(a)];',
+      '    print(str(v[0](0)));',
+      '    print(str(v[1](0)));',
+      '    print(str(v[2](0)));',
+      '    let mut w: Map[str, (i64) -> i64] = {};',
+      '    w.set("k", v[0]);',
+      '    print(str(w.get("k").unwrap()(0)));',
+      '    print(str(v[0](0)));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.3:t2 容器存储翻绿锚——Vec + Map 双边界复制互隔离 1/1/1/2/2 三腿逐字(P1 期 tree 1/1/1/2/3)',
+      legsOk111(legs, '1\n1\n1\n2\n2\n'), legsBrief111(legs));
+  }
+  {
+    // t5(.zcode/adr011/t5_struct_closure.ming 同源):闭包存 struct 字段,let s = r
+    // 整值复制后取字段——两字段闭包互隔离(P1 期 tree 1/2/3)。
+    const f = mk111('v111_t5.ming', [
+      'struct Holder { f: (i64) -> i64 }',
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrapB = (g: (i64) -> i64) => {',
+      '        let h = (x: i64) => g(x);',
+      '        h',
+      '    };',
+      '    let r = Holder { f: wrapB(a) };',
+      '    let s = r;',
+      '    let g1 = s.f;',
+      '    let g2 = r.f;',
+      '    print(str(g1(0)));',
+      '    print(str(g2(0)));',
+      '    print(str(g1(0)));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.4:t5 struct 字段翻绿锚——整值复制后字段互隔离 1/1/2 三腿逐字(P1 期 tree 1/2/3)',
+      legsOk111(legs, '1\n1\n2\n'), legsBrief111(legs));
+  }
+  {
+    // t6(.zcode/adr011/t6_closure_array_write.ming 逐字,ADR-011 §4.2 A-闭包数组
+    // 对抗正式入库):同一闭包值 push 进 Vec 两次后交替调用——两元素独立计数器。
+    const f = mk111('v111_t6.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrapB = (g: (i64) -> i64) => {',
+      '        let h = (x: i64) => g(x);',
+      '        h',
+      '    };',
+      '    let u1 = wrapB(a);',
+      '    let mut v: Vec[(i64) -> i64] = [];',
+      '    v.push(u1);',
+      '    v.push(u1);',
+      '    print(str(v[0](0)));',
+      '    print(str(v[1](0)));',
+      '    print(str(v[0](0)));',
+      '    print(str(v[1](0)));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.5:t6 闭包数组互写翻绿锚(A-闭包数组对抗入库)——同值双 push 互隔离 1/1/2/2 三腿逐字(P1 期 tree 1/2/3/4)',
+      legsOk111(legs, '1\n1\n2\n2\n'), legsBrief111(legs));
+  }
+  {
+    // p_closure_in_vec(.zcode/review-v097/probes/p_closure_in_vec.ming 同源):
+    // Vec 字面量 + Map + 双 wrapB——四路闭包值互隔离(P1 期 tree 1/2/1/2)。
+    const f = mk111('v111_piv.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrapB = (g: (i64) -> i64) => {',
+      '        let h = (x: i64) => g(x);',
+      '        h',
+      '    };',
+      '    let u1 = wrapB(a);',
+      '    let v: Vec[(i64) -> i64] = [u1];',
+      '    print(v[0](0));',
+      '    print(u1(0));',
+      '    let mut w: Map[str, (i64) -> i64] = {};',
+      '    let u3 = wrapB(a);',
+      '    w.set("f", u3);',
+      '    print(w.get("f").unwrap()(0));',
+      '    print(u3(0));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.6:p_closure_in_vec 翻绿锚——Vec/Map 存取互隔离 1/1/1/1 三腿逐字(P1 期 tree 1/2/1/2)',
+      legsOk111(legs, '1\n1\n1\n1\n'), legsBrief111(legs));
+  }
+  {
+    // n1(.zcode/verify81/corpus/n1_nested_min.ming 同源):外层 lambda 体内块级 let h,
+    // 复制后互隔离 + 定义处 a 不受穿透(P1 期 tree 1/2/3/1;VM 腿值零校准)。
+    const f = mk111('v111_n1.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrap = (g: (i64) -> i64) => {',
+      '        let h = (y: i64) => g(y);',
+      '        h',
+      '    };',
+      '    let w1 = wrap(a);',
+      '    let w2 = w1;',
+      '    print(w1(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    print(a(0));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.7:n1 翻绿锚——复制互隔离 + 定义处脱钩 1/1/2/1 三腿逐字(P1 期 tree 1/2/3/1)',
+      legsOk111(legs, '1\n1\n2\n1\n'), legsBrief111(legs));
+  }
+
+  // ---- ② 间接引用链对抗(ADR-011 §3.1.3 关键风险:collectFreeNames 只收 body 直接
+  //      Ident,g 的捕获集不经名字分析传递——传递走"值复制递归":复制 g 时自由名 h 的
+  //      值本身是 closure,deepCopy 递归对 h 自己的链按 h.body 自由集重建,x 逐名快照)。
+  //      v111.8 = 变异隔离(w2(0) 不影响 w1(0) 计数器);v111.9 = 快照时点(复制发生在
+  //      调用后 → 副本从"当前捕获状态"起算,与 VM deepCopy captures 同口径)。
+  //      修复前(git stash 实测):tree 10/20/30/40/50/0(共享)vs VM 10/10/20/20/30/0。
+  {
+    const f = mk111('v111_indirect.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let mk = () => {',
+      '        let h = (y: i64) => { c = c + 1; c + y };',
+      '        let g = (y: i64) => h(y) * 10;',
+      '        g',
+      '    };',
+      '    let w1 = mk();',
+      '    let w2 = w1;',
+      '    print(w1(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    print(c);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.8:间接引用链对抗(g 捕获 h,h 捕获 c)——复制后 w2(0) 不影响 w1(0) 计数器:'
+      + ' 10/10/20/20/30/0 三腿逐字(修复前 tree 10/20/30/40/50/0 共享,git stash 实测钉死检测器)',
+      legsOk111(legs, '10\n10\n20\n20\n30\n0\n'), legsBrief111(legs));
+  }
+  {
+    const f = mk111('v111_indirect_timing.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let mk = () => {',
+      '        let h = (y: i64) => { c = c + 1; c * 10 + y };',
+      '        let g = (y: i64) => h(y);',
+      '        g',
+      '    };',
+      '    let w1 = mk();',
+      '    print(w1(0));',
+      '    let w2 = w1;',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    print(c);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.9:间接链快照时点对抗(调用后再复制)——副本从当前捕获状态起算(c1=1 快照):'
+      + ' 10/20/20/30/30/0 三腿逐字(修复前 tree 10/20/30/40/50/0;时点语义 = 复制对'
+      + '"body 可经链到达的绑定状态"现值快照,与 VM deepCopy captures 同口径)',
+      legsOk111(legs, '10\n20\n20\n30\n30\n0\n'), legsBrief111(legs));
+  }
+
+  // ---- ③ 既有回归锚零校准(e79×2/t1/t4 与 §110 v110.3/4/7/8 同值三腿逐字——P2 后
+  //      再钉一次使本区自含 P2 终态锚表;n1 翻绿归 ① 组)。
+  {
+    const f = mk111('v111_e79_vclose.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let f = (x: i64) => { c = c + 1; x + c };',
+      '    let f2 = f;',
+      '    print(f2(0));',
+      '    print(f2(0));',
+      '    print(f(0));',
+      '    print(c);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.10:e79_vclose 回归锚——捕获快照隔离 1/2/1/0 三腿逐字(零校准)',
+      legsOk111(legs, '1\n2\n1\n0\n'), legsBrief111(legs));
+  }
+  {
+    const f = mk111('v111_e79_closure.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let f = (x: i64) => { c = c + 1; x + c };',
+      '    let r1 = [10, 20].map(f);',
+      '    let r2 = [10, 20].map(f);',
+      '    print(r1[0]);',
+      '    print(r1[1]);',
+      '    print(r2[0]);',
+      '    print(r2[1]);',
+      '    let mut m: Map[str, i64] = { "k": 1 };',
+      '    let g = (x: i64) => { m.set("k", m.get("k").unwrap() + x); x };',
+      '    let r3 = [1, 2].map(g);',
+      '    print(m.get("k").unwrap());',
+      '    print(r3[0]);',
+      '    print(r3[1]);',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.11:e79_closure 回归锚——HOF 重复 map + Map 捕获 11/22/11/22/1/1/2 三腿逐字(零校准)',
+      legsOk111(legs, '11\n22\n11\n22\n1\n1\n2\n'), legsBrief111(legs));
+  }
+  {
+    // t1(tys):复制后捕获窄型绑定 += 仍归一——P2 复制点 tys 子集随认领帧重建。
+    const f = mk111('v111_t1.ming', [
+      'fn main() with io {',
+      '    let mut a = 5u8;',
+      '    let f = () => { a = a + 1u8; a };',
+      '    let g = f;',
+      '    print(str(f()));',
+      '    print(str(g()));',
+      '    print(str(f()));',
+      '    print(str(a));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.12:t1 tys 回归锚——u8 窄型捕获经复制后归一 6/6/7/5 三腿逐字(零校准;复制点 tys 子集)',
+      legsOk111(legs, '6\n6\n7\n5\n'), legsBrief111(legs));
+  }
+  {
+    // t4(localFns):闭包引用块级本地 fn,复制后调用仍解析——命中条目浅拷,兄弟/
+    // 递归解析经 callLocalFn 的 sig.env.localFns 原表(A-LF 审计项维持现状)。
+    const f = mk111('v111_t4.ming', [
+      'fn main() with io {',
+      '    fn double(x: i64) -> i64 { x * 2 }',
+      '    let f = (y: i64) => double(y) + 1;',
+      '    let g = f;',
+      '    print(str(g(3)));',
+      '    print(str(f(3)));',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.13:t4 localFns 回归锚——块级本地 fn 经复制后调用 7/7 三腿逐字(零校准)',
+      legsOk111(legs, '7\n7\n'), legsBrief111(legs));
+  }
+  {
+    // A-循环内闭包复制(ADR-011 §4.2 对抗形态入库;t3 变体 + 循环内 let 复制):
+    // 每轮 f/g 独立且各轮闭包互不串扰(修复前后双引擎一致 = 回归锚,git stash 实测)。
+    const f = mk111('v111_loop_copy.ming', [
+      'fn main() with io {',
+      '    let mk = (i: i64) => {',
+      '        let f = (y: i64) => y + i;',
+      '        f',
+      '    };',
+      '    for i in 0..3 {',
+      '        let f = mk(i);',
+      '        let g = f;',
+      '        print(g(0));',
+      '        print(f(0));',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legsOf111(f);
+    check('v111.14:A-循环内闭包复制锚——每轮 mk→let g = f 复制独立,0/0/1/1/2/2 三腿逐字'
+      + '(修复前后双引擎一致,回归锚)',
+      legsOk111(legs, '0\n0\n1\n1\n2\n2\n'), legsBrief111(legs));
+  }
+
+  // ---- ④ snapshotEnv/__snapSeq 消亡断言:src/interp.js 源码 grep——旧全链快照函数
+  //      与其 MING_DBG_TYS 观测面(P2 顺手项裁决:零消费者 + __snapSeq 未声明,不迁移)
+  //      在**代码**中零残留(剥离 // 行注释与块注释后匹配——历史注记注释可提及被删
+  //      函数名;四个 token 均不出现在任何字符串字面量中,剥注释不影响判定);
+  //      captureEnvFor 单一路径(创建点 e.body/复制点 v.body 两调用位)。
+  {
+    const raw111 = fs.readFileSync(path.join(ROOT, 'src', 'interp.js'), 'utf8');
+    const code111 = raw111.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map((l) => l.slice(0, Math.max(0, l.indexOf('//') === -1 ? l.length : l.indexOf('//')))).join('\n');
+    const dead = !code111.includes('snapshotEnv') && !code111.includes('__snapSeq')
+      && !code111.includes('MING_DBG_TYS') && !code111.includes('__dbgId');
+    const single = code111.includes('captureEnvFor(v.body, v.params, v.env)')
+      && code111.includes('captureEnvFor(e.body, e.params, env)');
+    check('v111.15:snapshotEnv/__snapSeq 消亡——src/interp.js 代码零残留(剥注释 grep 断言,含 MING_DBG_TYS/__dbgId 观测面);'
+      + 'captureEnvFor 单一快照路径(创建点/复制点两调用位)',
+      dead && single, `dead=${dead} singlePath=${single}`);
+  }
+
+  // ---- ⑤b cc 具名拒绝面(第四腿口径):闭包程序形态对 ming cc 是 C1 门禁具名拒绝
+  //      (pre-existing 强不变量)——P2 只改 tree 复制路径,资格面零变化;断言 exit 1 +
+  //      stderr 具名前缀。
+  {
+    const f = mk111('v111_cc_face.ming', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let w1 = (y: i64) => a(y);',
+      '    let w2 = w1;',
+      '    print(w2(0));',
+      '}',
+    ].join('\n'));
+    const r = runMing(['cc', f]);
+    check('v111.16:cc 具名拒绝面不变——闭包程序 ming cc exit 1 + stderr C1 具名前缀'
+      + '(资格面零变化;四引擎执行差分由 fuzz 覆盖可资格程序)',
+      r.code === 1 && r.stderr.startsWith('C1 不支持该程序形态'), `code=${r.code} stderr=${JSON.stringify((r.stderr || '').slice(0, 80))}`);
+  }
+
+  // ---- ⑥ AOT dist 一条:P2 复制点形态(wrapB 复制互隔离 + t1 窄型复制)build(源码
+  //      模式回退)+ dist 产物执行输出与直跑逐字一致(P2 不改 build/dist 管线)。
+  {
+    const proj = path.join(dir111, 'aotproj');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(path.join(proj, 'ming.toml'), '[project]\nname = "v111_aot"\nversion = "0.1.0"\nentry = "main.ming"\n');
+    const srcAot111 = [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let a = (x: i64) => { c = c + 1; x + c };',
+      '    let wrapB = (g: (i64) -> i64) => {',
+      '        let h = (x: i64) => g(x);',
+      '        h',
+      '    };',
+      '    let w1 = wrapB(a);',
+      '    let w2 = w1;',
+      '    print(w1(0));',
+      '    print(w2(0));',
+      '    print(w1(0));',
+      '    let mut a2 = 5u8;',
+      '    let f = () => { a2 = a2 + 1u8; a2 };',
+      '    let g2 = f;',
+      '    print(str(f()));',
+      '    print(str(g2()));',
+      '}',
+    ].join('\n');
+    fs.writeFileSync(path.join(proj, 'main.ming'), srcAot111);
+    const env111 = { ...process.env };
+    delete env111.MING_NO_OPT;
+    delete env111.MING_WASM_STRICT;
+    const bld = spawnSync(process.execPath, [MING, 'build', '--clean-cache'], { encoding: 'utf8', cwd: proj, timeout: 120000, env: env111 });
+    const dist = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000, env: env111 });
+    const direct = runMing(['run', path.join(proj, 'main.ming')]);
+    check('v111.17:AOT dist 权重——复制点形态(wrapB 复制互隔离 1/1/2 + t1 窄型复制 6/6)'
+      + ' build + dist 产物 1/1/2/6/6 与直跑逐字一致',
+      bld.status === 0 && dist.status === 0 && dist.stdout === '1\n1\n2\n6\n6\n'
       && direct.code === 0 && direct.stdout === dist.stdout,
       `bld=${bld.status} dist=${dist.status}/${JSON.stringify(dist.stdout ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout ?? '')}`);
   }
