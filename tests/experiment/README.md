@@ -15,6 +15,9 @@ tasks/<id>/
   solutions/         参考实现(solution.ming / solution.ts / solution.py)
   mock_server.mjs    仅 B3:本地模拟 HTTP 源(单一实现,三语言共用)
   harness.mjs        仅 B4:服务生命周期 harness(启动/请求矩阵/关停)
+scenarios/<name>/   T3 场景试点(log_forensics 日志取证 / file_integrity 文件完整性;
+                    spec.md = 场景规格先行,T3-pre 交付;实现/fixture/verify 待 T3-impl,
+                    前置 = T2.3 生效——见各 spec.md 头注)
 ```
 
 ## 运行验收(一律从仓库根目录)
