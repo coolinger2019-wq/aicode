@@ -68,6 +68,7 @@ async function main() {
       console.log(l);
     }
     process.exitCode = 0; // v0.97 审查 m-3:自然退出——管道异步写 + 强退可能截断 transcript(被测 TS 程序同规)
+    return; // v0.97 审查 B-2:成功路径显式返回——此前无 return,落到失败路径输出"服务无法启动"+exit 2(b4 ming 验收腿因此 FAIL)
   }
   console.error("harness: 服务无法启动");
   process.exitCode = 2;

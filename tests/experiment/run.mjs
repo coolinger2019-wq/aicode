@@ -8,6 +8,10 @@
 //   缺口 5  修复轮反馈模板 —— --feedback(静态检查输出原文 + verify 输出原文,三语言同形)。
 //   缺口 6  prompt 裁剪     —— --prompt 与 --pilot 内置:按 "## 语言约束" 节标题定位,
 //                             只发送"正文 + 对应语言小节",禁止整文件发送(结构违规即报错)。
+//   缺口 4  端口段预检+env_blocked —— **未实现,登记缓办**:缺口 4 在设计 §8 列为"执行前必须解决",
+//        但 plan T1.2-a 行合同只承诺缺口 6–8;语料 +3/+7 漂移重试可缓解常态冲突,外来服务恰在
+//        漂移端口应答 200 的污染面登记为已知局限——**T1.2-c 涉及 b3/b4 共 12 格,采集前必须并入**
+//        (预检失败该格记 env_blocked 不计入样本;并发跑多格时端口漂移让判定复杂化)。
 //   缺口 7  env 指纹        —— 每 run JSONL 记录 env:{os,node,python,ming_head,tsc}
 //                             (附加 ming_version),逐 run 嵌入。
 //   缺口 8  工具口径        —— Python 静态检查 = python -m py_compile;Ming = ming check --json
@@ -598,6 +602,7 @@ function cmdPilot(args) {
   }
 
   // 2. 环境指纹(§8 缺口 7)
+  mkdirSync(path.join(root, "feedback"), { recursive: true }); // B-1: 修复轮反馈目录预建(P2-B 实测缺则 ENOENT 崩)
   const env = probeEnv(opts);
   console.log(
     `env: os=${env.os} node=${env.node} python=${env.python} ming_head=${env.ming_head.slice(0, 8)} ming=${env.ming_version} tsc=${env.tsc}`
@@ -692,6 +697,15 @@ function cmdPilot(args) {
 }
 
 function cmdRecord(args) {
+  // m-3:参数校验先于目录创建(无效调用不建 results/)
+  const taskPre = typeof args.task === "string" ? args.task : null;
+  const langPre = typeof args.language === "string" ? LANG_ALIASES[args.language] : null;
+  const runPre = Number.parseInt(String(args.run ?? ""), 10);
+  const roundPre = Number.parseInt(String(args.round ?? "1"), 10);
+  const progPre = typeof args.program === "string" ? args.program : null;
+  if (!taskPre || !langPre || !Number.isInteger(runPre) || !Number.isInteger(roundPre) || !progPre) {
+    throw new Error("--record 需要 --task <id> --language ming|typescript|python --run N --program <路径>(--round 缺省 1)");
+  }
   const root = resolveRoot(args, FORMAL_ROOT);
   const opts = optsFrom(args);
   const task = typeof args.task === "string" ? args.task : null;
@@ -705,7 +719,9 @@ function cmdRecord(args) {
   if (!existsSync(path.join(REPO_ROOT, TASKS_DIR, task, "prompt.md"))) throw new Error(`任务不存在: ${task}`);
   const progAbs = path.resolve(REPO_ROOT, program);
   if (!existsSync(progAbs)) throw new Error(`被测程序不存在: ${program}`);
-  const expect = args.expect === "fail" ? "fail" : "pass";
+  const expectRaw = typeof args.expect === "string" ? args.expect : "pass";
+  if (expectRaw !== "pass" && expectRaw !== "fail") throw new Error(`--expect 仅接受 pass|fail,got: ${expectRaw}`); // m-3:拼写错静默当 pass
+  const expect = expectRaw;
   const env = probeEnv(opts);
   const rec = runOneLeg({
     root,
