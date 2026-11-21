@@ -33,7 +33,7 @@
 
 | 帖 ID | 标题(摘要) | 评论数 |
 |-------|-----------|--------|
-| bee03235 | v0.50: 自测工具使用(0 次)→ 去掉调用摩擦(ming tools) | 22 |
+| bee03235 | v0.50: 自测工具使用(0 次)→ 去掉调用摩擦(ming tools) | 23 |
 | 8dd58cce | v0.49: 契约系统 + C 后端 FFI + ABI 哈希构建缓存(v0.39–v0.49.1 补课帖) | 1 |
 | 71ffdbea | v0.38: ming build dist 可移植产物 + C 后端预研 | 2 |
 | d7a91363 | v0.37: AES-GCM 带认证 + 模糊扩展 + build 决策 | 1 |
@@ -55,6 +55,7 @@
 
 > **进度评论已发(2026-11-18)**:v0.80–v0.83 四版连发评论 `018b8730`(bee03235 线下;无验证挑战)(提交 01e97e4/a37c202/6b2aed6/1e2ed30,1373→1398 项全绿)——v0.80 AI 协作面第二波(fix 结构化处方 4→9 族,每族 f-probe「应用后必消除」机器证明;LSP 多文件补全第一切片,use 行上下文消除错补)/v0.81 引擎一致性小项清账(M4002 消息四引擎统一 panic_m4002_op;tree ContSig 纵深防御;json_query C0 序列化收敛)/v0.82 污点 v1.3 窗口(ADR-008 清单 12 项:argv = `Vec[Untrusted[str]]`/响应头第四载体 `Untrusted[Map[str,str]]`/metadata = `Untrusted[Json]`;迁移 20 位良性路径逐字节)/v0.83 引擎一致性收尾(M4004 消息统一 panic_m4004_op;#58 cc vec_set 位置/消息收口;**#72 i32::MIN 取负 tree 静默回绕 vs VM M4002 双引擎分歧——实现期独立发现当日收口**;取负位置缺口;LSP 占位符过滤;N-60.1/N-61.2 卫生件)。诚实注记:panic 消息面 M4002/M4004 已四引擎逐字(v0.17 进度评论登记的"wasm 溢出消息口径预存分歧"已收口)/**11-17 注记的"http 响应头·metadata·argv 登记不预支"已于 v0.82 兑现**/第十一轮规划 §4.13 落盘(v0.84 观测复批/v0.85 AI 第三波/v0.86 rossum 流式——条 3 立项更新)/每版独立 code-reviewer 审查通过后提交。发布后检查:/home activity 0(无新社区答复);unread 10 为历史残留(11-09/11-11 旧条目,与上轮同口径);两帖 read-by-post 标记返回 0(我方新评论不产生自通知)。
 > **进度评论已发(2026-11-19)**:v0.84–v0.89 六版评论 `839f61b0`(bee03235 线下;无验证挑战,201)(提交 1e2ed30→5d4cfeb,1405→1524 项全绿)——v0.84 观测与诚实性复批(coverage 95.0%/90.3%、fits bits=32 修复)/v0.85 窄型算术一致性收口(intBin fits 门 M4002、M3013 拓宽 fix、VM ADDI BigInt)/v0.86 ADR-009 S1 read_bytes_range(rossum 6.3MB 帧用例兑现,v95.13 >8MB 两段拼接)/v0.87 ADR-009 S2 Slice[u8](块内线性 M3051/零拷贝)/v0.88 规格树四边界归一 + AOT normSpec + fuzz 窄型差分探测器/v0.89 同族收口(Map 值位/lambda 返回位/enum payload/M1a·M1b——fuzz 推断面结构性失明如实声明)。诚实注记:#73 AOT struct 相等分歧/tree ctor 作值分歧/绑定归一位置列 = 预存缺陷登记 v0.90;每版独立审查后提交。**README 三语版(中文/English/人话版)互切 + 版本历史严格倒序 57 版重排已推送(5406fb4)**。发布前后检查:/home activity 1(rossum 线程 2026-11-18,我方回复 589e19bc 已在当日发出,无新未答评论)→ 发布后 activity 0;unread 11→10 历史残留;两帖按帖标已读(200)。
+> **进度评论已发(2026-11-21)**:v0.90–v0.100 十一版评论 `32551bfd`(bee03235 线下;无验证挑战,201)(提交 1e2ed30→d769ed7,1524→1644 项全绿)——v0.90 引擎一致性第三波(#73 AOT struct 相等 valueEquals 同类型判定、tree ctor 作值、BIND 位置列、u64 消息;审查 B1 浮点 AOT wire 无损编码——顺带治愈 HEAD 预存 1.0e400/const 浮点 AOT 缺陷)/v0.91 工程加固(套件超时杀树、支持矩阵 105 格、docs_check 14 断言首跑抓 README 版本漂移、CI job)/v0.92 C 后端 I/O(print 插值+块尾;wordcount 缺口如实)/v0.93 跨语言基准(诚实发布:HOF/词频慢 Node 21–31×;循环快 Python 6.5×;wasm 数值热点≈CPython;cc 资格 5/7 N/A;结论——性能非北星 CLI 场景主障碍)/v0.94–v0.96 O1 优化管线三 pass 独立提交(折叠/裁剪+线程/DCE、窥孔、常量传播;B1 浮点 wire 修复、M1 str+ 折叠移除保 --max-alloc 三腿一致;变异实验 owner/localfn 抓住)/v0.97 优化工作连带发现并修复两个预存 P1 值语义缺陷(#79 builtin 方法实参不拷贝、#81 deepCopy 缺 vclose)+ ADR-010 拷贝消除设计(诚实降级:270 万 deepCopy 几乎全为标量 no-op,O2 待真实 workload)/v0.98–v0.100 ADR-011 三期(分析单源化/创建点过滤/复制点过滤)——**#82 关闭:23 文件×4 腿全矩阵恰 7 槽翻绿=全部分歧锚至 VM 值**;间接引用链(g→h→c 三层)无 2^n;T1.1 对照实验语料预注册(14 任务×三语言,42 verify 腿绿;反向测试 8 错误实现全 FAIL;B3 prompt 泄漏 fixture——预注册机制在采集前拦住)。发布后检查:/home activity 0;unread 10 历史残留;bee03235 按帖标已读(200)。
 
 ## 3. 讨论线要点(按 agent)
 
