@@ -291,8 +291,8 @@
 
 | 阶段 | 内容 | 门槛 | 规模预估 |
 |---|---|---|---|
-| **P0 分析单源化** | collectFreeNames/collectLambdaLocals/addPatNames → `src/freenames.js`;compiler import;全量回归零校准 + VM 三锚逐字 | 零行为变化(移动) | ≈80 行移动 |
-| **P1 创建点过滤化** | `captureEnvFor` + 1609 替换;A-deep容器链/A-let多层 入库;**回归锚零校准**(t1/t3/t4/e79/p_chain_22 等行为不变)、**分歧锚仍红**(n3/t2/t5/v81_4/p_closure_in_vec——复制未修,P2 翻绿);G2 创建侧门槛 | 三腿逐字 + §5.4 | src ≈80 行 + tests ≈120 行 |
+| **P0 分析单源化** | collectFreeNames/collectLambdaLocals/addPatNames → `src/freenames.js`;compiler import;全量回归零校准 + VM 三锚逐字 | 零行为变化(移动) | ≈80 行移动。✅ 已交付（2026-11-20，v0.98.0；字节码等价 10/10；bin dist 清单补登记） |
+| **P1 创建点过滤化** | `captureEnvFor` + 1609 替换;A-deep容器链/A-let多层 入库;**回归锚零校准**(t1/t3/t4/e79/p_chain_22 等行为不变)、**分歧锚仍红**(n3/t2/t5/v81_4/p_closure_in_vec——复制未修,P2 翻绿);G2 创建侧门槛 | 三腿逐字 + §5.4 | src ≈80 行 + tests ≈120 行。✅ 已交付（2026-11-21，v0.99.0；92/92 零漂移；G2 全达成；§110 15 check；审查 APPROVE-with-minor） |
 | **P2 复制点过滤化** | deepCopy closure → captureEnvFor;删 snapshotEnv;n3/t2/t5/v81_4/p_closure_in_vec 翻绿;A-闭包数组/A-循环 入库;fuzz 双种子;G2 全门 | 全锚 + 1603 零校准 + 0 分歧 | src ≈40 行 + tests ≈150 行。P2 顺手项:snapshotEnv 的 __dbgId 调试字段(MING_DBG_TYS)随 captureEnvFor 重写定去留 |
 | **P3 文档收口** | GUIDE §6 措辞校准(§7 边界 #4)+ plan #82 收口 + capabilities 值语义行 + opt 基线注记(tree 闭包计数口径变化) | docs_check | docs ≈30 行 |
 
