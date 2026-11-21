@@ -8,10 +8,18 @@
 //   缺口 5  修复轮反馈模板 —— --feedback(静态检查输出原文 + verify 输出原文,三语言同形)。
 //   缺口 6  prompt 裁剪     —— --prompt 与 --pilot 内置:按 "## 语言约束" 节标题定位,
 //                             只发送"正文 + 对应语言小节",禁止整文件发送(结构违规即报错)。
-//   缺口 4  端口段预检+env_blocked —— **未实现,登记缓办**:缺口 4 在设计 §8 列为"执行前必须解决",
-//        但 plan T1.2-a 行合同只承诺缺口 6–8;语料 +3/+7 漂移重试可缓解常态冲突,外来服务恰在
-//        漂移端口应答 200 的污染面登记为已知局限——**T1.2-c 涉及 b3/b4 共 12 格,采集前必须并入**
-//        (预检失败该格记 env_blocked 不计入样本;并发跑多格时端口漂移让判定复杂化)。
+//   缺口 4  端口段预检+env_blocked —— **已实现(2026-11-22)**:--record/--pilot 对任务
+//        b3_fetch_aggregate/b4_serve_handler 先做端口预检(node:net 绑定探测经同步子进程;
+//        b3 候选段 21031–21060 连续 30 个——基址 21031、需连续 3 端口组、+3 漂移 ×10;
+//        b4 候选 10 个——基址 21241、+7 漂移 ×10;口径与语料 mock_server.mjs/harness.mjs
+//        及 README"约定"节一致)。段内**任一**候选端口不可绑定 → 该格记 env_blocked:
+//        JSONL 行带 env_blocked:true + blocked_ports 明细,跳过静态检查与 verify;
+//        --matrix 单列(blk)且不计入样本统计(首过/轮次/静态检查口径全排除);退出码遵循
+//        "偏差 = 1"口径。已知局限维持登记:预检释放到 harness 真实绑定之间的抢注窗口
+//        (TOCTOU);并发跑多格时端口互占会让判定收紧——建议串行执行服务型任务两格
+//        (设计 §8 缺口 4 原口径;"外来服务恰在漂移端口应答 200"的静态占用面已由预检关闭)。
+//        预检覆盖 = 手工验证(占用/健康双向实测)+ T1.2-c 首采;tests/run.mjs §111 回归测试
+//        待并行化合并后补登记。
 //   缺口 7  env 指纹        —— 每 run JSONL 记录 env:{os,node,python,ming_head,tsc}
 //                             (附加 ming_version),逐 run 嵌入。
 //   缺口 8  工具口径        —— Python 静态检查 = python -m py_compile;Ming = ming check --json
@@ -240,6 +248,94 @@ function probeEnv(opts) {
   return env;
 }
 
+// ---------- §8 缺口 4:服务型任务端口预检(env_blocked) ----------
+
+// 端口探测子进程脚本(node:net 绑定探测;主进程保持同步风格,经 spawnSync 调用):
+//   输出单行 JSON {ok, group, probed:[{port,bindable}]}。
+// 判定口径(设计 §8 缺口 4"占用检查步骤"):所需端口段内**任一**候选端口不可绑定
+// → ok:false(env_blocked);全部可绑定 → ok:true。预检确认环境干净后由 harness
+// 自行绑定基址——这正是并发多格会互占端口而建议串行的原因;外来服务在段内任意
+// 端口的静态占用被预检拦在门外(残余 TOCTOU 窗口登记为已知局限)。
+// 绑定探测口径:127.0.0.1 + exclusive;绑定成功即 close 释放。
+const PORT_PROBE_SCRIPT = `
+const net = require("node:net");
+const task = process.argv[1];
+const isB4 = task === "b4_serve_handler";
+const base = isB4 ? 21241 : 21031;
+function probe(port) {
+  return new Promise((resolve) => {
+    const s = net.createServer();
+    let done = false;
+    const fin = (ok) => {
+      if (done) return;
+      done = true;
+      try { s.close(() => resolve(ok)); } catch { resolve(ok); }
+    };
+    s.once("error", () => fin(false));
+    s.listen({ port, host: "127.0.0.1", exclusive: true }, () => fin(true));
+    setTimeout(() => fin(false), 800);
+  });
+}
+(async () => {
+  // 所需端口集合: b3 = 21031..21060 连续 30 个(mock_server 需连续 3 端口组,+3 漂移 ×10 无间隙);
+  //              b4 = 21241 + i*7 ×10(harness 漂移候选,+7 间隔)。
+  const ports = [];
+  for (let i = 0; i < 10; i++) {
+    if (isB4) {
+      ports.push(base + i * 7);
+    } else {
+      ports.push(base + i * 3, base + i * 3 + 1, base + i * 3 + 2);
+    }
+  }
+  const probed = [];
+  for (const p of ports) {
+    probed.push({ port: p, bindable: await probe(p) });
+  }
+  const ok = probed.every((x) => x.bindable);
+  process.stdout.write(JSON.stringify({ ok, group: ok ? [base] : null, probed }));
+})().catch((e) => { console.error(String(e && e.message || e)); process.exit(2); });
+`;
+
+// 服务型任务端口集合(语料漂移口径 = mock_server.mjs/harness.mjs + README"约定"节):
+//   b3_fetch_aggregate:mock_server 绑定 base=21031、占用 +3 重试 ×10,每次需连续 3 端口组
+//                      (候选段 21031–21060 连续 30 个);
+//   b4_serve_handler:  harness 从 base=21241 起 +7 重试 ×10(候选 10 个)。
+// 返回 {needed:false}(非服务型任务)或 {needed, ok, detail};任一候选端口不可绑定
+// → ok:false(env_blocked)。探测自身失败按 env_blocked 保守处理(明细注明 probe_error
+// ——无法确认端口可用性时不得让 harness 半途挂起)。
+function probeServicePorts(task) {
+  if (task !== "b3_fetch_aggregate" && task !== "b4_serve_handler") return { needed: false };
+  const r = spawnSync(process.execPath, ["-e", PORT_PROBE_SCRIPT, task], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    timeout: 30000,
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (r.error || r.status !== 0) {
+    return {
+      needed: true,
+      ok: false,
+      detail: {
+        ok: false,
+        group: null,
+        probed: [],
+        probe_error: r.error ? String(r.error.message || r.error) : "exit " + r.status + ": " + String(r.stderr || "").slice(0, 400),
+      },
+    };
+  }
+  try {
+    const j = JSON.parse(r.stdout);
+    return { needed: true, ok: !!j.ok, detail: j };
+  } catch {
+    return {
+      needed: true,
+      ok: false,
+      detail: { ok: false, group: null, probed: [], probe_error: "探测输出解析失败: " + String(r.stdout || "").slice(0, 200) },
+    };
+  }
+}
+
 // ---------- 静态检查(§5.1.3;不是通过门槛,错误计数入 M2 槽位) ----------
 
 function staticCheck(langKey, progAbs, opts) {
@@ -367,6 +463,48 @@ function makeRecord(o) {
   };
 }
 
+// env_blocked 记录(§8 缺口 4):端口预检失败格——跳过静态检查与 verify,不计入样本统计。
+// 字段与 makeRecord 同名对齐,verify_result = "ENV_BLOCKED" 可区分;blocked_ports = 探测明细。
+function makeEnvBlockedRecord(o, probe) {
+  // o: 与 makeRecord 入参同形;probe: probeServicePorts 返回 {needed, ok, detail}
+  return {
+    run_id: o.runId,
+    pilot: !!o.pilot,
+    source: o.source,
+    expect: o.expect,
+    as_expected: false,
+    task: o.task,
+    language: o.langKey,
+    run_no: o.runNo,
+    repeat: o.runNo,
+    round: o.round,
+    env: o.env,
+    env_blocked: true,
+    blocked_ports: probe.detail.probed,
+    port_group_found: probe.detail.group ?? null,
+    probe_error: probe.detail.probe_error ?? null,
+    program: null,
+    static_check: null,
+    verify_result: "ENV_BLOCKED",
+    exit: "env-blocked",
+    verify_command: null,
+    duration_ms: null,
+    verify_output: null,
+    model: o.model ?? null,
+    temperature: o.temperature ?? null,
+    rounds: null,
+    first_pass: null,
+    defects: [],
+    tokens: { prompt: o.tokensP ?? null, completion: o.tokensC ?? null },
+    wall_ms: null,
+    verdict: "env_blocked",
+    notes:
+      (o.note ? o.note + "; " : "") +
+      "端口预检失败(env_blocked,设计 §8 缺口 4):所需端口段内存在不可绑定端口,该格不计入样本统计",
+    ts: new Date().toISOString(),
+  };
+}
+
 function appendJsonl(file, obj) {
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(obj) + "\n", { flag: "a" });
@@ -402,6 +540,7 @@ function buildMatrix(records) {
         pass_legs: 0,
         fail_legs: 0,
         error_legs: 0,
+        blocked_legs: 0,
         neg_legs: 0,
         neg_ok: 0,
         static_errors_sample: 0,
@@ -411,6 +550,11 @@ function buildMatrix(records) {
       });
     }
     const c = cells.get(k);
+    if (r.env_blocked) {
+      // §8 缺口 4:env_blocked 腿单列,不计入样本统计(legs/首过/轮次/静态检查全排除)
+      c.blocked_legs++;
+      continue;
+    }
     c.legs++;
     if (r.verify_result === "PASS") c.pass_legs++;
     else if (r.verify_result === "FAIL") c.fail_legs++;
@@ -445,6 +589,7 @@ function buildMatrix(records) {
       pass_legs: c.pass_legs,
       fail_legs: c.fail_legs,
       error_legs: c.error_legs,
+      blocked_legs: c.blocked_legs,
       first_pass_runs: reps.filter((s) => s.first_round_pass === true).length,
       final_pass_runs: passedReps.length,
       avg_rounds: passedReps.length === 0 ? null : Math.round((passedReps.reduce((a, s) => a + s.max_round, 0) / passedReps.length) * 10) / 10,
@@ -468,6 +613,7 @@ function printMatrix(rows) {
       pad("pass", 5) +
       pad("fail", 5) +
       pad("err", 4) +
+      pad("blk", 5) +
       pad("fp", 4) +
       pad("fin", 4) +
       pad("avgRd", 6) +
@@ -484,6 +630,7 @@ function printMatrix(rows) {
         pad(c.pass_legs, 5) +
         pad(c.fail_legs, 5) +
         pad(c.error_legs, 4) +
+        pad(c.blocked_legs, 5) +
         pad(c.first_pass_runs, 4) +
         pad(c.final_pass_runs, 4) +
         pad(c.avg_rounds ?? "-", 6) +
@@ -492,7 +639,7 @@ function printMatrix(rows) {
         pad(`${c.neg_ok}/${c.neg_legs}`, 8)
     );
   }
-  console.log("(fp=首轮通过 run 数;fin=最终通过 run 数;stErr=样本腿静态检查错误合计;neg=负例腿按预期失败数/总数)");
+  console.log("(fp=首轮通过 run 数;fin=最终通过 run 数;blk=env_blocked 腿数(端口预检失败,§8 缺口 4,不计入样本统计);stErr=样本腿静态检查错误合计;neg=负例腿按预期失败数/总数)");
 }
 
 // ---------- 单腿执行 ----------
@@ -510,6 +657,13 @@ function runOneLeg(o) {
   const lang = LANGS[o.langKey];
   const ext = o.progSrcRel.split(".").pop().toLowerCase();
   if (ext !== lang.ext) throw new Error(`程序扩展名 .${ext} 与语言 ${o.langKey}(.${lang.ext}) 不符: ${o.progSrcRel}`);
+  // §8 缺口 4:服务型任务(b3/b4)先做端口预检;失败 → env_blocked 行(跳过落盘/静态检查/verify)
+  const probe = probeServicePorts(o.task);
+  if (probe.needed && !probe.ok) {
+    const rec = makeEnvBlockedRecord(o, probe);
+    appendJsonl(path.join(o.root, "results.jsonl"), rec);
+    return rec;
+  }
   const progAbs = stageProgram(o.root, o.runId, path.join(REPO_ROOT, o.progSrcRel), o.langKey);
   const sc = staticCheck(o.langKey, progAbs, o.opts);
   const verify = verifyLeg(o.langKey, o.task, progAbs);
@@ -538,6 +692,13 @@ function runOneLeg(o) {
 }
 
 function printLeg(rec) {
+  if (rec.env_blocked) {
+    const tag = rec.expect === "fail" ? "neg " : "leg ";
+    console.log(`ENV ${tag}${rec.task}/${rec.language}  ENV_BLOCKED  (端口预检失败,该格不计入样本统计)`);
+    const probed = (rec.blocked_ports || []).map((p) => `${p.port}:${p.bindable ? "free" : "busy"}`).join(" ");
+    console.error(`  env_blocked: 所需端口段存在不可绑定端口;探测明细 ${probed || "(探测未执行" + (rec.probe_error ? ": " + rec.probe_error + ")" : ")")}`);
+    return;
+  }
   const tag = rec.expect === "fail" ? "neg " : "leg ";
   const mark = rec.as_expected ? "OK  " : "BAD ";
   const sc = rec.static_check;
@@ -660,7 +821,9 @@ function cmdPilot(args) {
     }
   }
 
-  // 5. 反馈回路(§8 缺口 5):全部非 PASS 腿渲染反馈文件(PASS 腿无反馈轮)
+  // 5. 反馈回路(§8 缺口 5):全部非 PASS 腿渲染反馈文件(PASS 腿无反馈轮)。
+  //    登记:env_blocked 腿(verify_result === "ENV_BLOCKED")今日不可达——PILOT_TASKS 固定
+  //    a1/c2 不涉端口;若未来进入 pilot 任务集,需与 cmdRecord 同口径跳过反馈渲染。
   mkdirSync(path.join(root, "feedback"), { recursive: true });
   let fbCount = 0;
   for (const rec of records) {
@@ -684,11 +847,13 @@ function cmdPilot(args) {
   const posOk = pos.filter((r) => r.as_expected).length;
   const negOk = neg.filter((r) => r.as_expected).length;
   const scUnavail = records.filter((r) => r.static_check && r.static_check.status === "unavailable").length;
+  const envBlocked = records.filter((r) => r.env_blocked).length;
   console.log("");
   console.log(`== 试点汇总 ==`);
   console.log(`crops: ${PILOT_TASKS.length * 3 - cropBad}/${PILOT_TASKS.length * 3} OK`);
   console.log(`正例腿(预期 PASS): ${posOk}/${pos.length}`);
   console.log(`负例腿(预期 FAIL): ${negOk}/${neg.length}`);
+  console.log(`env_blocked 腿: ${envBlocked}(端口预检失败,不计入样本统计)`);
   console.log(`静态检查 unavailable 腿: ${scUnavail}(非门槛,如实记录)`);
   console.log(`反馈文件: ${fbCount} 个 -> ${relToRepo(path.join(root, "feedback"))}/`);
   const green = cropBad === 0 && posOk === pos.length && negOk === neg.length;
@@ -743,7 +908,10 @@ function cmdRecord(args) {
     note: typeof args.note === "string" ? args.note : "",
   });
   printLeg(rec);
-  if (rec.verify_result !== "PASS") {
+  if (rec.env_blocked) {
+    console.error(`env_blocked: 该格未进入 verify(端口预检拦截),无反馈文件;不计入样本统计`);
+  } else if (rec.verify_result !== "PASS") {
+    mkdirSync(path.join(root, "feedback"), { recursive: true }); // B-1 同款:record 路径反馈目录预建(实测 b3 交叉腿 FAIL 时 ENOENT 崩——HEAD 预存缺陷,cmdPilot 有预建而 cmdRecord 漏,顺手收口)
     writeFileSync(path.join(root, "feedback", `${rec.run_id}.round${rec.round}.txt`), renderFeedback(rec));
     console.log(`反馈文件: ${relToRepo(path.join(root, "feedback", `${rec.run_id}.round${rec.round}.txt`))}`);
   }
