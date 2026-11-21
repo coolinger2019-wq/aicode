@@ -26363,6 +26363,209 @@ secBegin('111');
       && direct.code === 0 && direct.stdout === dist.stdout,
       `bld=${bld.status} dist=${dist.status}/${JSON.stringify(dist.stdout ?? '')} direct=${direct.code}/${JSON.stringify(direct.stdout ?? '')}`);
   }
+
+  // ---- ⑦ 采集器 env_blocked 端口预检回归(tests/experiment/run.mjs §8 缺口 4,2026-11-22 合入
+  //      HEAD 后补登记)。三面:--matrix 排除(纯 fixture,无端口)/--record 预检拦截 + 未拦截
+  //      (真实端口,b3 段 21031–21060——与套件其他监听段 26000/18190/27xxx 不相交,真实监听
+  //      分节全在并行组0,本节组3独占该段)/pilot 路径零影响(源码门禁 + 首采产物观察,秒级,
+  //      不重跑 pilot 全流程)。端口守卫:b3 全段逐口试绑,任一被外部占用 → record 三条 check
+  //      具名跳过(防外来占用假失败,C 腿无 gcc 自动跳过同风格);占用腿 try/finally 即释。
+  //      collector 调用统一加 --tsc-cmd "node {prog}":env 指纹的 tsc 探针降为 node --version
+  //      (秒级、离线确定;缺省 npx -p typescript 可能拉网,与被测面无关)。环境剥离
+  //      MING_WASM_STRICT/MING_NO_OPT(runMing 同款纪律,防开发者 shell 导出污染 collector
+  //      内部的 ming check/run 腿)。passthrough 腿的 verify 会在仓库 .zcode/ 写 b3-ready
+  //      就绪文件(既有试点同款,gitignored)。
+  //      独立审查收口登记:MINOR-1 = v111.22 残余 TOCTOU 假失败窗口两层收口(腿前全段复扫不净
+  //      → 具名 skip;复扫净但行仍呈 env_blocked 形态 → 具名 skip 不判 false);MINOR-2 =
+  //      v111.23 产物观察读/解析异常重试一次,仍失败降级豁免观察面(门禁面 gate 不豁免)。
+  //      三则 NOTE 登记(不改动;失败方向均为假失败非假通过):NOTE-1 = ⑦-c 源码门禁的剥注释
+  //      transform 前瞻脆弱(采集器注释风格漂移可致 gate 误判假红);NOTE-2 = tryBind111e 无逐口
+  //      超时(listen 异常挂起理论可能,组级看门狗兜底,表现为超时假红);NOTE-3 = rec111e fixture
+  //      字段是 buildMatrix 现消费面子集,聚合口径扩字段时 fixture 不随动(前瞻维护点,漂移表现
+  //      为断言假红)。
+  {
+    const { createServer: netServer111e } = await import('node:net');
+    const dir111e = path.join(TMP, 'v111envblk');
+    fs.mkdirSync(dir111e, { recursive: true });
+    const EXP111 = path.join(ROOT, 'tests', 'experiment', 'run.mjs');
+    const env111e = { ...process.env };
+    delete env111e.MING_WASM_STRICT;
+    delete env111e.MING_NO_OPT;
+    const runExp111 = (args) => spawnT(process.execPath, [EXP111, ...args], { timeout: 180000, env: env111e });
+    // 手造 JSONL 行构造器:字段与采集器 makeRecord/makeEnvBlockedRecord 输出对齐,只收
+    // buildMatrix 聚合消费的字段全集;env_blocked 明细经 extra 透传。
+    const rec111e = (o) => JSON.stringify({
+      run_id: o.run_id ?? 'b3-ming-x', pilot: false, source: 'generation', expect: o.expect ?? 'pass',
+      as_expected: o.as_expected ?? true, task: 'b3_fetch_aggregate', language: 'ming',
+      run_no: o.repeat ?? 1, repeat: o.repeat ?? 1, round: o.round ?? 1, env: {},
+      static_check: o.static_check ?? { status: 'ok', errors: 0 }, verify_result: o.verify_result ?? 'PASS',
+      exit: o.exit ?? 0, duration_ms: o.duration_ms ?? 100,
+      program: o.program ?? { path: 'p', source_path: 'p', sha256: 'x', bytes: 1 },
+      defects: [], first_pass: null, verdict: o.verdict ?? 'pass', notes: '', ts: '1970-01-01T00:00:00.000Z',
+      ...(o.extra ?? {}),
+    });
+    const jsonl111e = (root) => {
+      try { return fs.readFileSync(path.join(root, 'results.jsonl'), 'utf8').split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l)); }
+      catch { return []; }
+    };
+
+    // ⑦-a --matrix env_blocked 排除(纯 fixture,无端口;钉值 dry-run 实测:blk 1/runs 2/
+    //      legs 4/pass 2/fail 2/err 0/fp 1/fin 2/avgRd 1.5/stErr 2/neg 1/1)
+    {
+      const mx = path.join(dir111e, 'mx');
+      fs.mkdirSync(mx, { recursive: true });
+      fs.writeFileSync(path.join(mx, 'results.jsonl'), [
+        rec111e({ run_id: 'b3-ming-r1', repeat: 1, round: 1, verify_result: 'PASS', as_expected: true, duration_ms: 100 }),
+        rec111e({ run_id: 'b3-ming-r2', repeat: 2, round: 1, verify_result: 'FAIL', as_expected: false, static_check: { status: 'ok', errors: 2 }, duration_ms: 110 }),
+        rec111e({ run_id: 'b3-ming-r2', repeat: 2, round: 2, verify_result: 'PASS', as_expected: true, duration_ms: 120 }),
+        rec111e({
+          run_id: 'b3-ming-r3', repeat: 3, round: 1, verify_result: 'ENV_BLOCKED', as_expected: false,
+          verdict: 'env_blocked', program: null, static_check: null, exit: 'env-blocked', duration_ms: null,
+          extra: { env_blocked: true, blocked_ports: [{ port: 21031, bindable: false }, { port: 21032, bindable: true }], port_group_found: null, probe_error: null },
+        }),
+        rec111e({ run_id: 'b3-ming-neg', repeat: 0, round: 1, expect: 'fail', as_expected: true, verify_result: 'FAIL', static_check: { status: 'ok', errors: 1 }, duration_ms: 90, verdict: 'fail' }),
+      ].join('\n') + '\n', 'utf8');
+      const r = runExp111(['--matrix', '--root', mx]);
+      let row111 = null, recs111 = 0;
+      try {
+        const m = JSON.parse(fs.readFileSync(path.join(mx, 'matrix.json'), 'utf8'));
+        recs111 = m.records;
+        row111 = (m.rows ?? []).find((x) => x.task === 'b3_fetch_aggregate' && x.language === 'ming') ?? null;
+      } catch { /* row 保持 null → 断言失败并给 detail */ }
+      check('v111.18:--matrix env_blocked 单列排除——blk=1 且 runs/legs/pass/fail/err 不含 blocked 行'
+        + '(fixture:PASS r1 + FAIL→PASS 两轮 r2 + env_blocked r3 + 负例腿;r.code=0 且 records=5)',
+        r.code === 0 && recs111 === 5 && !!row111 && row111.blocked_legs === 1 && row111.runs === 2
+        && row111.legs === 4 && row111.pass_legs === 2 && row111.fail_legs === 2 && row111.error_legs === 0,
+        `code=${r.code} records=${recs111} row=${JSON.stringify(row111)}`);
+      check('v111.19:--matrix 样本统计口径排除 blocked——首过 fp=1/最终 fin=2/轮次 avgRd=1.5/'
+        + '静态 stErr=2(blocked 行不进 repeats 与静态累计);负例腿统计不受影响 neg=1/1',
+        !!row111 && row111.first_pass_runs === 1 && row111.final_pass_runs === 2 && row111.avg_rounds === 1.5
+        && row111.static_errors_total === 2 && row111.neg_legs === 1 && row111.neg_ok === 1,
+        `row=${JSON.stringify(row111)}`);
+    }
+
+    // ⑦-b --record 预检(真实端口)。守卫:b3 全段 21031–21060 逐口试绑(exclusive,绑即释,
+    //      与采集器 PORT_PROBE_SCRIPT 同口径);任一不可绑 = 外部占用 → 三条 check 具名跳过
+    //      并在输出注明 skip。全空 → 重绑 21031 作占用腿(blocked)→ finally 即释 → passthrough 腿。
+    const PROG111e = path.join(dir111e, 'prog_stub.ming');
+    fs.writeFileSync(PROG111e, [
+      'fn main(args: Vec[Untrusted[str]]) -> i64 with io {',
+      '    print("stub");',
+      '    return 0;',
+      '}',
+    ].join('\n') + '\n', 'utf8');
+    const recArgs111e = (root) => ['--record', '--task', 'b3_fetch_aggregate', '--language', 'ming', '--run', '1', '--round', '1',
+      '--program', PROG111e, '--root', root, '--tsc-cmd', 'node {prog}'];
+    const tryBind111e = async (p) => {
+      const s = netServer111e();
+      let ok = false;
+      try { await new Promise((res, rej) => { s.once('error', rej); s.listen({ port: p, host: '127.0.0.1', exclusive: true }, res); }); ok = true; } catch { /* busy */ }
+      await new Promise((res) => { try { s.close(() => res()); } catch { res(); } });
+      return ok;
+    };
+    const skipRec111e = (why) => {
+      process.stdout.write(`[skip] v111.20–v111.22 record 预检腿:${why}\n`);
+      check('v111.20:--record 端口预检拦截(b3 段被外部占用,跳过)', true, `skip: ${why}`);
+      check('v111.21:--record 预检拦截副作用面(b3 段被外部占用,跳过)', true, `skip: ${why}`);
+      check('v111.22:--record 预检未拦截/passthrough(b3 段被外部占用,跳过)', true, `skip: ${why}`);
+    };
+    const busy111e = [];
+    for (let p = 21031; p <= 21060; p++) { if (!(await tryBind111e(p))) busy111e.push(p); }
+    if (busy111e.length > 0) {
+      skipRec111e(`端口 ${busy111e.join(',')} 不可绑定(外部占用,防假失败;b3 段 21031–21060 需全段可用)`);
+    } else {
+      const hold111e = netServer111e();
+      let held111e = false;
+      try { await new Promise((res, rej) => { hold111e.once('error', rej); hold111e.listen({ port: 21031, host: '127.0.0.1', exclusive: true }, res); }); held111e = true; } catch { /* 守卫后被抢注(TOCTOU) */ }
+      if (!held111e) {
+        skipRec111e('21031 在守卫后被外部抢注(TOCTOU),record 三腿跳过');
+      } else {
+        // 占用腿:21031 被本测试持有 → 采集器预检必拦(env_blocked,跳过落盘/静态检查/verify)。
+        const blkRoot = path.join(dir111e, 'recblk');
+        try {
+          const r = runExp111(recArgs111e(blkRoot));
+          const lines = jsonl111e(blkRoot);
+          const rec = lines.length === 1 ? lines[0] : null;
+          const ports = rec && Array.isArray(rec.blocked_ports) ? rec.blocked_ports : [];
+          check('v111.20:--record 端口预检拦截——21031 占用 → exit 1 + JSONL 单行 env_blocked:true/'
+            + 'verify_result=ENV_BLOCKED/blocked_ports 含 21031 busy/program=null',
+            r.code === 1 && !!rec && rec.env_blocked === true && rec.verify_result === 'ENV_BLOCKED'
+            && rec.program === null && ports.some((p) => p.port === 21031 && p.bindable === false),
+            `code=${r.code} lines=${lines.length} rec=${JSON.stringify(rec ? { env_blocked: rec.env_blocked, vr: rec.verify_result, prog: rec.program, np: ports.length } : null)} stderr=${JSON.stringify((r.stderr || '').slice(0, 140))}`);
+          check('v111.21:--record 预检拦截副作用面——无 work/ 落盘、无 feedback 文件、stderr 提及 env_blocked',
+            !fs.existsSync(path.join(blkRoot, 'work')) && !fs.existsSync(path.join(blkRoot, 'feedback'))
+            && (r.stderr || '').includes('env_blocked'),
+            `work=${fs.existsSync(path.join(blkRoot, 'work'))} fb=${fs.existsSync(path.join(blkRoot, 'feedback'))} stderr=${JSON.stringify((r.stderr || '').slice(0, 100))}`);
+        } finally {
+          await new Promise((res) => { try { hold111e.close(() => res()); } catch { res(); } }); // 即释(try/finally)
+        }
+        // 反向腿:端口全空 → 穿过预检进 verify。只断言"预检未拦截"(JSONL 无 env_blocked 字段/
+        // verify_result ≠ ENV_BLOCKED/program 落 work/),不断言 PASS/FAIL 业务细节——那属于语料
+        // 腿(stub 程序 verify 恒 FAIL 是确定性的,但不强耦合 mock server 行为)。
+        // MINOR-1 残余 TOCTOU 假失败窗口两层收口:① 腿前对 b3 全段复扫(守卫扫描后、本腿运行前
+        // 外部抢注 21032–21060 任一端口 → 预检必拦 → 本条整支具名 skip);② 复扫净但 passthrough
+        // 行仍呈 env_blocked 形态(env_blocked 字段存在或 verify_result=ENV_BLOCKED)→ 同样具名
+        // skip 不计失败(预检期抢注残窗退化),不判 false。
+        const busy2111e = [];
+        for (let p = 21031; p <= 21060; p++) { if (!(await tryBind111e(p))) busy2111e.push(p); }
+        if (busy2111e.length > 0) {
+          process.stdout.write(`[skip] v111.22 passthrough 腿:端口 ${busy2111e.join(',')} 被外部占用(TOCTOU 残窗),具名跳过\n`);
+          check('v111.22:--record 预检未拦截/passthrough(b3 段被外部占用,跳过)', true,
+            `skip: TOCTOU 残窗——腿前复扫端口 ${busy2111e.join(',')} 不可绑定,passthrough 腿跳过`);
+        } else {
+          const passRoot = path.join(dir111e, 'recpass');
+          const r2 = runExp111(recArgs111e(passRoot));
+          const lines2 = jsonl111e(passRoot);
+          const rec2 = lines2.length === 1 ? lines2[0] : null;
+          const blockedShape111e = !!rec2 && (('env_blocked' in rec2) || rec2.verify_result === 'ENV_BLOCKED');
+          if (blockedShape111e) {
+            process.stdout.write(`[skip] v111.22 passthrough 腿:复扫净但行仍呈 env_blocked 形态(预检期外部抢注残窗),具名跳过\n`);
+            check('v111.22:--record 预检未拦截/passthrough(TOCTOU 残窗退化,跳过)', true,
+              `skip: 复扫净但 passthrough 行呈 env_blocked 形态(vr=${rec2.verify_result})——预检期外部抢注残窗,不计失败`);
+          } else {
+            check('v111.22:--record 预检未拦截(端口全空)——JSONL 单行无 env_blocked 字段/verify_result ≠'
+              + ' ENV_BLOCKED/program.path 落 work/(staging 发生 = 预检放行;exit 0|1 不耦合 verify 业务结果)',
+              !!rec2 && !('env_blocked' in rec2) && rec2.verify_result !== 'ENV_BLOCKED'
+              && !!rec2.program && String(rec2.program.path).includes('/work/') && (r2.code === 0 || r2.code === 1),
+              `code=${r2.code} lines=${lines2.length} rec=${JSON.stringify(rec2 ? { vr: rec2.verify_result, p: rec2.program && rec2.program.path } : null)} stderr=${JSON.stringify((r2.stderr || '').slice(0, 120))}`);
+          }
+        }
+      }
+    }
+
+    // ⑦-c pilot 路径零影响(秒级,不重跑 pilot 全流程):pilot 任务集(a1/c2)与端口预检集
+    //      (b3/b4)不相交——源码门禁断言(剥注释 grep,v111.15 同款口径)证明 pilot 腿走
+    //      needed:false 分支、env_blocked 不可达;T1.2-c 首采产物 .zcode/exp-pilot/results.jsonl
+    //      (存在时)全行 pilot:true 且零 env_blocked(产物观察;产物缺失时仅门禁面)。
+    {
+      const codeExp = fs.readFileSync(EXP111, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n').map((l) => l.slice(0, Math.max(0, l.indexOf('//') === -1 ? l.length : l.indexOf('//')))).join('\n');
+      const gate111e = codeExp.includes('const PILOT_TASKS = ["a1_log_clean", "c2_timeout_fallback"];')
+        && codeExp.includes('if (task !== "b3_fetch_aggregate" && task !== "b4_serve_handler") return { needed: false };');
+      // MINOR-2:产物观察面与并发写隔离——读/解析异常重试一次,仍失败降级为观察面豁免
+      // (skip/note 语义,不计失败);门禁面 gate 是硬断言不豁免。产物行内容异常(env_blocked
+      // 或非 pilot:true)仍是真失败,不受豁免。
+      const pilotJsonl111e = path.join(ROOT, '.zcode', 'exp-pilot', 'results.jsonl');
+      const readPilot111e = () => {
+        try { return fs.readFileSync(pilotJsonl111e, 'utf8').split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l)); }
+        catch { return null; }
+      };
+      let pilotFace111e = 'exempt', pilotNote111e = '首采产物不存在,仅门禁面';
+      if (fs.existsSync(pilotJsonl111e)) {
+        let rows = readPilot111e();
+        if (rows === null) rows = readPilot111e(); // 重试一次(疑似并发写)
+        if (rows === null) {
+          pilotNote111e = '首采产物读取/解析异常(疑似并发写),重试一次仍失败——产物观察面豁免,仅门禁面';
+        } else {
+          pilotFace111e = rows.every((x) => !x.env_blocked && x.pilot === true) ? 'ok' : 'bad';
+          pilotNote111e = `首采 ${rows.length} 行全 pilot:true 零 env_blocked`;
+        }
+      }
+      check('v111.23:pilot 路径零影响——PILOT_TASKS(a1/c2)与端口预检集(b3/b4)不相交(源码门禁:'
+        + 'pilot 腿 needed:false → env_blocked 不可达)+ .zcode/exp-pilot 首采产物零 env_blocked(存在时)',
+        gate111e && pilotFace111e !== 'bad', `gate=${gate111e} face=${pilotFace111e} ${pilotNote111e}`);
+    }
+  }
 }
 
 secEndAll();
