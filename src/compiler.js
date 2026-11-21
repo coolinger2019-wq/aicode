@@ -14,6 +14,8 @@ import { Interp } from './interp.js';
 import { resolveT, typeStr } from './checker.js';
 import { tryCompileWasm } from './wasm.js';
 import { optimize } from './opt.js';
+// v0.98 ADR-011 P0:自由变量分析单源化(VM capture plan 与 tree captureEnvFor 的单一事实来源)
+import { collectFreeNames, collectLambdaLocals, addPatNames } from './freenames.js';
 
 // v0.54 审查 B5:编译器内部可预期的"名字/结构体未解析"错误携带源码位置,
 // 由 CLI 渲染为 file:line:col 诊断(而不是 Node 裸栈)。其余异常仍按 bug 上抛。
@@ -1532,69 +1534,11 @@ class BytecodeCompiler {
   }
 }
 
-// ---------- 自由变量分析 ----------
-function collectFreeNames(node, bound, out, seen) {
-  if (!node || typeof node !== 'object') return;
-  if (Array.isArray(node)) { for (const x of node) collectFreeNames(x, bound, out, seen); return; }
-  switch (node.nt) {
-    case 'Ident': {
-      if (!bound.has(node.name) && !seen.has(node.name)) {
-        seen.add(node.name);
-        out.push(node.name);
-      }
-      return;
-    }
-    case 'Lambda': {
-      // 子 lambda:它自己的参数与局部绑定不算,但它的自由变量传递为当前层的自由变量
-      const innerBound = new Set(bound);
-      for (const p of node.params) innerBound.add(p.name);
-      collectLambdaLocals(node.body, innerBound);
-      collectFreeNames(node.body, innerBound, out, seen);
-      return;
-    }
-    case 'FnStmt': return; // 本地函数不捕获,体内名字不外泄
-    default: break;
-  }
-  for (const k of Object.keys(node)) {
-    if (k === 'span' || k === 'docs') continue;
-    const v = node[k];
-    if (v && typeof v === 'object') collectFreeNames(v, bound, out, seen);
-  }
-}
-
-// 把 lambda 体中 let/for/while-let/match 绑定的名字加入 bound(供 collectFreeNames 区分)
-function collectLambdaLocals(node, bound) {
-  if (!node || typeof node !== 'object') return;
-  if (Array.isArray(node)) { for (const x of node) collectLambdaLocals(x, bound); return; }
-  switch (node.nt) {
-    case 'Let': addPatNames(node.pat, bound); if (node.init) collectLambdaLocals(node.init, bound); return;
-    case 'For': addPatNames(node.pat, bound); return;
-    case 'WhileLet': addPatNames(node.pat, bound); return;
-    case 'FnStmt': return;
-    case 'BlockExpr': case 'Block': {
-      for (const s of node.stmts ?? []) collectLambdaLocals(s, bound);
-      if (node.tail) collectLambdaLocals(node.tail, bound);
-      return;
-    }
-    default: {
-      for (const k of Object.keys(node)) {
-        if (k === 'span' || k === 'docs') continue;
-        const v = node[k];
-        if (v && typeof v === 'object') collectLambdaLocals(v, bound);
-      }
-    }
-  }
-}
-
-function addPatNames(pat, bound) {
-  if (!pat) return;
-  switch (pat.nt) {
-    case 'PIdent': bound.add(pat.name); return;
-    case 'PTuple': for (const p of pat.pats) addPatNames(p, bound); return;
-    case 'PEnum': for (const p of pat.args) addPatNames(p, bound); return;
-    default: return;
-  }
-}
+// ---------- 自由变量分析(已单源化)----------
+// v0.98 ADR-011 P0:collectFreeNames/collectLambdaLocals/addPatNames 移至 src/freenames.js
+// (VM capture plan 与 tree captureEnvFor 的单一事实来源,零依赖叶模块,规避 interp→compiler
+// ESM 循环导入)。语义铁律:collectLambdaLocals 的 BlockExpr 分支为承重死代码(ADR-011 M1
+// 禁令,严禁顺手修复——修则 rv1/rv7 翻转),详见 src/freenames.js 函数注释。
 
 function collectPatNames(pat, out) {
   switch (pat.nt) {

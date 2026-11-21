@@ -24911,6 +24911,280 @@ secBegin('108');
 
 }
 
+// ===================== 109. ADR-011 P0:自由变量分析单源化(freenames.js)=====================
+// 文件所有权:§109 = 本区全部用例(Agent P0-A,v0.98 ADR-011 P0 纯移动)。
+// 背景:collectFreeNames/collectLambdaLocals/addPatNames 自 src/compiler.js(HEAD 37c5d3a
+// :1536-1597,62 行)移入零依赖叶模块 src/freenames.js——VM capture plan 与 tree
+// captureEnvFor(ADR-011 未来)的单一事实来源;compiler 改为 import 消费。纯移动零行为
+// 变化,§109 锁三面:
+//   ① 白盒行为:三函数经真实 parse AST 直测——rv1 形态过近似锁定(内层块级 `let g = g+1`
+//     的 init 引用外层 g 必须进自由集)+ collectLambdaLocals 死代码锁定(BlockExpr 体不向
+//     bound 添加任何名字)+ 合成节点机制锁定 + addPatNames 三模式 + FnStmt 子树排除;
+//   ② 字节码等价:5 个含 lambda/闭包/嵌套的程序,当前工作树 vs git worktree HEAD 纯净副本,
+//     parse→check→compile 全管线同源对照,functions/pool/patterns/spans/mainFnIdx/
+//     entryFnIdx/wasm 规范化 JSON 逐字节一致(优化开/关两态各比一次)。纯移动不改发射的
+//     机械证明;每次套件运行自建/自删 worktree(os 临时目录,finally 清理 + prune)。
+//   ③ 循环导入防回归:compiler.js import freenames.js 正常发射(freenames 零依赖叶模块,
+//     套件全绿即证明;此处显式锁导出面与 CLOSURE 捕获计划发射)。
+// 语义铁律(ADR-011 M1,v0.97 审查实证):collectLambdaLocals 的 BlockExpr 分支读 node.stmts
+// 而语句在 node.block.stmts——对真实 lambda 体从不下钻 = 死代码,但该死代码承重(内层
+// `let g = g+1` 的 init 引用外层 g 被收进自由集恰是 rv1/rv7 双引擎正确行为)。严禁顺手
+// 修复——修则 rv1/rv7 翻转;v109.1 即该禁令的回归锚。
+secBegin('109');
+{
+  const dir109 = path.join(TMP, 'v109');
+  fs.mkdirSync(dir109, { recursive: true });
+  const mk109 = (name, src) => { const f = path.join(dir109, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+
+  // rv1 形态(.zcode/review-adr011/rv1_shadow_init_nested.ming 同构):嵌套 lambda + 内层
+  // 块级 `let g = g + 1`(init 引用外层 g)——纯过近似捕获的承重形态。
+  const rv1Src109 = [
+    'fn main() with io {',
+    '    let g = 10;',
+    '    let f = (p: i64) => {',
+    '        let inner = () => {',
+    '            let g = g + 1;',
+    '            g',
+    '        };',
+    '        inner()',
+    '    };',
+    '    print(f(0));',
+    '    print(g);',
+    '}',
+  ].join('\n');
+
+  // ① 白盒:三函数直测(真实 parse AST;不经 checker——纯分析函数面)
+  const { parse: parse109 } = await import('../src/parser.js');
+  const freenames109 = await import('../src/freenames.js');
+  const lambdasOf109 = (program) => {
+    const out = [];
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      if (n.nt === 'Lambda') out.push(n);
+      for (const k of Object.keys(n)) {
+        if (k === 'span' || k === 'docs') continue;
+        const v = n[k];
+        if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(program);
+    return out;
+  };
+  {
+    let ok = false, detail = '';
+    try {
+      const f = mk109('v109_rv1.ming', rv1Src109);
+      const { program, diags } = parse109(f, rv1Src109);
+      if (diags.length) throw new Error('parse diags ' + diags.length);
+      const lams = lambdasOf109(program);
+      if (lams.length !== 2 || lams[0].params.length !== 1 || lams[1].params.length !== 0) throw new Error('lambda 形态不符 ' + lams.length);
+      const inner = lams[1];
+      // 死代码锁定:collectLambdaLocals 对真实 BlockExpr 体不向 bound 添加任何名字
+      const boundProbe = new Set();
+      freenames109.collectLambdaLocals(inner.body, boundProbe);
+      const deadOk = boundProbe.size === 0;
+      // 过近似锁定:自由集恰为 ['g'](init `g+1` 引用外层 g;若"修复"了 collectLambdaLocals
+      // 则 g 被误绑 → 自由集丢 g,rv1/rv7 捕获计划翻转)
+      const freeInner = [];
+      freenames109.collectFreeNames(inner.body, new Set(inner.params.map((p) => p.name)), freeInner, new Set());
+      const overOk = freeInner.length === 1 && freeInner[0] === 'g';
+      // 外层 f:块级 let 绑定名 `inner` 与被内层引用的 `g` 都进自由集(同一过近似口径)
+      const freeOuter = [];
+      freenames109.collectFreeNames(lams[0].body, new Set(lams[0].params.map((p) => p.name)), freeOuter, new Set());
+      const outerOk = freeOuter.includes('g') && freeOuter.includes('inner');
+      ok = deadOk && overOk && outerOk;
+      detail = `lams=${lams.length} dead(bound空)=${deadOk} innerFree=${JSON.stringify(freeInner)} outerFree=${JSON.stringify(freeOuter)}`;
+    } catch (e) { detail = String((e && e.message) || e); }
+    check('v109.1:白盒 rv1 形态——collectFreeNames 过近似锁定(inner 自由集恰 ["g"],外层含 g/inner)+ collectLambdaLocals 死代码锁定(真实 BlockExpr 体 bound 零添加;ADR-011 M1 禁令回归锚)',
+      ok, detail);
+  }
+  {
+    let ok = false, detail = '';
+    try {
+      // 合成节点机制锁定:case 'Let' 直达时绑定生效(活路径)
+      const b1 = new Set();
+      freenames109.collectLambdaLocals({ nt: 'Let', pat: { nt: 'PIdent', name: 'q' }, init: { nt: 'Ident', name: 'q' } }, b1);
+      const letOk = b1.has('q');
+      // 合成 BlockExpr 带 stmts 字段 → 绑定生效:机制锁定"该 case 读 node.stmts"
+      // (真实 BlockExpr 无 stmts 字段、语句在 block.stmts → 死代码成因)
+      const b2 = new Set();
+      freenames109.collectLambdaLocals({ nt: 'BlockExpr', stmts: [{ nt: 'Let', pat: { nt: 'PIdent', name: 's' }, init: null }], tail: null }, b2);
+      const mechOk = b2.has('s');
+      // addPatNames 三模式(PIdent/PTuple/PEnum)
+      const b3 = new Set();
+      freenames109.addPatNames({ nt: 'PTuple', pats: [{ nt: 'PIdent', name: 'a' }, { nt: 'PEnum', args: [{ nt: 'PIdent', name: 'b' }] }] }, b3);
+      freenames109.addPatNames({ nt: 'PIdent', name: 'c' }, b3);
+      const patOk = b3.size === 3 && b3.has('a') && b3.has('b') && b3.has('c');
+      // FnStmt 子树排除:本地函数体内名字不外泄(case 'FnStmt' 直接返回)
+      const freeFn = [];
+      freenames109.collectFreeNames({ nt: 'FnStmt', decl: { body: { nt: 'Ident', name: 'zzz' } } }, new Set(), freeFn, new Set());
+      const fnOk = freeFn.length === 0;
+      ok = letOk && mechOk && patOk && fnOk;
+      detail = `let=${letOk} mech=${mechOk} pat=${patOk}/3 fn排除=${fnOk}`;
+    } catch (e) { detail = String((e && e.message) || e); }
+    check('v109.2:白盒合成节点——Let 直达绑定生效 + BlockExpr 合成带 stmts 时读 node.stmts(死代码成因机制锁定)+ addPatNames PIdent/PTuple/PEnum + FnStmt 子树排除',
+      ok, detail);
+  }
+
+  // ② 字节码等价:当前工作树 vs git worktree HEAD 纯净副本(自建/自删,finally 清理)
+  const progs109 = [
+    ['p1_rv1', rv1Src109, 'rv1 形态:嵌套 lambda + 内层阴影 let(init 引用外层 g,过近似捕获承重形态)'],
+    ['p2_vclose', [
+      'fn main() with io {',
+      '    let mut c = 0;',
+      '    let f = (x: i64) => { c = c + 1; x + c };',
+      '    let f2 = f;',
+      '    print(f2(0));',
+      '    print(f(0));',
+      '    print(c);',
+      '}',
+    ].join('\n'), 'vclose 计数器:捕获标量 mut + let 复制(§108 同源形态)'],
+    ['p3_hof_map', [
+      'fn main() with io {',
+      '    let mut m: Map[str, i64] = { "k": 1 };',
+      '    let g = (x: i64) => { m.set("k", m.get("k").unwrap() + x); x };',
+      '    let r = [1, 2].map(g);',
+      '    print(r[0] + r[1]);',
+      '    print(m.get("k").unwrap());',
+      '}',
+    ].join('\n'), 'HOF map + Map 容器捕获'],
+    ['p4_nested_ldfn', [
+      'fn make(base: i64) -> i64 with io {',
+      '    fn dbl(v: i64) -> i64 { v * 2 }',
+      '    let h = (x: i64) => {',
+      '        let step = (y: i64) => y + base + x;',
+      '        step(dbl(2)) + step(3)',
+      '    };',
+      '    print(h(1));',
+      '    h(1)',
+      '}',
+      'fn main() with io {',
+      '    print(make(10));',
+      '}',
+    ].join('\n'), '嵌套 lambda 链 + 本地函数(fnBinds/LDFN 通道)'],
+    ['p5_loop_struct', [
+      'struct Counter { base: i64 }',
+      'fn main() with io {',
+      '    for i in 0..3 {',
+      '        let f = (x: i64) => x + i;',
+      '        print(f(10));',
+      '    }',
+      '    let c1 = Counter { base: 7 };',
+      '    let g = (x: i64) => x + c1.base;',
+      '    print(g(1));',
+      '    let mut k = 0;',
+      '    while k < 2 {',
+      '        let w = (x: i64) => x + k;',
+      '        print(w(100));',
+      '        k = k + 1;',
+      '    }',
+      '}',
+    ].join('\n'), 'for 循环变量捕获 + struct 字段捕获 + while 内 lambda'],
+  ];
+
+  const wtDir109 = path.join(os.tmpdir(), `ming-wt-v109-${process.pid}-${Date.now()}`);
+  let wtCreated = false, wtOk = false, wtErr = '';
+  try {
+    const add = spawnSync('git', ['-C', ROOT, 'worktree', 'add', '--detach', wtDir109, 'HEAD'], { encoding: 'utf8', timeout: 180000 });
+    wtOk = add.status === 0;
+    if (wtOk) wtCreated = true;
+    else wtErr = 'worktree add 失败: ' + ((add.stderr || '') + (add.stdout || '')).trim().slice(0, 160);
+    check('v109.3:worktree 纯净副本机制自检——git worktree add --detach HEAD 成功(§109.4-8 的对照基线;失败 = 环境性问题,非 P0 回归;'
+      + 'worktree 不可用时 v109.4-8 按环境跳过——对齐 gcc 无编译器先例)',
+      true, wtOk ? 'worktree 就绪' : ('SKIP(环境): ' + wtErr));
+    const { pathToFileURL } = await import('node:url');
+    const curMods = {
+      parse: await import('../src/parser.js'),
+      checker: await import('../src/checker.js'),
+      compiler: await import('../src/compiler.js'),
+    };
+    const wtMods = wtOk ? {
+      parse: await import(pathToFileURL(path.join(wtDir109, 'src/parser.js')).href),
+      checker: await import(pathToFileURL(path.join(wtDir109, 'src/checker.js')).href),
+      compiler: await import(pathToFileURL(path.join(wtDir109, 'src/compiler.js')).href),
+    } : null;
+    // 规范化转储:函数表(code 扁平)/池/模式池/span(路径归一)/mainFnIdx/entryFnIdx/wasm。
+    // methodImpls 与 entry.sig 为 checker 派生(两树同一 checker 代码),不在编译器发射面,不入转储。
+    const normPath109 = (p) => (p ? String(p).split(ROOT + path.sep).join('<R>').split(wtDir109 + path.sep).join('<R>') : p);
+    const dump109 = (c) => JSON.stringify({
+      fn: c.functions.map((f) => (f ? { name: f.name, nParams: f.nParams, nLocals: f.nLocals, local: !!f.local, modFile: normPath109(f.modFile), code: Array.isArray(f.code?.[0]) ? f.code.flat() : f.code, narrow: f.narrowSpecs ?? null } : null)),
+      pool: c.pool,
+      patterns: c.patterns,
+      spans: c.spans.map((s) => (s ? { ...s, file: normPath109(s.file) } : s)),
+      main: c.mainFnIdx,
+      entry: [...(c.entryFnIdx ?? [])],
+      wasm: c.wasm ? { b: Buffer.from(c.wasm.bytes).toString('base64'), el: [...c.wasm.eligible.entries()], sc: c.wasm.strConsts ?? [] } : null,
+    }, (k, v) => (typeof v === 'bigint' ? 'i64:' + v.toString() : v));
+    const pipe109 = (mods, file, src) => {
+      const parsed = mods.parse.parse(file, src);
+      if (parsed.diags.length) throw new Error('parse diags ' + parsed.diags.length);
+      const cr = new mods.checker.Checker(file, () => src).run();
+      return mods.compiler.compile(cr);
+    };
+    let p2Compiled = null;
+    const savedNoOpt109 = process.env.MING_NO_OPT;
+    try {
+      for (let i = 0; i < progs109.length; i++) {
+        const [name, src, why] = progs109[i];
+        const file = mk109(`v109_${name}.ming`, src);
+        let ok = true, detail = wtOk ? '' : 'SKIP(环境): worktree 不可用——对照基线缺失,本 check 按环境跳过(对齐 gcc 先例)';
+        if (wtOk) {
+          try {
+            for (const mode of ['opt', 'noopt']) {
+              if (mode === 'noopt') process.env.MING_NO_OPT = '1';
+              else delete process.env.MING_NO_OPT;
+              const compiledCur = pipe109(curMods, file, src);
+              const a = dump109(compiledCur);
+              const b = dump109(pipe109(wtMods, file, src));
+              const same = a === b;
+              ok = ok && same;
+              if (!same) {
+                let div = '';
+                for (let j = 0; j < Math.max(a.length, b.length); j++) {
+                  if (a[j] !== b[j]) { div = `首异 @${j} cur=${a.slice(Math.max(0, j - 40), j + 40)} wt=${b.slice(Math.max(0, j - 40), j + 40)}`; break; }
+                }
+                detail += `${mode} DIFF(len ${a.length}/${b.length}) ${div}`;
+              } else {
+                detail += `${mode} IDENTICAL(len ${a.length})`;
+              }
+              if (name === 'p2_vclose' && mode === 'opt') p2Compiled = compiledCur;
+            }
+          } catch (e) { ok = false; detail += ' err=' + String((e && e.message) || e).slice(0, 200); }
+        }
+        check(`v109.${4 + i}:字节码等价(${name})——${why}:当前工作树 vs HEAD 纯净副本,优化开/关两态规范化 JSON 逐字节一致(纯移动不改发射)`,
+          ok, detail);
+      }
+    } finally {
+      if (savedNoOpt109 === undefined) delete process.env.MING_NO_OPT; else process.env.MING_NO_OPT = savedNoOpt109;
+    }
+
+    // ③ 循环导入防回归:freenames 导出面 + compiler 经 import 正常发射 CLOSURE 捕获计划
+    {
+      let ok = false, detail = '';
+      try {
+        const exportsOk = typeof freenames109.collectFreeNames === 'function'
+          && typeof freenames109.collectLambdaLocals === 'function'
+          && typeof freenames109.addPatNames === 'function';
+        const c = p2Compiled ?? pipe109(curMods, mk109('v109_p2_min.ming', progs109[1][1]), progs109[1][1]);
+        const mainCode = c.functions[c.mainFnIdx].code;
+        const hasClosure = mainCode.some((ins) => ins[0] === OP.CLOSURE);
+        const hasCloFn = c.functions.some((f) => f && f.name === '<闭包>');
+        ok = exportsOk && hasClosure && hasCloFn;
+        detail = `exports=${exportsOk} mainCLOSURE=${hasClosure} 闭包fn=${hasCloFn} fnCount=${c.functions.length}`;
+      } catch (e) { detail = String((e && e.message) || e); }
+      check('v109.9:循环导入防回归——src/freenames.js 三函数导出面完整,compiler.js 经 import 正常发射(p2 主函数含 CLOSURE + <闭包> 函数入表;freenames 零依赖叶模块,套件全绿即全链证明)',
+        ok, detail);
+    }
+  } finally {
+    if (wtCreated) {
+      try { spawnSync('git', ['-C', ROOT, 'worktree', 'remove', '--force', wtDir109], { encoding: 'utf8', timeout: 60000 }); } catch { /* 尽力而为 */ }
+    }
+    try { fs.rmSync(wtDir109, { recursive: true, force: true }); } catch { /* 尽力而为 */ }
+    try { spawnSync('git', ['-C', ROOT, 'worktree', 'prune'], { encoding: 'utf8', timeout: 60000 }); } catch { /* 尽力而为 */ }
+  }
+}
+
 secEndAll();
 process.stdout.write(`\n${passed} 通过,${failed} 失败\n`);
 if (failed > 0) {

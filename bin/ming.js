@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '0.97.0';
+export const VERSION = '0.98.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -1291,8 +1291,9 @@ async function cmdBuild(flags) {
     fs.rmSync(distDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'runtime'), { recursive: true });
     fs.writeFileSync(path.join(distDir, '.ming-dist.json'), JSON.stringify({ tool: 'ming', version: VERSION }) + String.fromCharCode(10));
-    // O1(plan §4.16.3):opt.js 随 compiler.js 进 dist runtime(compiler.js 已 import 它)
-    for (const m of ['checker.js', 'compiler.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js', 'prover.js', 'opt.js']) {
+    // O1(plan §4.16.3):opt.js 随 compiler.js 进 dist runtime(compiler.js 已 import 它);
+    // v0.98 ADR-011 P0:freenames.js 同款登记(自由变量分析单源化新叶模块,compiler.js 已 import 它)
+    for (const m of ['checker.js', 'compiler.js', 'freenames.js', 'interp.js', 'vm.js', 'wasm.js', 'lexer.js', 'parser.js', 'diag.js', 'artifact.js', 'prover.js', 'opt.js']) {
       fs.copyFileSync(path.join(__dirname, '..', 'src', m), path.join(distDir, 'runtime', m));
     }
     // AOT 资格:无 sync(spawn 子任务需源码编译)、无用户 trait/impl 方法分发
