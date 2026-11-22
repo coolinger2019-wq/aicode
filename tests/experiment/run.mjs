@@ -664,7 +664,9 @@ function runOneLeg(o) {
     appendJsonl(path.join(o.root, "results.jsonl"), rec);
     return rec;
   }
-  const progAbs = stageProgram(o.root, o.runId, path.join(REPO_ROOT, o.progSrcRel), o.langKey);
+  // resolve(非 join):--program 可传绝对路径(套件 mkdtemp stub;CI Windows 仓库盘 ≠ tmp 盘时
+  // path.relative 跨盘返回绝对路径,join 会拼成 "仓库盘:\<C:\...>" 垃圾路径 → ENOENT——2026-11-22 CI win22 实测)
+  const progAbs = stageProgram(o.root, o.runId, path.resolve(REPO_ROOT, o.progSrcRel), o.langKey);
   const sc = staticCheck(o.langKey, progAbs, o.opts);
   const verify = verifyLeg(o.langKey, o.task, progAbs);
   const rec = makeRecord({
