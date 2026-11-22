@@ -1,0 +1,92 @@
+use std.net;
+
+use std.json;
+
+use std.unstr;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, net {
+    if args.len() < 4 {
+        eprint("error: expected 4 url arguments, got " + str(args.len()));
+        return 1;
+    }
+    let mut ok_count: i64 = 0;
+    let mut failed_count: i64 = 0;
+    let mut grand_total: i64 = 0;
+    for i in 0..4 {
+        let u = args[i];
+        match unstr.sanitize_cli_path(u) {
+            Ok(url) => {
+                match net.http_get(url) {
+                    Ok((code, body)) => {
+                        if code == 200 {
+                            match json.parse(body) {
+                                Ok(j) => {
+                                    let mut good = true;
+                                    let mut items_len: i64 = 0;
+                                    let mut total_val: i64 = 0;
+                                    match j.get("items") {
+                                        Some(iv) => {
+                                            match iv.as_arr() {
+                                                Some(arr) => {
+                                                    items_len = arr.len();
+                                                },
+                                                None => {
+                                                    good = false;
+                                                },
+                                            }
+                                        },
+                                        None => {
+                                            good = false;
+                                        },
+                                    }
+                                    if good {
+                                        match j.get("total") {
+                                            Some(tv) => {
+                                                match tv.as_num() {
+                                                    Some(f) => {
+                                                        total_val = f as i64;
+                                                    },
+                                                    None => {
+                                                        good = false;
+                                                    },
+                                                }
+                                            },
+                                            None => {
+                                                good = false;
+                                            },
+                                        }
+                                    }
+                                    if good {
+                                        print("src" + str(i + 1) + " ok code 200 items " + str(items_len) + " total " + str(total_val));
+                                        ok_count += 1;
+                                        grand_total += total_val;} else {
+
+                                        print("src" + str(i + 1) + " failed code 200");
+                                        failed_count += 1;
+                                    }
+                                },
+                                Err(e) => {
+                                    print("src" + str(i + 1) + " failed code 200");
+                                    failed_count += 1;
+                                },
+                            }} else {
+
+                            print("src" + str(i + 1) + " failed code " + str(code));
+                            failed_count += 1;
+                        }
+                    },
+                    Err(e) => {
+                        print("src" + str(i + 1) + " failed code 0");
+                        failed_count += 1;
+                    },
+                }
+            },
+            Err(e) => {
+                print("src" + str(i + 1) + " failed code 0");
+                failed_count += 1;
+            },
+        }
+    }
+    print("summary ok=" + str(ok_count) + " failed=" + str(failed_count) + " grand_total=" + str(grand_total));
+    return 0;
+}

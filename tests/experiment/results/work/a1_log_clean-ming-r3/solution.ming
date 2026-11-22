@@ -1,0 +1,83 @@
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() != 1 {
+        eprint("error: usage: solution <logfile>");
+        return 1;
+    }
+    let path = match std.unstr.sanitize_cli_path(args[0]) {
+        Ok(p) => p,
+        Err(_) => {
+            eprint("error: invalid log file path");
+            return 1;
+        }
+    };
+    let content = match std.fs.read_file(path) {
+        Ok(s) => s,
+        Err(_) => {
+            eprint("error: cannot read log file");
+            return 1;
+        }
+    };
+    let lines = content.split("\n");
+    let n = lines.len();
+    let mut neff = n;
+    if n > 0 {
+        let last = lines[n - 1];
+        if last.is_empty() {
+            neff = n - 1;
+        }
+    }
+    let mut c_info = 0;
+    let mut c_warn = 0;
+    let mut c_error = 0;
+    let mut c_debug = 0;
+    let mut skipped = 0;
+    for i in 0..neff {
+        let line = lines[i];
+        let segs = line.split(" ");
+        if segs.len() < 5 {
+            skipped = skipped + 1;
+            continue;
+        }
+        let lvl = segs[1];
+        let is_lvl = (lvl.starts_with("INFO") && lvl.char_len() == 4) || (lvl.starts_with("WARN") && lvl.char_len() == 4) || (lvl.starts_with("ERROR") && lvl.char_len() == 5) || (lvl.starts_with("DEBUG") && lvl.char_len() == 5);
+        if !is_lvl {
+            skipped = skipped + 1;
+            continue;
+        }
+        let mut user_idx = -1;
+        let mut action_idx = -1;
+        let mut j = 0;
+        while j < segs.len() {
+            let seg = segs[j];
+            if seg.starts_with("user=") && user_idx == -1 {
+                user_idx = j;
+            }
+            if seg.starts_with("action=") && action_idx == -1 {
+                action_idx = j;
+            }
+            j = j + 1;
+        }
+        if user_idx == -1 || action_idx == -1 {
+            skipped = skipped + 1;
+            continue;
+        }
+        if lvl.starts_with("DEBUG") && lvl.char_len() == 5 {
+            c_debug = c_debug + 1;
+            continue;
+        }
+        if lvl.starts_with("INFO") && lvl.char_len() == 4 {
+            c_info = c_info + 1;
+        }
+        if lvl.starts_with("WARN") && lvl.char_len() == 4 {
+            c_warn = c_warn + 1;
+        }
+        if lvl.starts_with("ERROR") && lvl.char_len() == 5 {
+            c_error = c_error + 1;
+        }
+        let up = segs[user_idx].split("=");
+        let ap = segs[action_idx].split("=");
+        print(up[1] + " " + ap[1]);
+    }
+    print("summary INFO=" + str(c_info) + " WARN=" + str(c_warn) + " ERROR=" + str(c_error) + " DEBUG=" + str(c_debug) + " skipped=" + str(skipped));
+    return 0;
+}

@@ -1,0 +1,25 @@
+fn slow_child(n: i64) -> i64 with time {
+    std.time.sleep(400);
+    99
+}
+
+fn fast_child(n: i64) -> i64 with time {
+    std.time.sleep(50);
+    99
+}
+
+fn main() -> i64 with io, sync {
+    let slow = std.sync.spawn(slow_child, 0);
+    let r1 = std.sync.join_detailed(slow, 100);
+    let v1 = r1.unwrap_or(0);
+    if v1 == 0 {
+        print("slow_child=timeout fallback=0");
+    } else {
+        print("slow_child=" + str(v1));
+    }
+    let fast = std.sync.spawn(fast_child, 0);
+    let r2 = std.sync.join_detailed(fast, 2000);
+    let v2 = r2.unwrap_or(0);
+    print("fast_child=" + str(v2));
+    0
+}

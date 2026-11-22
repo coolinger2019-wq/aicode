@@ -1,0 +1,27 @@
+use std.sync;
+
+// 分片 i (1..4) 负责区间 [25*(i-1)+1, 25*i] 的平方和
+fn shard_sq(i: i64) -> i64 {
+    let lo: i64 = 25 * (i - 1) + 1;
+    let end: i64 = 25 * i + 1;
+    let mut s: i64 = 0;
+    for x in lo..end {
+        s += x * x;
+    }
+    return s;
+}
+
+fn main() -> i64 with sync, io {
+    let rs: Vec[Result[i64, str]] = sync.spawn_all(shard_sq, [1, 2, 3, 4]);
+    let s1: i64 = rs[0].unwrap();
+    let s2: i64 = rs[1].unwrap();
+    let s3: i64 = rs[2].unwrap();
+    let s4: i64 = rs[3].unwrap();
+    let total: i64 = s1 + s2 + s3 + s4;
+    print("shard1=\{s1}");
+    print("shard2=\{s2}");
+    print("shard3=\{s3}");
+    print("shard4=\{s4}");
+    print("total=\{total}");
+    return 0;
+}

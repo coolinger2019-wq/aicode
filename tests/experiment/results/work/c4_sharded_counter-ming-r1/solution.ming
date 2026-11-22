@@ -1,0 +1,29 @@
+// 竞态防护——分片计数合并
+// 设计点：每分片本地计数 -> 子任务返回结果 -> 父任务按分片序合并，无共享计数器。
+
+fn shard_count(s: i64) -> i64 {
+    let mut hits = 0;
+    for j in 1..17 {
+        let v = (s * 13 + j * 7) % 6;
+        if v == 0 {
+            hits = hits + 1;
+        }
+    }
+    return hits;
+}
+
+fn main() -> i64 with sync, io {
+    let params: Vec[i64] = [1, 2, 3, 4];
+    let results = std.sync.spawn_all(shard_count, params);
+    let c1 = results[0].unwrap();
+    let c2 = results[1].unwrap();
+    let c3 = results[2].unwrap();
+    let c4 = results[3].unwrap();
+    let total = c1 + c2 + c3 + c4;
+    print("shard1=" + str(c1));
+    print("shard2=" + str(c2));
+    print("shard3=" + str(c3));
+    print("shard4=" + str(c4));
+    print("total=" + str(total));
+    return 0;
+}

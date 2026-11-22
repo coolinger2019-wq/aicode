@@ -1,0 +1,75 @@
+// CSV -> JSON 转换
+// 方言: 逗号逐字节分隔; 无引号无转义; 首行为表头; 行号含表头(首条数据行=第2行)。
+// 空行(除末尾换行产生的空行外)按 1 个字段计。
+use std.unstr;
+use std.fs;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    let a = args.get(0);
+    if a.is_none() {
+        eprint("error: missing CSV file argument");
+        return 1;
+    }
+    let su = a.unwrap();
+    let sp = unstr.sanitize_cli_path(su);
+    if sp.is_err() {
+        eprint("error: invalid CSV file path");
+        return 1;
+    }
+    let p = sp.unwrap();
+    let sr = fs.read_file(p);
+    if sr.is_err() {
+        eprint("error: cannot read CSV file");
+        return 1;
+    }
+    let content = sr.unwrap();
+    let lines = content.split("\n");
+    let mut m = lines.len();
+    if m > 0 {
+        let last = lines[m - 1];
+        if last.is_empty() {
+            m = m - 1;
+        }
+    }
+    let mut rowsStr = unstr.mark("");
+    let mut errsStr = unstr.mark("");
+    let mut nrows = 0;
+    let mut nerrs = 0;
+    if m > 0 {
+        let cols = lines[0].split(",");
+        let want = cols.len();
+        let mut i = 1;
+        while i < m {
+            let fields = lines[i].split(",");
+            let got = fields.len();
+            let ln = i + 1;
+            if got == want {
+                if nrows > 0 {
+                    rowsStr = rowsStr + ",";
+                }
+                rowsStr = rowsStr + "{";
+                let mut j = 0;
+                while j < want {
+                    if j > 0 {
+                        rowsStr = rowsStr + ",";
+                    }
+                    rowsStr = rowsStr + "\"" + cols[j] + "\":\"" + fields[j] + "\"";
+                    j = j + 1;
+                }
+                rowsStr = rowsStr + "}";
+                nrows = nrows + 1;
+            } else {
+                if nerrs > 0 {
+                    errsStr = errsStr + ",";
+                }
+                errsStr = errsStr + "{\"line\":" + str(ln) + ",\"got\":" + str(got) + ",\"want\":" + str(want) + "}";
+                nerrs = nerrs + 1;
+            }
+            i = i + 1;
+        }
+    }
+    let mut out = unstr.mark("");
+    out = out + "{\"rows\":[" + rowsStr + "],\"errors\":[" + errsStr + "]}";
+    print(out);
+    return 0;
+}

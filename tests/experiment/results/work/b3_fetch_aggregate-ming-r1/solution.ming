@@ -1,0 +1,83 @@
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, net {
+    if args.len() < 4 {
+        eprint("error: expected 4 url arguments");
+        return 1;
+    }
+    let mut ok_count: i64 = 0;
+    let mut failed_count: i64 = 0;
+    let mut grand_total: i64 = 0;
+    for i in 0..4 {
+        let src_label = "src" + str(i + 1);
+        match std.unstr.sanitize_cli_path(args[i]) {
+            Ok(surl) => {
+                match std.net.http_get(surl) {
+                    Ok((code, body)) => {
+                        if code == 200 {
+                            match std.json.parse(body) {
+                                Ok(j) => {
+                                    let mut n_items: i64 = 0;
+                                    let mut t_total: i64 = 0;
+                                    let mut has_items: bool = false;
+                                    let mut has_total: bool = false;
+                                    match j.get("items") {
+                                        Some(av) => {
+                                            match av.as_arr() {
+                                                Some(arr) => {
+                                                    n_items = arr.len();
+                                                    has_items = true;
+                                                },
+                                                None => {
+                                                },
+                                            }
+                                        },
+                                        None => {
+                                        },
+                                    }
+                                    match j.get("total") {
+                                        Some(tv) => {
+                                            match tv.as_num() {
+                                                Some(f) => {
+                                                    t_total = f as i64;
+                                                    has_total = true;
+                                                },
+                                                None => {
+                                                },
+                                            }
+                                        },
+                                        None => {
+                                        },
+                                    }
+                                    if has_items && has_total {
+                                        print(src_label + " ok code 200 items " + str(n_items) + " total " + str(t_total));
+                                        ok_count += 1;
+                                        grand_total += t_total;} else {
+
+                                        print(src_label + " failed code " + str(code));
+                                        failed_count += 1;
+                                    }
+                                },
+                                Err(_) => {
+                                    print(src_label + " failed code " + str(code));
+                                    failed_count += 1;
+                                },
+                            }} else {
+
+                            print(src_label + " failed code " + str(code));
+                            failed_count += 1;
+                        }
+                    },
+                    Err(_) => {
+                        print(src_label + " failed code 0");
+                        failed_count += 1;
+                    },
+                }
+            },
+            Err(_) => {
+                print(src_label + " failed code 0");
+                failed_count += 1;
+            },
+        }
+    }
+    print("summary ok=" + str(ok_count) + " failed=" + str(failed_count) + " grand_total=" + str(grand_total));
+    return 0;
+}

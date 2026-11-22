@@ -1,0 +1,181 @@
+// a4_dedup_stats —— 分块文本去重统计
+// 用法: node bin/ming.js run solution.ming -- <分块目录>
+// 读取目录中名称匹配 chunk_*.txt 的条目(按名称字节序升序),合并统计每行
+// 出现次数,输出 total/unique/repeated 与出现最多的前 3 行。
+
+use std.fs;
+use std.unstr;
+
+struct TopEntry {
+    line: str,
+    count: i64
+}
+
+// 排序比较:次数降序;次数并列时按行内容升序(字节序)。
+fn top_before(a: TopEntry, b: TopEntry) -> bool {
+    if a.count > b.count {
+        return true;
+    }
+    if a.count < b.count {
+        return false;
+    }
+    if a.line < b.line {
+        return true;
+    }
+    return false;
+}
+
+// 自底向上归并排序(确定性;入参按值语义为副本,返回排好序的 Vec)。
+fn sort_top(v: Vec[TopEntry]) -> Vec[TopEntry] {
+    let n: i64 = v.len();
+    let mut src: Vec[TopEntry] = v;
+    if n <= 1 {
+        return src;
+    }
+    let mut buf: Vec[TopEntry] = [];
+    let mut t: i64 = 0;
+    while t < n {
+        buf.push(src[t]);
+        t = t + 1;
+    }
+    let mut width: i64 = 1;
+    while width < n {
+        let mut lo: i64 = 0;
+        while lo < n {
+            let mid: i64 = lo + width;
+            let nxt: i64 = lo + width + width;
+            let m2: i64 = if mid < n { mid } else { n };
+            let h2: i64 = if nxt < n { nxt } else { n };
+            let mut a: i64 = lo;
+            let mut b: i64 = m2;
+            let mut k: i64 = lo;
+            while k < h2 {
+                if a < m2 && (b >= h2 || top_before(src[a], src[b])) {
+                    buf[k] = src[a];
+                    a = a + 1;
+                } else {
+                    buf[k] = src[b];
+                    b = b + 1;
+                }
+                k = k + 1;
+            }
+            lo = nxt;
+        }
+        let mut c: i64 = 0;
+        while c < n {
+            src[c] = buf[c];
+            c = c + 1;
+        }
+        width = width + width;
+    }
+    return src;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() != 1 {
+        eprint("error: usage: solution.ming <chunk-dir>");
+        return 1;
+    }
+    let dres = unstr.sanitize_cli_path(args.get(0).unwrap());
+    let mut dir: str = "";
+    match dres {
+        Ok(d) => {
+            dir = d;
+        },
+        Err(_) => {
+            eprint("error: 目录路径非法");
+            return 1;
+        },
+    }
+    // 收集名称匹配 chunk_*.txt 的条目(净值),其余忽略。
+    let lres = fs.list_dir(dir);
+    let mut names: Vec[str] = [];
+    match lres {
+        Ok(entries) => {
+            for e in entries {
+                let sres = unstr.sanitize_cli_path(e);
+                match sres {
+                    Ok(nm) => {
+                        if nm.starts_with("chunk_") && nm.ends_with(".txt") {
+                            names.push(nm);
+                        }
+                    },
+                    Err(_) => {},
+                }
+            }
+        },
+        Err(_) => {
+            eprint("error: 目录不可读: " + dir);
+            return 1;
+        },
+    }
+    // 按名称字节序升序逐块处理,跨块合并计数。
+    if names.len() > 0 {
+        names.sort();
+    }
+    let mut counts: Map[str, i64] = {};
+    let mut seen: Vec[str] = [];
+    let mut total: i64 = 0;
+    let mut idx: i64 = 0;
+    while idx < names.len() {
+        let name: str = names[idx];
+        let path: str = dir + "/" + name;
+        let rres = fs.read_file(path);
+        match rres {
+            Ok(content) => {
+                let parts = content.split("\n");
+                let n: i64 = parts.len();
+                let mut m: i64 = n;
+                if m > 0 {
+                    let last = parts.get(m - 1).unwrap();
+                    if last.is_empty() {
+                        m = m - 1;
+                    }
+                }
+                let mut i: i64 = 0;
+                while i < m {
+                    let l2 = unstr.sanitize_cli_path(parts.get(i).unwrap());
+                    match l2 {
+                        Ok(line) => {
+                            total = total + 1;
+                            let c: i64 = counts.get(line).unwrap_or(0);
+                            if c == 0 {
+                                seen.push(line);
+                            }
+                            counts.set(line, c + 1);
+                        },
+                        Err(_) => {},
+                    }
+                    i = i + 1;
+                }
+            },
+            Err(_) => {
+                eprint("error: 文件不可读: " + name);
+                return 1;
+            },
+        }
+        idx = idx + 1;
+    }
+    let mut unique: i64 = 0;
+    let mut repeated: i64 = 0;
+    let mut pairs: Vec[TopEntry] = [];
+    for k in seen {
+        let c: i64 = counts.get(k).unwrap();
+        unique = unique + 1;
+        if c > 1 {
+            repeated = repeated + 1;
+        }
+        pairs.push(TopEntry{ line: k, count: c });
+    }
+    let sorted: Vec[TopEntry] = sort_top(pairs);
+    print("total=" + str(total));
+    print("unique=" + str(unique));
+    print("repeated=" + str(repeated));
+    let mut i: i64 = 0;
+    while i < 3 && i < sorted.len() {
+        let e: TopEntry = sorted[i];
+        print("top" + str(i + 1) + " " + e.line + " " + str(e.count));
+        i = i + 1;
+    }
+    return 0;
+}

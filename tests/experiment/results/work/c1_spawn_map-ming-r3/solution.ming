@@ -1,0 +1,25 @@
+use std.sync;
+
+fn shard_sum(i: i64) -> i64 {
+    let lo = 25 * (i - 1) + 1;
+    let hi = 25 * i;
+    let mut s = 0;
+    for n in lo..(hi + 1) {
+        s = s + n * n;
+    }
+    s
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, sync {
+    let results = sync.spawn_all(shard_sum, [1, 2, 3, 4]);
+    let r0 = results[0].unwrap();
+    let r1 = results[1].unwrap();
+    let r2 = results[2].unwrap();
+    let r3 = results[3].unwrap();
+    print("shard1=" + str(r0));
+    print("shard2=" + str(r1));
+    print("shard3=" + str(r2));
+    print("shard4=" + str(r3));
+    print("total=" + str(r0 + r1 + r2 + r3));
+    0
+}

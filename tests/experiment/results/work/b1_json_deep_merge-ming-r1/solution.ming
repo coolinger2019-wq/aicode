@@ -1,0 +1,178 @@
+use std.fs;
+use std.json;
+use std.unstr;
+
+fn loadDoc(path: str) -> Result[Untrusted[Json], str] with fs {
+    match fs.read_file(path) {
+        Ok(content) => {
+            match json.parse(content) {
+                Ok(j) => {
+                    return Ok(j);
+                }
+                Err(e) => {
+                    return Err("json 解析失败");
+                }
+            }
+        }
+        Err(e) => {
+            return Err("文件不可读");
+        }
+    }
+}
+
+fn ser(j: Untrusted[Json]) -> Untrusted[str] {
+    if j.is_obj() {
+        let m = j.as_obj().unwrap();
+        let ks = m.keys();
+        let n = ks.len();
+        let mut out: Untrusted[str] = unstr.mark("{");
+        let mut first = true;
+        let mut i = 0;
+        while i < n {
+            let k = ks[i];
+            let v = m.get(k).unwrap();
+            if first {
+                first = false;
+            } else {
+                out = out + ",";
+            }
+            out = out + "\"" + k + "\":" + ser(v);
+            i = i + 1;
+        }
+        return out + "}";
+    }
+    if j.is_arr() {
+        let a = j.as_arr().unwrap();
+        let n = a.len();
+        let mut out: Untrusted[str] = unstr.mark("[");
+        let mut first = true;
+        let mut i = 0;
+        while i < n {
+            if first {
+                first = false;
+            } else {
+                out = out + ",";
+            }
+            out = out + ser(a[i]);
+            i = i + 1;
+        }
+        return out + "]";
+    }
+    if j.is_str() {
+        let s = j.as_str().unwrap();
+        return "\"" + s + "\"";
+    }
+    if j.is_num() {
+        let x = j.as_num().unwrap();
+        return unstr.mark(str(x as i64));
+    }
+    if j.is_bool() {
+        let b = j.as_bool().unwrap();
+        if b {
+            return unstr.mark("true");
+        }
+        return unstr.mark("false");
+    }
+    return unstr.mark("null");
+}
+
+fn mergeSer(a: Untrusted[Json], b: Untrusted[Json]) -> Untrusted[str] {
+    if a.is_obj() && b.is_obj() {
+        let ma = a.as_obj().unwrap();
+        let mb = b.as_obj().unwrap();
+        let ka = ma.keys();
+        let kb = mb.keys();
+        let na = ka.len();
+        let nb = kb.len();
+        let mut out: Untrusted[str] = unstr.mark("{");
+        let mut first = true;
+        let mut i = 0;
+        while i < na {
+            let k = ka[i];
+            let va = ma.get(k).unwrap();
+            if first {
+                first = false;
+            } else {
+                out = out + ",";
+            }
+            if mb.has(k) {
+                let vb = mb.get(k).unwrap();
+                if va.is_obj() && vb.is_obj() {
+                    out = out + "\"" + k + "\":" + mergeSer(va, vb);
+                } else {
+                    out = out + "\"" + k + "\":" + ser(vb);
+                }
+            } else {
+                out = out + "\"" + k + "\":" + ser(va);
+            }
+            i = i + 1;
+        }
+        let mut j2 = 0;
+        while j2 < nb {
+            let k = kb[j2];
+            if !ma.has(k) {
+                let vb = mb.get(k).unwrap();
+                if first {
+                    first = false;
+                } else {
+                    out = out + ",";
+                }
+                out = out + "\"" + k + "\":" + ser(vb);
+            }
+            j2 = j2 + 1;
+        }
+        return out + "}";
+    }
+    return ser(b);
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: 参数少于2,需要 <文档A路径> <文档B路径>");
+        return 1;
+    }
+    let pa = unstr.sanitize_cli_path(args[0]);
+    match pa {
+        Ok(p) => {
+            let pb = unstr.sanitize_cli_path(args[1]);
+            match pb {
+                Ok(q) => {
+                    match loadDoc(p) {
+                        Ok(a) => {
+                            match loadDoc(q) {
+                                Ok(b) => {
+                                    if !a.is_obj() {
+                                        eprint("error: 文档A顶层非对象");
+                                        return 1;
+                                    }
+                                    if !b.is_obj() {
+                                        eprint("error: 文档B顶层非对象");
+                                        return 1;
+                                    }
+                                    print(mergeSer(a, b));
+                                    return 0;
+                                }
+                                Err(e) => {
+                                    eprint("error: 文档B " + e);
+                                    return 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprint("error: 文档A " + e);
+                            return 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprint("error: 文档B路径不可用");
+                    return 1;
+                }
+            }
+        }
+        Err(e) => {
+            eprint("error: 文档A路径不可用");
+            return 1;
+        }
+    }
+}

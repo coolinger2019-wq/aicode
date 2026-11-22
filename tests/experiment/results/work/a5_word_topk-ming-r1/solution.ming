@@ -1,0 +1,80 @@
+use std.fs;
+use std.unstr;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing file argument");
+        return 1;
+    }
+    let p_res = std.unstr.sanitize_cli_path(args[0]);
+    let p = match p_res {
+        Ok(v) => v,
+        Err(_) => {
+            eprint("error: bad path");
+            return 1;
+        }
+    };
+    let c_res = std.fs.read_file(p);
+    let content = match c_res {
+        Ok(v) => v,
+        Err(_) => {
+            eprint("error: cannot read file");
+            return 1;
+        }
+    };
+    let flat = content.replace("\n", " ");
+    let ws = flat.split(" ");
+    let mut counts: Map[str, i64] = [:];
+    let mut n: i64 = 0;
+    while n < ws.len() {
+        let w_res = std.unstr.sanitize_cli_path(ws[n]);
+        let w = match w_res {
+            Ok(v) => v,
+            Err(_) => ""
+        };
+        if w != "" {
+            let cur = match counts.get(w) {
+                Some(c) => c,
+                None => 0
+            };
+            counts.set(w, cur + 1);
+        }
+        n = n + 1;
+    }
+    let mut keys = counts.keys();
+    let kn = keys.len();
+    // 简单选择排序: 次数降序, 并列按词升序
+    let mut i: i64 = 0;
+    while i < kn {
+        let mut j: i64 = i + 1;
+        let mut best: i64 = i;
+        while j < kn {
+            let wj = keys[j];
+            let wb = keys[best];
+            let cj = counts.get(wj).unwrap();
+            let cb = counts.get(wb).unwrap();
+            if cj > cb {
+                best = j;
+            } else {
+                if cj == cb {
+                    if wj < wb {
+                        best = j;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        if best != i {
+            let t = keys[i];
+            keys[i] = keys[best];
+            keys[best] = t;
+        }
+        i = i + 1;
+    }
+    let mut out: i64 = 0;
+    while out < kn && out < 5 {
+        print(keys[out] + " " + str(counts.get(keys[out]).unwrap()));
+        out = out + 1;
+    }
+    return 0;
+}

@@ -1,0 +1,116 @@
+// b4_serve_handler — HTTP serve handler
+// 路由:GET /ping -> 200 {"pong":true};POST /sum(nums 数组全数值)-> 200 {"sum":N};
+// POST /sum 其他形态 -> 400 {"code":"bad_request"};其余 -> 404 {"code":"not_found"}
+use std.net;
+use std.json;
+use std.unstr;
+
+// 取请求载荷中某字段的字符串值(缺失或非字符串 -> None)
+fn field_str(req: Untrusted[Json], key: str) -> Option[Untrusted[str]] {
+    match req.get(key) {
+        Some(v) => { v.as_str() }
+        None => { None }
+    }
+}
+
+// 取字段并过 sanitize_cli_path 得到净字符串(缺失/非串/含控制符 -> "")
+fn clean_field(req: Untrusted[Json], key: str) -> str {
+    match field_str(req, key) {
+        Some(s) => {
+            match unstr.sanitize_cli_path(s) {
+                Ok(cs) => { cs }
+                Err(_) => { "" }
+            }
+        }
+        None => { "" }
+    }
+}
+
+// 构造 serve 响应 Json:先拼出紧凑 JSON 文本再 parse 往返
+// body_esc 是已按 JSON 字符串转义好的响应体文本
+fn make_resp(status: i64, body_esc: str) -> Json {
+    let text: str = "{\"status\":" + str(status) + ",\"headers\":{},\"body\":\"" + body_esc + "\"}";
+    return json.parse(text).unwrap();
+}
+
+// POST /sum 处理
+fn handle_sum(req: Untrusted[Json]) -> Json {
+    let bad: Json = make_resp(400, "{\\\"code\\\":\\\"bad_request\\\"}");
+    match field_str(req, "body") {
+        Some(bs) => {
+            match json.parse(bs) {
+                Ok(j) => {
+                    if j.is_obj() {
+                        match j.get("nums") {
+                            Some(nv) => {
+                                if nv.is_arr() {
+                                    match nv.as_arr() {
+                                        Some(arr) => {
+                                            let mut total: i64 = 0;
+                                            let mut all_num: bool = true;
+                                            for e in arr {
+                                                match e.as_num() {
+                                                    Some(n) => { total = total + (n as i64); }
+                                                    None => { all_num = false; }
+                                                }
+                                            }
+                                            if all_num {
+                                                return make_resp(200, "{\\\"sum\\\":" + str(total) + "}");
+                                            }
+                                            return bad;
+                                        }
+                                        None => { return bad; }
+                                    }
+                                }
+                                return bad;
+                            }
+                            None => { return bad; }
+                        }
+                    }
+                    return bad;
+                }
+                Err(_) => { return bad; }
+            }
+        }
+        None => { return bad; }
+    }
+}
+
+// 路由入口
+fn handle(req: Untrusted[Json]) -> Json {
+    let method: str = clean_field(req, "method");
+    let path: str = clean_field(req, "path");
+    if method == "GET" {
+        if path == "/ping" {
+            return make_resp(200, "{\\\"pong\\\":true}");
+        }
+    }
+    if method == "POST" {
+        if path == "/sum" {
+            return handle_sum(req);
+        }
+    }
+    return make_resp(404, "{\\\"code\\\":\\\"not_found\\\"}");
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with net, io {
+    if args.len() == 0 {
+        eprint("error: missing port argument");
+        return 1;
+    }
+    let port: i64 = match args[0].parse_i64() {
+        Ok(p) => { p }
+        Err(_) => {
+            eprint("error: invalid port argument");
+            return 1;
+        }
+    };
+    let r: Result[i64, str] = net.serve(port, handle);
+    match r {
+        Ok(_) => { return 0; }
+        Err(e) => {
+            eprint("error: " + e);
+            return 1;
+        }
+    }
+}

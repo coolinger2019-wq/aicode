@@ -1,0 +1,130 @@
+use std.fs;
+use std.json;
+use std.unstr;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing argument");
+        return 1;
+    }
+    let sp = unstr.sanitize_cli_path(args[0]);
+    if !sp.is_ok() {
+        eprint("error: bad path");
+        return 1;
+    }
+    let path = sp.unwrap();
+    let rf = fs.read_file(path);
+    if !rf.is_ok() {
+        eprint("error: cannot read file");
+        return 1;
+    }
+    let content = rf.unwrap();
+    let pj = json.parse(content);
+    if !pj.is_ok() {
+        eprint("error: invalid json");
+        return 1;
+    }
+    let j = pj.unwrap();
+    let arr_opt = j.as_arr();
+    if !arr_opt.is_some() {
+        eprint("error: top level not array");
+        return 1;
+    }
+    let arr = arr_opt.unwrap();
+    let mut ok_count: i64 = 0;
+    let mut fail_count: i64 = 0;
+    let mut idx: i64 = 0;
+    for rec in arr {
+        idx = idx + 1;
+        let mut id_ok = false;
+        let mut email_ok = false;
+        let mut age_ok = false;
+        let mut role_ok = false;
+        let f_id = rec.get("id");
+        if f_id.is_some() {
+            let v = f_id.unwrap();
+            if v.is_num() {
+                let nvopt = v.as_num();
+                if nvopt.is_some() {
+                    let nv = nvopt.unwrap();
+                    if nv >= 1.0 {
+                        id_ok = true;
+                    }
+                }
+            }
+        }
+        let f_em = rec.get("email");
+        if f_em.is_some() {
+            let v = f_em.unwrap();
+            if v.is_str() {
+                let sopt = v.as_str();
+                if sopt.is_some() {
+                    let s = sopt.unwrap();
+                    if s.contains("@") {
+                        email_ok = true;
+                    }
+                }
+            }
+        }
+        let f_ag = rec.get("age");
+        if f_ag.is_some() {
+            let v = f_ag.unwrap();
+            if v.is_num() {
+                let avopt = v.as_num();
+                if avopt.is_some() {
+                    let av = avopt.unwrap();
+                    if av >= 0.0 && av <= 150.0 {
+                        age_ok = true;
+                    }
+                }
+            }
+        }
+        let f_ro = rec.get("role");
+        if f_ro.is_some() {
+            let v = f_ro.unwrap();
+            if v.is_str() {
+                let sropt = v.as_str();
+                if sropt.is_some() {
+                    let s = sropt.unwrap();
+                    if (s.starts_with("admin") && s.char_len() == 5) || (s.starts_with("user") && s.char_len() == 4) || (s.starts_with("guest") && s.char_len() == 5) {
+                        role_ok = true;
+                    }
+                }
+            }
+        }
+        if id_ok && email_ok && age_ok && role_ok {
+            print("record " + str(idx) + " ok");
+            ok_count = ok_count + 1;
+        } else {
+            let mut parts = "";
+            if !id_ok {
+                parts = "id invalid";
+            }
+            if !email_ok {
+                if parts != "" {
+                    parts = parts + "; email invalid";
+                } else {
+                    parts = "email invalid";
+                }
+            }
+            if !age_ok {
+                if parts != "" {
+                    parts = parts + "; age invalid";
+                } else {
+                    parts = "age invalid";
+                }
+            }
+            if !role_ok {
+                if parts != "" {
+                    parts = parts + "; role invalid";
+                } else {
+                    parts = "role invalid";
+                }
+            }
+            print("record " + str(idx) + " " + parts);
+            fail_count = fail_count + 1;
+        }
+    }
+    print("ok=" + str(ok_count) + " failed=" + str(fail_count));
+    return 0;
+}

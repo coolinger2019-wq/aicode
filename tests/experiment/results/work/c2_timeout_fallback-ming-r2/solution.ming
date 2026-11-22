@@ -1,0 +1,36 @@
+use std.sync;
+use std.time;
+
+fn slow_child_work(x: i64) -> i64 with time {
+    std.time.sleep(400);
+    return 99;
+}
+
+fn fast_child_work(x: i64) -> i64 with time {
+    std.time.sleep(50);
+    return 99;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, sync, time {
+    let h1 = std.sync.spawn(slow_child_work, 0);
+    let r1 = std.sync.join_detailed(h1, 100);
+    match r1 {
+        Ok(v) => {
+            print("slow_child=" + str(v) + " fallback=" + str(v));
+        }
+        Err(e) => {
+            print("slow_child=timeout fallback=0");
+        }
+    }
+    let h2 = std.sync.spawn(fast_child_work, 0);
+    let r2 = std.sync.join_detailed(h2, 2000);
+    match r2 {
+        Ok(v) => {
+            print("fast_child=" + str(v));
+        }
+        Err(e) => {
+            print("fast_child=timeout");
+        }
+    }
+    return 0;
+}

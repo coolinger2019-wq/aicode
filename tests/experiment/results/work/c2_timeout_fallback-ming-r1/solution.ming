@@ -1,0 +1,39 @@
+// c2: 两个子任务,父任务带超时等待
+// 慢子任务睡 400ms 产出 99,父最多等 100ms -> 超时,默认 0
+// 快子任务睡 50ms 产出 99,父最多等 2000ms -> 取到 99
+use std.sync;
+use std.time;
+
+fn slow_child(x: i64) -> i64 with time {
+    std.time.sleep(400);
+    return 99;
+}
+
+fn fast_child(x: i64) -> i64 with time {
+    std.time.sleep(50);
+    return 99;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, sync, time {
+    let h1 = std.sync.spawn(slow_child, 0);
+    let r1 = std.sync.join_detailed(h1, 100);
+    match r1 {
+        Ok(v) => {
+            print("slow_child=ok fallback=" + str(v));
+        }
+        Err(e) => {
+            print("slow_child=timeout fallback=0");
+        }
+    }
+    let h2 = std.sync.spawn(fast_child, 0);
+    let r2 = std.sync.join_detailed(h2, 2000);
+    match r2 {
+        Ok(v) => {
+            print("fast_child=" + str(v));
+        }
+        Err(e) => {
+            print("fast_child=timeout fallback=0");
+        }
+    }
+    return 0;
+}

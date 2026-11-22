@@ -1,0 +1,93 @@
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing log file argument");
+        return 1;
+    }
+    let path: str = match std.unstr.sanitize_cli_path(args[0]) {
+        Ok(p) => p,
+        Err(_) => { eprint("error: cannot read log file"); return 1; }
+    };
+    let content: Untrusted[str] = match std.fs.read_file(path) {
+        Ok(c) => c,
+        Err(_) => { eprint("error: cannot read log file"); return 1; }
+    };
+    let lv_info: Untrusted[str] = std.unstr.mark("INFO");
+    let lv_warn: Untrusted[str] = std.unstr.mark("WARN");
+    let lv_error: Untrusted[str] = std.unstr.mark("ERROR");
+    let lv_debug: Untrusted[str] = std.unstr.mark("DEBUG");
+    let empty_u: Untrusted[str] = std.unstr.mark("");
+    let lines = content.split("\n");
+    let mut m: i64 = lines.len();
+    if m > 0 {
+        let last = lines[m - 1];
+        if last.is_empty() {
+            m = m - 1;
+        }
+    }
+    let mut n_info: i64 = 0;
+    let mut n_warn: i64 = 0;
+    let mut n_error: i64 = 0;
+    let mut n_debug: i64 = 0;
+    let mut n_skip: i64 = 0;
+    for i in 0..m {
+        let line = lines[i];
+        let segs = line.split(" ");
+        if segs.len() < 5 {
+            n_skip = n_skip + 1;
+        } else {
+            let lvl = segs[1];
+            let mut level: i64 = 0;
+            if lvl == lv_info {
+                level = 1;
+            } else if lvl == lv_warn {
+                level = 2;
+            } else if lvl == lv_error {
+                level = 3;
+            } else if lvl == lv_debug {
+                level = 4;
+            }
+            if level == 0 {
+                n_skip = n_skip + 1;
+            } else {
+                let mut uval: Untrusted[str] = empty_u;
+                let mut aval: Untrusted[str] = empty_u;
+                let mut uval_set: bool = false;
+                let mut aval_set: bool = false;
+                for seg in segs {
+                    if !uval_set {
+                        if seg.starts_with("user=") {
+                            uval = seg.slice_chars(5, seg.char_len());
+                            uval_set = true;
+                        }
+                    }
+                    if !aval_set {
+                        if seg.starts_with("action=") {
+                            aval = seg.slice_chars(7, seg.char_len());
+                            aval_set = true;
+                        }
+                    }
+                }
+                if !uval_set {
+                    n_skip = n_skip + 1;
+                } else if !aval_set {
+                    n_skip = n_skip + 1;
+                } else if level == 4 {
+                    n_debug = n_debug + 1;
+                } else {
+                    if level == 1 {
+                        n_info = n_info + 1;
+                    }
+                    if level == 2 {
+                        n_warn = n_warn + 1;
+                    }
+                    if level == 3 {
+                        n_error = n_error + 1;
+                    }
+                    print(uval + " " + aval);
+                }
+            }
+        }
+    }
+    print("summary INFO=" + str(n_info) + " WARN=" + str(n_warn) + " ERROR=" + str(n_error) + " DEBUG=" + str(n_debug) + " skipped=" + str(n_skip));
+    return 0;
+}

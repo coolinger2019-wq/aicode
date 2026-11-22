@@ -1,0 +1,28 @@
+// 分片计数合并:4 个分片并行统计各自命中数,父任务合并输出。
+// 分片 s (1..4), 片内 j (1..16): v = (s*13 + j*7) % 6; v == 0 计命中。
+
+fn shard_hits(s: i64) -> i64 {
+    let mut n: i64 = 0;
+    for j in 1..17 {
+        let v = (s * 13 + j * 7) % 6;
+        if v == 0 {
+            n = n + 1;
+        }
+    }
+    return n;
+}
+
+fn main() -> i64 with sync, io {
+    let args: Vec[i64] = [1, 2, 3, 4];
+    let results: Vec[Result[i64, str]] = std.sync.spawn_all(shard_hits, args);
+    let mut total: i64 = 0;
+    let mut i: i64 = 1;
+    for r in results {
+        let c = r.unwrap();
+        total = total + c;
+        print("shard" + str(i) + "=" + str(c));
+        i = i + 1;
+    }
+    print("total=" + str(total));
+    return 0;
+}

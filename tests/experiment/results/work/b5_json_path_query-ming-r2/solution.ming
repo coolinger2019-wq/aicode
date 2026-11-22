@@ -1,0 +1,211 @@
+// 嵌套 JSON 路径查询 (b5)
+// 用法: solution.ming <文档路径> <查询文件路径>
+
+fn quoted(s: Untrusted[str]) -> Untrusted[str] {
+    return std.unstr.mark("\"") + s + std.unstr.mark("\"");
+}
+
+fn render_json(j: Untrusted[Json]) -> Untrusted[str] {
+    if j.is_str() {
+        match j.as_str() {
+            Some(s) => { return quoted(s); }
+            None => { return std.unstr.mark("null"); }
+        }
+    }
+    if j.is_num() {
+        match j.as_num() {
+            Some(f) => { return std.unstr.mark(str(f as i64)); }
+            None => { return std.unstr.mark("null"); }
+        }
+    }
+    if j.is_bool() {
+        match j.as_bool() {
+            Some(b) => { return std.unstr.mark(str(b)); }
+            None => { return std.unstr.mark("null"); }
+        }
+    }
+    if j.is_arr() {
+        match j.as_arr() {
+            Some(vs) => {
+                let mut out = std.unstr.mark("[");
+                let mut first = true;
+                for v in vs {
+                    if !first {
+                        out = out + std.unstr.mark(",");
+                    }
+                    out = out + render_json(v);
+                    first = false;
+                }
+                return out + std.unstr.mark("]");
+            }
+            None => { return std.unstr.mark("null"); }
+        }
+    }
+    if j.is_obj() {
+        match j.as_obj() {
+            Some(m) => {
+                let mut out = std.unstr.mark("{");
+                let mut first = true;
+                for k in m.keys() {
+                    if !first {
+                        out = out + std.unstr.mark(",");
+                    }
+                    out = out + quoted(std.unstr.mark(k)) + std.unstr.mark(":") + render_json(m.get(k).unwrap());
+                    first = false;
+                }
+                return out + std.unstr.mark("}");
+            }
+            None => { return std.unstr.mark("null"); }
+        }
+    }
+    return std.unstr.mark("null");
+}
+
+fn render_top(j: Untrusted[Json]) -> Untrusted[str] {
+    if j.is_str() {
+        match j.as_str() {
+            Some(s) => { return s; }
+            None => { return std.unstr.mark("MISSING"); }
+        }
+    }
+    if j.is_num() {
+        match j.as_num() {
+            Some(f) => { return std.unstr.mark(str(f as i64)); }
+            None => { return std.unstr.mark("MISSING"); }
+        }
+    }
+    if j.is_bool() {
+        match j.as_bool() {
+            Some(b) => { return std.unstr.mark(str(b)); }
+            None => { return std.unstr.mark("MISSING"); }
+        }
+    }
+    if j.is_arr() { return render_json(j); }
+    if j.is_obj() { return render_json(j); }
+    return std.unstr.mark("null");
+}
+
+fn drill(root: Untrusted[Json], segs: Vec[Untrusted[str]]) -> Option[Untrusted[Json]] {
+    let mut cur = root;
+    for seg in segs {
+        let num_seg = seg.parse_i64();
+        let mut is_num = false;
+        match num_seg {
+            Ok(_) => { is_num = true; }
+            Err(_) => { is_num = false; }
+        }
+        if is_num {
+            if cur.is_arr() {
+                let idx = match num_seg {
+                    Ok(n) => { n }
+                    Err(_) => { return None; }
+                };
+                match cur.at(idx) {
+                    Some(nj) => { cur = nj; }
+                    None => { return None; }
+                }
+            } else {
+                return None;
+            }
+        } else {
+            if cur.is_obj() {
+                match std.unstr.sanitize_cli_path(seg) {
+                    Ok(k) => {
+                        match cur.get(k) {
+                            Some(nj) => { cur = nj; }
+                            None => { return None; }
+                        }
+                    }
+                    Err(_) => { return None; }
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+    return Some(cur);
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: 需要 2 个参数: 文档路径 查询文件路径");
+        return 1;
+    }
+    let doc_path = match std.unstr.sanitize_cli_path(args[0]) {
+        Ok(p) => { p }
+        Err(_) => {
+            eprint("error: 文档路径非法");
+            return 1;
+        }
+    };
+    let q_path = match std.unstr.sanitize_cli_path(args[1]) {
+        Ok(p) => { p }
+        Err(_) => {
+            eprint("error: 查询路径非法");
+            return 1;
+        }
+    };
+    let doc_res = std.fs.read_file(doc_path);
+    let doc_str = match doc_res {
+        Ok(s) => { s }
+        Err(_) => {
+            eprint("error: 文档不可读");
+            return 1;
+        }
+    };
+    let doc_parsed = std.json.parse(doc_str);
+    let doc = match doc_parsed {
+        Ok(j) => { j }
+        Err(_) => {
+            eprint("error: JSON 解析失败");
+            return 1;
+        }
+    };
+    if !doc.is_obj() {
+        eprint("error: 文档顶层非对象");
+        return 1;
+    }
+    let q_res = std.fs.read_file(q_path);
+    let q_str = match q_res {
+        Ok(s) => { s }
+        Err(_) => {
+            eprint("error: 查询文件不可读");
+            return 1;
+        }
+    };
+    let mut lines = q_str.split("\n");
+    let mut n = lines.len();
+    let mut trimming = true;
+    while trimming {
+        if n > 0 {
+            let last = lines[n - 1];
+            if last.is_empty() {
+                n = n - 1;
+            } else {
+                trimming = false;
+            }
+        } else {
+            trimming = false;
+        }
+    }
+    let mut found = 0;
+    let mut missing = 0;
+    let mut i = 0;
+    while i < n {
+        let line = lines[i];
+        let segs = line.split(".");
+        match drill(doc, segs) {
+            Some(v) => {
+                print(line + std.unstr.mark(" = ") + render_top(v));
+                found = found + 1;
+            }
+            None => {
+                print(line + std.unstr.mark(" = MISSING"));
+                missing = missing + 1;
+            }
+        }
+        i = i + 1;
+    }
+    print("found=" + str(found) + " missing=" + str(missing));
+    return 0;
+}

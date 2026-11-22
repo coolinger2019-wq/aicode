@@ -1,0 +1,26 @@
+fn main() -> i64 with io {
+    let budget: i64 = 95;
+    let mut kept: i64 = 0;
+    let mut processed: i64 = 0;
+    let mut stopped: bool = false;
+    let mut stop_i: i64 = 0;
+    let mut stop_need: i64 = 0;
+    for i in 1..31 {
+        let name: str = "svc-" + str(i * 4 + 1);
+        let cost: i64 = name.char_len();
+        if kept + cost > budget {
+            stopped = true;
+            stop_i = i;
+            stop_need = cost;
+            break;
+        }
+        kept = kept + cost;
+        processed = processed + 1;
+        print("R" + str(i) + " " + name + " ok");
+    }
+    if stopped {
+        print("quota exceeded at record " + str(stop_i) + ": kept=" + str(kept) + " need=" + str(stop_need) + " budget=95");
+    }
+    print("summary processed=" + str(processed) + " kept_chars=" + str(kept));
+    return 0;
+}

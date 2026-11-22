@@ -1,0 +1,175 @@
+use std.fs;
+use std.json;
+use std.unstr;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing file argument");
+        return 1;
+    }
+    let path_res = unstr.sanitize_cli_path(args.get(0).unwrap());
+    if path_res.is_err() {
+        eprint("error: invalid file path");
+        return 1;
+    }
+    let path = path_res.unwrap();
+    let read_res = fs.read_file(path);
+    if read_res.is_err() {
+        eprint("error: cannot read file");
+        return 1;
+    }
+    let content = read_res.unwrap();
+    let parse_res = json.parse(content);
+    if parse_res.is_err() {
+        eprint("error: json parse failed");
+        return 1;
+    }
+    let top = parse_res.unwrap();
+    let arr_opt = top.as_arr();
+    if arr_opt.is_none() {
+        eprint("error: top-level is not an array");
+        return 1;
+    }
+    let arr = arr_opt.unwrap();
+    let n = arr.len();
+    let mut ok_count: i64 = 0;
+    let mut failed_count: i64 = 0;
+    for i in 0..n {
+        let rec = arr.get(i).unwrap();
+        let mut all_ok = true;
+        let mut det = "";
+        let mut first = true;
+
+        let mut id_bad = false;
+        let id_field = rec.get("id");
+        if id_field.is_some() {
+            let idj = id_field.unwrap();
+            if idj.is_num() {
+                let idv = idj.as_num().unwrap();
+                if idv < 1.0 {
+                    id_bad = true;
+                }
+            } else {
+                id_bad = true;
+            }
+        } else {
+            id_bad = true;
+        }
+        if id_bad {
+            all_ok = false;
+            if first {
+                det = "id invalid";
+                first = false;
+            } else {
+                det = det + "; id invalid";
+            }
+        }
+
+        let mut email_bad = false;
+        let email_field = rec.get("email");
+        if email_field.is_some() {
+            let emailj = email_field.unwrap();
+            if emailj.is_str() {
+                let emails = emailj.as_str().unwrap();
+                if !(emails.contains("@")) {
+                    email_bad = true;
+                }
+            } else {
+                email_bad = true;
+            }
+        } else {
+            email_bad = true;
+        }
+        if email_bad {
+            all_ok = false;
+            if first {
+                det = "email invalid";
+                first = false;
+            } else {
+                det = det + "; email invalid";
+            }
+        }
+
+        let mut age_bad = false;
+        let age_field = rec.get("age");
+        if age_field.is_some() {
+            let agej = age_field.unwrap();
+            if agej.is_num() {
+                let agev = agej.as_num().unwrap();
+                if agev < 0.0 {
+                    age_bad = true;
+                } else {
+                    if agev > 150.0 {
+                        age_bad = true;
+                    }
+                }
+            } else {
+                age_bad = true;
+            }
+        } else {
+            age_bad = true;
+        }
+        if age_bad {
+            all_ok = false;
+            if first {
+                det = "age invalid";
+                first = false;
+            } else {
+                det = det + "; age invalid";
+            }
+        }
+
+        let mut role_bad = false;
+        let role_field = rec.get("role");
+        if role_field.is_some() {
+            let rolej = role_field.unwrap();
+            if rolej.is_str() {
+                let roles = rolej.as_str().unwrap();
+                let mut role_ok = false;
+                if roles.starts_with("admin") {
+                    if roles.char_len() == 5 {
+                        role_ok = true;
+                    }
+                } else {
+                    if roles.starts_with("user") {
+                        if roles.char_len() == 4 {
+                            role_ok = true;
+                        }
+                    } else {
+                        if roles.starts_with("guest") {
+                            if roles.char_len() == 5 {
+                                role_ok = true;
+                            }
+                        }
+                    }
+                }
+                if !(role_ok) {
+                    role_bad = true;
+                }
+            } else {
+                role_bad = true;
+            }
+        } else {
+            role_bad = true;
+        }
+        if role_bad {
+            all_ok = false;
+            if first {
+                det = "role invalid";
+                first = false;
+            } else {
+                det = det + "; role invalid";
+            }
+        }
+
+        if all_ok {
+            print("record " + str(i + 1) + " ok");
+            ok_count = ok_count + 1;
+        } else {
+            print("record " + str(i + 1) + " " + det);
+            failed_count = failed_count + 1;
+        }
+    }
+    print("ok=" + str(ok_count) + " failed=" + str(failed_count));
+    return 0;
+}

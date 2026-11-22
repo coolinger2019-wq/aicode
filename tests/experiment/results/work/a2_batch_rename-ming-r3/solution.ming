@@ -1,0 +1,129 @@
+// a2 批量改名:按 ASCII 字节序处理输入目录文件,R1 report_<digits>.txt 重命名,
+// R2 *.log 移入 logs/,R3 跳过;目标占用登记跨规则共享,冲突跳过不登记。
+use std.fs;
+
+use std.unstr;
+
+// 原样字节复制(读/写均为 bytes,内容不变)。失败返回 false(不登记、行照常打印)。
+fn copy_file(src: str, dst: str) -> bool with fs {
+    match std.fs.read_bytes(src) {
+        Ok(b) => {
+            match std.fs.write_bytes(dst, b) {
+                Ok(x) => {
+                    return true;
+                },
+                Err(e) => {
+                    return false;
+                },
+            }
+        },
+        Err(e) => {
+            return false;
+        },
+    }
+}
+
+// R1:名称形如 report_<digits>.txt(digits 为 1 位以上十进制数字)时返回目标名
+// report-<NN>.txt(NN 为数值十进制,不足 2 位左补 0);数字串数值超出 64 位整数
+// 范围、含非数字字符或为空时返回 None(落入 R3)。
+fn r1_target(name: str) -> Option[str] {
+    if name.starts_with("report_") && name.ends_with(".txt") {
+        let blen = name.byte_len();
+        if blen >= 11 {
+            let digits = name.slice_chars(7, blen - 4);
+            if digits.is_digit() {
+                match digits.parse_i64() {
+                    Ok(v) => {
+                        let mut nn = str(v);
+                        if v < 10 {
+                            nn = "0" + nn;
+                        }
+                        return Some("report-" + nn + ".txt");
+                    },
+                    Err(e) => {
+                    },
+                }
+            }
+        }
+    }
+    return None;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: usage: batch_rename <input-dir> <output-dir>");
+        return 1;
+    }
+    let mut inp: str = "";
+    match std.unstr.sanitize_cli_path(args[0]) {
+        Ok(p) => {
+            inp = p;
+        },
+        Err(e) => {
+            eprint("error: invalid input directory path");
+            return 1;
+        },
+    }
+    let mut outp: str = "";
+    match std.unstr.sanitize_cli_path(args[1]) {
+        Ok(p) => {
+            outp = p;
+        },
+        Err(e) => {
+            eprint("error: invalid output directory path");
+            return 1;
+        },
+    }
+    let mut names: Vec[str] = [];
+    match std.fs.list_dir(inp) {
+        Ok(v) => {
+            for n in v {
+                match std.unstr.sanitize_cli_path(n) {
+                    Ok(s) => {
+                        names.push(s);
+                    },
+                    Err(e) => {
+                    },
+                }
+            }
+        },
+        Err(e) => {
+            eprint("error: cannot read input directory");
+            return 1;
+        },
+    }
+    if names.len() > 1 {
+        names.sort();
+    }
+    let mut taken: Vec[str] = [];
+    for name in names {
+        match r1_target(name) {
+            Some(target) => {
+                if taken.contains(target) {
+                    print("SKIP " + name + " conflict " + target);} else {
+
+                    let _mk1 = std.fs.make_dir(outp);
+                    let _cp1 = copy_file(inp + "/" + name, outp + "/" + target);
+                    taken.push(target);
+                    print("OK " + name + " -> " + target);
+                }
+            },
+            None => {
+                if name.ends_with(".log") {
+                    let target = "logs/" + name;
+                    if taken.contains(target) {
+                        print("SKIP " + name + " conflict " + target);} else {
+
+                        let _mk2 = std.fs.make_dir(outp + "/logs");
+                        let _cp2 = copy_file(inp + "/" + name, outp + "/" + target);
+                        taken.push(target);
+                        print("DIR " + name + " -> " + target);
+                    }} else {
+
+                    print("SKIP " + name + " nomatch");
+                }
+            },
+        }
+    }
+    return 0;
+}

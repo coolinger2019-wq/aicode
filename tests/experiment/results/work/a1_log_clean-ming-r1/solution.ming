@@ -1,0 +1,119 @@
+// 日志清洗:读取日志文件,按单空格切分判定日志行,提取 user/action 字段,
+// 过滤 DEBUG 级别,按原顺序输出保留行,最后输出一行汇总。
+//
+// 判定(逐条对应任务规则):按单空格切分后
+//   1. 段数 >= 5;
+//   2. 第 2 段整段等值于 INFO/WARN/ERROR/DEBUG 之一;
+//   3. 存在以 user= 开头的段,且存在以 action= 开头的段。
+// 不满足任一条 → 非日志行(skipped 计数)。DEBUG 日志行计数但不输出。
+//
+// 污点口径:args[0] 与文件内容均为 Untrusted[str];路径位先过
+// std.unstr.sanitize_cli_path;整段等值用 starts_with(净 bool)+ char_len
+// 等价实现(长度相等且以级别串开头 → 整段相同);值提取用 slice_chars(保污);
+// 输出全为逐字节确定内容。
+fn lvl_code(s: Untrusted[str]) -> i64 {
+    if s.char_len() == 4 && s.starts_with("INFO") {
+        return 1;
+    }
+    if s.char_len() == 4 && s.starts_with("WARN") {
+        return 2;
+    }
+    if s.char_len() == 5 && s.starts_with("ERROR") {
+        return 3;
+    }
+    if s.char_len() == 5 && s.starts_with("DEBUG") {
+        return 4;
+    }
+    return 0;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    // 参数缺失:stderr 一行 error: ... 退出码 1,stdout 为空
+    if args.len() < 1 {
+            eprint("error: missing log file argument");
+        return 1;
+    }
+
+    // 路径位净化:Untrusted[str] → 净 str(校验不改写,Ok 原样)
+    let path = match std.unstr.sanitize_cli_path(args[0]) {
+        Ok(p) => p,
+        Err(e) => {
+            eprint("error: bad path: " + e);
+            return 1;
+        }
+    };
+
+    // 文件不可读:同上
+    let content = match std.fs.read_file(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprint("error: cannot read file: " + e);
+            return 1;
+        }
+    };
+
+    // 按 \n 分行;末尾换行产生的空行不计为一行
+    let lines = content.split("\n");
+    let mut n = lines.len();
+    if n > 0 && lines[n - 1].is_empty() {
+        n = n - 1;
+    }
+
+    let mut c_info = 0;
+    let mut c_warn = 0;
+    let mut c_error = 0;
+    let mut c_debug = 0;
+    let mut c_skipped = 0;
+    let mut i = 0;
+    while i < n {
+        let line = lines[i];
+        let segs = line.split(" ");
+        let mut is_log = false;
+        let mut lvl = 0;
+        let mut user_val: Untrusted[str] = std.unstr.mark("-");
+        let mut action_val: Untrusted[str] = std.unstr.mark("-");
+
+        // 先查段数下限,再取第 2 段(避免越界)
+        if segs.len() >= 5 {
+            lvl = lvl_code(segs[1]);
+            let mut user_found = false;
+            let mut action_found = false;
+            for s in segs {
+                if !user_found && s.starts_with("user=") {
+                    user_found = true;
+                    user_val = s.slice_chars(5, s.char_len());
+                }
+                if !action_found && s.starts_with("action=") {
+                    action_found = true;
+                    action_val = s.slice_chars(7, s.char_len());
+                }
+            }
+            if lvl > 0 && user_found && action_found {
+                is_log = true;
+            }
+            if is_log {
+                if lvl == 1 {
+                    c_info += 1;
+                } else if lvl == 2 {
+                    c_warn += 1;
+                } else if lvl == 3 {
+                    c_error += 1;
+                } else {
+                    c_debug += 1;
+                }
+                // DEBUG 丢弃但已计数;其余保留,按 <user> <action> 单空格输出
+                if lvl != 4 {
+                    print(user_val + " " + action_val);
+                }
+            }
+        }
+        if !is_log {
+            c_skipped += 1;
+        }
+        i += 1;
+    }
+
+    // 汇总行(格式逐字固定):计数 = 全部日志行按级别(DEBUG 也计),skipped = 非日志行数
+    print("summary INFO=" + str(c_info) + " WARN=" + str(c_warn) + " ERROR=" + str(c_error) + " DEBUG=" + str(c_debug) + " skipped=" + str(c_skipped));
+    return 0;
+}

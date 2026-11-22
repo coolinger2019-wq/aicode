@@ -1,0 +1,188 @@
+// b5_json_path_query — 嵌套 JSON 路径查询
+// 用法: node bin/ming.js run solution.ming -- <json文档> <查询文件>
+use std.fs;
+
+use std.json;
+
+use std.unstr;
+
+// 容器元素/对象值渲染: 字符串加引号(值不含引号/反斜杠,无需转义)
+fn render_elem(v: Untrusted[Json]) -> Untrusted[str] {
+    if v.is_str() {
+        let s = v.as_str();
+        if s.is_some() {
+            let raw = s.unwrap();
+            return std.unstr.mark("\"") + raw + std.unstr.mark("\"");
+        }
+        return std.unstr.mark("");
+    }
+    return render_nonstr(v);
+}
+
+// 非字符串值渲染(标量/容器)
+fn render_nonstr(v: Untrusted[Json]) -> Untrusted[str] {
+    if v.is_num() {
+        let f = v.as_num();
+        if f.is_some() {
+            let x = f.unwrap();
+            let n = x as i64;
+            return std.unstr.mark(str(n));
+        }
+        return std.unstr.mark("0");
+    }
+    if v.is_bool() {
+        let b = v.as_bool();
+        if b.is_some() {
+            return std.unstr.mark(str(b.unwrap()));
+        }
+        return std.unstr.mark("false");
+    }
+    if v.is_arr() {
+        return render_arr(v);
+    }
+    if v.is_obj() {
+        return render_obj(v);
+    }
+    return std.unstr.mark("null");
+}
+
+fn render_arr(v: Untrusted[Json]) -> Untrusted[str] {
+    let items = v.as_arr().unwrap();
+    let mut out = std.unstr.mark("[");
+    let mut first = true;
+    for it in items {
+        if first {
+            first = false;} else {
+
+            out = out + std.unstr.mark(",");
+        }
+        out = out + render_elem(it);
+    }
+    return out + std.unstr.mark("]");
+}
+
+fn render_obj(v: Untrusted[Json]) -> Untrusted[str] {
+    let m = v.as_obj().unwrap();
+    let mut out = std.unstr.mark("{");
+    let mut first = true;
+    for k in m.keys() {
+        if first {
+            first = false;} else {
+
+            out = out + std.unstr.mark(",");
+        }
+        out = out + std.unstr.mark("\"") + std.unstr.mark(k) + std.unstr.mark("\"") + std.unstr.mark(":") + render_elem(m.get(k).unwrap());
+    }
+    return out + std.unstr.mark("}");
+}
+
+// 顶层渲染: 字符串原样不加引号
+fn render_top(v: Untrusted[Json]) -> Untrusted[str] {
+    if v.is_str() {
+        let s = v.as_str();
+        if s.is_some() {
+            return s.unwrap();
+        }
+        return std.unstr.mark("");
+    }
+    return render_nonstr(v);
+}
+
+// 单段下钻
+fn step(cur: Untrusted[Json], seg: Untrusted[str]) -> Option[Untrusted[Json]] {
+    if cur.is_arr() {
+        let pr = seg.parse_i64();
+        if pr.is_ok() {
+            let n = pr.unwrap();
+            return cur.at(n);
+        }
+        return None;
+    }
+    if cur.is_obj() {
+        let pr = seg.parse_i64();
+        if pr.is_ok() {
+            return None;
+        }
+        let san = std.unstr.sanitize_cli_path(seg);
+        if san.is_ok() {
+            let k = san.unwrap();
+            return cur.get(k);
+        }
+        return None;
+    }
+    return None;
+}
+
+fn navigate(root: Untrusted[Json], segs: Vec[Untrusted[str]]) -> Option[Untrusted[Json]] {
+    let mut cur: Untrusted[Json] = root;
+    for seg in segs {
+        let nxt = step(cur, seg);
+        if nxt.is_some() {
+            cur = nxt.unwrap();} else {
+
+            return None;
+        }
+    }
+    return Some(cur);
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: need 2 args: <doc.json> <queries.txt>");
+        return 1;
+    }
+    let doc_path = std.unstr.sanitize_cli_path(args[0]);
+    if doc_path.is_err() {
+        eprint("error: invalid document path");
+        return 1;
+    }
+    let doc_res = std.fs.read_file(doc_path.unwrap());
+    if doc_res.is_err() {
+        eprint("error: cannot read document file");
+        return 1;
+    }
+    let doc_content = doc_res.unwrap();
+    let parsed = std.json.parse(doc_content);
+    if parsed.is_err() {
+        eprint("error: JSON parse failed");
+        return 1;
+    }
+    let doc = parsed.unwrap();
+    if !doc.is_obj() {
+        eprint("error: document top level is not an object");
+        return 1;
+    }
+    let q_path = std.unstr.sanitize_cli_path(args[1]);
+    if q_path.is_err() {
+        eprint("error: invalid query file path");
+        return 1;
+    }
+    let q_res = std.fs.read_file(q_path.unwrap());
+    if q_res.is_err() {
+        eprint("error: cannot read query file");
+        return 1;
+    }
+    let q_content = q_res.unwrap();
+    let lines = q_content.split("\n");
+    let mut n = lines.len();
+    while n > 0 && lines[n - 1].is_empty() {
+        n = n - 1;
+    }
+    let mut found = 0;
+    let mut missing = 0;
+    for i in 0..n {
+        let q = lines[i];
+        let segs = q.split(".");
+        let res = navigate(doc, segs);
+        if res.is_some() {
+            let v = res.unwrap();
+            print(q + std.unstr.mark(" = ") + render_top(v));
+            found = found + 1;} else {
+
+            print(q + std.unstr.mark(" = MISSING"));
+            missing = missing + 1;
+        }
+    }
+    print("found=" + str(found) + " missing=" + str(missing));
+    return 0;
+}

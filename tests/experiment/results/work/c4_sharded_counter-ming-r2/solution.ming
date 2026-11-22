@@ -1,0 +1,28 @@
+// 竞态防护——分片计数合并
+// 4 个分片并行统计命中数：每分片本地计数 → 子任务返回结果 → 父任务合并。
+
+fn shard_hits(s: i64) -> i64 {
+    let mut count: i64 = 0;
+    for j in 1..17 {
+        let v: i64 = (s * 13 + j * 7) % 6;
+        if v == 0 {
+            count = count + 1;
+        }
+    }
+    return count;
+}
+
+fn main() -> i64 with sync, io {
+    let args: Vec[i64] = [1, 2, 3, 4];
+    let results: Vec[Result[i64, str]] = std.sync.spawn_all(shard_hits, args);
+    let mut total: i64 = 0;
+    let mut idx: i64 = 1;
+    for r in results {
+        let c: i64 = r.unwrap();
+        print("shard" + str(idx) + "=" + str(c));
+        total = total + c;
+        idx = idx + 1;
+    }
+    print("total=" + str(total));
+    return 0;
+}

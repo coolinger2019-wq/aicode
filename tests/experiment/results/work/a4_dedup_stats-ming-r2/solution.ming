@@ -1,0 +1,131 @@
+// 去重统计:读取分块目录中名称匹配 chunk_*.txt 的文件,合并统计每行出现次数。
+use std.fs;
+use std.unstr;
+
+fn contains_str(v: Vec[str], s: str) -> bool {
+    let n = v.len();
+    for i in 0..n {
+        if v[i] == s {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() != 1 {
+        eprint("error: expected 1 argument: chunk directory");
+        return 1;
+    }
+    let dir_res = unstr.sanitize_cli_path(args[0]);
+    if dir_res.is_err() {
+        eprint("error: invalid chunk directory argument");
+        return 1;
+    }
+    let dir = dir_res.unwrap();
+    let list_res = fs.list_dir(dir);
+    if list_res.is_err() {
+        eprint("error: cannot read directory");
+        return 1;
+    }
+    let entries = list_res.unwrap();
+    // 过滤 chunk_*.txt
+    let mut names: Vec[str] = [];
+    let ne = entries.len();
+    for ei in 0..ne {
+        let name_res = unstr.sanitize_cli_path(entries[ei]);
+        if name_res.is_err() {
+            continue;
+        }
+        let name = name_res.unwrap();
+        if name.starts_with("chunk_") && name.ends_with(".txt") {
+            names.push(name);
+        }
+    }
+    // 名称字节序升序(插入排序)
+    let mut p = 1;
+    while p < names.len() {
+        let mut q = p;
+        while q > 0 && names[q] < names[q - 1] {
+            let tmp = names[q];
+            names[q] = names[q - 1];
+            names[q - 1] = tmp;
+            q = q - 1;
+        }
+        p = p + 1;
+    }
+    // 合并统计(跨块累计)
+    let mut counts: Map[str, i64] = [:];
+    let mut order: Vec[str] = [];
+    let mut total: i64 = 0;
+    let nf = names.len();
+    for fi in 0..nf {
+        let path = dir + "/" + names[fi];
+        let content_res = fs.read_file(path);
+        if content_res.is_err() {
+            eprint("error: cannot read file: " + names[fi]);
+            return 1;
+        }
+        let content = content_res.unwrap();
+        let lines = content.split("\n");
+        let nl = lines.len();
+        for li in 0..nl {
+            if li == nl - 1 && lines[li].is_empty() {
+                continue;
+            }
+            let key_res = unstr.sanitize_cli_path(lines[li]);
+            if key_res.is_err() {
+                continue;
+            }
+            let key = key_res.unwrap();
+            total = total + 1;
+            if counts.has(key) {
+                counts.set(key, counts.get(key).unwrap() + 1);
+            } else {
+                counts.set(key, 1);
+                order.push(key);
+            }
+        }
+    }
+    let unique = order.len();
+    let mut repeated: i64 = 0;
+    for ri in 0..unique {
+        if counts.get(order[ri]).unwrap() > 1 {
+            repeated = repeated + 1;
+        }
+    }
+    print("total=" + str(total));
+    print("unique=" + str(unique));
+    print("repeated=" + str(repeated));
+    // Top-3:次数降序,并列按行内容字节序升序;不足 3 个只输出实际数量
+    let mut picked: Vec[str] = [];
+    for k in 0..3 {
+        let mut found: bool = false;
+        let mut best: str = "";
+        let mut bestc: i64 = 0;
+        for ti in 0..unique {
+            let key = order[ti];
+            if contains_str(picked, key) {
+                continue;
+            }
+            let c = counts.get(key).unwrap();
+            if !found {
+                found = true;
+                best = key;
+                bestc = c;
+            } else if c > bestc {
+                best = key;
+                bestc = c;
+            } else if c == bestc && key < best {
+                best = key;
+                bestc = c;
+            }
+        }
+        if !found {
+            break;
+        }
+        picked.push(best);
+        print("top" + str(k + 1) + " " + best + " " + str(bestc));
+    }
+    return 0;
+}

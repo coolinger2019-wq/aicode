@@ -1,0 +1,134 @@
+use std.json;
+use std.fs;
+use std.unstr;
+
+fn id_valid(r: Untrusted[Json]) -> bool {
+    let o = r.get("id");
+    if o.is_none() {
+        return false;
+    }
+    let v = o.unwrap();
+    if !v.is_num() {
+        return false;
+    }
+    return v.as_num().unwrap() >= 1.0;
+}
+
+fn email_valid(r: Untrusted[Json]) -> bool {
+    let o = r.get("email");
+    if o.is_none() {
+        return false;
+    }
+    let v = o.unwrap();
+    if !v.is_str() {
+        return false;
+    }
+    return v.as_str().unwrap().contains("@");
+}
+
+fn age_valid(r: Untrusted[Json]) -> bool {
+    let o = r.get("age");
+    if o.is_none() {
+        return false;
+    }
+    let v = o.unwrap();
+    if !v.is_num() {
+        return false;
+    }
+    let n = v.as_num().unwrap();
+    return n >= 0.0 && n <= 150.0;
+}
+
+fn role_valid(r: Untrusted[Json]) -> bool {
+    let o = r.get("role");
+    if o.is_none() {
+        return false;
+    }
+    let v = o.unwrap();
+    if !v.is_str() {
+        return false;
+    }
+    let s = v.as_str().unwrap();
+    if s.starts_with("admin") && s.char_len() == 5 {
+        return true;
+    }
+    if s.starts_with("user") && s.char_len() == 4 {
+        return true;
+    }
+    if s.starts_with("guest") && s.char_len() == 5 {
+        return true;
+    }
+    return false;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing records file argument");
+        return 1;
+    }
+    let sp = unstr.sanitize_cli_path(args[0]);
+    let path = match sp {
+        Ok(p) => p,
+        Err(_) => {
+            eprint("error: cannot read records file");
+            return 1;
+        }
+    };
+    let fr = fs.read_file(path);
+    let content = match fr {
+        Ok(c) => c,
+        Err(_) => {
+            eprint("error: cannot read records file");
+            return 1;
+        }
+    };
+    let jr = json.parse(content);
+    let root = match jr {
+        Ok(j) => j,
+        Err(_) => {
+            eprint("error: invalid JSON");
+            return 1;
+        }
+    };
+    if !root.is_arr() {
+        eprint("error: top-level JSON value is not an array");
+        return 1;
+    }
+    let records = root.as_arr().unwrap();
+    let n = records.len();
+    let mut ok_count = 0;
+    for i in 0..n {
+        let r = records[i];
+        let mut bad = "";
+        if !id_valid(r) {
+            bad = bad + "id invalid";
+        }
+        if !email_valid(r) {
+            if bad != "" {
+                bad = bad + "; ";
+            }
+            bad = bad + "email invalid";
+        }
+        if !age_valid(r) {
+            if bad != "" {
+                bad = bad + "; ";
+            }
+            bad = bad + "age invalid";
+        }
+        if !role_valid(r) {
+            if bad != "" {
+                bad = bad + "; ";
+            }
+            bad = bad + "role invalid";
+        }
+        let idx = i + 1;
+        if bad == "" {
+            print("record " + str(idx) + " ok");
+            ok_count = ok_count + 1;
+        } else {
+            print("record " + str(idx) + " " + bad);
+        }
+    }
+    print("ok=" + str(ok_count) + " failed=" + str(n - ok_count));
+    return 0;
+}

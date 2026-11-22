@@ -1,0 +1,101 @@
+use std.json;
+use std.unstr;
+use std.net;
+
+fn mkresp(status: i64, body: str) -> Json {
+  let mut m: Map[str, Json] = [:];
+  m.set("status", json.parse(str(status)).unwrap());
+  m.set("headers", json.parse("{}").unwrap());
+  let esc = body.replace("\"", "\\\"");
+  m.set("body", json.parse("\"" + esc + "\"").unwrap());
+  json.parse(json.stringify(m)).unwrap()
+}
+
+fn get_str_field(req: Untrusted[Json], key: str) -> str {
+  match req.get(key) {
+    Some(j) => {
+      match j.as_str() {
+        Some(us) => {
+          match unstr.sanitize_cli_path(us) {
+            Ok(s) => { s }
+            Err(_) => { "" }
+          }
+        }
+        None => { "" }
+      }
+    }
+    None => { "" }
+  }
+}
+
+fn strip_query(p: str) -> str {
+  let ps = p.split("?");
+  ps[0]
+}
+
+fn handle_sum(req: Untrusted[Json]) -> Json {
+  let body_u = match req.get("body") {
+    Some(bj) => {
+      match bj.as_str() {
+        Some(bs) => { bs }
+        None => { return mkresp(400, "{\"code\":\"bad_request\"}"); }
+      }
+    }
+    None => { return mkresp(400, "{\"code\":\"bad_request\"}"); }
+  };
+  let parsed = match json.parse(body_u) {
+    Ok(pj) => { pj }
+    Err(_) => { return mkresp(400, "{\"code\":\"bad_request\"}"); }
+  };
+  let nums = match parsed.get("nums") {
+    Some(nj) => { nj }
+    None => { return mkresp(400, "{\"code\":\"bad_request\"}"); }
+  };
+  let arr = match nums.as_arr() {
+    Some(a) => { a }
+    None => { return mkresp(400, "{\"code\":\"bad_request\"}"); }
+  };
+  let mut sum: i64 = 0;
+  let mut i = 0;
+  while i < arr.len() {
+    match arr[i].as_num() {
+      Some(n) => { sum = sum + (n as i64); }
+      None => { return mkresp(400, "{\"code\":\"bad_request\"}"); }
+    }
+    i = i + 1;
+  }
+  mkresp(200, "{\"sum\":" + str(sum) + "}")
+}
+
+fn handle(req: Untrusted[Json]) -> Json {
+  let method = get_str_field(req, "method");
+  let path = strip_query(get_str_field(req, "path"));
+  if method == "GET" && path == "/ping" {
+    return mkresp(200, "{\"pong\":true}");
+  }
+  if method == "POST" && path == "/sum" {
+    return handle_sum(req);
+  }
+  mkresp(404, "{\"code\":\"not_found\"}")
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with net, io {
+  if args.len() < 1 {
+    eprint("error: missing port argument");
+    return 1;
+  }
+  let port = match args[0].parse_i64() {
+    Ok(p) => { p }
+    Err(_) => {
+      eprint("error: port must be an integer");
+      return 1;
+    }
+  };
+  match net.serve(port, handle) {
+    Ok(_) => { 0 }
+    Err(msg) => {
+      eprint("error: " + msg);
+      1
+    }
+  }
+}

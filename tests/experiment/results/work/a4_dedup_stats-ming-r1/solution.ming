@@ -1,0 +1,110 @@
+// a4 去重统计：合并目录下 chunk_*.txt 分块文件的行出现次数，
+// 输出 total/unique/repeated 与出现最多的前 3 行。
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() == 0 {
+        eprint("error: missing argument");
+        return 1;
+    }
+    let dres = std.unstr.sanitize_cli_path(args.get(args.len() - 1).unwrap());
+    let mut dir: str = "";
+    if dres.is_ok() {
+        dir = dres.unwrap();
+    } else {
+        eprint("error: invalid directory argument");
+        return 1;
+    }
+    let lres = std.fs.list_dir(dir);
+    let mut entries: Vec[Untrusted[str]] = [];
+    if lres.is_ok() {
+        entries = lres.unwrap();
+    } else {
+        eprint("error: cannot read directory");
+        return 1;
+    }
+    let mut names: Vec[str] = [];
+    for i in 0..entries.len() {
+        let sres = std.unstr.sanitize_cli_path(entries.get(i).unwrap());
+        if sres.is_ok() {
+            let nm = sres.unwrap();
+            if nm.starts_with("chunk_") && nm.ends_with(".txt") {
+                names.push(nm);
+            }
+        }
+    }
+    let n = names.len();
+    for i in 1..n {
+        let key = names.get(i).unwrap();
+        let mut j: i64 = i;
+        while j > 0 && names.get(j - 1).unwrap() > key {
+            names[j] = names.get(j - 1).unwrap();
+            j = j - 1;
+        }
+        names[j] = key;
+    }
+    let mut keys: Vec[str] = [];
+    let mut counts: Vec[i64] = [];
+    let mut idx: Map[str, i64] = [:];
+    let mut total: i64 = 0;
+    for i in 0..n {
+        let path = dir + "/" + names.get(i).unwrap();
+        let fres = std.fs.read_file(path);
+        if !fres.is_ok() {
+            eprint("error: cannot read file");
+            return 1;
+        }
+        let content = fres.unwrap();
+        let parts = content.split("\n");
+        let ln = parts.len();
+        for k in 0..ln {
+            if k == ln - 1 && parts.get(k).unwrap().is_empty() {
+                continue;
+            }
+            let lres2 = std.unstr.sanitize_cli_path(parts.get(k).unwrap());
+            if !lres2.is_ok() {
+                eprint("error: invalid line content");
+                return 1;
+            }
+            let line = lres2.unwrap();
+            total = total + 1;
+            let probe = idx.get(line);
+            if probe.is_some() {
+                let t = probe.unwrap();
+                counts[t] = counts.get(t).unwrap() + 1;
+            } else {
+                idx.set(line, keys.len());
+                keys.push(line);
+                counts.push(1);
+            }
+        }
+    }
+    let m = keys.len();
+    for i in 1..m {
+        let kl = keys.get(i).unwrap();
+        let kc = counts.get(i).unwrap();
+        let mut j2: i64 = i;
+        while j2 > 0 && (counts.get(j2 - 1).unwrap() < kc || (counts.get(j2 - 1).unwrap() == kc && keys.get(j2 - 1).unwrap() > kl)) {
+            keys[j2] = keys.get(j2 - 1).unwrap();
+            counts[j2] = counts.get(j2 - 1).unwrap();
+            j2 = j2 - 1;
+        }
+        keys[j2] = kl;
+        counts[j2] = kc;
+    }
+    let mut repeated: i64 = 0;
+    for i in 0..m {
+        if counts.get(i).unwrap() > 1 {
+            repeated = repeated + 1;
+        }
+    }
+    print("total=" + str(total));
+    print("unique=" + str(m));
+    print("repeated=" + str(repeated));
+    let mut outn: i64 = 3;
+    if m < outn {
+        outn = m;
+    }
+    for i in 0..outn {
+        print("top" + str(i + 1) + " " + keys.get(i).unwrap() + " " + str(counts.get(i).unwrap()));
+    }
+    return 0;
+}

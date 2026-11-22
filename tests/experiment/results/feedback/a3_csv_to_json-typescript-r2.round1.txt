@@ -1,0 +1,6 @@
+=== 修复轮反馈 | run_id=a3_csv_to_json-typescript-r2 | round=1 | task=a3_csv_to_json | language=typescript ===
+--- 静态检查输出(原文) ---
+(空)
+--- 验收输出(原文) ---
+FAIL stdout mismatch actual_len=237 expected_len=238
+

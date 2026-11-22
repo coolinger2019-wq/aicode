@@ -1,0 +1,134 @@
+use std.fs;
+use std.json;
+use std.unstr;
+
+fn ser(j: Untrusted[Json]) -> Untrusted[str] {
+    if j.is_num() {
+        return unstr.mark(str((j.as_num().unwrap()) as i64));
+    }
+    if j.is_str() {
+        return "\"" + j.as_str().unwrap() + "\"";
+    }
+    if j.is_bool() {
+        if j.as_bool().unwrap() {
+            return unstr.mark("true");
+        }
+        return unstr.mark("false");
+    }
+    if j.is_arr() {
+        let arr = j.as_arr().unwrap();
+        let mut out: Untrusted[str] = unstr.mark("[");
+        let mut first: bool = true;
+        for e in arr {
+            if first {
+                first = false;
+            } else {
+                out = out + ",";
+            }
+            out = out + ser(e);
+        }
+        return out + "]";
+    }
+    if j.is_obj() {
+        let obj = j.as_obj().unwrap();
+        let mut out: Untrusted[str] = unstr.mark("{");
+        let mut first: bool = true;
+        for k in obj.keys() {
+            if first {
+                first = false;
+            } else {
+                out = out + ",";
+            }
+            out = out + "\"" + k + "\":" + ser(obj.get(k).unwrap());
+        }
+        return out + "}";
+    }
+    return unstr.mark("null");
+}
+
+fn merge(a: Untrusted[Json], b: Untrusted[Json]) -> Untrusted[str] {
+    if a.is_obj() && b.is_obj() {
+        let ao = a.as_obj().unwrap();
+        let bo = b.as_obj().unwrap();
+        let mut out: Untrusted[str] = unstr.mark("{");
+        let mut first: bool = true;
+        for k in ao.keys() {
+            if bo.has(k) {
+                if first {
+                    first = false;
+                } else {
+                    out = out + ",";
+                }
+                out = out + "\"" + k + "\":" + merge(ao.get(k).unwrap(), bo.get(k).unwrap());
+            } else {
+                if first {
+                    first = false;
+                } else {
+                    out = out + ",";
+                }
+                out = out + "\"" + k + "\":" + ser(ao.get(k).unwrap());
+            }
+        }
+        for k in bo.keys() {
+            if !ao.has(k) {
+                if first {
+                    first = false;
+                } else {
+                    out = out + ",";
+                }
+                out = out + "\"" + k + "\":" + ser(bo.get(k).unwrap());
+            }
+        }
+        return out + "}";
+    }
+    return ser(b);
+}
+
+fn fail(msg: str) -> i64 with io {
+    eprint("error: " + msg + "\n");
+    return 1;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        return fail("expected 2 arguments");
+    }
+    let paRes = unstr.sanitize_cli_path(args[0]);
+    if paRes.is_err() {
+        return fail("bad path for document A");
+    }
+    let pa = paRes.unwrap();
+    let pbRes = unstr.sanitize_cli_path(args[1]);
+    if pbRes.is_err() {
+        return fail("bad path for document B");
+    }
+    let pb = pbRes.unwrap();
+    let taRes = fs.read_file(pa);
+    if taRes.is_err() {
+        return fail("cannot read document A");
+    }
+    let ta = taRes.unwrap();
+    let tbRes = fs.read_file(pb);
+    if tbRes.is_err() {
+        return fail("cannot read document B");
+    }
+    let tb = tbRes.unwrap();
+    let jaRes = json.parse(ta);
+    if jaRes.is_err() {
+        return fail("document A is not valid JSON");
+    }
+    let ja = jaRes.unwrap();
+    let jbRes = json.parse(tb);
+    if jbRes.is_err() {
+        return fail("document B is not valid JSON");
+    }
+    let jb = jbRes.unwrap();
+    if !ja.is_obj() {
+        return fail("document A top level is not an object");
+    }
+    if !jb.is_obj() {
+        return fail("document B top level is not an object");
+    }
+    print(merge(ja, jb));
+    return 0;
+}

@@ -1,0 +1,121 @@
+struct Ent {
+    w: str,
+    c: i64,
+}
+
+fn before(x: Ent, y: Ent) -> bool {
+    if x.c != y.c {
+        return x.c > y.c;
+    }
+    return x.w < y.w;
+}
+
+fn merge(a: Vec[Ent], b: Vec[Ent]) -> Vec[Ent] {
+    let mut out: Vec[Ent] = [];
+    let mut i = 0;
+    let mut j = 0;
+    while i < a.len() && j < b.len() {
+        let x = a.get(i).unwrap();
+        let y = b.get(j).unwrap();
+        if before(x, y) {
+            out.push(x);
+            i = i + 1;
+        } else {
+            out.push(y);
+            j = j + 1;
+        }
+    }
+    while i < a.len() {
+        out.push(a.get(i).unwrap());
+        i = i + 1;
+    }
+    while j < b.len() {
+        out.push(b.get(j).unwrap());
+        j = j + 1;
+    }
+    return out;
+}
+
+fn msort(v: Vec[Ent]) -> Vec[Ent] {
+    let n = v.len();
+    if n <= 1 {
+        return v;
+    }
+    let half = n / 2;
+    let mut left: Vec[Ent] = [];
+    let mut right: Vec[Ent] = [];
+    let mut i = 0;
+    while i < n {
+        if i < half {
+            left.push(v.get(i).unwrap());
+        } else {
+            right.push(v.get(i).unwrap());
+        }
+        i = i + 1;
+    }
+    return merge(msort(left), msort(right));
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing file argument");
+        return 1;
+    }
+    let sr = std.unstr.sanitize_cli_path(args.get(0).unwrap());
+    let path = match sr {
+        Ok(v) => v,
+        Err(_) => {
+            eprint("error: bad file path");
+            return 1;
+        }
+    };
+    let fr = std.fs.read_file(path);
+    let content = match fr {
+        Ok(c) => c,
+        Err(_) => {
+            eprint("error: cannot read file");
+            return 1;
+        }
+    };
+    let mut counts: Map[str, i64] = {};
+    let mut order: Vec[str] = [];
+    for line in content.split("\n") {
+        for tok in line.split(" ") {
+            if tok.is_empty() {
+                continue;
+            }
+            let st = match std.unstr.sanitize_cli_path(tok) {
+                Ok(v) => v,
+                Err(_) => ""
+            };
+            if st == "" {
+                continue;
+            }
+            let cur = match counts.get(st) {
+                Some(c) => c,
+                None => 0
+            };
+            counts.set(st, cur + 1);
+            if cur == 0 {
+                order.push(st);
+            }
+        }
+    }
+    let mut items: Vec[Ent] = [];
+    for w in order {
+        let c = counts.get(w).unwrap();
+        items.push(Ent { w: w, c: c });
+    }
+    let sorted = msort(items);
+    let mut k = sorted.len();
+    if k > 5 {
+        k = 5;
+    }
+    let mut i = 0;
+    while i < k {
+        let e = sorted.get(i).unwrap();
+        print(e.w + " " + str(e.c));
+        i = i + 1;
+    }
+    return 0;
+}

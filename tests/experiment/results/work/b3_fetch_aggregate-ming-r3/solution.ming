@@ -1,0 +1,65 @@
+use std.net;
+use std.json;
+use std.unstr;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, net {
+    if args.len() < 4 {
+        eprint("error: expected 4 URL arguments");
+        return 1;
+    }
+    let mut ok_n: i64 = 0;
+    let mut bad_n: i64 = 0;
+    let mut grand: i64 = 0;
+    for i in 0..4 {
+        let idx: i64 = i + 1;
+        let url: str = match unstr.sanitize_cli_path(args[i]) {
+            Ok(u) => u,
+            Err(_) => "",
+        };
+        if url == "" {
+            print("src\{idx} failed code 0");
+            bad_n += 1;
+            continue;
+        }
+        let (code, body) = match net.http_get(url) {
+            Ok(pair) => pair,
+            Err(_) => {
+                print("src\{idx} failed code 0");
+                bad_n += 1;
+                continue;
+            }
+        };
+        if code != 200 {
+            print("src\{idx} failed code \{code}");
+            bad_n += 1;
+            continue;
+        }
+        let j = match json.parse(body) {
+            Ok(v) => v,
+            Err(_) => {
+                print("src\{idx} failed code 200");
+                bad_n += 1;
+                continue;
+            }
+        };
+        let items_n: i64 = match j.get("items") {
+            Some(x) => match x.as_arr() {
+                Some(a) => a.len(),
+                None => 0,
+            },
+            None => 0,
+        };
+        let total_n: i64 = match j.get("total") {
+            Some(x) => match x.as_num() {
+                Some(f) => f as i64,
+                None => 0,
+            },
+            None => 0,
+        };
+        print("src\{idx} ok code 200 items \{items_n} total \{total_n}");
+        ok_n += 1;
+        grand += total_n;
+    }
+    print("summary ok=\{ok_n} failed=\{bad_n} grand_total=\{grand}");
+    return 0;
+}

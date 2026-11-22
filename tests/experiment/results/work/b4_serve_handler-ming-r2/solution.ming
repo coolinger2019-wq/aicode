@@ -1,0 +1,134 @@
+// b4_serve_handler: 127.0.0.1 固定路由 HTTP 服务
+use std.net;
+use std.json;
+use std.unstr;
+use std.str;
+
+// 构造响应信封 Json: {status, headers, body}
+fn respond(status: i64, body_esc: str) -> Json {
+    let env = "{\"status\":" + str(status) + ",\"headers\":{},\"body\":\"" + body_esc + "\"}";
+    return json.parse(env).unwrap();
+}
+
+fn resp_pong() -> Json {
+    return respond(200, "{\\\"pong\\\":true}");
+}
+
+fn resp_sum(total: i64) -> Json {
+    return respond(200, "{\\\"sum\\\":" + str(total) + "}");
+}
+
+fn resp_bad() -> Json {
+    return respond(400, "{\\\"code\\\":\\\"bad_request\\\"}");
+}
+
+fn resp_nf() -> Json {
+    return respond(404, "{\\\"code\\\":\\\"not_found\\\"}");
+}
+
+// Untrusted[str] -> 校验后净 str(失败则 None)
+fn clean_or_none(u: Untrusted[str]) -> Option[str] {
+    let r = unstr.sanitize_cli_path(u);
+    if !r.is_ok() {
+        return None;
+    }
+    return Some(r.unwrap());
+}
+
+// 取请求字段字符串并过 sanitize
+fn field_str(req: Untrusted[Json], key: str) -> Option[str] {
+    let j_opt = req.get(key);
+    if j_opt.is_none() {
+        return None;
+    }
+    let s_opt = j_opt.unwrap().as_str();
+    if s_opt.is_none() {
+        return None;
+    }
+    return clean_or_none(s_opt.unwrap());
+}
+
+// 路径匹配:精确相等,或以 "<route>?" 开头(等价于按 ? 前部分匹配)
+fn route_match(p: str, route: str) -> bool {
+    if p == route {
+        return true;
+    }
+    let idx = str.index_of(p, route + "?");
+    if idx.is_none() {
+        return false;
+    }
+    return idx.unwrap() == 0;
+}
+
+// POST /sum 处理
+fn do_sum(req: Untrusted[Json]) -> Json {
+    let b_opt = field_str(req, "body");
+    if b_opt.is_none() {
+        return resp_bad();
+    }
+    let parsed = json.parse(b_opt.unwrap());
+    if !parsed.is_ok() {
+        return resp_bad();
+    }
+    let j = parsed.unwrap();
+    let nums_opt = j.get("nums");
+    if nums_opt.is_none() {
+        return resp_bad();
+    }
+    let arr_opt = nums_opt.unwrap().as_arr();
+    if arr_opt.is_none() {
+        return resp_bad();
+    }
+    let arr = arr_opt.unwrap();
+    let n = arr.len();
+    let mut total: i64 = 0;
+    for i in 0..n {
+        let el = arr[i];
+        let no = el.as_num();
+        if no.is_none() {
+            return resp_bad();
+        }
+        total = total + (no.unwrap() as i64);
+    }
+    return resp_sum(total);
+}
+
+// 路由入口(handler,同模块命名函数)
+fn handle(req: Untrusted[Json]) -> Json {
+    let m_opt = field_str(req, "method");
+    if m_opt.is_none() {
+        return resp_nf();
+    }
+    let p_opt = field_str(req, "path");
+    if p_opt.is_none() {
+        return resp_nf();
+    }
+    let method_c = m_opt.unwrap();
+    let path_c = p_opt.unwrap();
+    if method_c == "GET" && route_match(path_c, "/ping") {
+        return resp_pong();
+    }
+    if method_c == "POST" && route_match(path_c, "/sum") {
+        return do_sum(req);
+    }
+    return resp_nf();
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with net, io {
+    if args.len() != 1 {
+        eprint("error: 用法: solution.ming <端口>");
+        return 1;
+    }
+    let pres = args[0].parse_i64();
+    if !pres.is_ok() {
+        eprint("error: 端口必须是整数");
+        return 1;
+    }
+    let port = pres.unwrap();
+    let r = net.serve(port, handle);
+    if !r.is_ok() {
+        eprint("error: 端口绑定失败");
+        return 1;
+    }
+    return 0;
+}

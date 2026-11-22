@@ -1,0 +1,83 @@
+use std.fs;
+use std.unstr;
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 1 {
+        eprint("error: missing csv file argument");
+        return 1;
+    }
+    let pres = std.unstr.sanitize_cli_path(args[0]);
+    let mut path: str = "";
+    let mut path_ok = true;
+    match pres {
+        Ok(p) => { path = p; }
+        Err(_) => { path_ok = false; }
+    }
+    if !path_ok {
+        eprint("error: invalid csv file path");
+        return 1;
+    }
+    let res = fs.read_file(path);
+    let mut text: Untrusted[str] = std.unstr.mark("");
+    let mut read_ok = true;
+    match res {
+        Ok(t) => { text = t; }
+        Err(_) => { read_ok = false; }
+    }
+    if !read_ok {
+        eprint("error: cannot read csv file");
+        return 1;
+    }
+    let lines = text.split("\n");
+    let n = lines.len();
+    let mut nlines = n;
+    if n > 0 {
+        let last = lines[n - 1];
+        if last.is_empty() {
+            nlines = n - 1;
+        }
+    }
+    if nlines == 0 {
+        print("{\"rows\":[],\"errors\":[]}");
+        return 0;
+    }
+    let header = lines[0].split(",");
+    let want = header.len();
+    let mut out = std.unstr.mark("{\"rows\":[");
+    let mut first = true;
+    for i in 1..nlines {
+        let fields = lines[i].split(",");
+        if fields.len() == want {
+            if !first {
+                out = out + ",";
+            }
+            first = false;
+            out = out + "{";
+            let mut fk = true;
+            for j in 0..want {
+                if !fk {
+                    out = out + ",";
+                }
+                fk = false;
+                out = out + "\"" + header[j] + "\":\"" + fields[j] + "\"";
+            }
+            out = out + "}";
+        }
+    }
+    out = out + "],\"errors\":[";
+    first = true;
+    for i in 1..nlines {
+        let fields = lines[i].split(",");
+        let got = fields.len();
+        if got != want {
+            if !first {
+                out = out + ",";
+            }
+            first = false;
+            out = out + "{\"line\":" + str(i + 1) + ",\"got\":" + str(got) + ",\"want\":" + str(want) + "}";
+        }
+    }
+    out = out + "]}";
+    print(out);
+    return 0;
+}

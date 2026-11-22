@@ -1,0 +1,189 @@
+// 批量改名:按文件名 ASCII 升序处理输入目录文件,按规则改名写入输出目录并打印计划
+use std.unstr;
+
+use std.str;
+
+use std.fs;
+
+// R1: report_<digits>.txt -> report-<NN>.txt;不匹配或数值超 i64 范围 -> None
+fn r1_target(name: str) -> Option[str] {
+    if str.index_of(name, "report_").unwrap_or(-1) != 0 {
+        return None;
+    }
+    let mut st = 0;
+    let mut m = 0;
+    let mut ndigits = 0;
+    let mut digits = "";
+    let mut i = 0;
+    let mut failed = false;
+    for c in name {
+        if !failed && i >= 7 {
+            if st == 0 {
+                if str.index_of("0123456789", c).unwrap_or(-1) >= 0 {
+                    st = 1;
+                    digits = digits + c;
+                    ndigits = ndigits + 1;} else {
+
+                    failed = true;
+                }} else if st == 1 {
+
+                if str.index_of("0123456789", c).unwrap_or(-1) >= 0 {
+                    digits = digits + c;
+                    ndigits = ndigits + 1;} else if c == "." {
+
+                    st = 2;
+                    m = 0;} else {
+
+                    failed = true;
+                }} else if st == 2 {
+
+                if m == 0 && c == "t" || m == 1 && c == "x" || m == 2 && c == "t" {
+                    m = m + 1;
+                    if m == 3 {
+                        st = 3;
+                    }} else {
+
+                    failed = true;
+                }} else {
+
+                failed = true;
+            }
+        }
+        i = i + 1;
+    }
+    if failed || st != 3 || ndigits == 0 {
+        return None;
+    }
+    match digits.parse_i64() {
+        Ok(n) => {
+            let mut nn = str(n);
+            if n < 10 {
+                nn = "0" + nn;
+            }
+            return Some("report-" + nn + ".txt");
+        },
+        Err(_) => {
+            return None;
+        },
+    }
+}
+
+// 名称以 .log 结尾(末 4 字符恰为 ".log")
+fn is_log(name: str) -> bool {
+    let mut a = "";
+    let mut b = "";
+    let mut d = "";
+    let mut e = "";
+    for c in name {
+        a = b;
+        b = d;
+        d = e;
+        e = c;
+    }
+    return a == "." && b == "l" && d == "o" && e == "g";
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    if args.len() < 2 {
+        eprint("error: expected 2 arguments: <input-dir> <output-dir>");
+        return 1;
+    }
+    let in_dir = unstr.sanitize_cli_path(args[0]).unwrap_or("");
+    if in_dir == "" {
+        eprint("error: cannot read input dir");
+        return 1;
+    }
+    let out_dir = unstr.sanitize_cli_path(args[1]).unwrap_or("");
+    if out_dir == "" {
+        eprint("error: cannot read output dir");
+        return 1;
+    }
+    let mut names: Vec[str] = [];
+    let mut listed = false;
+    match fs.list_dir(in_dir) {
+        Ok(entries) => {
+            listed = true;
+            for e in entries {
+                names.push(unstr.sanitize_cli_path(e).unwrap_or(""));
+            }
+        },
+        Err(_) => {
+            listed = false;
+        },
+    }
+    if !listed {
+        eprint("error: cannot read input dir");
+        return 1;
+    }
+    let n = names.len();
+    let mut i = 1;
+    while i < n {
+        let key = names[i];
+        let mut j = i;
+        while j > 0 && key < names[j - 1] {
+            names[j] = names[j - 1];
+            j = j - 1;
+        }
+        names[j] = key;
+        i = i + 1;
+    }
+    let mut used: Vec[str] = [];
+    let mut out_made = false;
+    let mut logs_made = false;
+    for name in names {
+        let r1 = r1_target(name);
+        let mut target = "";
+        let mut kind = 3;
+        match r1 {
+            Some(t) => {
+                target = t;
+                kind = 1;
+            },
+            None => {
+                if is_log(name) {
+                    target = "logs/" + name;
+                    kind = 2;
+                }
+            },
+        }
+        if kind == 3 {
+            print("SKIP " + name + " nomatch");} else {
+
+            let mut conflict = false;
+            for u in used {
+                if u == target {
+                    conflict = true;
+                }
+            }
+            if conflict {
+                print("SKIP " + name + " conflict " + target);} else {
+
+                if !out_made {
+                    let _ = fs.make_dir(out_dir);
+                    out_made = true;
+                }
+                if kind == 2 && !logs_made {
+                    let _ = fs.make_dir(out_dir + "/logs");
+                    logs_made = true;
+                }
+                let src = in_dir + "/" + name;
+                let dst = out_dir + "/" + target;
+                match fs.copy_file(src, dst) {
+                    Ok(_) => {
+                        used.push(target);
+                        if kind == 1 {
+                            print("OK " + name + " -> " + target);} else {
+
+                            print("DIR " + name + " -> " + target);
+                        }
+                    },
+                    Err(_) => {
+                        eprint("error: copy failed");
+                        return 1;
+                    },
+                }
+            }
+        }
+    }
+    return 0;
+}
