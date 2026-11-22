@@ -28,10 +28,12 @@ jobs:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
-    # v1.0.0-rc.1 起:套件分节并行化(逐节一致验收,countMismatches=0;plan §4.19)后 CI 同步采用,
-    # 串行全量 1020-1078s + fuzz/proof_fuzz 步骤在慢 runner 上撞 20 分钟线(2026-11-22 两轮 5 job
-    # 同时开始同时跑满 20 分钟被收割实锤)——timeout 提至 30 分钟留余量。
-    timeout-minutes: 30
+    # v1.0.0-rc.1 起:套件分节并行化(逐节一致验收,countMismatches=0;plan §4.19)。
+    # node18 腿保持串行:node18 双核 runner 上 4 组并行把 §13/§15/§16/§30 等并发/serve 分节
+    # 放大 10-100 倍(600-720s vs node24 的 8-50s),spawnT 120s 连环超时级联杀组
+    # (2026-11-22 第五轮实测:node18 全组 961-1641s + 46 编排异常)——node18 为维护模式版本,
+    # CI 腿价值 = 语义在旧引擎上仍正确,时长宽容(串行 node18 全量 ~22 分钟 < 40 分钟线)。
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -48,8 +50,13 @@ jobs:
         run: node --version
       - name: wasm 分层存活(examples/fib.ming --strict-wasm;纯 Node,不依赖 gcc)
         run: node bin/ming.js run examples/fib.ming --strict-wasm
-      - name: 全量回归(分节并行;聚合口径 = 逐分节行 + 总计,与串行逐节一致)
-        run: node tests/run.mjs --parallel
+      - name: 全量回归(node20/22 分节并行;node18 串行——慢 runner 资源争用见上注)
+        run: |
+          if [ "${{ matrix.node }}" = "18" ]; then
+            node tests/run.mjs
+          else
+            node tests/run.mjs --parallel
+          fi
       - name: 差分模糊(seed 44044,25 程序)
         run: node tests/fuzz.mjs --seed 44044 --count 25
       - name: 静态边界证明模糊(100 例)
