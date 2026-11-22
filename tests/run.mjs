@@ -4158,7 +4158,7 @@ secBegin('57');
   const pkgVersion = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
   const binVersion = (fs.readFileSync(MING, 'utf8').match(/export const VERSION = '([^']+)'/) ?? [])[1];
   const guideText = fs.readFileSync(path.join(ROOT, 'GUIDE.md'), 'utf8');
-  const guideHead = (guideText.match(/^\*\*版本:v([0-9.]+)\*\*/m) ?? [])[1];
+  const guideHead = (guideText.match(/^\*\*版本:v([0-9.]+(?:-[0-9A-Za-z.\-]+)?)\*\*/m) ?? [])[1];
   const guideRev = guideText.includes('### v' + pkgVersion + '(');
   check('v53.21:版本三处一致(package.json/bin VERSION/GUIDE 头)+ GUIDE 修订记录',
     pkgVersion === binVersion && binVersion === guideHead && guideRev,
@@ -13694,9 +13694,9 @@ secBegin('70');
   // v70.10 REPL #64:横幅版本单一事实来源(package.json)——与 `ming version` 一致(基线硬编码
   // 曾漂移 v0.8.0→v0.63.0 两版,#64 机制性修复);fn 声明跨输入持久回归(double(21)=42)。
   const ver70 = runMing(['version']);
-  const mv70 = ver70.stdout.match(/v(\d+\.\d+\.\d+)/);
+  const mv70 = ver70.stdout.match(/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)/);
   const rBan70 = runMing(['repl'], { stdin: ':quit\n' });
-  const mb70 = rBan70.stdout.match(/Ming v(\d+\.\d+\.\d+) REPL/);
+  const mb70 = rBan70.stdout.match(/Ming v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?) REPL/);
   const rFn70 = runMing(['repl'], { stdin: 'fn double(n: i64) -> i64 { return n * 2; }\ndouble(21)\n:quit\n' });
   check('v70.10:REPL #64 横幅版本 = ming version(package.json 单一事实来源)+ fn 跨输入持久(double(21)=42)',
     !!mv70 && !!mb70 && mv70[1] === mb70[1] && rBan70.code === 0
