@@ -1607,6 +1607,10 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | checker.js 拆分（T4.2） | 本节 | 1.0-rc 后；快照对照先行 |
 | Slice 六项遗留边界 / S3 带长度 Ptr / S4 unsafe(cond) | ADR-009 | 各自门槛（C ABI + #55 / 四门槛） |
 | 污点微窗 read_to_end / serve TLS / C FFI ABI / 交叉编译 / async 语义 ADR / Map perf | §4.14 P3/P4 | 维持门槛 |
+| Agent 原生验证协议（queryTypeContext/getContractSummary/submitCandidate/requestProofObligation，消息 schema 公开并与 --json 诊断码对齐） | §4.21 roadmap 第二梯队 | 证明协议稳定（S-1/S-2 落地）+ ≥1 外部消费者（§4.21.6 计数口径：非仓库所有的项目/Agent 实际消费 Ming 输出）；与 LSP 第二切片同族统一为一个批次（§4.21.2 合并裁决） |
+| 参数化效果（`with fs("path")` 等带参效果表达式 + 运行时强制） | §4.21 roadmap 第二梯队 | 需 ADR + 与冻结面冲突裁决（T2.2 冻结令 2026-11-22 已确认，语法面冻结；效果参数的传播/包含关系/宿主强制是三引擎合同级改动，非纯 additive——§4.21.2） |
+| WIT 对齐（契约桩映射 WASM Component Model 接口） | §4.21 roadmap 第三梯队 | 契约桥 MVP（S-4）落地 + WASM component |
+| 证明缓存与增量验证（VC 哈希 + 求解器证明日志内容寻址工件） | §4.21 roadmap 第三梯队 | 证明协议稳定（S-1/S-2/S-3）+ 真实使用反馈 |
 
 ### 4.15.8 过程纪律（沿 §4.14.8，新增三条）
 
@@ -1949,6 +1953,8 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | R-12 | 窄型 DX 批 | 零校准审计 | §4.15.7 |
 | R-13 | CI 深化：windows node18 全量恢复 | node18 冒烟级是 runner 性能妥协——若 GitHub 提供 arm→x64 固定 runner 或 node18 性能补丁，恢复全量；另 fuzz/nightly 已在 ubuntu node22，评估 windows fuzz 腿 | 第六轮归因 |
 | R-14 | 实验协议 v2.3 | 温度受控通道（API 直调）+ 每格样本量提升 + 多模型快照——支撑 R-10 | experiment-report 偏差 1 |
+| R-15 | 证明协议切片 S-1/S-2：`ming check --proof-format smt-lib`（prover.js VC→SMT-LIB 2.0 纯输出选项，零语义改动）+ docs/proof-protocol.md 规范 | roadmap 裁决降门槛（§4.21.5.3）：纯输出 + Z3 外部消费实测即可入库，无需既有外部消费者——**v1.1 首批落位**（S-3 Alethe/S-4 契约桥沿 §4.21.2 切片表节奏） | §4.21（roadmap §5.1） |
+| R-16 | 契约桥 MVP（S-4）：TS JSDoc → .mingi 契约桩 + 跨语言调用点一致性检查 + 端到端示例 | roadmap 裁决降门槛（§4.21.5.3）：前置 = S-1/S-2 落地 + 端到端示例——**v1.2–v1.3 落位** | §4.21（roadmap §5.2） |
 
 **P3——维持门槛/登记（不动工）**
 
@@ -2231,6 +2237,15 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | 81 | ~~**deepCopy 缺 vclose 分支**(VM 闭包绑定/传参别名:tree 1/2/1/0 vs VM 1/2/3/0)~~ | P1 | **已修(v0.97.0,§108 8 check;tree closure 分支同口径)** |
 | 82 | ~~**树引擎闭包复制不完整**~~ **已修(v0.100.0,ADR-011 P2):deepCopy closure → captureEnvFor 过滤重建(23 文件×4 腿全矩阵恰 7 槽翻绿;间接引用链无 2^n;零自由快路径)——原缺陷**:`deepCopy(closure)` 的 `env.parent` 浅拷贝——内层闭包经 let 复制后与外层块级 let 捕获链共享(tree n3:wrapA 无 let `1/1/2` 快照 vs wrapB 有 let `1/2/3` 共享,自相矛盾;违反 design.md '无共享可变结构';VM 经 #81 修复为正确面) | P1 | **登记未修(v0.97 审查 B1 回退)**:递归 snapshotEnv 实现呈 **2^n 复制**(22 层嵌套块合法程序 4GB OOM exit 134;1M 次闭包绑定 tree +55%)——修法需 free-variable 捕获计划(对齐 VM capture plan)或持久化 env/COW;待专门设计批次(ADR 级)。**同源形态勘误(v0.99 验证 Agent P2-B 实测)**:p_flat_80 在 v0.97 时代 OOM 属实,但 **P1 创建点过滤已治愈**——v0.99 HEAD 实测 146ms/deepCopy 6,963 全绿(OOM 口径属 v0.97 pre-P1 时代,创建侧全链快照级联);flat-block 变体已入 ADR-011 G2 验收 |
 | — | **bench WARN 不覆盖 vm/tree 绝对耗时回退**(只盯 cc/vm 加速比;审查 m4)——**已修(v0.94)**:bench.mjs reportBaseline 增 vm/tree 绝对回退 >20% WARN(与 cc/vm 比值告警同阈值) | P3 | ✅ 已交付(2026-11-20) |
+
+### 新登记(2026-11-23,v1.0.0-rc.2/R-6 G8 实现期;#84 已修,#85 登记未修)
+
+> 编号跳过 #83:§4.20.1 已将"#83 族"预指 CI 七轮事故链 12+ 处平台缺陷(叙述登记于 §4.19(e),未落本表行)——该族留号,本批自 #84 起编。
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| 84 | **worker wire Json 载荷丢根级 `__taint` 运行时污标**:spawn/join 与 serve 跨 worker 边界的 wire 序列化(interp.js `vToWire`/`wireToV`)json 分支未携带污标键(`t`)→ worker 侧根级 `__taint` 恢复失败 → 投影链(`get`/`as_str`)断污 → 下游污字节运算退 u8 fits 门 M4002 → join Err——污点机制跨 worker 边界静默失真(tree/VM 共享 interp 同形态)。发现于 rc.2 三轮审查(Json wire 分支,审查终修 2;同轮 2 BLOCKER 三路径不闭合与第四路径 read_bytes_range 漏改一并实测收口) | **P1** | **已修(v1.0.0-rc.2,c86af82)**:wire str/json/vec 三分支保标(`t` 键仅在污值出现)+ serve argWire 恒 t:1(载荷恒 Untrusted[Json] 硬约束)+ deepCopy `__taint` 透传;回归锁定 tests/run.mjs v112.29(spawn 递 Untrusted[Json] → worker 内 get/as_str/to_bytes[0]×1000 = 66000 → join Ok(1))三腿逐字;§112 共 29 check;**1685 项全绿** |
+| 85 | **cc 后端 &&/深嵌套值型 if 短路求值序差分(四引擎 gap,pre-existing)**:JS 引擎(tree/VM)对 `&&` 与值型 if 条件短路跳过的 panic 子表达式,cc(C 侧)仍求值——seed 39039 程序集(纯 i64 程序,深嵌套值型 if 条件 + && + NaN float cast 派生的近 i64::MIN 乘法溢出)cc 腿在 JS 短路跳过的位置求值并 panic → 引擎间分歧;git worktree HEAD 纯净副本逐字复现,与本批语言改动无关。发现于 rc.2(ADR-012 清单 12 生成器扩 tbytes 形态改变 rng 流,39039 程序集随之命中) | P2 | **登记未修**:rc.2 快速档种子重钉 39039→44044 临时遮蔽(tests/run.mjs v39 注记锁定理由;标准验收种子 44044/777/20261 ×40 全 0 分歧);修法需 cc 求值序对齐 JS 短路语义(C 侧条件短路化,cbackend 求值序重构),另批裁决 |
 
 ## 6. 过程纪律（所有版本适用）
 
