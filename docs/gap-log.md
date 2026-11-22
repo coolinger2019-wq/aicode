@@ -55,3 +55,38 @@
 | I8 | S3 | Ming `&` 优先级低于 `==`(`f & 1 == 1` 解析为 `f & (1==1)` → M3008)——位判定需显式括号;标准 C 优先级非缺陷,登记为 AI 生成常见踩坑位 | scenarios/protocol_parser/gap-log.md 实现注记 |
 | I9 | S3 protocol_parser | spec §2.1 行宽公式笔误(16+2·length,实为 20+2·length,与 §3 判定 7 一致)——纯文本瑕疵,三语言实现与 expected 全按正确值,无行为影响 | scenarios/protocol_parser/gap-log.md GAP-S3-8 |
 | I10 | S3 protocol_parser | 空文件 read_bytes_range Err(start 超出文件大小)与 U+FFFD 替换语义为宿主继承口径(G10 同族);场景按状态行口径消费,未耦合消息文本 | scenarios/protocol_parser/gap-log.md GAP-S3-6 |
+
+## 4. S4/S5 场景扩面(R-5,2026-11-22;明细见各场景 gap-log.md)
+
+- **能力面核对结论(S4 agent_service / S5 release_bootstrap)**:两场景全部核心流程
+  在 T2.3 承诺面(P1–P8)既有能力内实现成功,零新增语言面——S4:serve handler
+  `Untrusted[Json]` 整树标污 → 投影表 + `sanitize_cli_path` 比较串位 + `json.parse`
+  载体分派 + 工具结果全净值构造;S5:argv 路径位净化 → read_file 污值代数
+  keep/clean 面 → 净 i64 三元组比较 → list_dir 条目净化 + 净 Vec 排序 → write_file
+  出向透传。未遇到不可绕过的 M3049/M3050 拒绝。三语言(ming/ts/py)输出逐字节一致
+  (S4:183 行 transcript 三腿 sha256 同值 cfb63412…;S5:六案例 stdout + notes 一致);
+  fixture 重跑 sha 逐字节不变(S4+S5 共 33 文件)。
+- **S4 追加(2026-11-22)**:R19 9MB 超大体客户端形态 = 头-only 声明尺寸请求
+  (GAP-S4-1——全量体发送对 ming serve 早响应+destroy 为客户端可见竞态,Windows
+  RST 丢缓冲响应实测 ~5%;头-only 20/20 干净 413;判定事实完整触达,判据零放宽);
+  端口被占腿经 harness --occupy 三语言全实现(GAP-S4-2);错服务判定协议
+  (连续 5 次 /health 非 200 → 立即失败)使交叉喂入腿 ~3s(GAP-S4-3);实现期
+  环境地雷两则(Python latin-1 体编码 / ThreadingHTTPServer backlog=5)已内置
+  (GAP-S4-4)。
+- **S5 追加(2026-11-22)**:探针三项全按预设成立(em-dash 码点口径/guide_head
+  ASCII `(` 经 spec 字节实测/notes 往返逐字节,GAP-S5-1);**发现 `Vec.sort()` 对
+  空 Vec 以 M4001 panic("sort:元素不支持排序",tree/VM 双引擎一致——空容器排序
+  数学 no-op 变 panic,实现以 len>0 守卫规避,src 域候选登记,GAP-S5-2)**;
+  TS UTF-16 索引与 Ming 码点口径在 fixture 域(全 BMP)等价(GAP-S5-3);plan 原文
+  忠实度按 spec §6 预登记落实(tag 存在性收窄/dist 冒烟降演练,GAP-S5-4)。
+
+| # | 场景 | 摘要 | 明细 |
+|---|------|------|------|
+| I11 | S4 agent_service | R19 全量体发送 = 客户端可见竞态(spec 字面不可稳定冻结)——实现改头-only 声明尺寸请求(Content-Length 头承载 9437184,体字节不发送;体内容本就不参与判定),TS/Python 服务端用 spec §3.3 首选"前置检查"形态;transcript 行冻结 `R19 -> 413 code=body_too_large`,三语言一致(唯一判据)保持 | scenarios/agent_service/gap-log.md GAP-S4-1 |
+| I12 | S4 agent_service | 端口被占腿构造定案:占用持有人 = harness --occupy 模式(ming 无端口持有面;js/py 原生),ming 绑定失败 = EADDRINUSE Err exit 1 stderr 一行 | scenarios/agent_service/gap-log.md GAP-S4-2 |
+| I13 | S4 agent_service | 交叉喂入腿"错服务"判定:连续 5 次 /health HTTP 非 200 → 立即失败(冷启动连接拒绝不计),执行时间 150s→3s,腿语义不变 | scenarios/agent_service/gap-log.md GAP-S4-3 |
+| I14 | S4 agent_service | 环境地雷两则(Python http.client str 体 latin-1 编码与 UTF-8 Content-Length 失配→服务端读挂;ThreadingHTTPServer request_queue_size=5 在 8 客户端并发下溢出 ECONNREFUSED)——实现内置(requests 显式 utf-8 字节/Server 子类 backlog 64) | scenarios/agent_service/gap-log.md GAP-S4-4 |
+| I15 | S5 release_bootstrap | `Vec.sort()` 空 Vec M4001 panic("sort:元素不支持排序",tree/VM 双引擎一致;元素类型分派按首元素判型)——实现以 len>0 守卫规避,判据零变化;src 域候选登记(空容器 sort 应为 no-op) | scenarios/release_bootstrap/gap-log.md GAP-S5-2 |
+| I16 | S5 release_bootstrap | 探针定案:em-dash `index_of` 码点口径 + guide_head 括号经 spec 行 75 字节实测为 ASCII `(` + notes 中文/尾\n 写读往返逐字节——全按 spec 预设,零判据调整 | scenarios/release_bootstrap/gap-log.md GAP-S5-1 |
+| I17 | S5 release_bootstrap | spec §3.4"单个 \n 结尾"字面与 §3.2/§3.4 条目体逐字(含第二条目前空段)不可同时成立——expected_notes_ok.md 实测 143B、\n\n 结尾(od 实测);实现取条目体侧(逐字写盘为核心语义),歧义随 spec 修订窗口校正 | scenarios/release_bootstrap/gap-log.md GAP-S5-5(审查 MINOR-1) |
+| I18 | S4/S5 | 独立审查 MINOR-2/3 收口:六份 verify 参数级腿补"stderr 恰一行"断言(split 段数==2 / \n 计数==1,零假红);交叉喂入负例腿收紧为具体 FAIL 形态(S4=harness exit 3 错服务 / S5=S2 exit 1+error: 行),排除 no-start 静默通过;harness fixture 读取移入 try/finally(异常不泄漏 child) | scenarios/agent_service/gap-log.md GAP-S4-5 |
