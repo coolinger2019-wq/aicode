@@ -10,6 +10,9 @@
 > 与既有语料的关系:B4 任务(b4_serve_handler)是 T1 侧 6 请求固定路由冒烟;
 > 本场景是 T3 场景 #3 的**压测向**——扩展到 serve 层事件码标签、9MB 超大体、
 > handler panic 隔离与服务存活、8 客户端 × 20 请求并发,B4 不覆盖这些面。
+> **实现登记(2026-11-22,T3-impl)**:本 spec 已实现——gen_fixtures + 三语言
+> solutions + verify.{ming,js,py}(transcript 逐字节/参数级/占用/交叉喂入/变异
+> 全腿绿);R19 客户端形态定案与探针记录见 gap-log.md(GAP-S4-1/2/3/4)。
 
 ## 1. 场景目标(真实场景,非玩具)
 

@@ -1,0 +1,7 @@
+#!/usr/bin/env node
+// VERSION 声明见下行(三处同步之一)
+const VERSION = "1.2.3";
+
+function main() {
+  console.log("ming-app " + VERSION);
+}

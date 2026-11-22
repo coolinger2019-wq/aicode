@@ -1,0 +1,208 @@
+// S4 内网 agent 工具服务 — 参考实现(Ming)
+// std.net.serve + 同模块命名 handler;请求载荷 Untrusted[Json] 整树标污(v0.68):
+// method/path/tool 经 sanitize_cli_path 净化后净域精确等值(比较串授权位),
+// body 经 json.parse 载体分派(污 str → 污 Json)投影消费;工具结果全部由净值构造
+// (json.stringify(Untrusted[Json]) → M3049,echo 透传被编译期拦截,天然合规)。
+// 判定序 = 路由层(第 0 条)先于编号 1–6,各编号内首条命中即停(spec §3.1)。
+// boom 工具无条件触发 handler 内具名运行时 panic(空容器下标 M4003)→ serve 层
+// 500 handler_panic,其余请求不受影响,服务不死(请求级隔离,ADR-001)。
+use std.net;
+
+use std.json;
+
+use std.unstr;
+
+// 响应构造:Json 经 stringify→parse 往返注入安全(GUIDE §18 serve 示例形态;
+// 键序 = Map 插入序,P7 确定性);body 恒为 str(S11 口径:非 str → 空体静默,防重蹈)
+fn jv(s: str) -> Json {
+    return std.json.parse(s).unwrap();
+}
+
+fn respond(status: i64, body: str) -> Json {
+    let resp: Map[str, Json] = { "status": jv(std.json.stringify(status)), "headers": jv("{}"), "body": jv(std.json.stringify(body)) };
+    return jv(std.json.stringify(resp));
+}
+
+// 应用错误体:{"ok":false,"code":"<标签>"}(应用协议标签集,fixture 定义)
+fn body_err(label: str) -> str {
+    let m: Map[str, Json] = { "ok": jv("false"), "code": jv(std.json.stringify(label)) };
+    return std.json.stringify(m);
+}
+
+// 工具成功体:{"ok":true,"result":<数值>}
+fn body_result_num(n: i64) -> str {
+    let m: Map[str, Json] = { "ok": jv("true"), "result": jv(std.json.stringify(n)) };
+    return std.json.stringify(m);
+}
+
+// 工具成功体:{"ok":true,"result":"<常量>"}(path_check 恒 "ok",不回显路径)
+fn body_result_str(s: str) -> str {
+    let m: Map[str, Json] = { "ok": jv("true"), "result": jv(std.json.stringify(s)) };
+    return std.json.stringify(m);
+}
+
+// 比较串位取值:get → as_str → sanitize_cli_path 净化(校验不改写);
+// 净化 Err(控制符)→ 空串回落(路径不匹配任何路由 → not_found,spec §3.2)
+fn get_cmp(req: Untrusted[Json], key: str) -> str {
+    return match req.get(key) { Some(v) => match v.as_str() { Some(u) => match std.unstr.sanitize_cli_path(u) { Ok(s) => s, Err(_) => "" }, None => "" }, None => "" };
+}
+
+fn get_raw(req: Untrusted[Json], key: str) -> Untrusted[str] {
+    return match req.get(key) { Some(v) => match v.as_str() { Some(u) => u, None => std.unstr.mark("") }, None => std.unstr.mark("") };
+}
+
+// sum:a/b 缺失 → missing_field;任一非数值 → bad_args;任一非整值数值(round-trip
+// 取整回比)→ bad_args;成功 → a+b(i64 checked 加法,溢出 M4002 → handler_panic;
+// 矩阵数值域受限,溢出形态不构造)。全净值域。
+fn tool_sum(args: Untrusted[Json]) -> Json {
+    if args.get("a").is_none() || args.get("b").is_none() {
+        return respond(400, body_err("missing_field"));
+    }
+    let a_num = args.get("a").unwrap().as_num();
+    let b_num = args.get("b").unwrap().as_num();
+    if a_num.is_none() || b_num.is_none() {
+        return respond(400, body_err("bad_args"));
+    }
+    let af = a_num.unwrap();
+    let bf = b_num.unwrap();
+    let ai = af as i64;
+
+    // round-trip 整值判定(spec §3.1);以 </> 表述不等(等价于 !=,避免 W3102 警告
+    // 污染 stderr——参数级腿要求 stderr 恰一行 error: 开头)
+    let back_a = ai as f64;
+    if back_a < af || back_a > af {
+        return respond(400, body_err("bad_args"));
+    }
+    let bi = bf as i64;
+    let back_b = bi as f64;
+    if back_b < bf || back_b > bf {
+        return respond(400, body_err("bad_args"));
+    }
+    return respond(200, body_result_num(ai + bi));
+}
+
+// count:text 缺失 → missing_field;非 str → bad_args;成功 → 码点数(char_len,含非 ASCII)
+fn tool_count(args: Untrusted[Json]) -> Json {
+    if args.get("text").is_none() {
+        return respond(400, body_err("missing_field"));
+    }
+    let t = args.get("text").unwrap();
+    if !t.is_str() {
+        return respond(400, body_err("bad_args"));
+    }
+    return respond(200, body_result_num(t.as_str().unwrap().char_len()));
+}
+
+// path_check:path 缺失 → missing_field;非 str → bad_args;sanitize_path Err
+// (绝对路径含盘符/.. 段/内部空段/空串)→ bad_args;Ok → 恒 "ok"(不回显路径)
+fn tool_path(args: Untrusted[Json]) -> Json {
+    if args.get("path").is_none() {
+        return respond(400, body_err("missing_field"));
+    }
+    let p = args.get("path").unwrap();
+    if !p.is_str() {
+        return respond(400, body_err("bad_args"));
+    }
+    if std.unstr.sanitize_path(p.as_str().unwrap()).is_err() {
+        return respond(400, body_err("bad_args"));
+    }
+    return respond(200, body_result_str("ok"));
+}
+
+fn handle_tool(body: Untrusted[str]) -> Json {
+
+    // 1. 空体/坏 JSON → bad_json(Err 载荷不消费——响应由字面量直接构造)
+    if body.is_empty() {
+        return respond(400, body_err("bad_json"));
+    }
+    let parsed = std.json.parse(body);
+    if parsed.is_err() {
+        return respond(400, body_err("bad_json"));
+    }
+    let doc = parsed.unwrap();
+
+    // 2. 根非对象 → bad_json
+    if !doc.is_obj() {
+        return respond(400, body_err("bad_json"));
+    }
+
+    // 3. tool 缺失 → missing_field;非 str → bad_args
+    if doc.get("tool").is_none() {
+        return respond(400, body_err("missing_field"));
+    }
+    let tool_val = doc.get("tool").unwrap();
+    if !tool_val.is_str() {
+        return respond(400, body_err("bad_args"));
+    }
+    let tool_u = tool_val.as_str().unwrap();
+
+    // 4. args 缺失 → missing_field;非对象 → bad_args
+    if doc.get("args").is_none() {
+        return respond(400, body_err("missing_field"));
+    }
+    let args = doc.get("args").unwrap();
+    if !args.is_obj() {
+        return respond(400, body_err("bad_args"));
+    }
+
+    // 5. 工具名净化后精确等值;∉ 已知集(含净化 Err 回落空串)→ 404 unknown_tool
+    let name = match std.unstr.sanitize_cli_path(tool_u) { Ok(s) => s, Err(_) => "" };
+    if name == "sum" {
+        return tool_sum(args);
+    }
+    if name == "count" {
+        return tool_count(args);
+    }
+    if name == "path_check" {
+        return tool_path(args);
+    }
+    if name == "boom" {
+
+        // 6. boom:无条件 handler 内 panic(空容器下标,M4003)→ serve 层 500 handler_panic
+        let v: Vec[i64] = [];
+        let _x = v[0];
+        return respond(200, "{}");
+    }
+    return respond(404, body_err("unknown_tool"));
+}
+
+fn handler(req: Untrusted[Json]) -> Json {
+
+    // 0. 路由层:/tool 非 POST 或 /health 非 GET → 405;其余路径 → 404 not_found
+    let method = get_cmp(req, "method");
+    let path = get_cmp(req, "path");
+    if path == "/tool" {
+        if method == "POST" {
+            return handle_tool(get_raw(req, "body"));
+        }
+        return respond(405, body_err("method_not_allowed"));
+    }
+    if path == "/health" {
+        if method == "GET" {
+            let ok_body: Map[str, Json] = { "ok": jv("true") };
+            return respond(200, std.json.stringify(ok_body));
+        }
+        return respond(405, body_err("method_not_allowed"));
+    }
+    return respond(404, body_err("not_found"));
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with net, io {
+    if args.len() < 1 {
+        eprint("error: 需要端口参数");
+        return 1;
+    }
+
+    // 端口数值位 parse_i64(ADR-008);非法端口(0/65536,serve 校验 1..65535)/绑定失败
+    // → serve Err → stderr 恰一行 error: 开头 + 退出码 1(#65 惯用法)
+    let port = match args[0].parse_i64() { Ok(p) => p, Err(_) => { eprint("error: 端口参数非法"); return 1; } };
+    match std.net.serve(port, handler) {
+        Ok(_) => {
+            return 0;
+        },
+        Err(e) => {
+            eprint("error: serve 失败: " + e);
+            return 1;
+        },
+    }
+}

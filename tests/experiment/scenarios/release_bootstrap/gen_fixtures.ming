@@ -1,0 +1,87 @@
+// S5 发布打包自举 — fixture 生成脚本(确定性;重跑逐字节不变)。
+// 生成 input/snapshots/<case>/ 六快照 × 五文件集(spec §2.2;合成 mimic 版号 1.2.3,
+// 与仓库真实版本无耦合):package.json / cli_source.txt / guide_head.txt /
+// CHANGELOG.md / tag.txt;extra_file 案例多一个 draft_notes.txt。
+// 全 ASCII 名、UTF-8、LF 行尾、末行以 LF 结尾;每文件 ≤200 字节,全 fixture ≤4KB。
+// 中文条目体 = notes 模板 ## Changes 体的逐字来源(spec §3.4)。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/release_bootstrap/gen_fixtures.ming
+use std.fs;
+
+fn put(dir: str, name: str, content: str) -> i64 with io, fs {
+    match std.fs.write_file(dir + "/" + name, content) {
+        Ok(_) => {
+            return 0;
+        },
+        Err(e) => {
+            eprint("error: 无法写入 " + dir + "/" + name + ": " + e);
+            return 1;
+        },
+    }
+}
+
+fn main() -> i64 with io, fs {
+    let base = "tests/experiment/scenarios/release_bootstrap/input/snapshots";
+
+    // 五文件集基础内容(ok 形态;版本 1.2.3 / tag v1.2.3)
+    let pkg = "{\"name\":\"ming-app\",\"version\":\"1.2.3\"}\n";
+    let cli = "#!/usr/bin/env node\n// VERSION 声明见下行(三处同步之一)\nconst VERSION = \"1.2.3\";\n\nfunction main() {\n  console.log(\"ming-app \" + VERSION);\n}\n";
+    let guide = "# GUIDE(mimic)— 修订记录头\n\n### v1.2.3(2026-11-22):当前条目\n- 记录:版本三处同步\n";
+    let changelog = "## v1.2.3 — 场景发布条目\n- toolchain: 自举工具链冒烟\n- notes: 模板化 release-notes\n\n## v1.2.2 — 旧条目\n- 旧条目体\n";
+    let tag = "v1.2.3\n";
+
+    // 六快照(spec §2.2 案例表)
+    let mut cases: Vec[str] = [];
+    cases.push("ok");
+    cases.push("mismatch_cli");
+    cases.push("mismatch_changelog");
+    cases.push("mismatch_tag");
+    cases.push("missing_version");
+    cases.push("extra_file");
+    for cs in cases {
+        match std.fs.make_dir(base + "/" + cs) {
+            Ok(_) => {
+            },
+            Err(e) => {
+                eprint("error: 无法建目录 " + base + "/" + cs + ": " + e);
+                return 1;
+            },
+        }
+        let dir = base + "/" + cs;
+
+        // package.json:missing_version 案例无 version 字段,其余一致
+        let pkg_here = if cs == "missing_version" { "{\"name\":\"ming-app\"}\n" } else { pkg };
+        if put(dir, "package.json", pkg_here) != 0 {
+            return 1;
+        }
+
+        // cli_source.txt:mismatch_cli 案例版本 = 1.2.2(仅 const VERSION 行改)
+        let cli_here = if cs == "mismatch_cli" { "#!/usr/bin/env node\n// VERSION 声明见下行(三处同步之一)\nconst VERSION = \"1.2.2\";\n\nfunction main() {\n  console.log(\"ming-app \" + VERSION);\n}\n" } else { cli };
+        if put(dir, "cli_source.txt", cli_here) != 0 {
+            return 1;
+        }
+        if put(dir, "guide_head.txt", guide) != 0 {
+            return 1;
+        }
+
+        // CHANGELOG.md:mismatch_changelog 案例首条 = v1.2.2 — 旧条目版本(其余一致)
+        let chg_here = if cs == "mismatch_changelog" { "## v1.2.2 — 旧条目版本\n- toolchain: 自举工具链冒烟\n- notes: 模板化 release-notes\n\n## v1.2.2 — 旧条目\n- 旧条目体\n" } else { changelog };
+        if put(dir, "CHANGELOG.md", chg_here) != 0 {
+            return 1;
+        }
+
+        // tag.txt:mismatch_tag 案例 = v1.2.2
+        let tag_here = if cs == "mismatch_tag" { "v1.2.2\n" } else { tag };
+        if put(dir, "tag.txt", tag_here) != 0 {
+            return 1;
+        }
+
+        // extra_file 案例:额外 draft_notes.txt(期望集之外的混入草稿)
+        if cs == "extra_file" {
+            if put(dir, "draft_notes.txt", "草稿:发布前清理(不入发布)\n") != 0 {
+                return 1;
+            }
+        }
+    }
+    print("fixture written: snapshots=6 files_per=5(+1 extra_file) base=1.2.3 tag=v1.2.3");
+    return 0;
+}

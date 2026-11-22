@@ -1,0 +1,235 @@
+// S5 黑盒验收(Ming):内容腿(ok → stdout 逐字节 + exit 0 + notes 逐字节;mismatch_*
+// /extra_file → stdout 逐字节 + exit 1 + 输出路径无文件)+ 参数级腿(缺参/目录不存在/
+// argv[1] 指向普通文件/missing_version 案例 → exit 1、stdout 空、stderr 恰一行 error:
+// 开头)+ 负例腿(交叉喂入 S2 参考实现预期 FAIL/expected 变异样本——检查行与 notes
+// 各一字符——预期 mismatch)+ 不 panic 专项(六快照 stderr 无引擎 panic 标记)。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/release_bootstrap/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.proc;
+
+fn exec_prog(prog: str, a1: str, a2: str) -> Result[(i64, Untrusted[str], Untrusted[str]), str] with proc {
+    return std.proc.exec("node", ["bin/ming.js", "run", prog, "--", a1, a2]);
+}
+
+// 不 panic 专项:引擎 panic 标记(S3 同款口径)
+fn has_panic_marker(err: Untrusted[str]) -> bool {
+    if err.contains("panic") {
+        return true;
+    }
+    if err.contains("内部错误") {
+        return true;
+    }
+    if err.contains("RangeError") {
+        return true;
+    }
+    if err.contains("TypeError") {
+        return true;
+    }
+    if err.contains("Traceback") {
+        return true;
+    }
+    return false;
+}
+
+fn expect_param_error(tag: str, r: Result[(i64, Untrusted[str], Untrusted[str]), str]) -> i64 with io {
+    match r {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code != 1 {
+                eprint("FAIL " + tag + ": exit=" + str(code) + "(预期 1)");
+                return 1;
+            }
+            if !out.is_empty() {
+                eprint("FAIL " + tag + ": stdout 非空(预期空)");
+                return 1;
+            }
+            if !err.starts_with("error:") {
+                eprint("FAIL " + tag + ": stderr 未以 error: 开头");
+                return 1;
+            }
+            if has_panic_marker(err) {
+                eprint("FAIL " + tag + ": stderr 含引擎 panic 标记");
+                return 1;
+            }
+
+            // stderr 恰一行(spec §4 字面):恰一个换行且在末尾 → split 段数 == 2
+            let segs = err.split("\n");
+            if segs.len() != 2 || !segs.get(1).unwrap().is_empty() {
+                eprint("FAIL " + tag + ": stderr 非恰一行(段数=" + str(segs.len()) + ")");
+                return 1;
+            }
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL " + tag + ": exec: " + e);
+            return 1;
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, proc {
+    let mut prog = "tests/experiment/scenarios/release_bootstrap/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let base = "tests/experiment/scenarios/release_bootstrap";
+    std.fs.make_dir(base + "/output");
+    let ok_snap = base + "/input/snapshots/ok";
+    let notes_out = base + "/output/notes_ok_ming.md";
+    std.fs.remove_file(notes_out);
+    let exp_ok = match std.fs.read_file(base + "/expected/expected_stdout_ok.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 stdout_ok: " + e); return 1; } };
+    let exp_notes = match std.fs.read_file(base + "/expected/expected_notes_ok.md") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 notes: " + e); return 1; } };
+    let exp_cli = match std.fs.read_file(base + "/expected/expected_stdout_mismatch_cli.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 stdout_cli: " + e); return 1; } };
+    let exp_chg = match std.fs.read_file(base + "/expected/expected_stdout_mismatch_changelog.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 stdout_changelog: " + e); return 1; } };
+    let exp_tag = match std.fs.read_file(base + "/expected/expected_stdout_mismatch_tag.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 stdout_tag: " + e); return 1; } };
+    let exp_extra = match std.fs.read_file(base + "/expected/expected_stdout_extra_file.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 stdout_extra: " + e); return 1; } };
+
+    // 内容腿 1:ok → exit 0 + stdout 逐字节 + notes 逐字节
+    let run_ok = exec_prog(prog, ok_snap, notes_out);
+    match run_ok {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code != 0 {
+                eprint("FAIL 内容-ok: exit=" + str(code) + "(预期 0) stderr=" + err);
+                return 1;
+            }
+            if out != exp_ok {
+                eprint("FAIL 内容-ok: stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(exp_ok.byte_len()));
+                return 1;
+            }
+            if has_panic_marker(err) {
+                eprint("FAIL 内容-ok: stderr 含引擎 panic 标记");
+                return 1;
+            }
+            let got_notes = match std.fs.read_file(notes_out) { Ok(n) => n, Err(e) => { eprint("FAIL 内容-ok: notes 未生成: " + e); return 1; } };
+            if got_notes != exp_notes {
+                eprint("FAIL 内容-ok: notes mismatch actual_len=" + str(got_notes.byte_len()) + " expected_len=" + str(exp_notes.byte_len()));
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL 内容-ok exec: " + e);
+            return 1;
+        },
+    }
+
+    // 内容腿 2–5:mismatch_cli/changelog/tag/extra_file → exit 1 + stdout 逐字节 + 无输出文件
+    let fail_cases: Vec[(str, str, Untrusted[str])] = [("mismatch_cli", base + "/input/snapshots/mismatch_cli", exp_cli), ("mismatch_changelog", base + "/input/snapshots/mismatch_changelog", exp_chg), ("mismatch_tag", base + "/input/snapshots/mismatch_tag", exp_tag), ("extra_file", base + "/input/snapshots/extra_file", exp_extra)];
+    let mut ci = 0;
+    while ci < fail_cases.len() {
+        let (tag, snap, exp) = fail_cases.get(ci).unwrap();
+        let notes_i = base + "/output/notes_" + tag + "_ming.md";
+        std.fs.remove_file(notes_i);
+        let r = exec_prog(prog, snap, notes_i);
+        match r {
+            Ok(t) => {
+                let (code, out, err) = t;
+                if code != 1 {
+                    eprint("FAIL 内容-" + tag + ": exit=" + str(code) + "(预期 1)");
+                    return 1;
+                }
+                if out != exp {
+                    eprint("FAIL 内容-" + tag + ": stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(exp.byte_len()));
+                    return 1;
+                }
+                if has_panic_marker(err) {
+                    eprint("FAIL 内容-" + tag + ": stderr 含引擎 panic 标记");
+                    return 1;
+                }
+                if std.fs.exists(notes_i) {
+                    eprint("FAIL 内容-" + tag + ": FAIL 路径竟产出 notes 文件");
+                    return 1;
+                }
+            },
+            Err(e) => {
+                eprint("FAIL 内容-" + tag + " exec: " + e);
+                return 1;
+            },
+        }
+        ci += 1;
+    }
+
+    // 参数级腿 1–4:缺参(0/1 个 argv)/快照目录不存在/argv[1] 指向普通文件
+    let r0 = std.proc.exec("node", ["bin/ming.js", "run", prog, "--"]);
+    if expect_param_error("参数-缺参", r0) != 0 {
+        return 1;
+    }
+    let r1 = std.proc.exec("node", ["bin/ming.js", "run", prog, "--", ok_snap]);
+    if expect_param_error("参数-单参", r1) != 0 {
+        return 1;
+    }
+    if expect_param_error("参数-目录不存在", exec_prog(prog, base + "/input/snapshots/no_such_dir", notes_out)) != 0 {
+        return 1;
+    }
+    if expect_param_error("参数-普通文件", exec_prog(prog, base + "/input/snapshots/extra_file/draft_notes.txt", notes_out)) != 0 {
+        return 1;
+    }
+
+    // 参数级腿 5:missing_version 案例整体(结构性,归参数级形态)
+    if expect_param_error("参数-missing_version", exec_prog(prog, base + "/input/snapshots/missing_version", notes_out)) != 0 {
+        return 1;
+    }
+
+    // 负例腿 1:交叉喂入 S2 参考实现(缺 key 参数)→ 必须按具体 FAIL 形态失败:
+    // exit 1 + stderr error: 行(参数级拒绝;排除 no-start/ENOENT 形态静默通过,
+    // 审查 MINOR-3 收口)
+    let cross = std.proc.exec("node", ["bin/ming.js", "run", "tests/experiment/scenarios/file_integrity/solutions/solution.ming", "--", ok_snap, notes_out]);
+    match cross {
+        Ok(t) => {
+            let (c, o, err) = t;
+            if c == 1 && err.starts_with("error:") && o.is_empty() {} else if c == 0 && o == exp_ok {
+
+                // 具体失败形态成立(S2 参数级拒绝)
+                eprint("FAIL 负例-交叉喂入: S2 参考实现竟通过 S5 验收");
+                return 1;} else {
+
+                eprint("FAIL 负例-交叉喂入: 未按参数级拒绝形态失败 exit=" + str(c));
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL 负例-交叉喂入 exec: " + e);
+            return 1;
+        },
+    }
+
+    // 负例腿 2:expected 变异样本 → mismatch FAIL(逐字节比对有齿,S3 惯例)
+    // 2a:检查行改一处(重跑 ok 案例,stdout 与变异期望必须不一致)
+    let mutated_out = exp_ok.replace("check tag OK", "check tag OKX");
+    let notes_mut = base + "/output/notes_mut_ming.md";
+    let rerun = exec_prog(prog, ok_snap, notes_mut);
+    match rerun {
+        Ok(t) => {
+            let (c2, o2, _e) = t;
+            if c2 != 0 {
+                eprint("FAIL 负例-变异样本: exit=" + str(c2));
+                return 1;
+            }
+            if o2 == mutated_out {
+                eprint("FAIL 负例-变异样本: 变异期望竟与 stdout 一致(比对无齿)");
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL 负例-变异样本 exec: " + e);
+            return 1;
+        },
+    }
+
+    // 2b:notes 改一字符(读盘 notes 与变异期望必须不一致;两侧同为文件内容,无跨污界比较)
+    let mutated_notes = exp_notes.replace("自举工具链冒烟", "自举工具链冒烟X");
+    let got_mut_notes = match std.fs.read_file(notes_mut) { Ok(n) => n, Err(e) => { eprint("FAIL 负例-变异样本: notes 未生成: " + e); return 1; } };
+    if got_mut_notes == mutated_notes {
+        eprint("FAIL 负例-变异样本: notes 变异期望竟与实写一致(比对无齿)");
+        return 1;
+    }
+    print("PASS");
+    return 0;
+}

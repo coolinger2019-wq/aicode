@@ -1,0 +1,5 @@
+check three_place OK
+check changelog OK
+check tag FAIL tag=1.2.2 version=1.2.3
+check snapshot_files OK
+summary checks=4 failed=1 version=1.2.3 tag=v1.2.2

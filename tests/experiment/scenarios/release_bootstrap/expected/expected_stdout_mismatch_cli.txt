@@ -1,0 +1,5 @@
+check three_place FAIL package=1.2.3 cli=1.2.2 guide=1.2.3
+check changelog OK
+check tag OK
+check snapshot_files OK
+summary checks=4 failed=1 version=1.2.3 tag=v1.2.3

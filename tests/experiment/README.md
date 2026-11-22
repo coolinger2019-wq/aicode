@@ -15,11 +15,13 @@ tasks/<id>/
   solutions/         参考实现(solution.ming / solution.ts / solution.py)
   mock_server.mjs    仅 B3:本地模拟 HTTP 源(单一实现,三语言共用)
   harness.mjs        仅 B4:服务生命周期 harness(启动/请求矩阵/关停)
-scenarios/<name>/   T3 场景试点(log_forensics 日志取证 / file_integrity 文件完整性;
-                    已实现(2026-11-22,T3-impl):gen_fixtures.ming 确定性 fixture +
-                    三语言 solutions + verify.{ming,js,py}(六腿全绿;负例含交叉喂)+
+scenarios/<name>/   T3 场景(T3-pre spec 先行 → T3-impl 已实现 2026-11-22;R-5 扩面后
+                    5/5:log_forensics 日志取证 / file_integrity 文件完整性 /
+                    protocol_parser 协议解析 / agent_service 内网 agent 工具服务 /
+                    release_bootstrap 发布打包自举):gen_fixtures.ming 确定性 fixture +
+                    三语言 solutions + verify.{ming,js,py} 全绿(负例含交叉喂)+
                     gap-log.md;spec.md = 场景规格(T3-pre 交付,实现登记见头注);
-                    总览 docs/gap-log.md)
+                    总览 docs/gap-log.md
 ```
 
 ## 运行验收(一律从仓库根目录)

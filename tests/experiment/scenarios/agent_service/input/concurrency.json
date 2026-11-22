@@ -1,0 +1,6 @@
+{"clients":8,"per_client":20,"pattern":[
+{"kind":"sum","method":"POST","path":"/tool","body":"{\"tool\":\"sum\",\"args\":{\"a\":<c>,\"b\":2}}"},
+{"kind":"health","method":"GET","path":"/health","body":""},
+{"kind":"count","method":"POST","path":"/tool","body":"{\"tool\":\"count\",\"args\":{\"text\":\"agent\"}}"},
+{"kind":"unknown_tool","method":"POST","path":"/tool","body":"{\"tool\":\"nope\",\"args\":{}}"}
+]}

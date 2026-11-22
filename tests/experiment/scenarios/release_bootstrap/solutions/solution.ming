@@ -1,0 +1,328 @@
+// S5 发布打包自举 — 参考实现(Ming)
+// prog <snapshot_dir> <notes_out>:结构门禁(argv/路径净化/目录存在/五文件可读/提取
+// 成功)先于一切检查行,任一失败 → stdout 空 + stderr 恰一行 error: 开头 + exit 1;
+// 内容级四检查(three_place/changelog/tag/snapshot_files)全部执行不短路,FAIL 行
+// + summary 后 exit 1(不触碰 notes 输出路径);全 OK → 模板化 release-notes 写盘
+// (CHANGELOG 首条目体经 write_file 出向透传逐字落盘)后 exit 0。
+// 污点工作流(spec §3.2):argv 路径位 sanitize_cli_path(v0.82);read_file →
+// Untrusted[str](v0.77);污值代数 keep(split/slice_chars/trim)+ clean(starts_with/
+// char_len/parse_i64)+ std.str.index_of 定位;比较全部在净 i64 域(三元组逐段相等);
+// 输出行由净三元组重构渲染,无污值出向问题。
+use std.fs;
+
+// 版本统一解析为 (major, minor, patch) 三元组 of i64;任一段非整数 → None(归结构门禁)
+fn version_triple(u: Untrusted[str]) -> Option[Vec[i64]] {
+    let segs = u.split(".");
+    if segs.len() != 3 {
+        return None;
+    }
+    let mut trip: Vec[i64] = [];
+    let mut i = 0;
+    while i < 3 {
+        let parsed = segs.get(i).unwrap().parse_i64();
+        if parsed.is_err() {
+            return None;
+        }
+        trip.push(parsed.unwrap());
+        i += 1;
+    }
+    return Some(trip);
+}
+
+// package.json:json.parse(载体感知污进污出)→ get("version") → as_str 载体收窄 → 三元组
+fn pkg_triple(content: Untrusted[str]) -> Option[Vec[i64]] {
+    let parsed = std.json.parse(content);
+    if parsed.is_err() {
+        return None;
+    }
+    let doc = parsed.unwrap();
+    if doc.get("version").is_none() {
+        return None;
+    }
+    let s = doc.get("version").unwrap().as_str();
+    if s.is_none() {
+        return None;
+    }
+    return version_triple(s.unwrap());
+}
+
+// 首个满足前缀谓词的行下标(首匹配语义;-1 = 无)
+fn first_line(lines: Vec[Untrusted[str]], prefix: str) -> i64 {
+    let mut idx: i64 = -1;
+    let mut i: i64 = 0;
+    for line in lines {
+        if idx < 0 && line.starts_with(prefix) {
+            idx = i;
+        }
+        i += 1;
+    }
+    return idx;
+}
+
+// cli_source.txt:首个 const VERSION 行 → 行内首个 " 与其后下一个 " 之间 → 三元组
+fn cli_triple(content: Untrusted[str]) -> Option[Vec[i64]] {
+    let lines = content.split("\n");
+    let idx = first_line(lines, "const VERSION");
+    if idx < 0 {
+        return None;
+    }
+    let line = lines.get(idx).unwrap();
+    let q1 = std.str.index_of(line, "\"");
+    if q1.is_none() {
+        return None;
+    }
+    let rest = line.slice_chars(q1.unwrap() + 1, line.char_len());
+    let q2 = std.str.index_of(rest, "\"");
+    if q2.is_none() {
+        return None;
+    }
+    return version_triple(rest.slice_chars(0, q2.unwrap()));
+}
+
+// guide_head.txt:首个 ### v 行 → 去前缀 → 首个 ( 前 → 三元组(ASCII 括号)
+fn guide_triple(content: Untrusted[str]) -> Option[Vec[i64]] {
+    let lines = content.split("\n");
+    let idx = first_line(lines, "### v");
+    if idx < 0 {
+        return None;
+    }
+    let line = lines.get(idx).unwrap();
+    let tail = line.slice_chars(5, line.char_len());
+    let pos = std.str.index_of(tail, "(");
+    if pos.is_none() {
+        return None;
+    }
+    return version_triple(tail.slice_chars(0, pos.unwrap()));
+}
+
+// CHANGELOG.md:首行 ## v 形态 → 去前缀 → 首个 " — "(空格+em-dash+空格)前 → 三元组
+fn changelog_triple(content: Untrusted[str]) -> Option[Vec[i64]] {
+    let lines = content.split("\n");
+    if lines.len() < 1 {
+        return None;
+    }
+    let first = lines.get(0).unwrap();
+    if !first.starts_with("## v") {
+        return None;
+    }
+    let tail = first.slice_chars(4, first.char_len());
+    let dash = std.str.index_of(tail, " — ");
+    if dash.is_none() {
+        return None;
+    }
+    return version_triple(tail.slice_chars(0, dash.unwrap()));
+}
+
+// CHANGELOG 首条目体:首行之后、下一个 ## 行之前的全部行(保序;notes 体来源)
+fn changelog_body(content: Untrusted[str]) -> Vec[Untrusted[str]] {
+    let lines = content.split("\n");
+    let mut body: Vec[Untrusted[str]] = [];
+    let mut i = 1;
+    while i < lines.len() {
+        let line = lines.get(i).unwrap();
+        if line.starts_with("## ") {
+            i = lines.len();} else {
+
+            body.push(line);
+            i += 1;
+        }
+    }
+    return body;
+}
+
+// tag.txt:全文 trim → 必须 v 前缀 → 去首字符后三元组
+fn tag_triple(content: Untrusted[str]) -> Option[Vec[i64]] {
+    let t = content.trim();
+    if !t.starts_with("v") {
+        return None;
+    }
+    return version_triple(t.slice_chars(1, t.char_len()));
+}
+
+fn trip_eq(a: Vec[i64], b: Vec[i64]) -> bool {
+    if a.len() != 3 || b.len() != 3 {
+        return false;
+    }
+    return a.get(0).unwrap() == b.get(0).unwrap() && a.get(1).unwrap() == b.get(1).unwrap() && a.get(2).unwrap() == b.get(2).unwrap();
+}
+
+// 净域重构渲染(1.2.3 形态;不带 v 前缀)
+fn render(t: Vec[i64]) -> str {
+    return str(t.get(0).unwrap()) + "." + str(t.get(1).unwrap()) + "." + str(t.get(2).unwrap());
+}
+
+fn vec_contains(v: Vec[str], s: str) -> bool {
+    for x in v {
+        if x == s {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn read_opt(path: str) -> Option[Untrusted[str]] with fs {
+    return match std.fs.read_file(path) { Ok(t) => Some(t), Err(_) => None };
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs {
+
+    // 结构门禁 1:argv 与路径净化(spec §3.1;缺参/净化 Err → error: 行 + exit 1)
+    if args.len() < 2 {
+        eprint("error: 需要 <snapshot_dir> <notes_out> 两个参数");
+        return 1;
+    }
+    let snap = match std.unstr.sanitize_cli_path(args[0]) { Ok(s) => s, Err(_) => "" };
+    if snap == "" {
+        eprint("error: 快照目录路径非法");
+        return 1;
+    }
+    let out = match std.unstr.sanitize_cli_path(args[1]) { Ok(s) => s, Err(_) => "" };
+    if out == "" {
+        eprint("error: 输出路径非法");
+        return 1;
+    }
+    if !std.fs.is_dir(snap) {
+        eprint("error: 快照目录不存在或非目录: " + snap);
+        return 1;
+    }
+
+    // 结构门禁 2:五文件逐一可读
+    let pkg_c = read_opt(snap + "/package.json");
+    if pkg_c.is_none() {
+        eprint("error: 快照文件缺失或不可读: package.json");
+        return 1;
+    }
+    let cli_c = read_opt(snap + "/cli_source.txt");
+    if cli_c.is_none() {
+        eprint("error: 快照文件缺失或不可读: cli_source.txt");
+        return 1;
+    }
+    let guide_c = read_opt(snap + "/guide_head.txt");
+    if guide_c.is_none() {
+        eprint("error: 快照文件缺失或不可读: guide_head.txt");
+        return 1;
+    }
+    let chg_c = read_opt(snap + "/CHANGELOG.md");
+    if chg_c.is_none() {
+        eprint("error: 快照文件缺失或不可读: CHANGELOG.md");
+        return 1;
+    }
+    let tag_c = read_opt(snap + "/tag.txt");
+    if tag_c.is_none() {
+        eprint("error: 快照文件缺失或不可读: tag.txt");
+        return 1;
+    }
+
+    // list_dir 预取(防御:is_dir 通过后仍失败的运维不可能形态 → 结构性报错)
+    let listing = std.fs.list_dir(snap);
+    if listing.is_err() {
+        eprint("error: 无法列出快照目录: " + snap);
+        return 1;
+    }
+
+    // 结构门禁 3:提取失败(package 非 JSON/无 version/version 非 str;cli 无 const
+    // VERSION 行或无成对引号;guide 无 ### v 行或缺 ( 终止;CHANGELOG 首行非 ## v 形态
+    // 或缺 — 分隔;tag 空/无 v 前缀/三段数字不全为整数)
+    let pkg_t = pkg_triple(pkg_c.unwrap());
+    if pkg_t.is_none() {
+        eprint("error: 提取失败: package.json");
+        return 1;
+    }
+    let cli_t = cli_triple(cli_c.unwrap());
+    if cli_t.is_none() {
+        eprint("error: 提取失败: cli_source.txt");
+        return 1;
+    }
+    let guide_t = guide_triple(guide_c.unwrap());
+    if guide_t.is_none() {
+        eprint("error: 提取失败: guide_head.txt");
+        return 1;
+    }
+    let chg_t = changelog_triple(chg_c.unwrap());
+    if chg_t.is_none() {
+        eprint("error: 提取失败: CHANGELOG.md");
+        return 1;
+    }
+    let tag_t = tag_triple(tag_c.unwrap());
+    if tag_t.is_none() {
+        eprint("error: 提取失败: tag.txt");
+        return 1;
+    }
+
+    // 四检查(全部执行,不短路;检查行序固定;值全部净域重构)
+    let mut failed = 0;
+    let mut lines: Vec[str] = [];
+    if trip_eq(pkg_t.unwrap(), cli_t.unwrap()) && trip_eq(pkg_t.unwrap(), guide_t.unwrap()) {
+        lines.push("check three_place OK");} else {
+
+        failed += 1;
+        lines.push("check three_place FAIL package=" + render(pkg_t.unwrap()) + " cli=" + render(cli_t.unwrap()) + " guide=" + render(guide_t.unwrap()));
+    }
+    if trip_eq(chg_t.unwrap(), pkg_t.unwrap()) {
+        lines.push("check changelog OK");} else {
+
+        failed += 1;
+        lines.push("check changelog FAIL changelog=" + render(chg_t.unwrap()) + " version=" + render(pkg_t.unwrap()));
+    }
+    if trip_eq(tag_t.unwrap(), pkg_t.unwrap()) {
+        lines.push("check tag OK");} else {
+
+        failed += 1;
+        lines.push("check tag FAIL tag=" + render(tag_t.unwrap()) + " version=" + render(pkg_t.unwrap()));
+    }
+
+    // snapshot_files:期望集之外的条目 → FAIL(extra 名按字节序升序、逗号连接;
+    // sanitize_cli_path Err 条目跳过不计 extra——fixture 全 ASCII 名不触达)
+    let expected_files: Vec[str] = ["CHANGELOG.md", "cli_source.txt", "guide_head.txt", "package.json", "tag.txt"];
+    let mut extra: Vec[str] = [];
+    for name_u in listing.unwrap() {
+        match std.unstr.sanitize_cli_path(name_u) {
+            Ok(name) => {
+                if !vec_contains(expected_files, name) {
+                    extra.push(name);
+                }
+            },
+            Err(_) => {
+            },
+        }
+    }
+
+    // 字节序升序(实现面,spec §3.3;空 Vec 不排序——Vec.sort 对空 Vec 以 M4001
+    // panic(元素类型分派无首元素),语言既有口径,gap-log GAP-S5-2 登记)
+    if extra.len() > 0 {
+        extra.sort();
+    }
+    if extra.len() == 0 {
+        lines.push("check snapshot_files OK");} else {
+
+        failed += 1;
+        lines.push("check snapshot_files FAIL extra=" + extra.join(","));
+    }
+    lines.push("summary checks=4 failed=" + str(failed) + " version=" + render(pkg_t.unwrap()) + " tag=v" + render(tag_t.unwrap()));
+    for l in lines {
+        print(l);
+    }
+    if failed != 0 {
+
+        // FAIL 不触碰输出路径(检查未通过不产出 notes,半成品防混入)
+        return 1;
+    }
+
+    // release-notes 生成(仅全部检查 OK;LF;文件以单个 \n 结尾;## Changes 后 =
+    // CHANGELOG 首条目体行逐字写盘——出向透传位,存储不是边界穿越;notes 以污目标
+    // 声明(mark 头部)承载污条目累计——净目标 += 污值是 M3049 洗白旁路,污目标累计合法)
+    let mut notes: Untrusted[str] = std.unstr.mark("# Release v" + render(pkg_t.unwrap()) + "\n\ntag: v" + render(pkg_t.unwrap()) + "\nversion: " + render(pkg_t.unwrap()) + "\nchangelog: " + render(pkg_t.unwrap()) + "\n\n## Changes\n");
+    for b in changelog_body(chg_c.unwrap()) {
+        notes += b;
+        notes += "\n";
+    }
+    match std.fs.write_file(out, notes) {
+        Ok(_) => {
+            return 0;
+        },
+        Err(e) => {
+            eprint("error: 无法写入 notes: " + e);
+            return 1;
+        },
+    }
+}

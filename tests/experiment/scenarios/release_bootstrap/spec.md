@@ -12,6 +12,9 @@
 > dist 构建入验收)——忠实度逐项标注见 §6;真实打包流程留维护者手动
 > (docs/release.md + docs/release-checklist.md),本场景 = 打包自举的
 > 可验收核(fuzz/漂移防线之前的机械检查层)。
+> **实现登记(2026-11-22,T3-impl)**:本 spec 已实现——gen_fixtures + 三语言
+> solutions + verify.{ming,js,py}(内容/参数级/交叉喂入/变异/不 panic 专项全腿绿);
+> 探针定案与 `Vec.sort()` 空 Vec M4001 既有口径见 gap-log.md(GAP-S5-1/2/3/4)。
 
 ## 1. 场景目标(真实场景,非玩具)
 

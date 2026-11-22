@@ -1,0 +1,94 @@
+// S4 内网 agent 工具服务 — fixture 生成脚本(确定性;重跑逐字节不变)。
+// 生成 input/requests.json(顺序阶段 23 case 请求矩阵,spec §4 R1–R23)与
+// input/concurrency.json(并发阶段 8 客户端 × 20 请求,四态轮转)。
+// 9MB 超大体不落盘(spec §2.2 明文):requests.json 只记 body_size 描述符,
+// 由各验收腿按公式即时构造("x".repeat(9437184))。无随机/时间源。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/agent_service/gen_fixtures.ming
+use std.fs;
+
+// JSON 字符串字面量(带引号转义;std.json.stringify 单一事实来源)
+fn q(s: str) -> str {
+    return std.json.stringify(s);
+}
+
+// app 腿 case(响应体逐字锚定)
+fn app_case(id: str, method: str, path: str, body: str, status: i64, expect_body: str) -> str {
+    return "{\"id\":" + q(id) + ",\"method\":" + q(method) + ",\"path\":" + q(path) + ",\"body\":" + q(body) + ",\"expect_status\":" + str(status) + ",\"expect_body\":" + q(expect_body) + "}";
+}
+
+// normalize 腿 case(serve 层事件;验收只锚状态码 + code 标签,message 不记录)
+fn norm_case(id: str, method: str, path: str, body: str, status: i64, code: str) -> str {
+    return "{\"id\":" + q(id) + ",\"method\":" + q(method) + ",\"path\":" + q(path) + ",\"body\":" + q(body) + ",\"expect_status\":" + str(status) + ",\"normalize\":true,\"expect_code\":" + q(code) + "}";
+}
+
+// 超大体 case(body_size 描述符;体内容不参与判定,handler 不接触)
+fn size_case(id: str, method: str, path: str, size: i64, status: i64, code: str) -> str {
+    return "{\"id\":" + q(id) + ",\"method\":" + q(method) + ",\"path\":" + q(path) + ",\"body_size\":" + str(size) + ",\"expect_status\":" + str(status) + ",\"normalize\":true,\"expect_code\":" + q(code) + "}";
+}
+
+// 并发 pattern 条目(kind + 轮转;<c> 占位符由驱动按客户端号替换)
+fn pat_case(kind: str, method: str, path: str, body: str) -> str {
+    return "{\"kind\":" + q(kind) + ",\"method\":" + q(method) + ",\"path\":" + q(path) + ",\"body\":" + q(body) + "}";
+}
+
+fn write_json(path: str, head: str, items: Vec[str], tail: str) -> i64 with io, fs {
+    let mut lines: Vec[str] = [];
+    lines.push(head);
+    lines.push(items.join(",\n"));
+    lines.push(tail);
+    match std.fs.write_file(path, lines.join("\n") + "\n") {
+        Ok(_) => {
+            return 0;
+        },
+        Err(e) => {
+            eprint("error: 无法写入 " + path + ": " + e);
+            return 1;
+        },
+    }
+}
+
+fn main() -> i64 with io, fs {
+    std.fs.make_dir("tests/experiment/scenarios/agent_service/input");
+
+    // requests.json:23 case(spec §4 顺序矩阵;叙事序 = 就绪→合法→坏形→panic→超大体→存活)
+    let mut r: Vec[str] = [];
+    r.push(app_case("R1", "GET", "/health", "", 200, "{\"ok\":true}"));
+    r.push(app_case("R2", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{\"a\":20,\"b\":22}}", 200, "{\"ok\":true,\"result\":42}"));
+    r.push(app_case("R3", "POST", "/tool", "{\"tool\":\"count\",\"args\":{\"text\":\"héllo\"}}", 200, "{\"ok\":true,\"result\":5}"));
+    r.push(app_case("R4", "POST", "/tool", "{\"tool\":\"path_check\",\"args\":{\"path\":\"report.txt\"}}", 200, "{\"ok\":true,\"result\":\"ok\"}"));
+    r.push(app_case("R5", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{\"a\":-1,\"b\":1}}", 200, "{\"ok\":true,\"result\":0}"));
+    r.push(app_case("R6", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{\"a\":1.5,\"b\":1}}", 400, "{\"ok\":false,\"code\":\"bad_args\"}"));
+    r.push(app_case("R7", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{\"a\":\"x\",\"b\":1}}", 400, "{\"ok\":false,\"code\":\"bad_args\"}"));
+    r.push(app_case("R8", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{}}", 400, "{\"ok\":false,\"code\":\"missing_field\"}"));
+    r.push(app_case("R9", "POST", "/tool", "{\"tool\":\"count\",\"args\":{}}", 400, "{\"ok\":false,\"code\":\"missing_field\"}"));
+    r.push(app_case("R10", "POST", "/tool", "{\"tool\":\"path_check\",\"args\":{\"path\":\"../etc/passwd\"}}", 400, "{\"ok\":false,\"code\":\"bad_args\"}"));
+    r.push(app_case("R11", "POST", "/tool", "{\"tool\":\"path_check\",\"args\":{\"path\":\"C:/temp\"}}", 400, "{\"ok\":false,\"code\":\"bad_args\"}"));
+    r.push(app_case("R12", "POST", "/tool", "{\"tool\":\"nope\",\"args\":{}}", 404, "{\"ok\":false,\"code\":\"unknown_tool\"}"));
+    r.push(app_case("R13", "POST", "/tool", "{\"args\":{}}", 400, "{\"ok\":false,\"code\":\"missing_field\"}"));
+    r.push(app_case("R14", "POST", "/tool", "{\"tool\":5,\"args\":{}}", 400, "{\"ok\":false,\"code\":\"bad_args\"}"));
+    r.push(app_case("R15", "POST", "/tool", "{\"tool\":\"sum\",\"args\":\"x\"}", 400, "{\"ok\":false,\"code\":\"bad_args\"}"));
+    r.push(app_case("R16", "POST", "/tool", "notjson{{{", 400, "{\"ok\":false,\"code\":\"bad_json\"}"));
+    r.push(app_case("R17", "POST", "/tool", "", 400, "{\"ok\":false,\"code\":\"bad_json\"}"));
+    r.push(norm_case("R18", "POST", "/tool", "{\"tool\":\"boom\",\"args\":{}}", 500, "handler_panic"));
+    r.push(size_case("R19", "POST", "/tool", 9437184, 413, "body_too_large"));
+    r.push(app_case("R20", "GET", "/tool", "", 405, "{\"ok\":false,\"code\":\"method_not_allowed\"}"));
+    r.push(app_case("R21", "POST", "/health", "", 405, "{\"ok\":false,\"code\":\"method_not_allowed\"}"));
+    r.push(app_case("R22", "GET", "/nope", "", 404, "{\"ok\":false,\"code\":\"not_found\"}"));
+    r.push(app_case("R23", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{\"a\":40,\"b\":2}}", 200, "{\"ok\":true,\"result\":42}"));
+    if write_json("tests/experiment/scenarios/agent_service/input/requests.json", "{\"version\":1,\"cases\":[", r, "]}") != 0 {
+        return 1;
+    }
+
+    // concurrency.json:8 客户端 × 20 请求,(j-1)%4 四态轮转(spec §4 并发腿;
+    // sum 结果随客户端号变化 = 每请求响应内容 = f(该请求) 的黑盒证据)
+    let mut c: Vec[str] = [];
+    c.push(pat_case("sum", "POST", "/tool", "{\"tool\":\"sum\",\"args\":{\"a\":<c>,\"b\":2}}"));
+    c.push(pat_case("health", "GET", "/health", ""));
+    c.push(pat_case("count", "POST", "/tool", "{\"tool\":\"count\",\"args\":{\"text\":\"agent\"}}"));
+    c.push(pat_case("unknown_tool", "POST", "/tool", "{\"tool\":\"nope\",\"args\":{}}"));
+    if write_json("tests/experiment/scenarios/agent_service/input/concurrency.json", "{\"clients\":8,\"per_client\":20,\"pattern\":[", c, "]}") != 0 {
+        return 1;
+    }
+    print("fixture written: cases=23 pattern=4 clients=8 per_client=20");
+    return 0;
+}
