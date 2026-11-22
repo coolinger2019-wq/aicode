@@ -20,7 +20,7 @@
 | 自举工具 | 14 个全部 Ming 自写（mingkit 文件补丁 / edit 行级编辑 / engdiff 引擎差分 / diaghot 诊断热力图 / wc·tree·find·json·todo·log·rename·organize 日用小工具）；v0.51.6 起统一错误纪律（stderr + 失败退出 1）并全部 fmt 规范；`ming tools` 统一入口 + `--` 透传 + **v0.57 工具 AOT 缓存**（14 工具全缓存零回退；`MING_TOOLS_DEBUG=1` 观测缓存决策） |
 | 质量护栏 | 回归全绿（v0.99.0 起 **1627 项**，§110 P1 创建点过滤 15 check；v0.98.0 **1612 项**/§109 9 check；v0.97.0 **1603 项**/§107 9 + §108 8 check；v0.96.0 **1586 项**/§106 11 check；v0.95.0 **1575 项**/§105 9 check；v0.94.0 **1566 项**/§104 15 check；历史：v0.89.0 **1524 项**；§99 为 v0.89 同族收口 **18 check**；v0.88.0 时为 **1506 项**（§98 **18 check**）；v0.87.0 时为 **1488 项**（§96 **18 check** + §97 **14 check**）；v0.86.0 时为 **1456 项**（§95 **15 check**）；v0.85.0 时为 **1441 项**（§93 **23 check** + §94 **13 check**）；v0.84.0 时为 **1405 项**（§92 **7 check**）；v0.83.0 时为 **1398 项**（§90 **16 check** + §91 **9 check**）；§90 为 v0.83 M4004 统一 **16 check** + §91 为 v0.83 位置/占位符/卫生 **9 check**；v0.82.0 时为 **1373 项**（§88 **17 check** + §89 **23 check**）；§88 为 v0.82 污点 v1.3 **17 check** + §89 为 v0.82 迁移纪律 **23 check**；v0.81.0 时为 **1333 项**（§86 **11 条** + §87 **22 条**）；v0.80.0 时为 **1300 项**（§84 fix 处方 **26 条** + §85 LSP 切片 **9 条**）；v0.73.0 时为 **1141 项**，§76 为 v0.73 深嵌套守卫与覆盖补测 **9 条**，§75 为 v0.72 补刀 **8 项**，§74 为 v0.71 残留收口 **17 项**，§73 为 v0.70 parser 级联抑制 **12 项**，§72 为 v0.69 eval **20 项**，§71 为 v0.68 Untrusted[Json] **18 项**，§70 为 v0.67 诊断协议校准 **14 项**，§69 为 v0.65 wasm slice 3 **19 项**，§68 为 v0.64 信任边界 **21 项**；§67 为 v0.63 wasm 守护收口 slice 2 **28 项**；§66 为 v0.62 服务端 v1 **22 项**，§65 为 v0.61 污点窄源 v1 **40 条**，§64 为 v0.60 资源门禁一致性 **24 项**（A 组 4 + B 组 9 + C 组 11），§63 为 v0.59 wasm 覆盖/本地函数/invariant bench + P1/P2 审查修复 **56 项**；§62 为 v0.58 LSP/join/doc/Release **34 项**；§61 为 v0.57 循环义务 19 + tools 缓存 6 + 观测冒烟 2 共 **27 项**；§60 为 v0.56 引擎一致性/契约保真/wasm 语义/独立审查 70 项；§59 为 v0.55 跨函数契约摘要 42 项；§58 为 v0.54 `with unsafe`/C5 + 独立审查 20 项；§57 为 v0.53 可信构建 31 项）+ 多后端差分模糊（四腿 + **v0.56 fuzz 真实 wasm 腿**:eligible helper 断言 `[wasm] fn OK` 并计数）+ proof_fuzz（边界证明模式 1/2 + v0.55 summaries 模式 + **v0.57 loops 模式** 0 误报/反例独立求值器三重验证）+ bench（cc 腿 + **v0.57 Δ基线对比** + **v0.59 invariant 项**）+ **v0.57 覆盖率基线 + v0.59 复测 + v0.60 全表 + v0.73 复测刷新**（tests/coverage.mjs；**94.8% 行 / 89.7% 函数**，vm.js 74.2%；2026-11-15 快照,信息性不设门槛） |
 | 能力矩阵 | 55 行口径 ≈85%（docs/capabilities.md；v0.69 eval 行 ❌→🟡(ADR-005 12/12 go + 随版交付):42✅ 10🟡 3❌（约 85%；T4.4 校验器锁定）；历史：v0.61 新增"数据流安全(污点标注)"行(✅,窄源 v1)、v0.62"TCP/UDP/服务端"行 ❌→🟡(serve v1)、v0.68 污点行载体扩面(保持 ✅)；"运行时资源熔断"经 2026-11-13 评估改判 🟡 后于 v0.60 修复恢复 ✅） |
-| 下一步 | **当前 v0.96.0**(2026-11-20,1586 项全绿,本地=GitHub 同步)。**§4.15/§4.16 交付态**:v0.90 T2.1 ✅ / v0.91 T4.1·T4.3·T4.4 ✅ / v0.92 T5.2 ✅ / v0.93 T5.1 ✅ / v0.94 O1 首批 ✅ / v0.95 O1b 窥孔 ✅ / **v0.96 O1c 常量传播 ✅（审查 APPROVE-with-minor；opt_gate 374）——O1 四 pass 全部交付**。下一步候选（待维护者裁决）：O2 拷贝消除（O0 实证最大热点）或 T2.3/T2.4 稳定性契约+1.0-rc（前置 T2.2 冻结令确认）。**待维护者裁决**:T2.2 语言面冻结令(确认后 v0.94 = T2.3 稳定性契约 + T2.4 1.0-rc 准入清单 + 英文 GUIDE 关键章节)。**独立并行未开工**:T1.* 对照实验(核心命题证据)/ T3.* 场景试点(前置 T2.3)。**T6 优化线**:O0 ✅ / O1(v0.94 候选,常量折叠/DCE/窥孔/常量传播逐 pass)/ O2 拷贝消除(v0.95 候选,O0 实证最大热点)。**冻结期后**:§4.15.7(LSP 第二切片/Option·Result 载荷位/窄型 DX/checker 拆分/S3·S4 等)。**登记未修 P3**:#74/#75/#76 + bench WARN 口径。孤儿小项已清:plan §0 行/GUIDE 归一机制节(§3)/coverage 复测登记。 |
+| 下一步 | **当前 v1.0.0-rc.1**(2026-11-22)。v0.102/v0.103/1.0-rc 三批全交付（见 §4.19）。唯一未闭项 = push 后 CI 矩阵观察；CI 绿即打 tag v1.0.0-rc.1。冻结期后候选见 §4.15.7 + gap-log G8（污字节消费通道）/G9（crc32）/复核位 #3 七项定案/#78 补测批/#80-e 与 O2-re 触发器。 |
 
 
 ## 1. 已完成的规划项（v0.39–v0.44）
@@ -1816,9 +1816,9 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | 版本 | 主题 | 门槛 |
 |------|------|------|
 | v0.101 | T1.2-a 采集器 + T1.2-b 试点 + T2.3-d 契约草案 | ✅ 本轮交付 |
-| v0.102 | T1.2-c-1/-2 生成者批 + T1.2-c-matrix 汇总 + T2.3-e 复核前置 + T3-pre spec | JSONL 完整；T2.3-e 两项裁决 |
-| v0.103 | T1.3 分析报告（三态结论）+ T3-impl 场景实现（若 T2.3 已生效） | 数据齐；T2.2 确认 |
-| 1.0-rc | T2.4 准入清单（前置 = T2.2 冻结令确认） | checklist 全绿 + 套件并行化 |
+| v0.102 | T1.2-c-1/-2 生成者批 + T1.2-c-matrix 汇总 + T2.3-e 复核前置 + T3-pre spec | ✅ 本批交付（T1.2-c-1/-2 + matrix + T2.3-e + T3-pre spec + 并行化全落地） |
+| v0.103 | T1.3 分析报告（三态结论）+ T3-impl 场景实现（若 T2.3 已生效） | ✅ 本批交付（T1.3 报告 b4bcecb + T3-impl 6924508） |
+| 1.0-rc | T2.4 准入清单（前置 = T2.2 冻结令确认） | ✅ v1.0.0-rc.1 已打版（09c7f60；CI 观察=push 后事项） |
 
 ### 4.18.4 套件并行化预研（T2.4 门槛逼近）
 
@@ -1841,6 +1841,56 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 1. **plan 路线表三轮未落教训的根治**：v0.97–v0.99 三行曾三轮未落（脚本中止连锁）——本轮起 plan 更新必须**脚本尾联检查**（写入后立即 grep 验证锚存在）；docs_check 路线表扩展维持候选。
 2. **审查-实现并发度红线**：维持"每批独立审查"；实现 agent 提交前工作树必须静置。
 3. **T1.2 生成者隔离**：生成者 agent 仅收裁剪 prompt + verify 命令；禁读 expected/solutions/spec.md；生成程序入库 .zcode/exp-gen/（gitignored）；违反隔离的 run 标记 `isolated: false` 不入样本。
+
+
+### 4.19 第十六轮执行批登记（2026-11-22，1.0-rc 收官）
+
+本批（2026-11-22 会话）连续交付 v0.102/v0.103/1.0-rc 三批，共 14 个提交；**T2.4 准入清单 8 项全绿**（唯一未闭项 = push 后 CI 矩阵观察）；**v1.0.0-rc.1 已打版**（09c7f60）。
+
+**(a) 批次与提交清单（14 提交）**
+
+| 提交 | 内容 |
+|------|------|
+| 698bb2d | docs(plan): §4.18.5 决策呈报（三项维护者确认 T2.2 冻结令/生成者/并行化前置 + 复核位 #2 子项/#4 裁决） |
+| 246ade1 | docs(stability-contract): T2.3-e 契约生效落盘（复核位 #1 生效/#2 子项 CLI 缺省值纳入承诺 P5 增补/#4 维持 ≥1 minor；AGENTS §6 硬规则第 8 条联动；§3 候选四→七项补齐） |
+| f901665 | tests(experiment): T3-pre 两场景 spec 入库（log_forensics/file_integrity；审查 M-1/m-1/m-2 收口） |
+| 259d744 | feat(experiment): 采集器缺口 4 env_blocked 端口预检（b3 21031-21060/b4 21241+7i×10 漂移全域绑定探测；JSONL env_blocked 行 + --matrix blk 列排除；顺带修 --record 反馈目录预建；审查 n 项收口） |
+| 6536653 | feat(tests): 套件分节并行化（--parallel/--jobs/--groups 默认串行不变；串行 1078.3s → 并行 320.5s = 3.36×；1644 项逐节一致/端口零冲突；审查 APPROVE 2 MINOR 收口；AGENTS §5 PAR_GROUPS 纪律 + GUIDE 条目） |
+| 322c64e | docs(plan): §4.18.4 并行化交付登记 |
+| 1c8697c | test(experiment): §111 补 env_blocked 回归 6 check（v111.18–23；套件 1644 → 1650；审查 APPROVE 2 MINOR 假失败路径收口） |
+| 55d492d | data(T1.2-c): 对照实验全量采集入库——126/126 run（14 任务×3 语言×3；results.jsonl 128 行含 2 修复轮）+ matrix.json 逐格 15 字段复算零差异；初读 ming 42/42 与 py 42/42 首轮过/ts 41/42；env_blocked 0；数据审查 PASS（1 MAJOR 登记级：两修复轮 round-1 生成物被覆盖 sha 不可复核，T1.3 已标注；温度未控/wall_ms 缺口等偏差登记）；协议 v2.2 两次作废事件留痕 PROTOCOL-LOG（不入库） |
+| b4bcecb | docs(experiment-report): T1.3 分析报告——H1/H2 均判不确定（天花板效应 97.6–100% 使 >20% 判据失去区分力，系区分度不足而非无差异；M4 token 方向不利 ming 1586>1283>976 如实登记；M5 未采集）；审查 APPROVE 3 MINOR 修正 |
+| 6924508 | test(experiment): T3-impl 两场景实现（gen_fixtures 确定性 + 三语言 solutions + verify 六腿全绿含 all-OK 腿变异杀伤验证 + HMAC 独立复核 28/28；gap log 5 条；审查 APPROVE MINOR-1/NOTE-2/NOTE-6 收口；README scenarios 行更新） |
+| cc7c408 | docs(guide-en): 英文 GUIDE 关键四章节（docs/guide-en.md 忠实转述 40+ 主张审查零发明；9 示例 check 零诊断；§19 三缺省值登记；diagnostics 头注清理） |
+| ad4aa2d | docs(guide): §5.1 四项具名降级（#74/#76/#77/#80 → GUIDE §7/§10/§19 + capabilities C 行修正；#75/#78 维持登记，#78 列冻结后首批补测；顺带勘误"字段访问要求 mut"措辞） |
+| fb8e8cd | test(experiment): T3 场景#3 protocol_parser（MGTP 帧/Fletcher-16/双门禁；三语言 verify 全绿 + 不 panic sweep；探针 8 项塑形 spec——污 Vec[u8] 下标 M3020 → hex 传输编码 G8；审查 APPROVE 2 MINOR 收口 + I9/I10） |
+| 09c7f60 | **Ming v1.0.0-rc.1 — 1.0-rc 准入批**（版本三处 + docs_check 版本正则扩展支持 -rc 后缀 + README/GUIDE 登记；T2.4 清单 8 项全绿：契约生效/并行化 3.36×/T1 报告发布/场景 3/3/英文 GUIDE/§5.1 降级/fuzz 三种子×3 轮 0 分歧 + proof_fuzz 100 例 0 误报/套件 1650 项 0 失败；唯一待办 = push 后 CI 矩阵观察） |
+
+**(b) T2.4 准入清单 8 项逐项状态与证据**
+
+| # | 清单项 | 状态 | 证据 |
+|---|--------|------|------|
+| 1 | §5.1 无未处置项 | ✅ | ad4aa2d——#74/#76/#77/#80 具名降级、#75/#78 维持登记、#78 列冻结后首批补测候选 |
+| 2 | fuzz 三种子×3 轮 0 分歧 + proof_fuzz 100 例 0 误报 | ✅ | 实测 |
+| 3 | CI 矩阵 | ⏳ | push 后观察（本表唯一未闭项） |
+| 4 | T4.1 套件 ≤10min | ✅ | 320.5s 并行 |
+| 5 | T3 场景 ≥3 | ✅ | 3/3 六腿+十一组断言全绿 |
+| 6 | T1 报告已发布 | ✅ | b4bcecb |
+| 7 | 英文 GUIDE | ✅ | cc7c408 |
+| 8 | 版本三处+README/plan/GUIDE 一致 | ✅ | docs_check 14/14，docs_check 版本正则扩展支持 -rc 后缀 |
+
+**(c) 1.0-rc 诚实边界**
+
+- **T1 结论限定语**：H1/H2 均判**不确定**——天花板效应 97.6–100% 使 >20% 判据失去区分力，系区分度不足而非无差异；M4 token 方向不利 ming（1586>1283>976）如实登记；M5 未采集。
+- **温度未控**（agent 默认采样）、**格内近重复**偏差已登记。
+- **数据审查 1 MAJOR**（两修复轮 round-1 生成物被覆盖、sha 不可复核）已在 T1.3 报告标注。
+- **G8 污字节消费通道缺口**为冻结期后候选（场景#3 探针塑形：污 Vec[u8] 下标 M3020 → hex 传输编码）。
+- **#80-e 与 O2-re 触发器维持**（待真实用例/workload）。
+
+**(d) 遗留待办**
+
+- **复核位 #3（七项候选定案）/#5/#6** 留 1.0-rc 复核。
+- **§5.1 信息行簿记回填约 8 行**——本批已逐行补状态列更新（审计已核，只改状态列不动其他列）：json_query C0 已收口(v0.81)/N-65.4 已收口(v0.81)/N-62.2 已被 S9 取代/N-64 已解决/N-67 已文档化(GUIDE:108)/N-68 已交付/NOTE 极端嵌套已收口(v0.73–76)/N-61.2 已实落(v0.83)。
 
 
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
@@ -1996,7 +2046,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | 67 | **parser panic-mode 有界伪诊断**:"嵌套块在值构造内失败"形态——valBrace 结清后 salvage 所有权缺失,产出 1 条指向失真的伪诊断(v0.70 独立审查残留;YELLOW 裁决维持:误导+错误 fix 比静默更伤 AI 修正回路) | P3 | **已修(v0.71)**:构造级登记所有权(块入口快照 enterVB + 种子层同步递减 + 条件化 `--`)——p21/p05/p06 伪诊断消除且被救回语句的真实诊断如实报出(伪→真),p24 逐字不变,s1 伪 M2002 清零;独立审查四形态自建语料 + 记账推演核实 |
 | 68 | **被吞区域语句级 salvage 缺失**:recover(false) 深度 0 停机把失败语句区域整体吞掉,区域内"疑似函数调用行"(如 `id(`)可抢救而未抢救(v0.70 YELLOW 登记,GUIDE 修订记录 1259) | P3 | **已修(v0.71)**:深度 0 `id(` 停机启发式——probe_anchor 真实 M3001 复活(1→2,基线误导 4 条)、锚定语料仍恰 1 条(print("bye") 救回无新诊断)、长体/干净形态回归逐字;毒汤三组 20s 守卫收敛;s1 伪清零真实面扩大(400→600,600 全为真实诊断) |
 | 69 | **嵌套位置污点诊断回落通用码**(v0.68 审查 m2 补登记,同族 N-63.1):`Some(污)` 变体构造载荷位报 M3002 非 M3049(struct 字面量字段前置先例未覆盖变体构造器);同族 N-63.1 五形态(块尾/match 分支混型/spawn_all 元素/用户变体载荷)——全部**正确拒绝**,仅诊断质量非旁路;另 n2 备忘:污键 Map get 保守拒绝(行为正确,登记备忘) | P3 | **已修(v0.71)**:判定翻转 + callCtor 前置 + match/spawn_all 三处——五形态全 M3049(统一净化 hint),直传逐字不变、双侧污维持 M3002、Some(污) 自洽传播合法维持;既有 §65/§66/§71 污点回归零校准;if 分支混型位已随 v0.72 对称化收口(checker.js checkIf 双向接入) |
-| — | **NOTE 极端嵌套裸栈溢出**:解析/求值深嵌套的预存极端形态(v0.70 审查 NOTE,两版本一致;非回归) | 信息 | backlog 登记;与引擎栈深相关,修复需栈深评估另裁 |
+| — | **NOTE 极端嵌套裸栈溢出**:解析/求值深嵌套的预存极端形态(v0.70 审查 NOTE,两版本一致;非回归) | 信息 | **已收口(v0.73–v0.76)**:解析 exprDepth(M2001)/checker·lexer·type·pattern·const 守卫(v0.75,M4005)/call-arg 嵌套(v0.76)——深嵌套稳定诊断全挂点 |
 
 ### 新登记(2026-11-17,v0.77 内容源扩面迁移期发现)
 
@@ -2005,7 +2055,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | 70 | **VM:for 内 match 臂中的 `continue` → `内部错误: TypeError: iter.next is not a function` 进程崩溃**;tree 引擎同程序正常(双引擎分歧 + 崩溃)。v0.76 src 两版本一致复现(迁移期实测;最小复现形态留存 .zcode/v77/probe6 方向——match 臂内 continue 于 for 循环)。v0.77 工具迁移已全部避开该形态(改嵌套 if),不影响本批交付 | **P1** | **已修(v0.78)**:根因实测定案——match 宗量贯穿臂体留栈、Break/Continue JUMP 不清理活临时（for 崩溃/while 泄漏/break 静默泄漏三形态）；修复 = 纯编译器层 matchTemps 词法计数 + 四循环点 breakCtx 快照 + 前置 POP × popN；无 match 形态字节码逐字节不变；§81 16 条目 18 check 全形态锁定；**1251 项全绿**；fuzz 双种子 0 分歧 |
 | — | **io.read_to_end**：v0.77 审查 M1 补裁**已翻转**（Untrusted[str]，与 read_line 同源同污；重复注册两行 HEAD 预存一并清理） | 信息 | **已翻转(v0.77 审查 M1)**；§80.19 锁定 |
 | 71 | **lambda 体内 continue/break = checker 漏洞**：checkLambda 保留外层 inLoop → `let g = (a: i64) => { continue; };` 过 check 且块尾 never 使 g 可传 HOF——调用时 tree"continue 穿透 lambda 到外层循环"（打印空），VM compileLambda 子状态无 breakCtx 走防御分支发射裸 POP 弹穿共享操作数栈 → `TypeError: ... 'next'` 内部错误崩溃（tree/VM 分歧；语料 .zcode/v78/t_l6.ming——v0.78 实现 agent 同族发现，独立可复现） | **P1** | **登记；v0.79 候选首位**（修复归属 checker.js——lambda 体应重置 inLoop 发 M3010/M3011"continue 在循环外"；或 compiler 专用跳出机制，随批裁决） |
-| — | **json_query C0 控制字符输出分歧**:污 Json 重建路径对 \u0007 等控制字符原样透出(jsonWrite 是 \uXXXX 转义)——非良性文件上逐字节口径破裂;工具头注释原指向 GUIDE §19 系错误指向,已改指本登记 | 信息 | **登记**(v0.77 迁移期发现;良性文件不含;修复需语言面码点分类能力,登记不预支) |
+| — | **json_query C0 控制字符输出分歧**:污 Json 重建路径对 \u0007 等控制字符原样透出(jsonWrite 是 \uXXXX 转义)——非良性文件上逐字节口径破裂;工具头注释原指向 GUIDE §19 系错误指向,已改指本登记 | 信息 | **已收口(v0.81)**:序列化收敛——27 条 replace 与引擎逐字节对齐(良性路径零回归;孤立代理对分歧登记) |
 | — | **tree 引擎 ContSig/BrkSig 穿透 lambda 调用帧(防御不对称)**:lambda 边界的 continue/break 拦截仅在编译器层(v0.79 checker 全拦);tree 引擎 callClosure 只捕获 RetSig——若未来出现免检 AST 消费者,tree 侧会重新静默吞迭代(审查 NOTE-1,公共入口均经 checker 门控故不可达,与顶层裸 continue 信任模型一致) | 信息 | **硬化候选登记**(非阻塞;随 #71 家族后续批次评估) |
 
 ### 备注登记(2026-11-13,v0.57 收口;信息性,非缺陷)
@@ -2013,20 +2063,20 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | # | 备注 | 级别 | 状态 |
 |---|------|------|------|
 | N-62.1 | serve 运维事实：`--max-ms` 对 serve 程序照常生效,CLI 缺省 600000ms——**长驻服务必须显式调大**(如 `--max-ms 86400000`),否则 10 分钟后被 M4012 熔断;GUIDE std.net 节已登记 | 信息 | 已登记(v0.62 收口) |
-| N-62.2 | 嵌套 serve 边缘行为:handler 白名单含 net,handler 内调 serve 编译期不拒——嵌套 serve 会绑第二服务、外层请求 30s 后 504,嵌套服务继续存活;v1 不 policing,如实登记 | 信息 | 已登记(v0.62 S2 报告;放开/禁止待后续裁决) |
+| N-62.2 | 嵌套 serve 边缘行为:handler 白名单含 net,handler 内调 serve 编译期不拒——嵌套 serve 会绑第二服务、外层请求 30s 后 504,嵌套服务继续存活;v1 不 policing,如实登记 | 信息 | **已被 S9 取代**(v0.64):嵌套 serve 编译期拒绝(handler 体内 serve → M3002),原边缘行为面不再可达 |
 | N-62.3 | §66 v66.15(worker 启动失败)skip:`new Worker` 抛错难确定性构造;行为正确性由源码审查覆盖(五条释放路径 done/error/exit/timeout/启动失败均有 release 且 done 防双释放——审查确认) | 信息 | 已登记(v0.62 审查 n2) |
-| N-64 | examples 零覆盖 v0.61/v0.62 能力面:Untrusted/std.unstr 与 std.net.serve 各 0 示例(18 文件 grep 证实)——AI 靠 examples 学惯用法,两个新能力面"文档化但不可见" | 信息 | Backlog:各补 1 个 ≤30 行示例(模板 fs_demo/unsafe_demo);第四轮复核登记 |
+| N-64 | examples 零覆盖 v0.61/v0.62 能力面:Untrusted/std.unstr 与 std.net.serve 各 0 示例(18 文件 grep 证实)——AI 靠 examples 学惯用法,两个新能力面"文档化但不可见" | 信息 | **已解决**(v0.69 serve_demo.ming + v0.71 unstr_demo.ming/GUIDE 挂链) |
 | N-64b | 使命层端到端实测结论(AI 修正回路):17 错误程序 100% 被 `check --json` 捕获(码/位置/消息全准)、多错误一次报告 5 条、warning-only ok:true、panic 形态三引擎一致、LSP/REPL/test/fmt/doc/init 冒烟正常——AI 修正回路主干健康,是当前最强协作面 | 信息 | 第四轮复核登记(plan §4.5.8);v0.67 主题裁决证据基线 |
 | N-66 | AOT 对含 test 块文件回退源码模式——"缺少签名"具名提示质量好(非静默),但产物含明文源与 build 宣传面"无明文源"不一致 | 信息 | 登记;AOT 面 test 块支持待评估 |
-| N-67 | GUIDE 缺元组字段访问语法示例(.0/.1 仅解构出现;走查实测 AI 猜 .1 被 M2002 拒且无 hint) | 信息 | onboarding 包(v0.68 候选):GUIDE 类型表补一行 + examples |
-| N-68 | fmt --write 写入后文案"已是规范格式"含糊(实际已写文件) | 信息 | 顺手改文案"已格式化"(v0.67 顺带候选) |
+| N-67 | GUIDE 缺元组字段访问语法示例(.0/.1 仅解构出现;走查实测 AI 猜 .1 被 M2002 拒且无 hint) | 信息 | **已文档化**(GUIDE:108 元组行:无 t.0 数字下标访问(M2002)/取值用解构) |
+| N-68 | fmt --write 写入后文案"已是规范格式"含糊(实际已写文件) | 信息 | **已交付**(v0.71:fmt --write 回执) |
 | — | 惯用法观察(非缺陷):unwrap_or("") 吞 read_file 失败 → 静默 exit 0;CLI --tree 误置 -- 后被当程序参数——AI 高频反模式 | — | 归 N-64 examples/GUIDE 惯用法节(read_file ? 传播示范 + 旗标位置说明) |
 | N-65.1 | wasm Result 句柄表示:Ok/Err 构造入 objTable 句柄池,无回收(循环内构造单调增长;实测 100,000 次构造 exit 0 正确无上限)——与既有 Vec/Map 句柄、callCompiled 参数入表同一 pre-existing 模式;语义安全(Result 无变异方法,句柄共享无别名风险;Result 形参/返回不 eligible,句柄不跨函数边界) | 信息 | 已登记(v0.65 审查 NOTE 1) |
 | N-65.2 | frame 透传使 wasm 直调增约 18%(fib30 167→197ms,stash 对照实测)——换 #59 三引擎栈帧逐字的代价;bench 信息性 | 信息 | 已登记(v0.65 W1;架构师复核项) |
 | N-65.3 | unwrap_or/is_some/is_none 实为 **shape-eligible + emit 具名回落**(strict exit 2),非既往登记的"不 eligible"——口径修正入 GUIDE/capabilities(v0.65 W1 实测) | 信息 | 已登记(口径修正) |
-| N-65.4 | M4002 wasm 消息为泛化文案(整数运算溢出/移位越界)vs tree 操作数逐字明细——HEAD 预存分歧,v0.65 复测确认(span/exit 已逐字,仅消息文本) | 信息 | 已登记(GUIDE/capabilities 已载;操作数穿越导入边界留后续) |
+| N-65.4 | M4002 wasm 消息为泛化文案(整数运算溢出/移位越界)vs tree 操作数逐字明细——HEAD 预存分歧,v0.65 复测确认(span/exit 已逐字,仅消息文本) | 信息 | **已收口(v0.81)**:wasm 溢出经 panic_m4002_op 携带操作数,四引擎消息首行逐字(18 形态矩阵) |
 | N-63.1 | 嵌套位置污点诊断回落通用码:`Result[Untrusted[str],str]`→`Result[str,str]` 块尾、match/if 分支混型、spawn_all Vec 元素、用户变体载荷报 M3002(而非 M3049);`json.stringify` 的 M3033 hint 对污点值误导——全部**正确拒绝**,仅诊断质量非旁路 | 信息 | 已登记(审查 m3;后续可把判定改 `typeContainsUntrusted(actual) && !typeContainsUntrusted(expected)`) |
-| N-61.2 | compiler `tryWasm` 的 Untrusted 解包为**原地修改** checker `entry.sig`(运行时擦除下语义自洽;doc/LSP 读 AST 不受影响;AOT 产物存载体签名正确)——卫生债:未来"compile 之后再读 sig 渲染"的功能会踩坑 | 信息 | 已登记(审查 n1;建议将来改 clone 喂 wasm.js,v1 不修) |
+| N-61.2 | compiler `tryWasm` 的 Untrusted 解包为**原地修改** checker `entry.sig`(运行时擦除下语义自洽;doc/LSP 读 AST 不受影响;AOT 产物存载体签名正确)——卫生债:未来"compile 之后再读 sig 渲染"的功能会踩坑 | 信息 | **已实落(v0.83)**:tryWasm clone 喂 wasm.js(登记笔误,架构师复核成立) |
 | N-60.1 | #53 钳制等待后的 `checkTimeQuota`（M4012）先于 `worker.terminate()` 抛出（syncSpawnAll/syncJoin/join_detailed/exitSyncScope 四处）——CLI 侧 `process.exit` 收割全部 worker 无碍；"解释器即库"（REPL/嵌入）场景会泄漏运行中 worker 至任务自然结束。修复前该位置无检查，非回归 | 信息 | 已登记（v0.60 批次 1 审查；后续可把 terminate 挪到检查前/finally） |
 | N-60.2 | `read_file` stat 预记账的平台差异：Windows 目录 size 0 不多计（EISDIR Err 与 v0.59 逐字一致）；Linux 目录 size 4096 会多计 4096 后仍回 Err（注释已声明"偏保守"口径） | 信息 | 已登记（v0.60 批次 1 审查） |
 | N-60.3 | `wasmWriteVecNum` 调用点传 3 参（含 mut 旗标）但定义只收 2 参——mut 旗标静默丢弃，`mut 参数预留容量(v0.20 push)` 注释名不副实；v0.59 既有代码，不在 v0.60 改动面 | 信息 | 已登记（latent；单独收口需评估 mut Vec 容量语义） |
