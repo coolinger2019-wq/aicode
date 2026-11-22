@@ -792,6 +792,8 @@ fn main() with io {
 | `write_bytes` | `(str, Vec[u8]) -> Result[bool, str]`(数据**出向透传位**,清单 6) | 二进制写/覆盖(v0.31) |
 | `append_bytes` | `(str, Vec[u8]) -> Result[bool, str]`(数据出向透传) | 二进制追加(v0.31) |
 
+**`read_file` 文本解码语义(gap-log G10,2026-11-22 文档化)**:`read_file` 以 UTF-8 解码文件内容,无效字节序列按宿主规则(Node,WHATWG 编码标准)替换为 U+FFFD(�)并返回 **`Ok`(非 Err)**——文件被当作文本容器,解码容错是宿主继承口径,不是参数错误(含无效字节的文件会照常进入后续解析路径;Python `errors="replace"` 同款);需要严格字节级读取用 `read_bytes`(`Untrusted[Vec[u8]]`,逐字节无损)。
+
 - **8MB 上限口径(v0.86 S1)**:`read_bytes_range` 解锁分段读取(**单次 ≤8MB**,总量由用户循环);`read_bytes` = **文件大小** 8MB 上限不变(`read_file` 无此上限——整文件读,按 `--max-alloc` 记账);`write_bytes`/`append_bytes` = **单次写入量** 8MB 上限;仍不覆盖:常驻句柄/seek 的随机访问 Reader 抽象、mmap(ADR-009 分阶段:S2 `Slice[u8]` v0.87+)。**内存口径诚实注记**:`Vec[u8]` 为逐字节装箱表示(6.3MB 帧进程工作集约 780MB),分段读限制的是单次读取量,不是常驻内存——大帧须**逐帧消费、不驻留**。
 
 二进制配套转换(纯函数):`s.to_bytes() -> Vec[u8]`(UTF-8 编码;污接收者 → `Untrusted[Vec[u8]]` keepBytes,与 read_bytes 对称)与 `bytes.to_str() -> str`(UTF-8 解码,无效序列 → U+FFFD;仅净 Vec[u8] 有此方法——污字节载体无 to_str,元素消费面维持净槽)。
@@ -800,6 +802,7 @@ fn main() with io {
 use std.fs;
 
 fn main() with io, fs {
+    // 无效 UTF-8 的文件也走 Ok 分支(内容含 U+FFFD 替换符;字节级读取用 read_bytes)
     match std.fs.read_file("config.txt") {
         Ok(content) => print(content),   // v0.77:content 是污值,print 出向透传合法回显
         Err(e)      => print("读不到: \{e}"),
@@ -1463,6 +1466,14 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 - **采集器缺口 4 env_blocked**(b3/b4 端口预检;36 腿零误拦)+ §111 补 6 check(套件 1644 → 1650)。
 - **验证面**:fuzz 三种子(44044/777/20261)× 3 轮 0 分歧;proof_fuzz 100 例 0 误报;docs_check 14/14;全套件 1650 项 0 失败(并行 313.7s)。
 - **诚实边界**:T1 结论限"本任务集、本模型、本环境下";温度未控(agent 默认采样)与格内近重复多样性退化已声明;M5 墙钟未采集;#80-e 设计裁决与 O2 重开触发器维持登记。
+
+### 文档:GUIDE §18 read_file 无效 UTF-8 语义声明(2026-11-22,非语言面,不升版本)
+
+- **gap-log G10 文档化(plan §4.20 P1 R-4)**:宿主继承语义此前 §18 未声明——protocol_parser 场景实测含无效字节的 bad_utf8.bin 走解析路径而非参数错误,Python `errors="replace"` 对齐。**语义定案**:`read_file` 以 UTF-8 解码文件内容,无效字节序列按宿主规则(Node,WHATWG 编码标准)替换为 U+FFFD(�)并返回 **Ok(非 Err)**——文件是文本容器、解码容错;严格字节级读取用 `read_bytes`(`Untrusted[Vec[u8]]`,逐字节无损)。
+- **§18 std.fs 节**:read_file 表行后补语义声明段;现有示例补一行注记(无效 UTF-8 也走 Ok 分支)。
+- **docs/capabilities.md**:文本文件读写行补短句(read_file 无效 UTF-8 → U+FFFD 替换 Ok,宿主继承,G10 已文档化)。
+- **docs/gap-log.md**:G10 状态列"登记不实现" → "已文档化(2026-11-22,GUIDE §18)"。
+- **验证**:探针实测(系统临时目录,夹具 7 字节 `48 69 ff fe e4 bd 41`):read_file = Ok、char_len = 6、byte_len = 12、含 U+FFFD = true;read_bytes len = 7 → write_bytes 往返 cmp 逐字节一致(tree 腿同);docs_check 14/14。docs-only 零语义改动,禁改面(src/tests/plan/stability-contract/AGENTS)未触碰。
 
 ### 文档:§5.1 登记缺陷四项具名降级为文档限制(2026-11-22,非语言面,不升版本)
 

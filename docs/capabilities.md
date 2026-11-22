@@ -12,7 +12,7 @@
 | stdin 整行 | ✅ | read_line |
 | stdin 全量 | ✅ | read_to_end |
 | 格式化输出(宽度/精度) | ✅ | std.fmt(v0.27/v0.28):精度 fixed/exp、进制 hex/bin、宽度 align(left/right/center,字符口径) |
-| 文本文件读写 | ✅ | read/write/append(Result 化) |
+| 文本文件读写 | ✅ | read/write/append(Result 化);**read_file 无效 UTF-8 → U+FFFD 替换并返回 Ok**(宿主继承,gap-log G10 已文档化;字节级读取用 read_bytes) |
 | 二进制文件 I/O | 🟡 | v0.31 雏形:read/write/append_bytes 整文件 ↔ Vec[u8],to_bytes/to_str 转换;8MB 单次上限。**v0.86:read_bytes_range 最小流式(分段读取,单次 ≤8MB,总量循环)**;真流式 Reader/无常驻句柄的随机访问抽象/mmap 仍不覆盖(ADR-009 分阶段:S2 Slice v0.87+) |
 | 目录:列名/创建/递归删除 | ✅ | list_dir/make_dir/remove_dir_recursive |
 | 文件元数据(大小/时间/类型) | ✅ | metadata → Json(v0.24) |

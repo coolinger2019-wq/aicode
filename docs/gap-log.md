@@ -39,7 +39,7 @@
 | G7 | S2 file_integrity | 清单对抗边界:攻击者持 key 同时改文件并伪造清单行不在防护目标内(持有 key 即维护者信任域);fixture 不构造此形态 | S2 spec §7 | 登记不实现(报告不得宣称"防任意清单伪造") |
 | G8 | S3 protocol_parser | 污字节值消费通道缺失(`Untrusted[Vec[u8]]` 元素读 → M3020、字节→bin/crypto 消费面净槽 → M3049)——纯二进制帧捕获不可按值解析;场景以 hex 传输编码承载同一帧格式,Ming 从污行重建净帧字节后做字节序/校验和判定 | S3 spec §6 | 登记不实现 |
 | G9 | S3 protocol_parser | crc32/adler32 无内建——Fletcher-16(mod 255)替代,gen 与三语言 solution 同一公式,Python 独立重算 16 帧全数吻合(初报误记 10;实数 = frames 8 + clean 6 + bad_utf8 2);校验强度弱于 crc32 | S3 spec §6 | 登记不实现 |
-| G10 | S3 protocol_parser | `read_file` 无效 UTF-8 的 U+FFFD 替换语义属宿主(Node)继承,GUIDE §18 未声明(bad_utf8.bin 进解析路径非参数错误;Python errors="replace" 实测对齐)——文档诚实性候选 | S3 spec §6 | 登记不实现 |
+| G10 | S3 protocol_parser | `read_file` 无效 UTF-8 的 U+FFFD 替换语义属宿主(Node)继承,GUIDE §18 未声明(bad_utf8.bin 进解析路径非参数错误;Python errors="replace" 实测对齐)——文档诚实性候选 | S3 spec §6 | 已文档化(2026-11-22,GUIDE §18) |
 
 ## 3. 实现期发现(spec 文本歧义/覆盖注记,明细见场景 gap-log.md)
 
