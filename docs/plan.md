@@ -1897,6 +1897,13 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 - T2.4 第 3 项 CI 已闭环：**run 44997475605（commit `5468984`）13/13 job success**；checklist 终稿 `ae9a7de`；**tag v1.0.0-rc.1 已 push**（指向 5468984）；tag 后的台账提交 `ae9a7de` 亦自带一次 CI 全绿（run 45003507627）。逐项证据落盘 docs/release-checklist.md（第 3 项含六轮事故链逐轮登记）。
 - CI 七轮事故链（每轮红 = 一个实锤根因，全部预存问题非 rc 批引入）：semver 正则不含 prerelease(v53.21/v70.10，2bfff9f 修)→ 三条 Linux 平台缺陷(lsp_flow 盘符+TEMP/v65.23 msvcrt 库名/v68.9b 产物名，6b96dab 修)→ 8 处平台感知(v31 /tmp 硬编码——CI Windows D: 盘检出时 D:\tmp 不存在/v111.22 path.join 跨盘垃圾路径/§77 asm×5 无 x64 门/v58.9 darwin/v74.9 零诊断守卫/v79.4 darwin，48a5546 修)→ timeout 20 收割(串行 1020–1078s+外围步骤撞线，5 job 同时开始同时跑满 20 分钟，8f6ac47 修)→ node18 资源争用+PowerShell 分流语法错 → **node18 腿降级冒烟级（架构师裁决，5468984）**：node20/22 全量回归 --parallel 承担语义合同，node18 冒烟（docs_check+wasm 严格存活+check/run/test 抽样+fuzz×25+proof×100）保持"旧引擎可启动核心语义可执行"信号；engines >=18 不收缩。
 
+**(e2) v1.0.0 正式发布收官(2026-11-23)**
+
+- **tag v1.0.0 指向 a4ef95d**(含 GUIDE 条目修复);CI 13/13 全绿(修复提交实测)。发布构成 = rc.1(准入批)+ rc.2(R-6 G8 + R-5 场景 5/5);1685 项全绿。
+- **发布事故如实登记**:版本批脚本在 rc.2 条目 assert 失败中断 → GUIDE v1.0.0 条目从未插入,版本头替换单独成功造成本地漏检;CI v53.21 guideRev 断言如实拦截(a4ef95d 修复)。教训 = 版本三处同步脚本须逐段确认执行(§4.20.4 纪律 1 的 CI 真绿条款再次生效)。
+- **冻结期解除**:语言面可再演进(§4.20 P2 为输入);稳定性契约 P1–P8 对用户生效。
+- **维护者手动**:GA Release 页(artifact ming-v1.0.0);复核位 #5/#6。
+
 **(f) 维护者手动事项**
 
 1. GitHub Release 手动创建（release.yml 按 tag 打包 artifact `ming-v1.0.0-rc.1` 但不自动建 Release 页——docs/release.md 惯例）；2. 复核位 #3（七项候选定案）/ #5（1.0 前缺陷与契约冲突口径）/ #6（英文文档范围）——1.0-rc 期间复核。
