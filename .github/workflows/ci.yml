@@ -28,7 +28,10 @@ jobs:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # v1.0.0-rc.1 起:套件分节并行化(逐节一致验收,countMismatches=0;plan §4.19)后 CI 同步采用,
+    # 串行全量 1020-1078s + fuzz/proof_fuzz 步骤在慢 runner 上撞 20 分钟线(2026-11-22 两轮 5 job
+    # 同时开始同时跑满 20 分钟被收割实锤)——timeout 提至 30 分钟留余量。
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -45,8 +48,8 @@ jobs:
         run: node --version
       - name: wasm 分层存活(examples/fib.ming --strict-wasm;纯 Node,不依赖 gcc)
         run: node bin/ming.js run examples/fib.ming --strict-wasm
-      - name: 全量回归
-        run: node tests/run.mjs
+      - name: 全量回归(分节并行;聚合口径 = 逐分节行 + 总计,与串行逐节一致)
+        run: node tests/run.mjs --parallel
       - name: 差分模糊(seed 44044,25 程序)
         run: node tests/fuzz.mjs --seed 44044 --count 25
       - name: 静态边界证明模糊(100 例)
@@ -56,7 +59,7 @@ jobs:
     name: c-backend (${{ matrix.os }})
     if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -75,8 +78,8 @@ jobs:
           if ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
             echo "无 gcc/clang:C 相关测试将自动跳过(本 job 成功)"
           fi
-      - name: 全量回归(C 腿自动启用)
-        run: node tests/run.mjs
+      - name: 全量回归(C 腿自动启用;分节并行)
+        run: node tests/run.mjs --parallel
 
   docs-and-matrix:
     name: docs-and-matrix (ubuntu, node 20)
