@@ -314,8 +314,9 @@ enum Shape {
 let s = Shape.Circle(2.0);          // 构造必须限定(枚举名.变体名)
 ```
 
-- 字段访问、赋值要求所在绑定是 `mut`。
+- 字段赋值要求所在绑定是 `mut`(字段读取不需要)。
 - 枚举是标签联合(tagged union),配 match 使用(§8)。
+- 已知限制(#74,v1.0 文档限制):枚举变体构造值(ctor)作值参与**重赋值**时(`let d = E.A;` 后再 `d = E.A;` 形态),checker 可能误报 M3002("目标是 E.A,值是 E.A")——合法形态的已知假阳性,登记维持,修复待冻结后。
 - v0.1 用户类型没有方法;用自由函数:`fn area(s: Shape) -> f64`。
 
 ---
@@ -399,6 +400,8 @@ for (k, v) in m { ... }            // 插入顺序,永远确定
 **方法速查(Map[K,V])**:`len is_empty get set has delete keys values items clear clone`
 
 值语义提醒:`let w = v;` 后对 `v.push(...)` 不影响 `w`;`w` 是完整拷贝。
+
+方法返回值口径(#80,v1.0 文档限制):`map`/`filter`/`slice` 等方法**返回的容器在绑定前与源 Vec 共享元素引用**——绑定变量即按值语义深拷贝隔离;未绑定的内联链式使用(如 `v.slice(0,1)[0].push(2)`)会写穿源 Vec。设计级裁决(#80-e)登记于 plan §5.1。
 
 ---
 
@@ -1298,9 +1301,9 @@ fn demo() with eval, io {
 | 命令 | 作用 |
 |------|------|
 | `ming run f.ming [-- args]` | 类型检查 → 编译字节码 → VM 运行;`--tree` 用树遍历引擎对照;`--json` 捕获输出进 JSON;`--strict-wasm`(或 `MING_WASM_STRICT=1`,v0.53)把 eligible>0 的 wasm 回落变成可见失败(exit 2 并点名原因;与 `--tree`/`--no-wasm` 互斥),`--json` additive `wasm_status: none\|ok\|fallback`;`--no-opt`(或 `MING_NO_OPT=1`,v0.94)关闭字节码优化管线 |
-| 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额 |
+| 发布期门禁参数(v0.32) | `--max-steps N` 步数、`--max-alloc N` 累计分配(Vec/Map 元素 + str 字符口径,超限 M4011)、`--max-ms N` 墙钟(超限 M4012);子任务继承限额。**已知口径(#77,v1.0 文档限制)**:模块 `const` 的编译期求值(含字符串拼接)进 VM const 池**不经运行时计费**——严格配额下三腿可分歧(tree 按求值路径 M4011 / VM exit 0);配额敏感程序勿依赖 const 拼接大小的门禁行为 |
 | `ming build`(项目模式 v0.38 / 缓存 v0.49 / 构建键 v0.53 / `--no-opt` v0.94) | 项目检查通过后产出 **dist 可移植产物**:app.bytecode.json(或 app.ming 源码模式)+ runtime 拷贝 + ming-app.mjs launcher(参数透传、`--` 剥离、panic → 101);Node ≥ 18 零依赖,`node dist/ming-app.mjs [-- args]` 即跑。**v0.49 起内容寻址缓存**:键 = 编译器版本 + 项目全部 .ming 源 + ming.toml(过包含保健全),命中且 dist 完整 → 跳过检查与编译;每次构建报告每模块**接口哈希**(签名/效果/契约规范化,排除函数体:`接口哈希:未变 N 个,变更 <文件>`);`--clean-cache` 清理缓存与 dist 并全量重建。**v0.53**:构建键条目改为**项目相对路径 + 内容**(修复嵌套目录重复与同名文件交换漏检)并注入 **Node 主版本**;`--json` additive 增加 `build_key/dist_hash/cache_hit/source_count/interface_hashes`。可复现承诺:**同 OS + 同 Node 主版本**下两次 `--clean-cache` 构建 `dist_hash` 相同(不承诺跨 OS 位级一致)。**源码回退面(诚实登记)**:受限形态一律回退源码模式并具名原因——`with sync`(spawn)/`with unsafe`/`with eval`/`with asm`/net 程序;此外**含 `test` 块的程序**当前也回退(提示"函数 test <名> 缺少签名"),此时 dist 含明文源(app.ming),**AOT test 块支持待评估(plan §5.1 N-66)**。**v0.94**:`--no-opt` 产出未优化字节码 dist,优化开关进入**构建键**(两态不互相假命中;`MING_NO_OPT=1` env 同义) |
-| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3 / v0.42 C4 / v0.53 str for-in / v0.54 C5 unsafe) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64] + **Ptr/unsafe 形态**)+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;`str` for-in 按 **UTF-8 码点**迭代(v0.53,ASCII/CJK/emoji 与 tree/VM 逐字一致);`--static` 静态链接;extern fn FFI(C4)。**C5(v0.54)**:`with unsafe` 是 C 专用资格扩展(效果 ⊆ {ffi, unsafe};wasm 路径不传该旗标)——`Ptr[mut u8]` → `unsigned char*`、`Ptr[u8]` → `const unsigned char*`,`std.mem.alloc/free` → `malloc/free`(失败 M4011),extern 槽接受/返回 Ptr;非 unsafe 程序的 C 输出逐字不变。**已声明覆盖范围**:上述 eligible 形态及其调用/for-in/match 组合;`for-in` 的 `str` 源支持 Ident 局部/参数,字面量/字段/const 源仍发射期拒绝;**print 位插值串已放行(v0.92 T5.2,段类型五类与 displayStr 逐字节,f64 负零归一 +0.0)**,表达式位插值串、Result 返回值、结构体/数组 FFI 参数不在此列——**不支持的语句形态在 C 发射期显式拒绝**(报 `C1 不支持该程序形态` 并 exit 1),需另用 JS 引擎运行 |
+| `ming cc f.ming [--emit-c] [--no-run] [--out 目录]`(v0.39 C1 / v0.40 C2 / v0.41 C3 / v0.42 C4 / v0.53 str for-in / v0.54 C5 unsafe) | **C 后端**:eligible 函数(数值 + str + Vec[i64] + Map[str,i64] + Option[i64] + **Ptr/unsafe 形态**)+ AOT 形态 main → C(GCC/Clang -O2 编译并运行;panic/输出与 `ming run` 逐字对齐,含 M4003/M4006/M4007 消息);`--emit-c` 只产出 .c;`--no-run` 只构建不运行;编译器探测 MING_CC → PATH → 已知便携位置;`str` for-in 按 **UTF-8 码点**迭代(v0.53,ASCII/CJK/emoji 与 tree/VM 逐字一致);`--static` 静态链接;extern fn FFI(C4)。**C5(v0.54)**:`with unsafe` 是 C 专用资格扩展(效果 ⊆ {ffi, unsafe};wasm 路径不传该旗标)——`Ptr[mut u8]` → `unsigned char*`、`Ptr[u8]` → `const unsigned char*`,`std.mem.alloc/free` → `malloc/free`(失败 M4011),extern 槽接受/返回 Ptr;非 unsafe 程序的 C 输出逐字不变。**已声明覆盖范围**:上述 eligible 形态及其调用/for-in/match 组合;`for-in` 的 `str` 源支持 Ident 局部/参数,字面量/字段/const 源仍发射期拒绝;**print 位插值串已放行(v0.92 T5.2,段类型五类与 displayStr 逐字节,f64 负零归一 +0.0)**,表达式位插值串、Result 返回值、结构体/数组 FFI 参数不在此列——**不支持的语句形态在 C 发射期显式拒绝**(报 `C1 不支持该程序形态` 并 exit 1),需另用 JS 引擎运行;插值段含 Vec/Map 方法调用(如 `m.delete("x")`)时同样拒绝,但诊断理由措辞失准(#76,类型表不一致——该形态语句位可用,拒绝理由非"语句形态不支持") |
 | 自举工具(v0.27.1 / v0.40,Ming 自写) | `tools/mingkit.ming`(文件工具箱:read/write/replace 恰好 1 处/insert/delete-lines/count,一层转义,歧义写入拒绝)+ `tools/engdiff.ming`(多引擎差分:`node bin/ming.js run tools/engdiff.ming -- <file.ming>` 一条命令对比 vm+wasm/tree/vm-only 三引擎 stdout+退出码)——用 Ming 写 Ming 的工具链,自举即验证 |
 | 自举工具 v0.44 | `tools/diaghot.ming`(诊断热力图:聚合 `ming check --json` 的诊断码频次;v0.51.6 起参数可为**文件或目录**(目录递归收 .ming,跳隐藏/node_modules/dist)+ `--top N` 限量,缺省 Top-10)——语法/检查改进的数据依据 |
 | 自举工具 v0.45 扩充(全部 Ming 自写,共 12 个) | `edit`(行级编辑器:show/get/set/ins/del/sub/append,行号越界拒绝、尾部换行保真)+ `wc`(行/词/字节)+ `find_files`(按名递归查找,跳隐藏目录与 node_modules)+ `tree`(目录树)+ `todo_scan`(TODO/FIXME 扫描)+ `log_analyzer`(ERROR/WARN/INFO 计数)+ `json_query`(JSON 字段提取)+ `batch_rename`(批量加前缀;破坏性:目录必须显式给出)+ `file_organizer`(按扩展名归档;破坏性:同上);v0.45.1 检视:全部 **args 优先、env 回退** 双接口 |
@@ -1448,6 +1451,15 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### 文档:§5.1 登记缺陷四项具名降级为文档限制(2026-11-22,非语言面,不升版本)
+
+- **降级裁决(T2.4 准入清单第 1 项"无未处置项";架构师裁决,依据 §5.1 审计报告)**:#74/#76/#77/#80 四项有用户可见面且正文零覆盖 → 各补一句文档限制(见下);#75/#78 维持登记(用户不可见/#78 测试面缺口列"冻结后首批补测候选")。全部 docs-only,冻结期合规。
+- **§7 已知限制(#74)**:枚举变体构造值(ctor)作值参与重赋值的 checker 误报 M3002 形态具名。
+- **§7 字段措辞勘误**:原"字段访问、赋值要求所在绑定是 mut"改为"字段**赋值**要求 mut(字段读取不需要)"——与 §7 自身示例及实测一致(读取不需 mut;审查 NOTE-1 指认的 GUIDE 原文措辞瑕疵)。
+- **§10 方法返回值口径(#80)**:`map`/`filter`/`slice` 返回容器在绑定前与源 Vec 共享元素引用,未绑定内联链式使用可写穿源——绑定即深拷贝隔离;设计级裁决 #80-e 留 plan §5.1。
+- **§19 资源门禁已知口径(#77)**:模块 `const` 编译期求值(含字符串拼接)进 VM const 池不经运行时 `--max-alloc` 计费,严格配额下三腿可分歧。
+- **§19 cc 行补注(#76)**:插值段含 Vec/Map 方法调用的 C1 拒绝理由措辞失准(类型表不一致;该形态语句位可用);docs/capabilities.md C 后端行"未覆盖:插值串"同步改准(消除与 v0.92 放行的矛盾)+ 头部版本行 0.86.0 → 0.100.0。
 
 ### 文档:英文 GUIDE 关键章节 docs/guide-en.md + §19 CLI 缺省值登记(2026-11-22,非语言面,不升版本)
 
