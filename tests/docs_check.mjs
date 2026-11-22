@@ -59,7 +59,7 @@ function checkVersions(pkgVersion) {
   console.log('[1] 版本三处一致(package.json == bin/ming.js VERSION == GUIDE 头部)');
   // bin/ming.js VERSION
   const bin = read(path.join('bin', 'ming.js'));
-  const binM = bin.match(/^export const VERSION = '(\d+\.\d+\.\d+)';$/m);
+  const binM = bin.match(/^export const VERSION = '(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)';$/m);
   if (!binM) {
     fail('bin/ming.js', null, 'VERSION 声明', `export const VERSION = '${pkgVersion}';`, '未找到 VERSION 声明(或格式漂移)');
   } else if (binM[1] !== pkgVersion) {
@@ -69,7 +69,7 @@ function checkVersions(pkgVersion) {
   }
   // GUIDE 头部 **版本:vX.Y.Z**
   const guide = read('GUIDE.md');
-  const guideM = firstMatch(guide, /^\*\*版本:v(\d+\.\d+\.\d+)\*\*/);
+  const guideM = firstMatch(guide, /^\*\*版本:v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)\*\*/);
   if (!guideM) {
     fail('GUIDE.md', 1, '头部版本标注', `**版本:v${pkgVersion}**`, '未找到 `**版本:v…**`');
   } else if (guideM.match[1] !== pkgVersion) {
@@ -86,7 +86,7 @@ function checkReadmeVersions(pkgVersion) {
   for (const f of files) {
     const text = read(f);
     // a) 状态表"当前版本/Current version"行
-    const cur = firstMatch(text, /^\|\s*(?:当前版本|Current version)\s*\|\s*\*\*v(\d+\.\d+\.\d+)\*\*/);
+    const cur = firstMatch(text, /^\|\s*(?:当前版本|Current version)\s*\|\s*\*\*v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)\*\*/);
     if (!cur) {
       fail(f, null, '状态表当前版本行', `**v${pkgVersion}**`, '未找到(表格行缺失或格式漂移)');
     } else if (cur.match[1] !== pkgVersion) {
@@ -95,7 +95,7 @@ function checkReadmeVersions(pkgVersion) {
       pass(`${f}:${cur.line} 当前版本 = v${cur.match[1]}`);
     }
     // b) 版本历史表首条 vN(plain 版无历史表,如实跳过)
-    const hist = firstMatch(text, /^\|\s*v(\d+\.\d+\.\d+)\s*\|/);
+    const hist = firstMatch(text, /^\|\s*v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)\s*\|/);
     if (hist) {
       if (hist.match[1] !== pkgVersion) {
         fail(f, hist.line, '版本历史表首条', `v${pkgVersion}`, `v${hist.match[1]}`);
