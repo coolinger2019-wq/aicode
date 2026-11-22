@@ -1317,6 +1317,7 @@ fn demo() with eval, io {
 
 - **extern fn FFI 的 str 返回按 C `strlen` 语义读取(v0.43 字符串桥;`ming_str_from_c`)**:C 侧按 **NUL 结尾**读返回串——返回数据含**内嵌 NUL** 会**静默变短**(如 C 侧返回 "ab\0cd" 共 6 字节 → `byte_len()` = 2;NUL 之后的数据不可达)。**FFI 面扩大前必须先裁决 NUL 策略**(Vec[u8] 实参等二进制载荷进 FFI 时,同问题会从"返回值"扩散到"参数")。
 - **资源门禁口径(v0.60,#51–#53)**:`--max-alloc` 计费 = **值创建**(Vec/Map 元素 + str 字符,计费点见修订记录 v0.32 条目)+ **外部输入边界**(fs/stdin/proc/net 的结果按返回内容长度计费);派生值(deepCopy/json.parse/re.*/wasm 参数搬运)**不重复计费**。`--max-ms` 对阻塞内建 **sleep/join/exec/http 钳制**(超限 **M4012**)。**进程内不可抢占边界(具名,诚实登记)**:`read_line`/`read_to_end` 的 stdin 阻塞与 RegExp 回溯不受 `--max-ms` 中断。资源门禁旗标对 `ming test` 同样生效(v0.60 #54,默认值与 run 相同)。
+- **CLI 资源门禁缺省值(承诺面,2026-11-22 稳定性契约 P5 增补裁决登记)**:`--max-steps` 无上限(Infinity)、`--max-alloc` **268435456 字节**、`--max-ms` **600000ms**——run/test/通用三处为同一缺省三元组(锚定 bin/ming.js CLI 缺省值定义处);调整缺省值 = 行为变更,须走稳定性契约 §4 弃用流程。`--max-ms` 对 serve 程序照常生效——**长驻服务必须显式调大**(如 `--max-ms 86400000`;§18 std.net 节 N-62.1 惯用法)。
 - **退出码**:0 成功;1 有诊断;101 panic;2 工具链 bug 或 strict-wasm 可见回落(`--strict-wasm` 下 wasm 层 fallback;普通模式静默回落仍是 0)。`main -> i64` 自定义退出码。
 - **O1 字节码优化开关(v0.94)**:`ming run/test/build/tools` 默认启用字节码优化管线(**首批 = 常量折叠 / 分支裁剪 / 跳转线程 / DCE**);`--no-opt`(CLI)或 `MING_NO_OPT=1`(env)关闭,逐字节回到未优化字节码。三腿语义一致与 panic 位置逐字由 §104 锁定。**开关进缓存键**:`ming build` 的构建键与 `ming tools` 的工具 AOT 缓存键都含优化开关——优化开/关产物各自寻址,不互相假命中(`ming build --no-opt` 的 dist 与默认 dist 内容不同即键不同)。**字符串 `+` 不折叠**:运行时字符串 `+`(OP.BIN/`binopValues`)计入 `--max-alloc`(M4011;OP.CONCAT 插值不计费),折叠会抹掉计费并破坏资源门禁三腿一致(整数/f64/比较折叠保留)。**配额类观测量随指令数变化**:折叠减少执行指令,`--max-steps` 等配额边界会随之移动(语义不变,口径登记于 docs/opt-baseline.md)。**`ming build --no-opt` 仅对 AOT 字节码生效**:源码回退模式(unsafe/eval/asm/sync 等)的 launcher 运行时按自身 env 编译,不带构建期开关。
 - **wasm 覆盖面(v0.59 收口 + v0.63 slice 2 + v0.65 slice 3 终章;已声明覆盖 / 剩余回落具名)**:已声明覆盖 = i64/u64/f64/str/Vec/Map 的 eligible 函数(数值比较/算术、for-in/while/if、**f64 局部/混合槽序、Map 形参、str 返回、值型 if、块尾 unit if**、调用、**v0.63 起数值 VecLit、Vec 下标读/mut 元素写、Option 数值 Vec `get(i).unwrap()`、f64 复合赋值;v0.65 起 expect(字面量 msg)、Map/Err(Result 标量载荷) unwrap·expect、Vec[str] 下标读、下标复合赋值 `v[i] op= x`(标量 `&= |= ^=` 顺带)**已真实经 wasm;不含 `match`)。**剩余回落**(守护具名清零后余项,不影响语义;`--strict-wasm` 可见且原因具名):unwrap_or/is_some/is_none(shape-eligible 具名回落)、expect 非字面量 msg(变量/插值)、Result 非标量载荷(容器/结构体/bool)、Vec[str] 元素写(登记不做)、Map 下标复合赋值(通用"赋值目标"守护)、`?` 运算符(不可达,注释登记)、Vec[str].get(i) 的 unwrap/expect 消费链(具名"Vec[str].get 侧待解锁")、Result 查询方法 is_ok/is_err/unwrap_err(未入消费链分发,通用"条件 Call/条件操作数"守护)、非局部接收者形态(Option 消费链守护具名"非局部接收者")。**#59 已兑现(v0.65)**:wasm→wasm 直调调用点帧透传(frame_push/frame_pop),panic 穿透时宿主帧并入 stderr——main→f→g 三引擎逐字(`at g` 帧回归);代价:直调 +18%(信息性)。排查用 `MING_WASM_DEBUG=1` 看 `[wasm] fn <名> OK`/`REJECT`;改槽位/locals/签名先跑 tests §63 P1 组与 §67/§69 组。
@@ -1447,6 +1448,12 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### 文档:英文 GUIDE 关键章节 docs/guide-en.md + §19 CLI 缺省值登记(2026-11-22,非语言面,不升版本)
+
+- **docs/guide-en.md 新建(T2.4 第 7 项"英文 GUIDE 关键章节",plan §4.15.3)**:v1.0-rc 的英文关键章节伴生文档(**非完整翻译**)——Syntax & Types / The Effect System / Diagnostics / Toolchain 四章,忠实转述 GUIDE.md(冲突时以 GUIDE.md 为准,文中标注);代码示例取自 GUIDE 既有示例(语义逐字),全部 9 个 ming 示例经 `ming check` 零诊断实测(实现与独立审查各复测一轮 9/9)。
+- **§19 三缺省值登记(T2.3 稳定性契约 P5 增补对齐,复核位 #2 子项裁决,2026-11-22)**:`--max-steps` 无上限(Infinity)、`--max-alloc` 268435456 字节、`--max-ms` 600000ms——登记于 §19 工具链"资源门禁口径"相邻条目,与 bin/ming.js run/test/通用三处缺省三元组一致;调整缺省值 = 行为变更,走稳定性契约 §4 弃用流程;`--max-ms` 长驻服务须显式调大(N-62.1 惯用法)。
+- **docs/diagnostics.md 头部陈旧注记清理(契约审查 NOTE-7)**:标题"维护至 v0.63.0"改为现状口径("随版本持续维护"),码表内容零改动。
 
 ### 测试基建:tests/run.mjs 分节并行(2026-11-22,非语言面,不升版本)
 
