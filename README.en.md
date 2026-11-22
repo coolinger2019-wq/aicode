@@ -77,7 +77,7 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.0.0-rc.2** (2026-11-23) |
+| Current version | **v1.0.0** (2026-11-23) |
 | Regression suite | **1644 checks, all green** (§1–§111; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.0.0 | 2026-11-23 | 1.0 GA (rc.1 admission + rc.2 G8/scenarios 5/5) | 1685 |
 | v1.0.0-rc.2 | 2026-11-23 | R-6 G8 taint-bytes channel (ADR-012) + R-5 two scenarios (T3 5/5) | 1685 |
 | v1.0.0-rc.1 | 2026-11-22 | 1.0-rc admission batch (T2.4 checklist all green; contract effective / parallelization / T1 experiment / 3 scenarios / English GUIDE) | 1650 |
 | v0.100.0 | 2026-11-21 | ADR-011 P2 copy-point filtering (#82 closed; design line complete) | 1644 |
