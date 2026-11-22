@@ -34,7 +34,10 @@
 //      D2(M1)str 拼接配额四腿一致(默认/--no-wasm/--tree/--no-opt × --max-alloc 4);
 //      D3(m2)build --no-opt(--no-opt 与 MING_NO_OPT=1 产物逐字节一致 + build_key 含
 //      opt 状态、缓存不得跨态命中);D4(m1)JUMP 终结 DCE(break/continue 后死代码删除)。
-//      四类均为硬断言(修复已落地并经独立验证);仅 --no-opt 未注册时 D2/D3/D4 pending。
+//      D5(plan §4.20 R-2 / §5.1 #78)float wire 容器/嵌套面 AOT 端到端(Map 浮点键/
+//      Map[str,f64]/Vec·Map 嵌套 + 深拷贝隔离;dist/source/--tree 黄金逐字 + 池 float
+//      无 null 且 specials 在位——D1 标量面的容器载体扩展)。
+//      五类均为硬断言(修复已落地并经独立验证);仅 --no-opt 未注册时 D2/D3/D4 pending。
 //   7. O1b 通用窥孔闸门(Agent B2):10 个窥孔形态程序(纯值语句/panic 值语句 × 2/
 //      全字面量 CONCAT/混合 CONCAT/LD+ST 自赋值/嵌套折叠链/CONCAT 值语句循环/
 //      循环内纯值+块值/短路跳转目标守卫)× 优化开/--no-opt 两态 × 三腿。断言:
@@ -504,7 +507,7 @@ if (O1_NOOPT) {
 }
 
 // ============================================================
-// O1 审查修复回归锚(B1/M1/m1/m2;Agent D 独立验证维护,见文件头注释 6)
+// O1 审查修复回归锚(B1/M1/m1/m2 + D5 #78;Agent D 独立验证维护,见文件头注释 6)
 // ============================================================
 // 与上方"O1 优化语义闸门"互补:该节锁两态语义等价,本节锁审查 REQUEST_CHANGES
 // 四项修复的永久回归面。四类断言均为**硬断言**(修复已落地并经独立验证 2026-11-20;
@@ -778,6 +781,99 @@ const D3_SRC = 'fn main() with io {\n    print(1 + 2 * 3);\n    print("aaaa" + "
     }
     dStatus.push(`D4(m1) 硬断言(instr ${iNoopt}→${iOpt})`);
   }
+}
+
+// ---------- D5(plan §4.20 R-2 / §5.1 #78):float wire 容器/嵌套面 AOT 端到端 ----------
+// D1 只覆盖标量面(顶层 const/字面量);本节补容器载体:Map 浮点键(Map[f64,i64]——
+// -0.0 与 0.0 同键、插入序遍历)、Map[str,f64](值含 0.1+0.2/1.25e-7/±Inf/NaN)、
+// Vec[Vec[f64]] 与 Map[str,Vec[f64]] 嵌套读回 + 值语义深拷贝隔离(副本元素写不穿透源;
+// -0.0 显示 0.0、符号经 1.0/x = -Infinity 判别——ming_float_str 口径)。
+// 断言:build exit 0 + app.bytecode.json 在位(AOT 路径,防"回退源码模式"把锚弄空)
+// + 产物池 float 无 null 且 specials('-0'/'Infinity')在位(沿 D1/v104.14 wire 口径扩到
+// 容器载体)+ dist/source/--tree 三方黄金逐字。
+const D5_SRC = [
+  'fn nested_sum(m: Map[str, Vec[f64]]) -> f64 {',
+  '    let mut s = 0.0;',
+  '    for (k, v) in m {',
+  '        for x in v { s += x; }',
+  '    }',
+  '    return s;',
+  '}',
+  '',
+  'fn main() with io {',
+  '    let mut m: Map[f64, i64] = {1.5: 10, 2.5: 30};',
+  '    m.set(-0.0, 20);',
+  '    m.set(1.5, 11);',
+  '    print(str(m.len()));',
+  '    print(str(m.get(-0.0).unwrap()));',
+  '    print(str(m.get(0.0).unwrap()));',
+  '    for (k, v) in m { print(str(k)); }',
+  '    let mut ms: Map[str, f64] = {"a": 0.1 + 0.2, "b": 1.25e-7};',
+  '    ms.set("c", 1.0e308 * 10.0);',
+  '    ms.set("d", 0.0 / 0.0);',
+  '    print(str(ms.get("a").unwrap()));',
+  '    print(str(ms.get("b").unwrap()));',
+  '    print(str(ms.get("c").unwrap()));',
+  '    print(str(ms.get("d").unwrap()));',
+  '    let nv: Vec[Vec[f64]] = [[1.5, -0.0], [1.0e308 * 10.0, 0.0 / 0.0]];',
+  '    print(str(nv[0][0]));',
+  '    print(str(1.0 / nv[0][1]));',
+  '    print(str(nv[1][0]));',
+  '    print(str(nv[1][1]));',
+  '    let mut nm: Map[str, Vec[f64]] = {"row": [1.5, 2.5]};',
+  '    nm.set("sp", [1.0e308 * 10.0, 0.0 / 0.0]);',
+  '    print(str(nested_sum(nm)));',
+  '    for (k, v) in nm { print(str(v[0])); }',
+  '    let mut w = nv;',
+  '    w[0][1] = 7.5;',
+  '    print(str(w[0][1]));',
+  '    print(str(1.0 / nv[0][1]));',
+  '    let mut w2 = nm;',
+  '    w2["row"][0] = 9.5;',
+  '    print(str(w2["row"][0]));',
+  '    print(str(nm["row"][0]));',
+  '}',
+  '',
+].join('\n');
+const D5_GOLDEN = '3\n20\n20\n1.5\n2.5\n0.0\n0.30000000000000004\n1.25e-7\nInfinity\nNaN\n'
+  + '1.5\n-Infinity\nInfinity\nNaN\nNaN\n1.5\nInfinity\n7.5\n-Infinity\n9.5\n1.5\n';
+{
+  const dir = dProject('d5container', D5_SRC);
+  const b = dBuild(dir);
+  dChecks++;
+  if (b.r.status !== 0 || !b.info || !b.info.ok) {
+    dFail(`D5: ming build 失败 exit=${b.r.status}(stderr 首=${(b.r.stderr || '').split('\n')[0]?.slice(0, 120)})`);
+  }
+  dChecks++;
+  if (!dHasAot(dir)) dFail('D5: 产物无 app.bytecode.json(非 AOT 路径,回归锚失效)');
+  const src = dSpawn(['run', 'main.ming'], dir);
+  const tree = dSpawn(['run', 'main.ming', '--tree'], dir);
+  const dist = dRunDist(dir);
+  dChecks++;
+  if (src.status !== 0 || src.stdout !== D5_GOLDEN) {
+    dFail(`D5: source 输出不符 exit=${src.status} got=${JSON.stringify(src.stdout.slice(0, 60))} want=${JSON.stringify(D5_GOLDEN.slice(0, 60))}`);
+  }
+  dChecks++;
+  if (dist.status !== 0 || dist.stdout !== D5_GOLDEN) {
+    dFail(`D5: dist 输出不符(容器载体 float wire 丢信息)exit=${dist.status} got=${JSON.stringify((dist.stdout || '').slice(0, 60))} want=${JSON.stringify(D5_GOLDEN.slice(0, 60))}`);
+  }
+  dChecks++;
+  if (tree.status !== 0 || tree.stdout !== D5_GOLDEN) {
+    dFail(`D5: --tree 输出不符 exit=${tree.status} got=${JSON.stringify(tree.stdout.slice(0, 60))}`);
+  }
+  dChecks++;
+  let poolOk = false;
+  try {
+    const raw = JSON.parse(fs.readFileSync(dArtPath(dir), 'utf8'));
+    const floats = raw.pool.filter((p) => p && p.w === 'float');
+    const marks = new Set(floats.map((p) => p.v).filter((x) => typeof x === 'string'));
+    poolOk = floats.length > 0
+      && floats.every((p) => typeof p.v === 'number' || ['NaN', 'Infinity', '-Infinity', '-0'].includes(p.v))
+      && !floats.some((p) => p.v === null)
+      && marks.has('-0') && marks.has('Infinity');
+  } catch { poolOk = false; }
+  if (!poolOk) dFail('D5: 产物池 float 校验不符(存在 null/非法标记,或缺 -0/Infinity specials)');
+  dStatus.push('D5(#78 容器 float wire) 硬断言(AOT)');
 }
 
 // ============================================================
@@ -1433,7 +1529,7 @@ if (allFailures.length) {
   for (const f of allFailures) process.stderr.write(`✗ ${f}\n`);
   process.exitCode = 1;
 } else if (O1_NOOPT) {
-  console.log(`全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 两态(stdout/instr/panic 首行/确定性)断言全绿;B1/M1/m2/m1 修复回归锚全绿;O1b 通用窥孔闸门全绿(10 形态 × 两态 × 三腿 + panic 值语句 + 确定性);O1c ${O1C_READY.ready ? '常量传播闸门全绿(8 靶点 + panic 保留锚 × 两态 × 四腿 + 确定性)' : '节 pending(A3 未就绪)'}。`);
+  console.log(`全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1 两态(stdout/instr/panic 首行/确定性)断言全绿;B1/M1/m2/m1 修复回归锚全绿 + D5 #78 容器 float wire 锚全绿;O1b 通用窥孔闸门全绿(10 形态 × 两态 × 三腿 + panic 值语句 + 确定性);O1c ${O1C_READY.ready ? '常量传播闸门全绿(8 靶点 + panic 保留锚 × 两态 × 四腿 + 确定性)' : '节 pending(A3 未就绪)'}。`);
 } else {
   console.log('全部通过:三腿 stdout 逐字一致,期望输出符合,cc 腿(资格者)逐字一致;O1/O1b/O1c 节 pending(旗标未就绪)。');
 }

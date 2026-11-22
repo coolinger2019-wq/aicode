@@ -7321,6 +7321,20 @@ secBegin('61');
     ? fs.readdirSync(TOOLS_CACHE).filter((x) => x.endsWith('.json'))
     : [];
   const clearToolCache = () => fs.rmSync(TOOLS_CACHE, { recursive: true, force: true });
+  // 并行口径加固(plan §4.20 R-2 期间 v76.8 并发实锤):.ming-cache/tools 是跨组共享缓存
+  // (§71/§77/§79 在他组时间线并发写各自工具键;写侧 tmp+rename 原子,读侧只见完整文件)。
+  // "恰 N 条目"类隔离断言一律按工具键内容(modFile 集合)过滤后计数:他组写**同键**
+  // (wc/json_query——§77/§71)收敛为同一文件不改条目数,写**异键**(xnsni/xnopen/engdiff)
+  // 被过滤——计数对本组窗口内的并发写不敏感。文件级"0 条目/冷跑 stored"无法归因写入者,
+  // 改走 MING_TOOLS_DEBUG 决策行(每 run 自己的 stderr,天然免竞态)。
+  const entryMods = (f) => {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(TOOLS_CACHE, f), 'utf8'));
+      return [...new Set((j.functions ?? []).map((fn) => fn.modFile))].sort().join(',');
+    } catch { return '<unreadable>'; }
+  };
+  const scopedEntries = (...mods) => cacheEntries().filter((f) => mods.includes(entryMods(f)));
+  const dbgLines = (r) => (r.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]'));
   const runTool = (args, env = {}) => runMing(['tools', ...args], { cwd: B_DIR, env });
   const noDbg = { MING_TOOLS_DEBUG: '' }; // 显式关掉继承(防宿主 shell 泄漏 MING_TOOLS_DEBUG)
   const wTxt = path.join(B_DIR, 'w.txt');
@@ -7348,8 +7362,8 @@ secBegin('61');
   const b1CodesOk = coldB1[0].code === 0 && coldB1[1].code === 0 && coldB1[2].code === 1
     && coldB1[3].code === 0 && coldB1[4].code === 1 && coldB1[5].code === 0;
   const dbgB1 = runTool(['wc', wTxt], { MING_TOOLS_DEBUG: '1' });
-  check('v57.20:B1 tools 缓存冷/热逐字一致(6 例 code+stdout+stderr 全等;缓存恰 3 条目 wc/mingkit/json_query)且二次运行 [tools-cache] hit',
-    b1Same && b1CodesOk && cacheEntries().length === 3
+  check('v57.20:B1 tools 缓存冷/热逐字一致(6 例 code+stdout+stderr 全等;本节三工具键 wc/mingkit/json_query 恰 3 条目——按 modFile 过滤,他组异键并发写不计入)且二次运行 [tools-cache] hit',
+    b1Same && b1CodesOk && scopedEntries('wc.ming', 'mingkit.ming', 'json_query.ming').length === 3
     && dbgB1.code === 0 && (dbgB1.stderr ?? '').includes('[tools-cache] hit'),
     `same=${b1Same} codes=${JSON.stringify(coldB1.map((r) => r.code))} entries=${JSON.stringify(cacheEntries())} `
     + `dbg=${JSON.stringify((dbgB1.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))}`);
@@ -7372,7 +7386,7 @@ secBegin('61');
   // ---- v57.22(B3):损坏缓存自愈(重建为可 JSON.parse 的产物;输出与 run 直连逐字一致) ----
   clearToolCache();
   const b3a = runTool(['wc', wTxt], noDbg);
-  const b3Entries = cacheEntries();
+  const b3Entries = scopedEntries('wc.ming'); // 并行口径:按工具键过滤(他组异键并发写不计入)
   let b3Corrupted = false;
   if (b3Entries.length === 1) {
     fs.writeFileSync(path.join(TOOLS_CACHE, b3Entries[0]), '{corrupt', 'utf8');
@@ -7394,47 +7408,56 @@ secBegin('61');
     + `codes=${b3a.code}/${b3b.code}/${b3Direct.code} same=${b3b.stdout === b3Direct.stdout}`);
 
   // ---- v57.23(B4):旁路(--tree/--json)不缓存;冷跑恰 +1;patch-all 与 patch 同键共享条目 ----
+  // 并行口径:旁路"不缓存"按决策行断言(bypass 在 tryToolRun 触达缓存前具名返回,存/读
+  // 决策恒发射 [tools-cache] 行——本 run 零行 = 本 run 零缓存交互,免竞态);文件级"0 条目"
+  // 无法归因写入者(他组 §77 同键 wc 写入落窗即假红),不再作断言面。patch 存储计数按
+  // mingkit 键过滤(他组无 mingkit 写入者,同键收敛,免竞态)。
   clearToolCache();
-  const b4tree = runTool(['wc', wTxt, '--tree'], noDbg);
-  const b4json = runTool(['wc', wTxt, '--json'], noDbg);
-  const b4EntriesAfterBypass = cacheEntries(); // 旁路运行后立即快照(后续 patch 会写缓存,不能再查实时)
+  const b4tree = runTool(['wc', wTxt, '--tree'], { MING_TOOLS_DEBUG: '1' });
+  const b4json = runTool(['wc', wTxt, '--json'], { MING_TOOLS_DEBUG: '1' });
   const p4 = path.join(B_DIR, 'p4.txt');
   fs.writeFileSync(p4, 'aaa\n', 'utf8');
   const b4cold = runTool(['patch', p4, 'aaa', 'bbb'], noDbg);
-  const b4EntriesAfterCold = cacheEntries();
+  const b4EntriesAfterCold = scopedEntries('mingkit.ming');
   const b4all = runTool(['patch-all', p4, 'bbb', 'ccc'], noDbg);
-  const b4EntriesAfterAll = cacheEntries();
-  check('v57.23:B4 旁路不缓存(--tree/--json 后 0 条目)+ 冷跑恰 +1 + patch-all 与 patch 同键共享(仍 1 条;aaa→bbb→ccc 实际执行)',
-    b4tree.code === 0 && b4json.code === 0 && b4EntriesAfterBypass.length === 0
+  const b4EntriesAfterAll = scopedEntries('mingkit.ming');
+  check('v57.23:B4 旁路不缓存(--tree/--json 零决策行)+ 冷跑恰 +1(mingkit 键过滤)+ patch-all 与 patch 同键共享(仍 1 条;aaa→bbb→ccc 实际执行)',
+    b4tree.code === 0 && b4json.code === 0 && dbgLines(b4tree).length === 0 && dbgLines(b4json).length === 0
     && b4cold.code === 0 && b4EntriesAfterCold.length === 1
     && b4all.code === 0 && b4EntriesAfterAll.length === 1
     && fs.readFileSync(p4, 'utf8').trim() === 'ccc',
-    `bypass codes=${b4tree.code}/${b4json.code} afterBypass=${JSON.stringify(b4EntriesAfterBypass)} `
+    `bypass codes=${b4tree.code}/${b4json.code} dbg=${JSON.stringify(dbgLines(b4tree).concat(dbgLines(b4json)))} `
     + `afterCold=${JSON.stringify(b4EntriesAfterCold)} afterAll=${JSON.stringify(b4EntriesAfterAll)} p4=${JSON.stringify(fs.readFileSync(p4, 'utf8'))}`);
 
   // ---- v57.24(B5):MING_TOOLS_DEBUG=1 决策行(冷 stored / 热 hit);无旗标无前缀且输出不变 ----
+  // 并行口径:冷跑决策行恰 1 行(stored 或 hit——他组 §77 同键 wc 并发写落窗时收敛为
+  // hit,本 run 决策行仍恒发射);热跑在冷跑后本键必在 → hit 免竞态。
   clearToolCache();
   const b5cold = runTool(['wc', wTxt], { MING_TOOLS_DEBUG: '1' });
   const b5warm = runTool(['wc', wTxt], { MING_TOOLS_DEBUG: '1' });
   const b5off = runTool(['wc', wTxt], noDbg);
-  check('v57.24:B5 MING_TOOLS_DEBUG=1 决策行走 stderr(冷 stored、热 hit);无旗标无 [tools-cache] 前缀且 stdout 不变',
+  const b5coldLines = dbgLines(b5cold);
+  check('v57.24:B5 MING_TOOLS_DEBUG=1 决策行走 stderr(冷跑 stored/hit 决策行在位、热 hit);无旗标无 [tools-cache] 前缀且 stdout 不变',
     b5cold.code === 0 && b5warm.code === 0 && b5off.code === 0
-    && (b5cold.stderr ?? '').includes('[tools-cache] stored')
+    && b5coldLines.some((l) => /\[tools-cache\] (stored|hit) wc\.ming/.test(l))
     && (b5warm.stderr ?? '').includes('[tools-cache] hit')
     && !(b5off.stderr ?? '').includes('[tools-cache]')
     && b5cold.stdout === b5warm.stdout && b5cold.stdout === b5off.stdout,
     `codes=${b5cold.code}/${b5warm.code}/${b5off.code} `
-    + `cold=${JSON.stringify((b5cold.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))} `
-    + `warm=${JSON.stringify((b5warm.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]')))}`);
+    + `cold=${JSON.stringify(b5coldLines)} `
+    + `warm=${JSON.stringify(dbgLines(b5warm))}`);
 
   // ---- v57.25(B6):ming run 直连工具路由不受缓存影响(直连不写缓存;输出与 tools 路由逐字一致) ----
+  // 并行口径:直连后 wc 键 0 条目按工具键过滤(run 路径不触 tools 缓存;`ming run` 无决策行
+  // 可观测,文件级是唯一信号)。残留窄窗口:他组 §77 同键 wc 写入恰落本 ~1s 窗口才假红
+  // (同键收敛为同文件——§71 json_query/§79 xnsni 等异键已被过滤),实测罕见。
   clearToolCache();
   const dTxt = path.join(B_DIR, 'd.txt');
   fs.writeFileSync(dTxt, 'x\ny\n', 'utf8');
   const b6direct = runMing(['run', path.join(ROOT, 'tools', 'wc.ming'), '--', dTxt], { env: noDbg });
-  const b6EntriesAfterDirect = cacheEntries();
+  const b6EntriesAfterDirect = scopedEntries('wc.ming');
   const b6tools = runTool(['wc', dTxt], noDbg);
-  check('v57.25:B6 ming run 直连路由不受缓存影响 —— 直连后 0 缓存条目;stdout 与 tools 路由逐字一致',
+  check('v57.25:B6 ming run 直连路由不受缓存影响 —— 直连后 wc 键 0 缓存条目(按工具键过滤);stdout 与 tools 路由逐字一致',
     b6direct.code === 0 && b6EntriesAfterDirect.length === 0
     && b6tools.code === 0 && b6tools.stdout === b6direct.stdout && b6direct.stdout.trim() !== '',
     `direct=${b6direct.code} entriesAfterDirect=${JSON.stringify(b6EntriesAfterDirect)} `
@@ -15859,11 +15882,22 @@ secBegin('76');
     if (hadCache768) fs.rmSync(TOOLS_CACHE_768, { recursive: true, force: true }); // 冷跑保证条目恰 1
     const noDbg768 = { MING_TOOLS_DEBUG: '' }; // 显式关掉继承(防宿主 shell 泄漏,§61 noDbg 同款)
     const rCold = runMing(['tools', 'wc', w768], { cwd: dir768, env: noDbg768 });
+    // 并行口径加固(R-2 期间 v76.8 并发实锤):.ming-cache/tools 跨组共享(§71/§77/§79 在
+    // 他组时间线并发写各自工具键;写侧原子 rename,读侧只见完整文件)。条目计数按 wc.ming
+    // 键内容过滤——他组同键(§77 wc)收敛为同文件不改条目数、异键(xnsni/xnopen/json_query)
+    // 被过滤;fromArtifact 加载取过滤后的 wc 条目(不再取 entries[0] 这种任意序下标)。
     const entries768 = fs.existsSync(TOOLS_CACHE_768)
       ? fs.readdirSync(TOOLS_CACHE_768).filter((x) => x.endsWith('.json')) : [];
+    const wcMods768 = (f) => {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(TOOLS_CACHE_768, f), 'utf8'));
+        return [...new Set((j.functions ?? []).map((fn) => fn.modFile))].sort().join(',');
+      } catch { return '<unreadable>'; }
+    };
+    const wcEntries768 = entries768.filter((f) => wcMods768(f) === 'wc.ming');
     let fa768 = null, fa2Out = null, faErr = '';
     try {
-      const artifact = JSON.parse(fs.readFileSync(path.join(TOOLS_CACHE_768, entries768[0]), 'utf8'));
+      const artifact = JSON.parse(fs.readFileSync(path.join(TOOLS_CACHE_768, wcEntries768[0]), 'utf8'));
       const vm = VMInterp.fromArtifact(artifact, { capture: true });
       const r1 = vm.runMain([w768]); // launcher 模板在 runMain 之前剥 "--",此处直接传实参
       fa768 = { code: r1.exitCode, out: vm.flushCaptured() };
@@ -15872,11 +15906,11 @@ secBegin('76');
       fa2Out = { code: r2.exitCode, out: vm2.flushCaptured() };
     } catch (e) { faErr = String((e && e.message) || e); }
     if (!hadCache768) fs.rmSync(TOOLS_CACHE_768, { recursive: true, force: true }); // 恢复原状态(目录 gitignored)
-    check('v76.8:VMInterp.fromArtifact 加载路径——缓存条目恰 1 + 进程内 fromArtifact 执行 exit/输出与 CLI 冷跑逐字一致,二次加载执行同断言(产物加载合同;vm.js fromArtifact 覆盖缺口闭合)',
-      rCold.code === 0 && entries768.length === 1 && faErr === '' && fa768 !== null
+    check('v76.8:VMInterp.fromArtifact 加载路径——wc 键缓存条目恰 1(按工具键过滤) + 进程内 fromArtifact 执行 exit/输出与 CLI 冷跑逐字一致,二次加载执行同断言(产物加载合同;vm.js fromArtifact 覆盖缺口闭合)',
+      rCold.code === 0 && wcEntries768.length === 1 && faErr === '' && fa768 !== null
         && fa768.code === 0 && fa768.out === rCold.stdout
         && fa2Out !== null && fa2Out.code === 0 && fa2Out.out === rCold.stdout,
-      `cli=${rCold.code} entries=${entries768.length} faErr=${JSON.stringify(faErr)} `
+      `cli=${rCold.code} entries=${entries768.length} wcEntries=${wcEntries768.length} faErr=${JSON.stringify(faErr)} `
         + `fa=${fa768 ? fa768.code + '/' + JSON.stringify(fa768.out) : 'null'} `
         + `fa2=${fa2Out ? fa2Out.code + '/' + JSON.stringify(fa2Out.out) : 'null'} `
         + `cliOut=${JSON.stringify(rCold.stdout)}`);
@@ -23663,6 +23697,10 @@ secBegin('103');
 //     进程内执行,优化后字节码的跳转目标/池下标/span 下标界检查全绿;
 //   * v0.94 审查修复回归:浮点常量 AOT wire 无损(v104.14 真实 build+dist)、
 //     str `+` 不折叠/分配计费四腿一致(v104.13)、build --no-opt 与缓存键分离(v104.15)。
+//   * plan §4.20 R-2(§5.1 #78 补测批,门禁面——产品探针均先期通过):float wire
+//     spawn/join/spawn_all 通道(v104.16)、Map 浮点键 AOT(v104.17)、Vec/Map 嵌套
+//     float AOT + 深拷贝隔离(v104.18)、旧 v2 artifact 兼容与 format/version 校验面
+//     (v104.19/v104.20)、tools 缓存键 opt/no-opt 成对门禁(v104.21)。
 secBegin('104');
 {
   const dir104 = path.join(TMP, 'v104');
@@ -24063,6 +24101,304 @@ secBegin('104');
       && direct.code === 0 && direct.stdout === d1.stdout
       && toolOn.code === 0 && toolOff.code === 0 && toolOn.stdout === toolOff.stdout && toolOn.stdout.length > 0,
       `keys=${j1?.build_key}/${j2?.build_key} hit=${j1?.cache_hit}/${j1b?.cache_hit}/${j2?.cache_hit}/${j2e?.cache_hit} instr=${l1}/${l2} out=${JSON.stringify(d2.stdout)} tools=${toolOn.code}/${toolOff.code} eq=${toolOn.stdout === toolOff.stdout}`);
+  }
+
+  // 16) plan §4.20 R-2(§5.1 #78):float wire spawn/join/spawn_all 通道——子任务实参与返回值
+  //     经 vToWire/wireToV 往返(interp.js 单一事实来源,与 AOT 池同源 floatToWire)。
+  //     载荷:Vec[f64] 顶层(含 -0.0/±Inf/NaN)与 Map[str,f64] 顶层;spawn_all 元素 = float
+  //     标量。程序内先直跑同函数同载荷(无 wire)作"对照 interp 直跑"锚——spawn 往返输出
+  //     == 直跑输出 == 黄金(逐段可判别:-0.0→1.0/x=-Infinity,Inf→Infinity,NaN→NaN)。
+  //     三腿(默认/tree/--no-wasm)stdout 与黄金逐字。spawn 程序 build 走源码回退
+  //     (artifact.js 边界:无 spawn/spawn_all),故无 dist 腿。
+  {
+    const f = mk104('v104_spawn_float.ming', [
+      'use std.sync;',
+      '',
+      'fn probe_vec(v: Vec[f64]) -> Vec[f64] {',
+      '    let negz = 1.0 / v.get(1).unwrap();',
+      '    let inf = v.get(2).unwrap();',
+      '    let nan = v.get(3).unwrap();',
+      '    return [negz, inf, nan, v.get(0).unwrap()];',
+      '}',
+      '',
+      'fn probe_map(m: Map[str, f64]) -> Vec[f64] {',
+      '    return [1.0 / m.get("negz").unwrap(), m.get("big").unwrap(), m.get("nan").unwrap()];',
+      '}',
+      '',
+      'fn half(x: f64) -> f64 {',
+      '    return x / 2.0;',
+      '}',
+      '',
+      'fn main() with io, sync {',
+      '    let v: Vec[f64] = [1.5, -0.0, 1.0e308 * 10.0, 0.0 / 0.0];',
+      '    let mut m: Map[str, f64] = [:];',
+      '    m.set("negz", -0.0);',
+      '    m.set("big", 1.0e308 * 10.0);',
+      '    m.set("nan", 0.0 / 0.0);',
+      '    let d1 = probe_vec(v);',
+      '    print(str(d1.get(0).unwrap()));',
+      '    print(str(d1.get(1).unwrap()));',
+      '    print(str(d1.get(2).unwrap()));',
+      '    print(str(d1.get(3).unwrap()));',
+      '    let d2 = probe_map(m);',
+      '    print(str(d2.get(0).unwrap()));',
+      '    print(str(d2.get(1).unwrap()));',
+      '    print(str(d2.get(2).unwrap()));',
+      '    let r1 = std.sync.join(std.sync.spawn(probe_vec, v)).unwrap();',
+      '    print(str(r1.get(0).unwrap()));',
+      '    print(str(r1.get(1).unwrap()));',
+      '    print(str(r1.get(2).unwrap()));',
+      '    print(str(r1.get(3).unwrap()));',
+      '    let r2 = std.sync.join(std.sync.spawn(probe_map, m)).unwrap();',
+      '    print(str(r2.get(0).unwrap()));',
+      '    print(str(r2.get(1).unwrap()));',
+      '    print(str(r2.get(2).unwrap()));',
+      '    let all = std.sync.spawn_all(half, [1.0, -0.0, 1.0e308 * 10.0, 0.0 / 0.0]);',
+      '    for res in all {',
+      '        print(str(res.unwrap()));',
+      '    }',
+      '}',
+      '',
+    ].join('\n'));
+    // 黄金 = 直跑段(d1 4 行 + d2 3 行)与 spawn/join 段(r1 4 行 + r2 3 行)与 spawn_all 段(4 行)同序逐段;
+    // 直跑段与 spawn 段输出相同 = wire 往返对 interp 直跑零漂移。
+    const golden = '-Infinity\nInfinity\nNaN\n1.5\n-Infinity\nInfinity\nNaN\n'
+      + '-Infinity\nInfinity\nNaN\n1.5\n-Infinity\nInfinity\nNaN\n'
+      + '0.5\n0.0\nInfinity\nNaN\n';
+    const legs = [
+      ['default', []],
+      ['tree', ['--tree']],
+      ['vm-only', ['--no-wasm']],
+    ];
+    const runs = legs.map(([n, extra]) => [n, runMing(['run', f, ...extra])]);
+    check('v104.16:float wire spawn/join/spawn_all——Vec[f64](含 -0.0/±Inf/NaN)与 Map[str,f64] 顶层载荷 wire 往返 + spawn_all float 元素,三腿 stdout 黄金逐字且 spawn 段 == 程序内直跑锚段',
+      runs.every(([, r]) => r.code === 0 && r.stdout === golden),
+      `legs=${runs.map(([n, r]) => n + ':' + r.code + '/' + JSON.stringify(r.stdout.slice(0, 24))).join(',')} wantHead=${JSON.stringify(golden.slice(0, 24))}`);
+  }
+
+  // 17) R-2(#78):Map 浮点键 AOT——Map[f64,i64](构造字面量/set/get/-0.0 与 0.0 同键/
+  //     插入序遍历)与 Map[str,f64](值含 0.1+0.2/1.25e-7/±Inf/NaN);build 产物执行 vs
+  //     源码执行 vs tree 三方黄金逐字;产物池 float 无 null 且 specials('-0'/'Infinity')在位
+  //     (wire 面沿 v104.14 口径扩到 Map 载体)。
+  {
+    const proj = mkProj104('v104_map_fkey', [
+      'fn sum_keys(m: Map[f64, i64]) -> i64 {',
+      '    let mut s = 0;',
+      '    for (k, v) in m { s += v; }',
+      '    return s;',
+      '}',
+      '',
+      'fn main() with io {',
+      '    let mut m: Map[f64, i64] = {1.5: 10, 2.5: 30};',
+      '    m.set(-0.0, 20);',
+      '    m.set(1.5, 11);',
+      '    print(str(m.len()));',
+      '    print(str(m.get(-0.0).unwrap()));',
+      '    print(str(m.get(0.0).unwrap()));',
+      '    for (k, v) in m { print(str(k)); }',
+      '    print(str(sum_keys(m)));',
+      '    let mut ms: Map[str, f64] = {"a": 0.1 + 0.2, "b": 1.25e-7};',
+      '    ms.set("c", 1.0e308 * 10.0);',
+      '    ms.set("d", 0.0 / 0.0);',
+      '    print(str(ms.get("a").unwrap()));',
+      '    print(str(ms.get("b").unwrap()));',
+      '    print(str(ms.get("c").unwrap()));',
+      '    print(str(ms.get("d").unwrap()));',
+      '    for (k, v) in ms { print(k); }',
+      '}',
+      '',
+    ].join('\n'));
+    const main = path.join(proj, 'main.ming');
+    const golden = '3\n20\n20\n1.5\n2.5\n0.0\n61\n0.30000000000000004\n1.25e-7\nInfinity\nNaN\na\nb\nc\nd\n';
+    const direct = runMing(['run', main]);
+    const tree = runMing(['run', main, '--tree']);
+    const bld = spawnSync(process.execPath, [MING, 'build', '--clean-cache'], { encoding: 'utf8', cwd: proj, timeout: 120000, env: baseEnv104 });
+    const dist = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000, env: baseEnv104 });
+    let poolOk = false;
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(proj, 'dist', 'app.bytecode.json'), 'utf8'));
+      const floats = raw.pool.filter((p) => p && p.w === 'float');
+      const marks = new Set(floats.map((p) => p.v).filter((x) => typeof x === 'string'));
+      poolOk = floats.length > 0
+        && floats.every((p) => typeof p.v === 'number' || ['NaN', 'Infinity', '-Infinity', '-0'].includes(p.v))
+        && !floats.some((p) => p.v === null)
+        && marks.has('-0') && marks.has('Infinity');
+    } catch { poolOk = false; }
+    check('v104.17:Map 浮点键 AOT——Map[f64,i64](set/get/-0.0≡0.0 同键/插入序遍历/跨函数传参)+ Map[str,f64](0.1+0.2/1.25e-7/±Inf/NaN),源码/tree/dist 三方黄金逐字,产物池 float 无 null 且 -0/Infinity 在位',
+      bld.status === 0 && direct.code === 0 && tree.code === 0 && dist.status === 0
+      && direct.stdout === golden && tree.stdout === golden && dist.stdout === golden && poolOk,
+      `bld=${bld.status} direct=${direct.code}/${JSON.stringify(direct.stdout.slice(0, 30))} treeEq=${tree.stdout === golden} dist=${dist.status}/${JSON.stringify(dist.stdout.slice(0, 30))} pool=${poolOk}`);
+  }
+
+  // 18) R-2(#78):Vec/Map 嵌套 float AOT——Vec[Vec[f64]] 与 Map[str,Vec[f64]](载荷含
+  //     ±Inf/NaN)经 build wire 的读回,值语义深拷贝隔离(副本元素写不穿透源;-0.0 符号
+  //     经深拷贝存活:1.0/源元素 = -Infinity)。源码/tree/dist 三方逐字。
+  {
+    const proj = mkProj104('v104_nested_float', [
+      'fn nested_sum(m: Map[str, Vec[f64]]) -> f64 {',
+      '    let mut s = 0.0;',
+      '    for (k, v) in m {',
+      '        for x in v { s += x; }',
+      '    }',
+      '    return s;',
+      '}',
+      '',
+      'fn main() with io {',
+      '    let nv: Vec[Vec[f64]] = [[1.5, -0.0], [1.0e308 * 10.0, 0.0 / 0.0]];',
+      '    print(str(nv[0][0]));',
+      '    print(str(1.0 / nv[0][1]));',
+      '    print(str(nv[1][0]));',
+      '    print(str(nv[1][1]));',
+      '    let mut nm: Map[str, Vec[f64]] = {"row": [1.5, 2.5]};',
+      '    nm.set("sp", [1.0e308 * 10.0, 0.0 / 0.0]);',
+      '    print(str(nested_sum(nm)));',
+      '    for (k, v) in nm { print(str(v[0])); }',
+      '    let mut w = nv;',
+      '    w[0][1] = 7.5;',
+      '    print(str(w[0][1]));',
+      '    print(str(1.0 / nv[0][1]));',
+      '    let mut w2 = nm;',
+      '    w2["row"][0] = 9.5;',
+      '    print(str(w2["row"][0]));',
+      '    print(str(nm["row"][0]));',
+      '}',
+      '',
+    ].join('\n'));
+    const main = path.join(proj, 'main.ming');
+    const golden = '1.5\n-Infinity\nInfinity\nNaN\nNaN\n1.5\nInfinity\n7.5\n-Infinity\n9.5\n1.5\n';
+    const direct = runMing(['run', main]);
+    const tree = runMing(['run', main, '--tree']);
+    const bld = spawnSync(process.execPath, [MING, 'build', '--clean-cache'], { encoding: 'utf8', cwd: proj, timeout: 120000, env: baseEnv104 });
+    const dist = spawnSync(process.execPath, [path.join(proj, 'dist', 'ming-app.mjs')], { encoding: 'utf8', cwd: proj, timeout: 60000, env: baseEnv104 });
+    check('v104.18:Vec/Map 嵌套 float AOT——Vec[Vec[f64]]/Map[str,Vec[f64]] 跨 AOT wire 读回逐字(±Inf/NaN 在位)+ 值语义深拷贝隔离(副本写 7.5/9.5 不穿透源,-0.0 符号存活 = 1.0/源元素 -Infinity);源码/tree/dist 三方黄金逐字',
+      bld.status === 0 && direct.code === 0 && tree.code === 0 && dist.status === 0
+      && direct.stdout === golden && tree.stdout === golden && dist.stdout === golden,
+      `bld=${bld.status} direct=${direct.code}/${JSON.stringify(direct.stdout.slice(0, 30))} treeEq=${tree.stdout === golden} dist=${dist.status}/${JSON.stringify(dist.stdout.slice(0, 30))} want=${JSON.stringify(golden.slice(0, 30))}`);
+  }
+
+  // 19) R-2(#78):旧 v2 artifact 兼容(正例)——ARTIFACT_VERSION=3 起,float wire 带白名单
+  //     specials 与 bits;deserializeArtifact 版本检查接受 2(3 为现行)。手工构造 v2 产物
+  //     (version=2 + 纯数字 float 去掉 bits = 旧写入器形态;断言池内确无 specials)经
+  //     fromArtifact 执行,输出与 v3 逐字。
+  {
+    const f19 = mk104('v104_v2art.ming', 'fn main() with io {\n    print(1.5);\n    print(2.5);\n}\n');
+    let v2Out = null, v3Out = null, err19 = '';
+    try {
+      const art19 = await import('../src/artifact.js');
+      const wire = JSON.parse(JSON.stringify(art19.serializeArtifact(compile(new Checker(f19).run()), { baseDir: ROOT })));
+      const vm3 = VMInterp.fromArtifact(wire, { capture: true });
+      vm3.runMain([]);
+      v3Out = vm3.flushCaptured();
+      const hasSpecial = wire.pool.some((p) => p && p.w === 'float' && typeof p.v === 'string');
+      const v2 = JSON.parse(JSON.stringify(wire));
+      v2.version = 2;
+      for (const p of v2.pool) if (p && p.w === 'float') delete p.bits;
+      const vm2 = VMInterp.fromArtifact(v2, { capture: true });
+      vm2.runMain([]);
+      v2Out = vm2.flushCaptured();
+      err19 = 'exit=0 special=' + hasSpecial;
+    } catch (e) { err19 = String((e && e.message) || e); }
+    check('v104.19:旧 v2 artifact 兼容——version=2 + 纯数字 float(去 bits,旧写入器形态,池内无 specials)fromArtifact 执行输出与 v3 逐字(1.5\\n2.5\\n)',
+      err19 === 'exit=0 special=false' && v2Out === '1.5\n2.5\n' && v3Out === v2Out,
+      `err=${err19} v2=${JSON.stringify(v2Out ?? '')} v3=${JSON.stringify(v3Out ?? '')}`);
+  }
+
+  // 20) R-2(#78):format/version 字段校验面——format 错 → '不是 Ming 字节码产物'(稳定
+  //     诊断通道,v0.64 #56 口径);version 1/4/缺失 → '产物版本不支持: N(本工具链支持 2..3)'
+  //     逐字;v2 产物损坏结构仍被 validateArtifact 拒(mainFnIdx 越界——版本兼容不放松结构
+  //     校验);v2 wire 携带 float specials(新写入器旧版本号形态)读端宽容(白名单校验版本无关)。
+  {
+    const f20 = mk104('v104_verface.ming', 'const I: f64 = 1.0e308 * 10.0;\nfn main() with io {\n    print(I);\n}\n');
+    let fmtMsg = '', v1Msg = '', v4Msg = '', vUMsg = '', v2cMsg = '', v2sOut = null;
+    try {
+      const art20 = await import('../src/artifact.js');
+      const wire = JSON.parse(JSON.stringify(art20.serializeArtifact(compile(new Checker(f20).run()), { baseDir: ROOT })));
+      const tryD = (a) => { try { art20.deserializeArtifact(a); return '未拒绝'; } catch (e) { return String((e && e.message) || e); } };
+      fmtMsg = tryD({ ...wire, format: 'nope' });
+      v1Msg = tryD({ ...wire, version: 1 });
+      v4Msg = tryD({ ...wire, version: 4 });
+      const vU = JSON.parse(JSON.stringify(wire));
+      delete vU.version;
+      vUMsg = tryD(vU);
+      v2cMsg = tryD({ ...wire, version: 2, mainFnIdx: 99 });
+      const v2s = JSON.parse(JSON.stringify(wire));
+      v2s.version = 2;
+      const vm2s = VMInterp.fromArtifact(v2s, { capture: true });
+      vm2s.runMain([]);
+      v2sOut = vm2s.flushCaptured();
+    } catch (e) { if (fmtMsg === '') fmtMsg = String((e && e.message) || e); }
+    check('v104.20:format/version 校验面——format 错→"不是 Ming 字节码产物";version 1/4/缺失→"产物版本不支持: N(本工具链支持 2..3)"逐字;v2 损坏结构(mainFnIdx 越界)仍被 validateArtifact 拒;v2 wire 含 float specials 读端宽容(Infinity 输出逐字)',
+      fmtMsg === '不是 Ming 字节码产物'
+      && v1Msg === '产物版本不支持: 1(本工具链支持 2..3)'
+      && v4Msg === '产物版本不支持: 4(本工具链支持 2..3)'
+      && vUMsg === '产物版本不支持: undefined(本工具链支持 2..3)'
+      && v2cMsg === '不是 Ming 字节码产物: mainFnIdx 越界(99,functions=1)'
+      && v2sOut === 'Infinity\n',
+      `fmt=${JSON.stringify(fmtMsg)} v1=${JSON.stringify(v1Msg)} v4=${JSON.stringify(v4Msg)} vU=${JSON.stringify(vUMsg)} v2c=${JSON.stringify(v2cMsg)} v2s=${JSON.stringify(v2sOut ?? '')}`);
+  }
+
+  // 21) R-2(#78):tools 缓存键 opt/no-opt 门禁成对——toolCacheKey(bin/ming.js)含 noOpt
+  //     (v0.94 审查 m2;产品探针已过、缺门禁断言)。本用例按 bin/ming.js 同配方在测试侧
+  //     复算两态键(sha256({v,node,compiler 32hex,noOpt,tool,src})),断言:
+  //     ① default 与 --no-opt 各自写到**自己的键文件**(k1≠k2 且两文件都存在 = 实现键含
+  //       noOpt 且配方未漂移;若 --no-opt 假命中 default 键,复算 k2 文件缺失 → 红);
+  //     ② MING_TOOLS_DEBUG=1 决策行:stored 时哈希 == 复算键(测试侧键与实现键恒等);
+  //     ③ 两态热跑均 '[tools-cache] hit'(不回落原路径、不假命中对方键);
+  //     ④ 四跑 stdout 逐字(缓存命中行为零输出漂移)。
+  //     并行安全:clearToolCache/全量删目录只存在于 §61/§76(同组 3,组内串行先于本节);
+  //     本用例只新增同键写入(原子 rename,内容一致),无删除。
+  {
+    const wTxt21 = mk104('v104_toolkey_input.txt', 'alpha beta\nalpha\n');
+    const toolSrc21 = fs.readFileSync(path.join(ROOT, 'tools', 'wc.ming'), 'utf8');
+    const files21 = [];
+    for (const dn of ['bin', 'src']) {
+      for (const n of fs.readdirSync(path.join(ROOT, dn)).filter((x) => x.endsWith('.js')).sort()) files21.push(dn + '/' + n);
+    }
+    files21.sort();
+    const ch21 = createHash('sha256');
+    for (const rel of files21) {
+      ch21.update(rel + '\u0000');
+      ch21.update(fs.readFileSync(path.join(ROOT, rel)));
+      ch21.update('\u0000');
+    }
+    const pkgV21 = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+    const compilerHex21 = ch21.digest('hex').slice(0, 32);
+    const key21 = (noOpt) => createHash('sha256').update(JSON.stringify({
+      v: pkgV21,
+      node: process.versions.node.split('.')[0],
+      compiler: compilerHex21,
+      noOpt,
+      tool: 'wc.ming',
+      src: toolSrc21,
+    })).digest('hex');
+    const TOOLS_CACHE_DIR21 = path.join(ROOT, '.ming-cache', 'tools');
+    const k1 = key21(false);
+    const k2 = key21(true);
+    const exists21 = (k) => { try { return fs.existsSync(path.join(TOOLS_CACHE_DIR21, k + '.json')); } catch { return false; } };
+    const envD21 = { ...baseEnv104, MING_TOOLS_DEBUG: '1' };
+    const runTool21 = (extra) => spawnSync(process.execPath, [MING, 'tools', 'wc', wTxt21, ...extra], {
+      encoding: 'utf8', cwd: ROOT, timeout: 120000, env: envD21,
+    });
+    const decisions21 = (r) => (r.stderr ?? '').split('\n').filter((l) => l.includes('[tools-cache]'));
+    // 决策行哈希==复算键(配方漂移硬断言):miss 行(ENOENT 内嵌实现键)与 stored 行均携带完整键;
+    // 缓存状态前置不可控(组内 §61/§77/§79 可能已热)——miss/stored 任一存在即断言恒等,全 hit 时
+    // 由 exists21(复算键文件在位)兜底,配方漂移 → 实现写出的键文件名变 → exists21 假 → 红。
+    const lineHash21 = (r, kind) => (decisions21(r).find((l) => kind.test(l))?.match(/([0-9a-f]{64})\.json/) ?? [])[1] ?? null;
+    const missHash21 = (r) => lineHash21(r, /miss/);
+    const storedHash21 = (r) => lineHash21(r, /stored .*→ /);
+    const isHit21 = (r) => decisions21(r).some((l) => l.includes('hit'));
+    const keyLineOk21 = (r, k) => { const m = missHash21(r), s = storedHash21(r); return (m === null || m === k) && (s === null || s === k); };
+    const r1 = runTool21([]);
+    const r2 = runTool21(['--no-opt']);
+    const r3 = runTool21([]);
+    const r4 = runTool21(['--no-opt']);
+    check('v104.21:tools 缓存键 opt/no-opt 成对——k1≠k2 且两键文件都存在(实现按配方命名键文件,漂移→exists21 假→红;--no-opt 假命中 default 键 → k2 缺失即红),决策行出现 miss/stored 时内嵌键==复算键(缓存前置状态不可控:全 hit 则无行可比对,由 exists21 兜底),两态热跑 hit,四跑 stdout 逐字',
+      r1.status === 0 && r2.status === 0 && r3.status === 0 && r4.status === 0
+      && (r1.stdout ?? '').length > 0 && r1.stdout === r2.stdout && r1.stdout === r3.stdout && r1.stdout === r4.stdout
+      && k1 !== k2 && exists21(k1) && exists21(k2)
+      && keyLineOk21(r1, k1) && keyLineOk21(r2, k2)
+      && isHit21(r3) && isHit21(r4),
+      `r=${r1.status}/${r2.status}/${r3.status}/${r4.status} k1=${k1.slice(0, 8)} k2=${k2.slice(0, 8)} ex=${exists21(k1)}/${exists21(k2)} m1=${JSON.stringify((missHash21(r1) ?? '').slice(0, 8))} s1=${JSON.stringify((storedHash21(r1) ?? '').slice(0, 8))} d1=${JSON.stringify(decisions21(r1).join('|').slice(0, 70))}`);
   }
 }
 
