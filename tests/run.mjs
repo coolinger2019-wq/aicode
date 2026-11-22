@@ -10773,7 +10773,7 @@ secBegin('65');
       return spawnSync('gcc', ['--version'], { encoding: 'utf8', timeout: 15000 }).status === 0;
     })();
     const fFfi = m65('k23a_ffi_untrusted.ming', [
-      'extern "msvcrt" fn getenv(n: str) -> Untrusted[str];',
+      'extern "' + (process.platform === 'win32' ? 'msvcrt' : process.platform === 'darwin' ? 'libSystem.dylib' : 'libc.so.6') + '" fn getenv(n: str) -> Untrusted[str];',
       '',
       'fn main() with ffi, io {',
       '    let raw: Untrusted[str] = getenv("V65K_STR");',
@@ -10790,7 +10790,7 @@ secBegin('65');
       const ccDir = path.join(dir65, 'ccout');
       fs.mkdirSync(ccDir, { recursive: true });
       const build = spawnSync(process.execPath, [MING, 'cc', fFfi, '--out', ccDir], { encoding: 'utf8', cwd: ROOT, timeout: 180000 });
-      const exe = path.join(ccDir, 'k23a_ffi_untrusted.exe');
+      const exe = path.join(ccDir, 'k23a_ffi_untrusted' + (process.platform === 'win32' ? '.exe' : ''));
       const rc = build.status === 0 && fs.existsSync(exe)
         ? spawnSync(exe, [], { encoding: 'utf8', timeout: 30000, env: { ...process.env, V65K_STR: 'ming-rocks' } })
         : { status: -1, stdout: '', stderr: 'no exe' };
@@ -12476,7 +12476,7 @@ secBegin('68');
     {
       const boomFile = m68('k68_9_boom.ming', SRC68.boom);
       const ccBoom = spawnSync(process.execPath, [MING, 'cc', boomFile, '--no-run', '--out', path.join(ffiDir68, 'out9')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
-      const boomExe = path.join(ffiDir68, 'out9', 'k68_9_boom.exe');
+      const boomExe = path.join(ffiDir68, 'out9', 'k68_9_boom' + (process.platform === 'win32' ? '.exe' : ''));
       const rBoom = fs.existsSync(boomExe) ? spawnSync(boomExe, [], { encoding: 'utf8', timeout: 30000 }) : { status: -1, stderr: '(exe 缺失)' };
       check('v68.9b:M4013 专项——extern 坏库 → C 后端 exit 101 "error M4013[ffi-load-failed]"',
         ccBoom.status === 0 && rBoom.status === 101 && (rBoom.stderr ?? '').includes('M4013') && (rBoom.stderr ?? '').includes('ffi-load-failed'),

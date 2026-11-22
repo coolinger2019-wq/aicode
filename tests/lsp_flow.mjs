@@ -1,10 +1,13 @@
 // 手动全流程测试:initialize + didOpen + didChange + hover + shutdown 一次送入
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = 'C:/code/aicode';
-const TMP = fs.mkdtempSync(path.join(process.env.TEMP, 'ming-lsp-'));
+// 跨平台:ROOT 由本文件位置推导(勿硬编码盘符路径);临时目录用 os.tmpdir()(TEMP 是 Windows 独有 env)
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-lsp-'));
 const FILE = path.join(TMP, 'sample.ming').replace(/\\/g, '/');
 const URI = 'file:///' + FILE;
 
