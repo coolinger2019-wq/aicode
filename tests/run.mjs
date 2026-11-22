@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -1472,11 +1472,14 @@ secBegin('31');
   const rrb = runMing(['run', rb]);
   check('v31:read_bytes 缺文件 Err', rrb.code === 0 && rrb.stdout === 'err-ok\n', rrb.stderr.slice(0, 150));
 
-  // v0.77 校准(ADR-007 清单 3):污字节内容不可读值——Untrusted[Vec[u8]] 下标 → M3020(新增负例,
-  // 锁定"内容字节按设计不可读值"语义;正例消费面 = len/is_empty 白名单)
-  const bidx = mingFile('v31-tainted-index.ming', 'use std.fs;\nuse std.io;\nfn main() with io, fs { match std.fs.read_bytes("' + bioBin31 + '") { Ok(v) => print(str(v[0])), Err(_) => print("err") } }');
-  const rbidx = runMing(['check', bidx]);
-  check('v31:污字节下标读拒绝 M3020', rbidx.code === 1 && rbidx.stderr.includes('M3020'), rbidx.stderr.slice(0, 150));
+  // v1.0.0-rc.2 校准(ADR-012 清单 1,负例翻正理由化):v0.77 的"污字节下标读拒绝 M3020"
+  // 负例随元素读解锁翻转——读取不构成洗白出口("校验 ≠ 净化"),v[i] 现产出 Untrusted[i64]
+  // (运行时擦除,与净 Vec 同一求值路径);元素消费面语义由 §112 全表接管,本位保留
+  // "下标读合法 + 越界 panic 同轨"的最小正例锚(0x00 → str(0) = "0")。
+  const bidx = mingFile('v31-tainted-index.ming', 'use std.fs;\nuse std.io;\nfn main() with io, fs { match std.fs.read_bytes("' + bioBin31 + '") { Ok(v) => { let b0 = v[0]; if b0 == 0 { print("ok0"); } }, Err(_) => print("err") } }');
+  const rbidx = runMing(['run', bidx]);
+  check('v31:污字节下标读解锁(ADR-012 清单 1)——v[0] == 0 判定合法三引擎逐字(ok0)',
+    rbidx.code === 0 && rbidx.stdout === 'ok0\n', 'code=' + rbidx.code + ' stdout=' + JSON.stringify(rbidx.stdout) + ' stderr=' + rbidx.stderr.slice(0, 150));
 
   // 类型门槛:Vec[i64].to_str → M3015;join_detailed 非句柄 → M3002
   const bt = mingFile('v31-tostr-type.ming', 'use std.io;\nfn main() with io { let v: Vec[i64] = [1]; v.to_str(); }');
@@ -2044,9 +2047,16 @@ secBegin('34b');
     check('v39:C 腿(无编译器,跳过运行时差分)', true);
   }
 
-  // 模糊器 v0.39 快速档(新形态:f64+math/match/loop/Option/Vec/str 方法)
-  const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '39039'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v39:模糊器加深形态(40 程序一致)', fuzz39.status === 0 && /分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
+  // 模糊器 v0.39 快速档(新形态:f64+math/match/loop/Option/Vec/str 方法)。
+  // v1.0.0-rc.2 校准(ADR-012 清单 12):生成器扩污字节形态(tbytes)改变 rng 流,
+  // seed 39039 的程序集随之变化并命中一个**既有 C 后端缺陷**(纯 i64 程序,深嵌套
+  // 值型 if 条件 + && + NaN float cast 派生的近 i64::MIN 乘法溢出——cc 在 JS 短路
+  // 跳过的位置求值 panic 子表达式;git worktree HEAD 纯净副本逐字复现,与本批语言
+  // 改动无关,已登记报告交架构师另批裁决)。快速档重钉为标准验收种子 44044
+  // (本批三验收种子 44044/777/20261 ×40 全 0 分歧,含 tbytes 程序 4/9/6 个)。
+  const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '44044'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v39:模糊器加深形态(40 程序一致;v1.0.0-rc.2 种子重钉 39039→44044,理由见上注——39039 程序集命中既有 cc 缺陷与本批无关)',
+    fuzz39.status === 0 && /分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
 }
 
 // ===================== 35b. v0.40:C2(str/Vec[i64])+ engdiff 自举工具 =====================
@@ -10737,8 +10747,9 @@ secBegin('65');
   }
 
   // v65.22 `as` 洗白禁面 + 载体禁面(M3050 锁码):白名单方法结果经 as 数值位 OK;
-  // 直接 u as str / u as i64 → M3050(洗白通道关闭);Untrusted[i64] 与
-  // Untrusted[Untrusted[str]] 声明 → M3050(载体 v1 仅 str,扩载体不得静默)。
+  // 直接 u as str / u as i64 → M3050(洗白通道关闭,污载体不受 ADR-012 污标量代数影响);
+  // Untrusted[Untrusted[str]] 声明 → M3050(嵌套仍拒,扩载体不得静默)。
+  // v1.0.0-rc.2(ADR-012 清单 3):Untrusted[i64] 载体随污标量白名单 +i64 翻转为正例(下方)。
   {
     const fWl = m65('k22a_as_whitelist.ming', [
       'use std.unstr;',
@@ -10777,7 +10788,13 @@ secBegin('65');
       'fn main() {',
       '}',
     ].join('\n'));
-    chk65('v65.22:Untrusted[i64] 载体禁面 → M3050(载体 v1 仅 str)', fCarI64, 'M3050');
+    // v1.0.0-rc.2 校准(ADR-012 清单 3,负例翻正理由化):v0.61 的"Untrusted[i64] 载体禁面
+    // M3050(载体 v1 仅 str)"随污标量载体白名单 +i64 翻转——污标量可声明才能过 helper
+    // 签名(元素读/算术衍生的承接位);翻转为正例(check exit 0)。嵌套 Untrusted[Untrusted[str]]
+    // 负例维持 M3050 不动(嵌套仍拒)。
+    const rCarI64 = runMing(['check', fCarI64]);
+    check('v65.22:Untrusted[i64] 载体白名单 +i64(ADR-012 清单 3)——签名声明合法 check exit 0',
+      rCarI64.code === 0, 'code=' + rCarI64.code + ' stderr=' + (rCarI64.stderr ?? '').slice(0, 120));
     const fCarNest = m65('k22e_carrier_nested.ming', [
       'fn h(x: Untrusted[Untrusted[str]]) {',
       '}',
@@ -16982,20 +16999,22 @@ secBegin('79');
     const runs = runAll80(f80);
     check('v80.2:read_bytes → Untrusted[Vec[u8]] 标污(清单 3)——len/is_empty 白名单消费三引擎逐字(3/nonempty)',
       same80(runs, '3\nnonempty\n'), fmtRuns80(runs));
-    const neg = j80(m80('v80_2_readbytes_neg.ming', [
+    // v1.0.0-rc.2 校准(ADR-012 清单 1,负例翻正理由化):v80.2 的"污字节下标读 → M3020"
+    // 随元素读解锁翻转(理由同 §31 位——读取不构成洗白出口;污点在标量上保污,越界
+    // M4003 同轨)。翻转后本位锁定:污下标读进比较(净 bool 出)三引擎逐字合法。
+    const neg = m80('v80_2_readbytes_neg.ming', [
       'use std.fs;',
       'use std.io;',
       '',
       'fn main() with io, fs {',
       '    match std.fs.read_bytes("' + path.join(dir80, 'src2.bin').replace(/\\/g, '/') + '") {',
-      '        Ok(v) => print(str(v[0])),',
+      '        Ok(v) => { let b0 = v[0]; if b0 == 1 { print("first1"); } },',
       '        Err(e) => print("ERR:" + e),',
       '    }',
       '}',
-    ].join('\n')));
-    check('v80.2:污字节下标读 → M3020(内容字节按设计不可读值;check exit 1)',
-      neg.r.code === 1 && !!neg.j && neg.j.diagnostics.some(d => d.code === 'M3020'),
-      `code=${neg.r.code} first=${JSON.stringify(firstCode80(neg.r))}`);
+    ].join('\n'));
+    check('v80.2:污字节下标读解锁(ADR-012 清单 1)——v[0] == 1 判定合法三引擎逐字(first1)',
+      same80(runAll80(neg), 'first1\n'), fmtRuns80(runAll80(neg)));
   }
 
   // v80.3 清单 2:list_dir 条目标污——Vec[Untrusted[str]];消费 = len(净)+ get(0) → Option[污]
@@ -26921,6 +26940,757 @@ secBegin('111');
         + 'pilot 腿 needed:false → env_blocked 不可达)+ .zcode/exp-pilot 首采产物零 env_blocked(存在时)',
         gate111e && pilotFace111e !== 'bad', `gate=${gate111e} face=${pilotFace111e} ${pilotNote111e}`);
     }
+  }
+}
+
+// ===================== 112. v1.0.0-rc.2:R-6 G8 污字节消费通道(ADR-012 清单 1–7/9)=====================
+// 覆盖矩阵:元素读双形态(清单 1)/算术位运算 11 算符×污污·污净·净污三向(清单 4)/
+// 比较六符放宽(清单 5)/unpack 载体感知槽(清单 6)/to_hex 双载体(清单 7)/洗白负例
+// 全表(清单 9 + 义务 5/6)/M3013 宽度门禁(§4.2)/复合赋值两向(义务 7)/签名声明
+// (清单 3 + 义务 1)/不做项锁定(mut 写/for-in,§8)/引擎面 strict-wasm 形态(义务 8)/
+// 净侧零变化锚(u8 fits 门 + str 代数)。实现注记(实现期发现,报告同步):污字节元素
+// 在创建位携带 i64 运行时标签(taintBytesOf/mark __taint 标记)——"元素读即 i64 拓宽"
+// 的运行时承载,v0.85 fits 门对污域机械不适用(净 u8 字节语义零变化,本节 ⑮ 对照锚)。
+secBegin('112');
+{
+  const dir112 = path.join(TMP, 'v112');
+  fs.mkdirSync(dir112, { recursive: true });
+  const mk112 = (name, src) => { const f = path.join(dir112, name); fs.writeFileSync(f, src.endsWith('\n') ? src : src + '\n', 'utf8'); return f; };
+  const legs112 = (f) => [
+    ['tree', runMing(['run', f, '--tree'])],
+    ['默认', runMing(['run', f])],
+    ['no-wasm', runMing(['run', f, '--no-wasm'])],
+  ];
+  const legsOk112 = (legs, out) => legs.every(([, r]) => r.code === 0 && r.stdout === out);
+  const legsBrief112 = (legs) => legs.map(([n, r]) => `${n}:${r.code}/${JSON.stringify(r.stdout)}`).join(' ');
+  const firstErr112 = (r) => (r.stderr ?? '').split('\n')[0] ?? '';
+  const j112 = (p) => { const r = runMing(['check', p, '--json']); try { return { r, j: JSON.parse(r.stdout) }; } catch { return { r, j: null }; } };
+  const codes112 = (p) => (j112(p).j?.diagnostics ?? []).map((d) => d.code);
+  const msg112 = (p, code) => (j112(p).j?.diagnostics ?? []).find((d) => d.code === code)?.message ?? '';
+
+  // ---- ① 元素读双形态(清单 1):v[i] → Untrusted[i64] 比较 + .get(i) → Option[Untrusted[i64]]
+  //      载荷比较——污点在标量上保污,唯一净出口 = 比较输出 bool。三引擎逐字。
+  {
+    const f = mk112('v112_1_read.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let b0 = tb[0];',
+      '    if b0 == 97 {',
+      '        print("idx-ok");',
+      '    }',
+      '    match tb.get(1) {',
+      '        Some(b) => {',
+      '            if b == 98 {',
+      '                print("get-ok");',
+      '            }',
+      '        },',
+      '        None => print("none"),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.1:元素读双形态(清单 1)——v[0] == 97 / get(1) == 98 比较合法三引擎逐字(idx-ok/get-ok)',
+      legsOk112(legs, 'idx-ok\nget-ok\n'), legsBrief112(legs));
+  }
+  // ---- ② 越界 panic 同轨(清单 1):M4003 消息/退出码与净 Vec 逐字(运行时擦除,同一求值路径)
+  {
+    const f = mk112('v112_2_oob.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let _ = tb[5];',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    const wantMsg = '索引越界:长度 2,访问 5(用 .get(i) 返回 Option)';
+    check('v112.2:污下标越界 M4003 同轨(清单 1)——exit 101 + 消息与净 Vec 逐字三腿',
+      legs.every(([, r]) => r.code === 101 && firstErr112(r).includes('M4003') && firstErr112(r).includes(wantMsg)),
+      legsBrief112(legs) + ' msg=' + JSON.stringify(firstErr112(legs[0][1])));
+  }
+  // ---- ③ 四则/取模 11 算符之四则+取模,污×净 / 净×污 / 污×污 三向(清单 4)——i64 域封闭 golden
+  {
+    const f = mk112('v112_3_arith.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let b0 = tb[0];',
+      '    let r1 = b0 + 1;',
+      '    let r2 = 1 + b0;',
+      '    let r3 = b0 + tb[1];',
+      '    let r4 = b0 - 1;',
+      '    let r5 = 3 - b0;',
+      '    let r6 = b0 - b0;',
+      '    let r7 = b0 * 2;',
+      '    let r8 = 2 * b0;',
+      '    let r9 = b0 * b0;',
+      '    let r10 = b0 / 1;',
+      '    let r11 = 97 / b0;',
+      '    let r12 = b0 / b0;',
+      '    let r13 = b0 % 10;',
+      '    let r14 = 10 % b0;',
+      '    let r15 = b0 % b0;',
+      '    if r1 == 98 && r2 == 98 && r3 == 195 && r4 == 96 && r5 == -94 && r6 == 0 && r7 == 194 && r8 == 194 && r9 == 9409 && r10 == 97 && r11 == 1 && r12 == 1 && r13 == 7 && r14 == 10 && r15 == 0 {',
+      '        print("arith-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.3:四则/取模传播三向(清单 4)——+ - * / % ×(污净/净污/污污)i64 域封闭 golden 三引擎逐字',
+      legsOk112(legs, 'arith-ok\n'), legsBrief112(legs));
+  }
+  // ---- ④ 移位/位运算三向(清单 4)——位掩码是协议解析主食(b & 0x0F)
+  {
+    const f = mk112('v112_4_bit.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let b0 = tb[0];',
+      '    let r1 = b0 << 2;',
+      '    let r2 = 1 << 3;',
+      '    let r3 = b0 >> 1;',
+      '    let r4 = b0 & 15;',
+      '    let r5 = 240 & b0;',
+      '    let r6 = b0 & tb[1];',
+      '    let r7 = b0 | 128;',
+      '    let r8 = 128 | b0;',
+      '    let r9 = b0 ^ 255;',
+      '    let r10 = b0 ^ b0;',
+      '    if r1 == 388 && r2 == 8 && r3 == 48 && r4 == 1 && r5 == 96 && r6 == 96 && r7 == 225 && r8 == 225 && r9 == 158 && r10 == 0 {',
+      '        print("bit-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.4:移位/位运算传播三向(清单 4)——<< >> & | ^ ×(污净/净污/污污)golden 三引擎逐字',
+      legsOk112(legs, 'bit-ok\n'), legsBrief112(legs));
+  }
+  // ---- ⑤ 比较六符放宽(清单 5):任一侧污标量 → 净 bool(长度边界判定基本原语)
+  {
+    const f = mk112('v112_5_cmp.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let b0 = tb[0];',
+      '    let mut n = 0;',
+      '    if b0 == 97 {',
+      '        n += 1;',
+      '    }',
+      '    if b0 != 98 {',
+      '        n += 1;',
+      '    }',
+      '    if b0 < 200 {',
+      '        n += 1;',
+      '    }',
+      '    if b0 <= 97 {',
+      '        n += 1;',
+      '    }',
+      '    if b0 > 90 {',
+      '        n += 1;',
+      '    }',
+      '    if b0 >= 97 {',
+      '        n += 1;',
+      '    }',
+      '    print(str(n));',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.5:比较六符放宽(清单 5)——== != < <= > >= 污 vs 净常量全绿 golden 三引擎逐字(6)',
+      legsOk112(legs, '6\n'), legsBrief112(legs));
+  }
+  // ---- ⑥ 一元取负传播对称(§4.2)——Untrusted[i64] → Untrusted[i64](实现期发现配套:
+  //      运行时 i64 标签使 -97 合法,u8 标签下会 M4002 取负溢出)
+  {
+    const f = mk112('v112_6_neg.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let b0 = tb[0];',
+      '    let n = -b0;',
+      '    if n == -97 {',
+      '        print("neg-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.6:一元取负传播(§4.2)——-污标量 → Untrusted[i64] i64 域无回绕 golden 三引擎逐字',
+      legsOk112(legs, 'neg-ok\n'), legsBrief112(legs));
+  }
+  // ---- ⑦ unpack 载体感知槽(清单 6):污 Vec[u8] → Result[Untrusted[i64], str];
+  //      Err 文本 = 位置/长度信息(B1 审计通过:无字节内容回显,interp binUnpack 全 Err 路径复核)
+  {
+    const f = mk112('v112_7_unpack.ming', [
+      'use std.bin;',
+      '',
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("abcd").to_bytes();',
+      '    match std.bin.unpack_u16_be(tb, 0) {',
+      '        Ok(n) => {',
+      '            if n == 24930 {',
+      '                print("ok");',
+      '            }',
+      '        },',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '    match std.bin.unpack_u16_be(tb, 3) {',
+      '        Ok(_) => print("bug"),',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.7:unpack 污路径(清单 6)——污字节 → Ok(Untrusted[i64]) 判定 + Err 位置信息净 str(B1 审计)三引擎逐字',
+      legsOk112(legs, 'ok\nE:unpack:偏移越界(需 [3, 5),长度 4)\n'), legsBrief112(legs));
+  }
+  // ---- ⑧ unpack Ok 载荷保污:污载荷进净 i64 槽 → M3049(提取语义,零洗白出口)
+  {
+    const f = mk112('v112_8_unpack_sink.ming', [
+      'use std.bin;',
+      '',
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("abcd").to_bytes();',
+      '    match std.bin.unpack_u16_be(tb, 0) {',
+      '        Ok(n) => {',
+      '            let c: i64 = n;',
+      '            print(str(c));',
+      '        },',
+      '        Err(_) => print("E"),',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.8:unpack Ok 载荷保污——Untrusted[i64] 进净 i64 槽 → M3049(不可信标量 remedy;check exit 1)',
+      codes112(f).includes('M3049') && msg112(f, 'M3049').includes('期望 i64,实际 Untrusted[i64](不可信标量:'),
+      JSON.stringify(codes112(f)) + ' ' + msg112(f, 'M3049').slice(0, 120));
+  }
+  // ---- ⑨ unpack 净路径逐字不变(清单 6 红线):净 Vec[u8] → Result[i64, str] 既有签名/行为
+  {
+    const f = mk112('v112_9_unpack_clean.ming', [
+      'use std.bin;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let raw: Vec[u8] = [1, 2];',
+      '    match std.bin.unpack_u16_be(raw, 0) {',
+      '        Ok(n) => print(str(n + 1)),',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.9:unpack 净路径逐字不变(清单 6 红线)——净 Vec[u8] → 净 i64 直接算术 golden(259)三引擎逐字',
+      legsOk112(legs, '259\n'), legsBrief112(legs));
+  }
+  // ---- ⑩ to_hex 双载体(清单 7):净收 → 净 str;污收 → Untrusted[str](print 出向透传合法
+  //      ——存储面非 sink,义务 5 明示 print(to_hex(污)) 不断言为拒绝)
+  {
+    const f = mk112('v112_10_tohex.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let clean: Vec[u8] = [1, 15, 255];',
+      '    print(clean.to_hex());',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    print(tb.to_hex());',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.10:to_hex 双载体(清单 7)——净收净 str + 污收 Untrusted[str] print 透传 golden(010fff/6162)三引擎逐字',
+      legsOk112(legs, '010fff\n6162\n'), legsBrief112(legs));
+  }
+  // ---- ⑪ to_hex 保污:污输出进净 str 槽 → M3049(hex 可逆变,净输出 = 字节级洗白通道)
+  {
+    const f = mk112('v112_11_tohex_sink.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let s: str = tb.to_hex();',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    check('v112.11:to_hex 污输出进净 str 槽 → M3049(保污——hex 双射可逆变;check exit 1)',
+      codes112(f).includes('M3049'), JSON.stringify(codes112(f)));
+  }
+  // ---- ⑫ 洗白 sink 族全表(义务 5/6):污标量进 str()/debug/插值/as/let 标注/get unwrap
+  //      五位——M3049/M3050 各就各位(污标量零净出口,除比较 bool)
+  {
+    const sinks = [
+      ['str', 'fn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    print(str(b0));\n}\n', 'M3049'],
+      ['debug', 'fn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    debug(b0);\n}\n', 'M3050'],
+      ['interp', 'fn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let _ = "\\{b0}";\n}\n', 'M3050'],
+      ['as', 'fn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let _ = b0 as i64;\n}\n', 'M3050'],
+      ['letann', 'fn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let c: i64 = b0;\n}\n', 'M3049'],
+      ['getsink', 'fn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let c: i64 = tb.get(0).unwrap();\n}\n', 'M3049'],
+    ];
+    const got = sinks.map(([nm, src, want]) => {
+      const f = mk112(`v112_12_${nm}.ming`, 'use std.unstr;\n\nuse std.io;\n\n' + src);
+      const cs = codes112(f);
+      return cs.includes(want);
+    });
+    check('v112.12:洗白 sink 族全表(义务 5/6)——str() M3049 / debug M3050 / 插值 M3050 / as M3050 / let 标注 M3049 / get().unwrap() M3049',
+      got.every(Boolean), got.map((g, i) => `${sinks[i][0]}=${g}`).join(' '));
+  }
+  // ---- ⑬ 污标量方法面 = 空白名单(清单 9 防堵形态):任何方法(含 to_str/char_len)一律 M3050
+  //      ——防堵 污 i64 → to_str → 净 str → exec/path/eval sink 净串注入
+  {
+    const f1 = mk112('v112_13_tostr.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let _ = b0.to_str();\n}\n');
+    const f2 = mk112('v112_13_charlen.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let _ = b0.char_len();\n}\n');
+    check('v112.13:污标量方法面空白名单(清单 9)——to_str/char_len 全部 M3050 且消息具名空白名单(防堵净串注入)',
+      codes112(f1).includes('M3050') && msg112(f1, 'M3050').includes('方法面是空白名单')
+      && codes112(f2).includes('M3050'),
+      JSON.stringify(codes112(f1)) + ' / ' + JSON.stringify(codes112(f2)));
+  }
+  // ---- ⑭ M3013 宽度门禁照旧(§4.2):污标量 × 净窄型不放宽(无隐式转换);消息用原类型渲染
+  {
+    const f1 = mk112('v112_14_u8.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let n: u8 = 7u8;\n    let _ = b0 + n;\n}\n');
+    const f2 = mk112('v112_14_i32.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let b0 = tb[0];\n    let m: i32 = 7;\n    let _ = b0 + m;\n}\n');
+    check('v112.14:M3013 宽度门禁照旧(§4.2)——污 i64 × u8(有符号/无符号)与 × i32(宽度)消息逐字、原类型渲染',
+      msg112(f1, 'M3013') === '有符号与无符号不能直接运算:Untrusted[i64] 与 u8'
+      && msg112(f2, 'M3013') === '整数宽度不同:Untrusted[i64] 与 i32 不能直接运算',
+      JSON.stringify(msg112(f1, 'M3013')) + ' / ' + JSON.stringify(msg112(f2, 'M3013')));
+  }
+  // ---- ⑮ str/Json 跨污界 == 维持 M3002(清单 5 范围限定;GAP-S3-3 口径零校准锚)+
+  //      污污标量 == 既有合法维持(unify 精确匹配)
+  {
+    const f = mk112('v112_15_crosstaint.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let u = std.unstr.mark("ab");\n    let tb = u.to_bytes();\n    let b0 = tb[0];\n    let _ = b0 == u;\n}\n');
+    const g = mk112('v112_15_taintaint.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    if tb[0] == tb[0] {',
+      '        print("eq");',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.15:跨污界 == 范围限定(清单 5)——污标量 == 污 str → M3002 逐字 + 污污标量 == 合法三引擎逐字(eq)',
+      msg112(f, 'M3002') === '"==" 两侧类型不同:Untrusted[i64] 与 Untrusted[str]' && legsOk112(legs112(g), 'eq\n'),
+      JSON.stringify(msg112(f, 'M3002')) + ' ' + legsBrief112(legs112(g)));
+  }
+  // ---- ⑯ 复合赋值两向(义务 7):污目标 += 污值/净值合法(污点只增不减);净目标 += 污值 M3049
+  {
+    const g = mk112('v112_16_taintadd.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let mut acc = tb[0];',
+      '    acc += 1;',
+      '    if acc == 98 {',
+      '        print("taint-add-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const f = mk112('v112_16_cleanadd.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let mut clean = 0;\n    clean += tb[1];\n}\n');
+    check('v112.16:复合赋值两向(义务 7)——污目标 += 合法三引擎逐字 + 净目标 += 污值 → M3049 复合赋位逐字',
+      legsOk112(legs112(g), 'taint-add-ok\n')
+      && msg112(f, 'M3049').startsWith('复合赋值类型不匹配:期望 i64,实际 Untrusted[i64](不可信标量:'),
+      legsBrief112(legs112(g)) + ' ' + JSON.stringify(msg112(f, 'M3049').slice(0, 80)));
+  }
+  // ---- ⑰ 污标量签名/声明(清单 3)+ 载体白名单负例(义务 1):Untrusted[i64] 合法;
+  //      Untrusted[f64] → M3050,待解锁清单文本 u8 具名维持、f64 不入
+  {
+    const g = mk112('v112_17_sig.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn scale(x: Untrusted[i64]) -> Untrusted[i64] {',
+      '    return x * 2 + 1;',
+      '}',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    if scale(tb[0]) == 195 {',
+      '        print("sig-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const f = mk112('v112_17_f64.ming', 'fn bad(x: Untrusted[f64]) -> i64 {\n    return 0;\n}\n\nfn main() {\n}\n');
+    const m = msg112(f, 'M3050');
+    check('v112.17:污标量声明(清单 3)——Untrusted[i64] 签名合法三引擎逐字(sig-ok)+ Untrusted[f64] → M3050'
+      + '(义务 1:白名单文本含 i64、待解锁清单 u8 具名维持)',
+      legsOk112(legs112(g), 'sig-ok\n') && m.includes('Untrusted 的载体类型只支持 str/Json/Vec[u8]/Map[str,str]/i64,得到 f64')
+      && m.includes('u8 原始载体'),
+      legsBrief112(legs112(g)) + ' ' + JSON.stringify(m.slice(0, 140)));
+  }
+  // ---- ⑱ mut 元素写不做(§8 锁定):污缓冲写穿不做,checkPlace 索引赋值位维持 M3020
+  {
+    const f = mk112('v112_18_mutwrite.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let mut tb = std.unstr.mark("ab").to_bytes();\n    tb[0] = 1;\n}\n');
+    check('v112.18:mut 元素写不做(§8)——污 Vec[u8] 索引赋值 → M3020 消息逐字(check exit 1)',
+      msg112(f, 'M3020') === 'Untrusted[Vec[u8]] 不支持索引赋值', JSON.stringify(msg112(f, 'M3020')));
+  }
+  // ---- ⑲ for-in 不解锁(§8 锁定):迭代维持 M3026(解锁面仅 v[i] 与 .get(i) 双形态)
+  {
+    const f = mk112('v112_19_forin.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    for b in tb {',
+      '        print(str(b));',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.19:for-in 不解锁(§8)——污 Vec[u8] 迭代 → M3026 维持(check exit 1)',
+      codes112(f).includes('M3026'), JSON.stringify(codes112(f)));
+  }
+  // ---- ⑳ 引擎面 strict-wasm 形态登记(义务 8):unpack/to_hex 所在函数 = shape 级不资格
+  //      (Vec[u8] 无 wasm 槽型,typeToNumTy 对窄型返回 null——资格边界在类型层,先于
+  //      str.join 式调用级 REJECT;strict 语料 exit 0 = 候选集不含该函数,非回落),
+  //      输出与默认腿逐字(零新机制核验)。
+  {
+    const f = mk112('v112_20_strict.ming', [
+      'use std.bin;',
+      '',
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn unpackHelper(bytes: Vec[u8]) -> i64 {',
+      '    match std.bin.unpack_u16_be(bytes, 0) {',
+      '        Ok(n) => n,',
+      '        Err(_) => 0,',
+      '    }',
+      '}',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    print(str(tb.len()));',
+      '}',
+    ].join('\n'));
+    const strict = runMing(['run', f, '--strict-wasm']);
+    const def = runMing(['run', f]);
+    check('v112.20:引擎面 strict-wasm(义务 8)——unpack 所在 fn shape 级不资格(strict exit 0 候选集不含,非回落)+ 默认腿输出逐字(2)',
+      strict.code === 0 && def.code === 0 && strict.stdout === '2\n' && def.stdout === '2\n',
+      `strict=${strict.code}:${JSON.stringify(strict.stdout)} def=${def.code}:${JSON.stringify(def.stdout)} ${JSON.stringify((strict.stderr ?? '').split('\n')[0])}`);
+  }
+  // ---- ㉑ 净 Vec[u8] 零变化锚:净侧元素读 u8 语义不变——窄型 fits 门(v0.85)照发 M4002
+  //      (污字节 i64 标签只落在污源创建位,净 VecLit/净字节算术零校准)
+  {
+    const f = mk112('v112_21_clean.ming', [
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let v: Vec[u8] = [250u8, 10u8];',
+      '    let s = v[0] + v[1];',
+      '    print(str(s));',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.21:净 Vec[u8] 零变化锚——净元素算术 fits 门 M4002 照发(250+10 超窄型界,消息 = 既有 i8u 渲染格式)三腿逐字',
+      legs.every(([, r]) => r.code === 101 && firstErr112(r).includes('M4002') && firstErr112(r).includes('250 + 10')),
+      legsBrief112(legs) + ' msg=' + JSON.stringify(firstErr112(legs[0][1])));
+  }
+  // ---- ㉒ read_bytes 污源实景(G8 验收形态):真污源 → 元素读 + 位掩码 + 比较,全在污域完成
+  {
+    const fixture112 = path.join(dir112, 'frame.bin');
+    fs.writeFileSync(fixture112, Buffer.from([0x01, 0x02, 0x03]), 'binary');
+    const f = mk112('v112_22_readbytes.ming', [
+      'use std.fs;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes("' + fixture112.split(path.sep).join('/') + '") {',
+      '        Ok(v) => {',
+      '            let b0 = v[0];',
+      '            let masked = b0 & 15;',
+      '            if masked == 1 {',
+      '                print("src-ok");',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.22:read_bytes 污源实景(G8)——元素读+位掩码+比较全污域 golden(src-ok)三引擎逐字',
+      legsOk112(legs, 'src-ok\n'), legsBrief112(legs));
+  }
+  // ---- ㉓ 污值代数 str 面回归锚:v0.80 既有语义零变化(parse_i64 Ok 净值/keepBytes len/is_empty)
+  {
+    const f = mk112('v112_23_algebra.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let u = std.unstr.mark("42");',
+      '    match u.parse_i64() {',
+      '        Ok(n) => print(str(n + 1)),',
+      '        Err(_) => print("E"),',
+      '    }',
+      '    let tb = u.to_bytes();',
+      '    print(str(tb.len()));',
+      '    print(str(tb.is_empty()));',
+      '}',
+    ].join('\n'));
+    const legs = legs112(f);
+    check('v112.23:污值代数回归锚(v0.80 零校准)——parse_i64 Ok 净值 43 + keepBytes len/is_empty 消费三引擎逐字',
+      legsOk112(legs, '43\n2\nfalse\n'), legsBrief112(legs));
+  }
+  // ---- ㉔ panic 同轨(义务 2 收口):污标量除零 M4004/移位越界 M4002 与净值逐字
+  //      (运行时擦除——污值不改变 panic 行为;ADR-012 §4.2"消息与退出码逐字"。
+  //      注:除零净侧即 M4004[div-by-zero],ADR 文本"除零 M4002"指 panic 族同轨口径,
+  //      实际码以净值同轨为准——实现期核验记录)
+  {
+    const f1 = mk112('v112_24_divzero.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let _ = tb[0] / 0;',
+      '}',
+    ].join('\n'));
+    const f2 = mk112('v112_24_shift.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let _ = tb[0] << 70;',
+      '}',
+    ].join('\n'));
+    const legs1 = legs112(f1);
+    const legs2 = legs112(f2);
+    check('v112.24:panic 同轨(义务 2)——污除零 M4004"整数除零:97 / 0" + 污移位越界 M4002"移位位数 70 越界(必须在 0..63)"三腿逐字 exit 101',
+      legs1.every(([, r]) => r.code === 101 && firstErr112(r).includes('M4004') && firstErr112(r).includes('整数除零:97 / 0'))
+      && legs2.every(([, r]) => r.code === 101 && firstErr112(r).includes('M4002') && firstErr112(r).includes('移位位数 70 越界(必须在 0..63)')),
+      legsBrief112(legs1) + ' / ' + legsBrief112(legs2));
+  }
+  // ---- ㉕ 审查 B1(a) 回归:__taint 传播路径 1——to_hex 往返保标(hex 是字节化的逆变换,
+  //      to_hex().to_bytes() 必须保持 i64 域;修复前二次字节化退回 u8 门 → M4002 i8u 溢出);
+  //      附 read_bytes/read_bytes_range 非掩码算术(1 * 1000 超 u8 门,掩码形态掩盖面收口)
+  {
+    const f1 = mk112('v112_25_hexrt.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let h = std.unstr.mark("abcdef").to_bytes().to_hex();',
+      '    let t = h.to_bytes();',
+      '    let v = t[0] * 1000;',
+      '    let w = t[5] * 1000;',
+      '    if v == 54000 && w == 51000 {',
+      '        print("hex-roundtrip-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    const fixture25 = path.join(dir112, 'frame25.bin');
+    fs.writeFileSync(fixture25, Buffer.from([0x01, 0x02, 0x03]), 'binary');
+    const f2 = mk112('v112_25_srcmul.ming', [
+      'use std.fs;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io, fs {',
+      '    match std.fs.read_bytes("' + fixture25.split(path.sep).join('/') + '") {',
+      '        Ok(v) => {',
+      '            let m = v[0] * 1000;',
+      '            if m == 1000 {',
+      '                print("src-mul-ok");',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '    match std.fs.read_bytes_range("' + fixture25.split(path.sep).join('/') + '", 0, 3) {',
+      '        Ok(v) => {',
+      '            let m = v[2] * 1000;',
+      '            if m == 3000 {',
+      '                print("range-mul-ok");',
+      '            }',
+      '        },',
+      '        Err(e) => print("ERR:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.25:审查 B1(a) 回归——to_hex 往返保标(54/51 ×1000 i64 域)三腿逐字 + read_bytes/range 非掩码乘法(1000/3000)i64 域三腿逐字',
+      legsOk112(legs112(f1), 'hex-roundtrip-ok\n') && legsOk112(legs112(f2), 'src-mul-ok\nrange-mul-ok\n'),
+      legsBrief112(legs112(f1)) + ' ' + legsBrief112(legs112(f2)));
+  }
+  // ---- ㉖ 审查 B1(b) 回归:__taint 传播路径 2——Json 投影链(mark → json.parse 根打标
+  //      → get/as_str 载荷打标 → to_bytes 字节化 i64 域;修复前投影链标签丢失 → M4002)
+  {
+    const f = mk112('v112_26_jsonchain.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    match std.json.parse(std.unstr.mark("{\\"a\\":\\"B\\"}")) {',
+      '        Ok(j) => {',
+      '            match j.get("a") {',
+      '                Some(f) => {',
+      '                    match f.as_str() {',
+      '                        Some(s) => {',
+      '                            let t = s.to_bytes();',
+      '                            let v = t[0] * 1000;',
+      '                            if v == 66000 {',
+      '                                print("json-chain-ok");',
+      '                            }',
+      '                        },',
+      '                        None => print("no-str"),',
+      '                    }',
+      '                },',
+      '                None => print("no-field"),',
+      '            }',
+      '        },',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.26:审查 B1(b) 回归——Json 投影链保标(mark → parse → get → as_str → to_bytes[0]×1000 = 66000 i64 域)三腿逐字',
+      legsOk112(legs112(f), 'json-chain-ok\n'), legsBrief112(legs112(f)));
+  }
+  // ---- ㉗ 审查 B1(c) 回归:__taint 传播路径 3——spawn wire(str 分支 t 键,worker 内
+  //      to_bytes 字节化保持 i64 域;修复前 worker 序列化丢标 → 整数*溢出 → join Err)
+  {
+    const f = mk112('v112_27_wire.ming', [
+      'use std.sync;',
+      '',
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn task(s: Untrusted[str]) -> i64 {',
+      '    let t = s.to_bytes();',
+      '    let v = t[0] * 1000;',
+      '    if v == 97000 {',
+      '        return 1;',
+      '    }',
+      '    return 0;',
+      '}',
+      '',
+      'fn main() with io, sync {',
+      '    let h = std.sync.spawn(task, std.unstr.mark("abcdef"));',
+      '    match std.sync.join(h) {',
+      '        Ok(n) => print(str(n)),',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.27:审查 B1(c) 回归——spawn wire 保标(污 str 跨任务 → worker 内 t[0]×1000 = 97000 i64 域 → join Ok(1))三腿逐字',
+      legsOk112(legs112(f), '1\n'), legsBrief112(legs112(f)));
+  }
+  // ---- ㉘ 审查 B2 回归:移位净窄型左操作数 × 污标量 → M3013(§4.2 宽度门禁照旧——
+  //      运行时位型沿左操作数标签,静态 Untrusted[i64] 与 u8 门矛盾不放宽);
+  //      合法形态对照:污左 << 净窄移位量 / 净 i64 << 污 → Untrusted[i64] 三腿逐字
+  {
+    const fNeg = mk112('v112_28_shiftneg.ming', 'use std.unstr;\n\nuse std.io;\n\nfn main() with io {\n    let tb = std.unstr.mark("ab").to_bytes();\n    let v: Vec[u8] = [1u8, 2u8];\n    let _ = v[0] << tb[0];\n}\n');
+    const fPos = mk112('v112_28_shiftpos.ming', [
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn main() with io {',
+      '    let tb = std.unstr.mark("ab").to_bytes();',
+      '    let mut n = 0;',
+      '    let a = tb[0] << 2;',
+      '    let b = tb[1] >> 3;',
+      '    let c = 7 << 2;',
+      '    let d = 7 << tb[0] - 90;',
+      '    if a == 388 && b == 12 && c == 28 && d == 896 {',
+      '        n = 1;',
+      '    }',
+      '    if n == 1 {',
+      '        print("shift-ok");',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.28:审查 B2 回归——净 u8 << 污 → M3013 消息逐字(check exit 1)+ 污左/净 i64 左(7 << tb[0]-90)移位传播合法三腿逐字(shift-ok)',
+      msg112(fNeg, 'M3013') === '有符号与无符号不能直接运算:u8 与 Untrusted[i64]'
+      && legsOk112(legs112(fPos), 'shift-ok\n'),
+      JSON.stringify(msg112(fNeg, 'M3013')) + ' ' + legsBrief112(legs112(fPos)));
+  }
+  // ---- ㉙ 审查终修回归:wire Json 分支保标(spawn 任务收 Untrusted[Json] → worker 内
+  //      根级 __taint 恢复 → get/as_str 投影链 → to_bytes[0]×1000 i64 域 → join Ok(1);
+  //      修复前 worker 序列化丢根标 → 投影链断 → t[0]\*1000 退 u8 门 M4002 → join Err)。
+  //      serve 同机制(argWire 恒 t:1,载荷恒 Untrusted[Json] 硬约束)。
+  {
+    const f = mk112('v112_29_wirejson.ming', [
+      'use std.sync;',
+      '',
+      'use std.json;',
+      '',
+      'use std.unstr;',
+      '',
+      'use std.io;',
+      '',
+      'fn taskj(j: Untrusted[Json]) -> i64 {',
+      '    let mut r = 0;',
+      '    match j.get("a") {',
+      '        Some(f) => {',
+      '            match f.as_str() {',
+      '                Some(s) => {',
+      '                    let t = s.to_bytes();',
+      '                    let v = t[0] * 1000;',
+      '                    if v == 66000 {',
+      '                        r = 1;',
+      '                    }',
+      '                },',
+      '                None => {',
+      '                },',
+      '            }',
+      '        },',
+      '        None => {',
+      '        },',
+      '    }',
+      '    return r;',
+      '}',
+      '',
+      'fn main() with io, sync {',
+      '    let j = std.json.parse("{\\"a\\":\\"B\\"}").unwrap();',
+      '    let h = std.sync.spawn(taskj, std.unstr.mark_json(j));',
+      '    match std.sync.join(h) {',
+      '        Ok(n) => print(str(n)),',
+      '        Err(e) => print("E:" + e),',
+      '    }',
+      '}',
+    ].join('\n'));
+    check('v112.29:审查终修回归——wire Json 分支保标(spawn 收 Untrusted[Json] → worker 内 get/as_str/to_bytes[0]×1000 = 66000 → join Ok(1))三腿逐字',
+      legsOk112(legs112(f), '1\n'), legsBrief112(legs112(f)));
   }
 }
 

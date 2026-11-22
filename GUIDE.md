@@ -1102,7 +1102,7 @@ fn main() with io {
 
 > 可运行示例:examples/unstr_demo.ming(env.get → Option[Untrusted[str]] → sanitize_cli_path 三分支;`TARGET=../bad` 的放行是正确语义——`..` 遍历拒绝属 sanitize_path 职责,见 §18 sanitize_path 行)。
 
-**污点模型(窄源 v1,ADR-002;v0.68 载体扩面 {str, Json},ADR-004;v0.77 内容源扩面 + 污值代数 + 第三载体,ADR-007)**:类型 `Untrusted[str]` / `Untrusted[Json]` / `Untrusted[Vec[u8]]` 是编译期标签、运行时擦除——值就是载体,四引擎输出与标注无关。**来源必污纪律一次到位(v0.77)**:外部影响的字节进入 Ming 后类型可区分,全部 sink 门禁(M3049)对其生效;处理能力由污值代数承担(见下表),净化仍只有 sanitize 族两个路径类函数(净化器族不扩,ADR-007 清单 10)。
+**污点模型(窄源 v1,ADR-002;v0.68 载体扩面 {str, Json},ADR-004;v0.77 内容源扩面 + 污值代数 + 第三载体,ADR-007;v1.0.0-rc.2 污字节消费通道 + 污标量载体,ADR-012)**:类型 `Untrusted[str]` / `Untrusted[Json]` / `Untrusted[Vec[u8]]` / `Untrusted[i64]`(污标量,ADR-012 清单 3——元素读/算术衍生,无字面量构造、无直接 source、extern 返回不预支)是编译期标签、运行时擦除——值就是载体,四引擎输出与标注无关。**来源必污纪律一次到位(v0.77)**:外部影响的字节进入 Ming 后类型可区分,全部 sink 门禁(M3049)对其生效;处理能力由污值代数承担(见下表),净化仍只有 sanitize 族两个路径类函数(净化器族不扩,ADR-007 清单 10;**第四次不扩,ADR-012 清单 9**——二进制内容无机械净化定义,校验/边界判定由污标量代数在污域完成)。
 
 **来源全景表(v0.77;逐源签名与消费口径)**:
 
@@ -1140,9 +1140,10 @@ fn main() with io {
 
 - **拼接传播(实现期微调 ①)**:`+` 是内容处理的基本组合子——污+净/污+污 → 污(污点只增不减);v0.61 的 `"a"+u → M3008` 拦截面后移到消费 sink。**净目标 `+=` 污值 → M3049**(微调 ②——复合赋值不得成为洗白旁路;污目标累计合法)。
 - **定位原语**:`std.str.index_of(hay, needle) -> Option[i64]`(v0.77 新函数,§18 std.str——字符下标口径含增补平面;hay 载体感知,needle 净槽)。
-- **`Untrusted[Vec[u8]]` 操作面(清单 3)**:`len` / `is_empty`(载体计数;元素消费面 re/bin/crypto 维持净槽 → M3049)。
-- **sink 门禁免费**:任何期待载体类型(`str`/`Json`/`Vec[u8]`)的位置(调用实参/赋值/let 推断/return/Map 键/方法接收者/struct 字段/分支混型(if/match 臂))对 `Untrusted` 报 **M3049[untrusted-mismatch]**(hint 载体感知:str → sanitize 族,Json → `as_str` 投影 + sanitize);反向(期待 Untrusted、给裸载体)→ M3002(必须显式 `mark` / `mark_json`)。
-- **禁面(洗白通道,与 Ptr 同款;不受代数影响)**:`debug(u)`、插值 `\{u}`、`u as T`、`str(u)` → **M3050/M3049**;`Untrusted[Json]`/`Untrusted[Vec[u8]]` 进 print/eprint → M3049(先 `as_str` 投影/投影消费)。
+- **污标量代数(v1.0.0-rc.2,ADR-012 清单 4/5——THE CRUX:没有算术传播,元素读解锁没有意义)**:`Untrusted[i64]` 的操作面 = **算术/位运算传播**(`+ - * / % << >> & | ^` 任一操作数为污标量 → 结果 `Untrusted[i64]`,i64 域封闭,v0.77 拼接传播同构)+ **一元取负传播**(`-污` → `Untrusted[i64]`)+ **比较六符放宽**(`== != < <= > >=` 任一侧污标量 → **净 bool**——污点在布尔上终结,ADR-004 清单 9 eq 先例;"从帧里读一个字节与期望值比较"是 G8 关闭的硬约束:mark 仅 str,常量侧无法标污)。**范围限定**:比较放宽只限标量 i64;str/Json/Vec[u8]/Map 载体的跨污界 `==` 维持 M3002(GAP-S3-3 口径不变);污污 `==` 既有合法维持。**宽度门禁 M3013 照旧**:污标量仅与 i64 域自由组合,净窄型(u8/i16/i32)操作数不隐式拓宽(无隐式转换原则);除零 M4004/移位越界 M4002/溢出 M4002 与净值同轨逐字(运行时擦除,同一求值路径)。**复合赋值两向**:`污目标 += 污值/净值` 合法(污点只增不减);净目标 += 污值 → M3049。
+- **`Untrusted[Vec[u8]]` 操作面(清单 3;v1.0.0-rc.2 扩围,ADR-012 清单 1/7)**:`len` / `is_empty`(载体计数)+ **`get(i)`**(`Option[Untrusted[i64]]`——元素读解锁,校验 ≠ 净化,读取不构成洗白出口)+ **`to_hex()`**(净收 → 净 str、污收 → `Untrusted[str]` 保污——hex 是内容保持的双射编码,净输出 = 字节级洗白通道,保污使全部 sink 门禁继续生效);**下标读 `v[i]` → `Untrusted[i64]`**(panicking 形态,越界 M4003 与净 Vec 同轨逐字)。**净污不对称是特性不是疏漏**(GUIDE 明示):净 `Vec[u8]` 元素读返回 u8(窄型,既有,v0.85 fits 门适用),污返回 `Untrusted[i64]`(i64 拓宽一次到位,窄型回绕门对污域不适用——污源值经 **str keep 代数/拼接/str.join/Json 投影链/to_hex/wire(spawn·serve 序列化)全路径传播 i64 标签**,该承诺覆盖污值可达的全部派生路径)——依赖窄型语义的净侧代码迁移到污域时宽度语义变化需作者知悉。mut 元素写不做(ADR-012 §8)、for-in 迭代维持 M3026——解锁面仅 `v[i]` 与 `.get(i)` 双形态。`bin.unpack_u16_le/be`…`u64` 参数槽**载体感知**(清单 6):污字节流入 → `Result[Untrusted[i64], str]`(提取语义载荷保污;Err 净 str 以 B1 审计为前提——Err 文本 = 位置/长度信息,无内容回显),净路径逐字不变。`Untrusted[i64]` 的**方法面 = 空白名单**(清单 9):任何方法调用(含 `to_str`)一律 M3050——防堵 污 i64 → 净 str → sink 串注入;唯一净出口 = 比较输出 bool。
+- **sink 门禁免费**:任何期待载体类型(`str`/`Json`/`Vec[u8]`/`i64`,v1.0.0-rc.2 载体白名单 +i64)的位置(调用实参/赋值/let 推断/return/Map 键/方法接收者/struct 字段/分支混型(if/match 臂))对 `Untrusted` 报 **M3049[untrusted-mismatch]**(hint 载体感知:str → sanitize 族,Json → `as_str` 投影 + sanitize,vec → 投影消费,污标量 → 改声明 `Untrusted[i64]`);反向(期待 Untrusted、给裸载体)→ M3002(必须显式 `mark` / `mark_json`)。
+- **禁面(洗白通道,与 Ptr 同款;不受代数影响)**:`debug(u)`、插值 `\{u}`、`u as T`、`str(u)` → **M3050/M3049**(污标量同面——`debug(污 i64)`/`污 i64 as i64`/`str(污 i64)` 全拒;ADR-012 §4.2 禁面维持);`Untrusted[Json]`/`Untrusted[Vec[u8]]` 进 print/eprint → M3049(先 `as_str` 投影/投影消费);`to_hex(污)` 输出进净 str 槽 → M3049(保污)。
 - **出向透传位(v0.77,清单 6 + 实现期裁决——storage 非边界穿越)**:污值**合法流出**的槽位,机制与 sink 槽同源:① **本地存储**——`fs.write_file/append_file` 内容、`fs.write_bytes/append_bytes` 数据(污值合法写盘;路径参数保持净 sink);② **CLI 存储面**——`print`/`print_raw`/`eprint` 实参(`Untrusted[str]` 载体合法回显——stdout/stderr 是 CLI 工具的存储面,mingkit read = cat 的回显行为;`Untrusted[Json]` 等其他载体维持 M3049,先投影);③ **载体感知计算槽**——`std.str.index_of` 的 hay(纯计算,输出标量净)。**网络出向不是存储**:`http_request` 的 headers/body 污值 → M3049(数据外传面,清单 8);`debug()`/插值/`as`/`str()` 维持禁面(值出口/调试通道,不是存储面)。
 - **双向函数(清单 7,唯一双向点)**:`proc.exec`——`cmd`/`args` 是**命令注入 sink**(污值流入 → M3049;命令应由程序常量构造),`stdout`/`stderr` 是 **source**(`Untrusted[str]`);`sync.spawn` 同口径(任务参数污值经形参载体位合法流入,任务返回白名单扩入污载体)。污文件内容 → eval 同样被 M3049 拦截(v0.69 登记的"污内容直入 eval"窗口就此机械关闭)。
 - **净化族(唯一类型跃迁出口,纯函数,契约内可调用)**:
@@ -1156,7 +1157,7 @@ fn main() with io {
 
 - **净化器族不扩(v0.68 裁决,ADR-004 §4.4;ADR-007 清单 10 第三次适用)**:`sanitize_json` 不设、文本内容无机械净化定义(剩余威胁是内容级,净化目标因 sink 而异);路径类 sanitize_cli_path/sanitize_path 照用;`assume_clean` 逃逸舱**不做**(清单 12——显式信任断言破坏"来源必污"构造性保证,处理能力由污值代数承担)。污进污出 `stringify_untrusted` 登记候选**不预支**。
 - **迁移惯例(v0.77,12 自举工具实测)**:净变量承接污值改 `Untrusted[str]` 标注(起点 `std.unstr.mark("")`);`Err(_) => std.unstr.mark("")` 同型化 fallback;`u == ""` 比较禁 → `u.is_empty()`;list_dir 条目作路径前 `match std.unstr.sanitize_cli_path(name)` 显式 Err 处理;回显/落盘直接走出向透传位。良性路径行为逐字节不变(v0.61 口径,12 工具 52 命令冒烟对照)。
-- **wasm/C**:资格按载体判定(顶层 `Untrusted[str]`/`Untrusted[Json]`/`Untrusted[Vec[u8]]` 形参在资格分析前解包为载体,ADR-002 清单 14 先例;`analyze()` 单一事实来源不裂化);嵌套容器形参(`Vec[Untrusted[str]]` 等)整函数资格拒绝 → 回落 VM,输出三引擎一致(strict 具名)。C 后端按载体发射(`mingTyNum`/`annoTarget` 载体穿透);`Result[str,str]` 的 `let 标注` 仍受 C2 既有载体面限制(显式拒绝,非污点缺口)。
+- **wasm/C**:资格按载体判定(顶层 `Untrusted[str]`/`Untrusted[Json]`/`Untrusted[Vec[u8]]`/`Untrusted[i64]` 形参在资格分析前解包为载体——v1.0.0-rc.2 污标量解包后同 i64 口径,v0.61 先例零新机制;`analyze()` 单一事实来源不裂化);嵌套容器形参(`Vec[Untrusted[str]]` 等)整函数资格拒绝 → 回落 VM,输出三引擎一致(strict 具名)。`bin.unpack_*`/`to_hex` 的函数内资格 = **不可达面**:其参数/接收者类型 `Vec[u8]` 先行 shape 级不资格(wasm.js `isEligibleShape` 的 `numOkElem` 只收 i64/f64/str 元素,u8 元素不入槽型,既有行为)——strict 语料核验 exit 0(候选集不含该函数,非回落,输出与默认腿逐字)。C 后端按载体发射(`mingTyNum`/`annoTarget` 载体穿透);`Result[str,str]` 的 `let 标注` 仍受 C2 既有载体面限制(显式拒绝,非污点缺口)。
 - **契约可用**:`requires u.byte_len() < 256 && std.unstr.sanitize_path(u).is_ok()` 合法(净化纯函数,M3029 通道完好);违反 → 运行时 M4015。
 - 深拷贝保污点是类型恒等式;`?`/Option/Result/Vec/Map/struct 载荷类型精确传播;容器装脏值与取出值同污点,无旁路。
 
@@ -1454,6 +1455,13 @@ node bin/ming.js run tools/mingkit.ming -- count <file>
 ## 24. 修订记录
 
 每次修改语言或工具链,在此登记;GUIDE 始终与实现同步。
+
+### v1.0.0-rc.2(R-6 G8 实现,2026-11-22;版本号随合并批统一)
+
+- **G8 污字节消费通道(ADR-012 清单 1–7/9 全落地,零新增 M 码)**:① 元素读解锁——污 `Vec[u8]` 下标 `v[i]` → `Untrusted[i64]`、`.get(i)` → `Option[Untrusted[i64]]`(不引入 `Untrusted[u8]` 载体;越界 M4003 同轨;mut 元素写不做);② 污标量代数——载体白名单 +i64、算术/位运算 11 算符传播(任一污 → `Untrusted[i64]`,i64 域封闭)、一元取负传播、比较六符放宽(任一污 → 净 bool;str/Json 跨污界 == 维持 M3002)、M3013 宽度门禁照旧;③ `bin.unpack_uN` 参数槽载体感知(污路径 `Result[Untrusted[i64], str]`,净路径逐字不变;Err 净 str 以 B1 审计为前提);④ `Vec[u8].to_hex` 新方法面(净收 → 净 str,污收 → `Untrusted[str]` 保污);⑤ 洗白旁路全表过审——污标量方法面 = 空白名单(M3050 全拒),净化器族第四次不扩;⑥ 引擎面零新机制(wasm/C 资格走既有载体解包;unpack/to_hex 函数内资格 = 不可达面,shape 级先行排除)。
+- **运行时污字节 i64 标签(实现期发现,ADR-012 §4.2"污域统一 i64,无回绕面"的机制承载)**:污源(`fs.read_bytes`/`read_bytes_range`/`env.get`/`io.read_line`/`fs.read_file`/`fs.list_dir`/`proc.exec` stdout+stderr/`net.http_*` body/响应头/`std.unstr.mark`/`mark_json`/污 str 经 `json.parse`)创建的载体值携带实现级 `__taint` 标记,经 **str keep 代数/拼接/str.join/Json 投影链(get/at/as_str)/to_hex/wire(spawn·serve 序列化,str/json 分支)全路径传播**,在 `bytes`/`to_bytes` 字节化边界落为元素 i64 标签——污字节算术无 v0.85 fits 门(`-b0`/`b0 * 3`/`b0 << 20` 全在 i64 域合法;`to_hex().to_bytes()` 往返保持 i64 域);**净 `Vec[u8]` 字节维持 u8 标签,既有窄型语义零变化**(§112.21 对照锚)。审查 B1 修复:标签传播路径(to_hex 往返/Json 投影链/wire str+json)已闭合,src/interp.js 标签机制处载显式不变量注释;serve 载荷 argWire 恒 t:1(载荷恒 Untrusted[Json] 硬约束)。
+- **测试**:新分节 §112 共 29 check(元素读双形态/越界 M4003 逐字/算术位运算 11 算符×三向/比较六符/一元取负/unpack 污路径 + B1 Err 审计/Ok 载荷保污 M3049/净路径逐字/to_hex 双载体 + sink/洗白 sink 族 6 位/方法面空白名单/M3013 两向/跨污界 == 零校准锚/复合赋值两向/签名声明 + Untrusted[f64] 负例/mut 写 M3020/for-in M3026/strict-wasm 形态/净侧 fits 门对照锚/read_bytes 实景/str 代数回归锚/panic 同轨;审查 B1 三路径回归(to_hex 往返/Json 投影链/spawn wire)+ B2 净窄型左移位 M3013 锁定 + 终修 wire Json 分支回归(spawn 收 Untrusted[Json] → worker 内投影链字节化 i64 域));负例翻转 3 位(v31/v80.2 污字节下标读 M3020 → 正例;v65.22 Untrusted[i64] 载体声明 → 正例,逐条理由化);fuzz 生成器扩展污字节形态 tbytes(元素读/位掩码/比较/污标量算术/unpack/to_hex,权重 ×6,三种子 4/9/6 程序命中)。
+- **文档**:GUIDE §18 污点节(污标量代数规则/元素读解锁/净污不对称注记/unpack 载体感知/空白名单)+ capabilities 污点行 + diagnostics M3020 注记(该类型停止触发,码号不改不删);plan §4.20 R-6 行收口由架构师合并批处理。
 
 ### v1.0.0-rc.1(2026-11-22):1.0-rc 准入批(非语言面,零新增 M 码)
 

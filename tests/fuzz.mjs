@@ -278,6 +278,10 @@ function genStmt(s, vars, strVar, mode, lines, ctx) {
 function genNarrowStmt(s, vars, lines, ctx) {
   void vars;
   const pool = ['nlet', 'nlet', 'nvec', 'ntuple', 'nmap', 'nmap', 'ninfer', 'ninfer', 'ninfer'];
+  // v1.0.0-rc.2(ADR-012 清单 12):污字节消费形态 ×6——第三载体元素读/位掩码/比较/
+  // 污标量算术/unpack/to_hex(新污标量面是差分盲区,不扩展则验收缺齿;权重 ×6 对齐
+  // v0.89 新面探测先例——窄型池满配 25 槽下 ~24%/narrow 槽,wide 族每种子 ~4-9 程序)
+  pool.push('tbytes', 'tbytes', 'tbytes', 'tbytes', 'tbytes', 'tbytes');
   if (ctx.nz) pool.push('nstruct', 'nstruct');
   if (ctx.hz) pool.push('nlambda', 'nlambda');
   // v0.89 新面探测权重 ×3:nlret/nenum 各自依赖前置声明(P=0.6),按净分布对齐
@@ -320,6 +324,44 @@ function genNarrowStmt(s, vars, lines, ctx) {
       lines.push(`    nu${s}[0] = ${e()};`);
       lines.push(`    x0 = x0 + (nu${s}[0] + ${k}u8) as i64 + nu${s}[2] as i64;`);
     }
+  } else if (kind === 'tbytes') {
+    // v1.0.0-rc.2(ADR-012 清单 12):污字节消费形态——mark().to_bytes() 第三载体元素读
+    // (Untrusted[i64])+ 位掩码/算术传播 + 比较净 bool 出 + unpack 载体感知槽 + to_hex。
+    // 污标量与 x0 的混合只经比较布尔(污标量零净出口;`as` 是禁面 M3050——与窄型形态的
+    // "as i64 通道"刻意不同)。字节值由生成器按源串静态已知,断言面 = 确定性;
+    // 10% 概率越界下标 → M4003 三腿一致 panic(panic 程序同样是差分面)。
+    const srcStr = pick(['a', 'ab', 'Zq', 'hello']);
+    const bytes = [...Buffer.from(srcStr, 'utf8')];
+    lines.push(`    let tb${s} = std.unstr.mark("${srcStr}").to_bytes();`);
+    const i0 = int(0, bytes.length - 1);
+    const bv = bytes[i0];
+    const form = pick(['mask', 'arith', 'cmpchain', 'unpack', 'hex']);
+    if (form === 'mask') {
+      // 位掩码传播 + 比较终结(污标量算术 → 净 bool)
+      lines.push(`    if (tb${s}[${i0}] & 15) == ${bv & 15} { x0 = x0 + ${int(1, 9)}; }`);
+      if (rng() < 0.5) lines.push(`    if (tb${s}[${i0}] | 128) >= 128 { x0 = x0 - ${int(1, 5)}; }`);
+    } else if (form === 'arith') {
+      // 算术传播三向(污×净/净×污/污×污)后比较终结
+      const j0 = int(0, bytes.length - 1);
+      const w = bytes[j0];
+      lines.push(`    if ((tb${s}[${i0}] * 2) + (tb${s}[${j0}] - tb${s}[${j0}])) == ${bv * 2} { x0 = x0 + ${k}; }`);
+      if (rng() < 0.5) lines.push(`    if (${w} - tb${s}[${j0}]) == 0 { x0 = x0 + ${int(1, 4)}; }`);
+    } else if (form === 'cmpchain') {
+      // 比较六符(清单 5):污 vs 净常量 → 净 bool
+      lines.push(`    if tb${s}[${i0}] == ${bv} { x0 = x0 + ${int(1, 9)}; }`);
+      lines.push(`    if tb${s}[${i0}] != ${bv} { x0 = x0 - ${int(1, 9)}; } else { x0 = x0 + 1; }`);
+      if (rng() < 0.5) lines.push(`    if tb${s}[${i0}] < ${bv + 1} { x0 = x0 + 1; }`);
+    } else if (form === 'unpack') {
+      // bin.unpack 载体感知槽(清单 6):污路径 Result[Untrusted[i64], str];len=1 时
+      // u16 短缓冲必 Err(Err 面 = x0 减),len≥2 按字节静态期望值判定
+      const need = bytes.length >= 2 && i0 + 2 <= bytes.length;
+      const expect = need ? (bytes[i0] << 8) | bytes[i0 + 1] : -1;
+      lines.push(`    match std.bin.unpack_u16_be(tb${s}, ${i0}) { Ok(n) => { if n == ${expect} { x0 = x0 + ${int(1, 6)}; } }, Err(_) => { x0 = x0 - ${int(1, 6)}; } }`);
+    } else {
+      // to_hex 保污编码 → print 出向透传(存储面合法,义务 5;确定性输出进差分比对)
+      lines.push(`    print(tb${s}.to_hex());`);
+    }
+    if (rng() < 0.10) lines.push(`    let _ = tb${s}[${bytes.length}];`);
   } else if (kind === 'nstruct') {
     // struct 窄型字段构造 + 读改写(§4.13.7 struct 字段边界;plain 字面量位 = 静默面;
     // plain 负 i32 字段实测可收窄,但保守起见 plain 恒非负,负值走后缀)

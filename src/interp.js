@@ -90,7 +90,9 @@ export function deepCopy(v) {
       return v;
     // v0.88(§4.13.7):__elemTy(元素规格标签)随拷贝保留——跨 let/传参/clone 边界的
     // vec 对象 push/元素写归一不断档(标签是规格树数据,元素对象共享安全)。
-    case 'vec': return { t: 'vec', a: v.a.map(deepCopy), __elemTy: v.__elemTy };
+    // 审查 B1(a):__taint(vec 级,字节化产物/源读取位打标)随拷贝保留——to_hex 从
+    // 接收者保标的读取位跨绑定边界不断档。
+    case 'vec': return { t: 'vec', a: v.a.map(deepCopy), __elemTy: v.__elemTy, __taint: v.__taint };
     // v0.87(ADR-009 S2):Slice 视图复制 = 复制视图引用(地址+偏移+长度),非数据拷贝
     // ——值语义世界的显式视图例外(ADR-009 §2.2);共享同一 base 数组,零数据拷贝。
     // checker 的 M3051 块内线性门禁保证视图不逃逸,深拷贝仅在解释器管线的值搬运位出现。
@@ -538,6 +540,29 @@ function intBinSlow(op, a, b, span) {
     default: throw new Error(`intBin: ${op}`);
   }
 }
+
+// ===================== 污字节运行时标记(v1.0.0-rc.2,ADR-012) =====================
+
+// 【显式不变量(审查 B1(d))】static Untrusted[i64] ⇒ runtime i64 label(无 fits 门):
+// 检查器类型为 Untrusted[i64] 的值,运行时必须携带 i64 元素标签,污域算术才与类型承诺
+// 一致。因此——污源载体值必须打 __taint(read_bytes/read_bytes_range/env.get/read_line/
+// read_file/list_dir/proc.exec stdout+stderr/net.http_* body+响应头/mark/mark_json/
+// json.parse 污实参),且所有**新建污载体值**的路径必须传播标记:str keep 代数(strMethodImpl
+// 包装器)/拼接(binopValues)/str.join/Json 投影链(jsonMethodImpl 包装器)/to_hex(接收者
+// 保标)/wire 序列化(vToWire/wireToV str/json 分支,serve argWire 恒 t:1)。新增任何产出 Untrusted[str]/
+// Untrusted[Json] 的运行时路径时,必须在此表补传播位——否则 check exit 0 的程序会以
+// u8 fits 门 M4002 形态运行期失败(B1 三路径教训:to_hex 往返/Json 投影链/spawn wire)。
+// 唯一消费位 = bytes/to_bytes 的字节元素创建(V.int i64 拓宽标签,见 taintBytesOf)——
+// "元素读即 i64 拓宽"(ADR-012 清单 1)的运行时形态:污字节参与算术走 i64 域(v0.85
+// fits 门对污域不适用,无回绕面,ADR-012 §4.2);净 Vec[u8] 字节维持 u8 标签(既有窄型
+// 语义零变化)。纪律:恒新建载体对象(str/json 不可变,复制对象头安全)——禁止对实参/
+// 池对象原地打标(VM OP.CONST 直推池共享对象,原地改会跨值污染);Json 投影的子树载荷
+// 例外(父已污、子树只经污上下文可达,向下打标一致)。
+export function taintStr(v) { return { ...v, __taint: true }; }
+
+// 污字节向量化:字节元素一律 i64 标签(污域统一 i64)。与净侧 [...buf].map(b =>
+// V.int(BigInt(b), 8, false)) 的唯一差异就是元素标签;值本身逐字节不变。
+export function taintBytesOf(buf) { return [...buf].map(b => V.int(BigInt(b))); }
 
 // ===================== 窄型绑定归一(v0.87,plan §4.13.7 / v0.85 审查 M1) =====================
 
@@ -1894,7 +1919,7 @@ export class Interp {
         // v0.60(#52):stdin 行按 UTF-16 长度计费(外部输入边界)
         const line = this.readLine();
         this.chargeAllocBytes(line.length, span);
-        return V.str(line);
+        return taintStr(V.str(line)); // v1.0.0-rc.2(ADR-012):污源标记(to_bytes 字节 i64 拓宽的传播起点)
       }
       // 日志(v0.28):级别过滤,`[LEVEL] msg` 到 stderr;set_level 非法值 = 程序员错误 → panic
       case 'log.debug': return this.logEmit(0, 'DEBUG', args[0].v);
@@ -1918,7 +1943,7 @@ export class Interp {
         if (size >= 0) this.chargeAllocBytes(size, span);
         try {
           const content = nodeFs.readFileSync(args[0].v, 'utf8');
-          return V.enumv('builtin-res', 'Ok', [V.str(content)]);
+          return V.enumv('builtin-res', 'Ok', [taintStr(V.str(content))]); // v1.0.0-rc.2(ADR-012):污源标记
         } catch (e) {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
@@ -1938,7 +1963,12 @@ export class Interp {
         this.chargeAllocBytes(st.size, span);
         try {
           const buf = nodeFs.readFileSync(args[0].v);
-          return V.enumv('builtin-res', 'Ok', [V.vec([...buf].map(b => V.int(BigInt(b), 8, false)))]);
+          // v1.0.0-rc.2(ADR-012 清单 1 + 审查 B1(a)):污字节元素 i64 标签 + vec 级 __taint
+          // ("元素读即 i64 拓宽"的运行时承载——污域算术无 fits 门;净 Vec[u8] 字节维持
+          // u8 标签,既有窄型语义零变化;vec 标记 = to_hex 从接收者保标的读取位)
+          const outRead = V.vec(taintBytesOf(buf));
+          outRead.__taint = true;
+          return V.enumv('builtin-res', 'Ok', [outRead]);
         } catch (e) {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
@@ -1991,7 +2021,12 @@ export class Interp {
           if (fd !== null) { try { nodeFs.closeSync(fd); } catch { /* 关闭失败不掩盖原结果 */ } }
         }
         this.chargeAllocBytes(bytes.length, span);
-        return V.enumv('builtin-res', 'Ok', [V.vec([...bytes].map(b => V.int(BigInt(b), 8, false)))]);
+        // v1.0.0-rc.2(ADR-012 清单 1 + 审查 B1(a)):污字节元素 i64 标签 + vec 级 __taint
+        // (与 read_bytes 同源同污同标签;审查中发现本位原实现漏改 u8 标签——§112.22
+        // 掩码值形态掩盖了它,非掩码算术会退 u8 门,已修并补 §112.25 非掩码回归)
+        const outRange = V.vec(taintBytesOf(bytes));
+        outRange.__taint = true;
+        return V.enumv('builtin-res', 'Ok', [outRange]);
       }
       case 'fs.write_bytes': {
         const r = this.u8VecToFile(args[0].v, args[1], 'write');
@@ -2033,7 +2068,7 @@ export class Interp {
         }
         // v0.60(#52):目录条目按元素数计费(外部输入边界)
         this.chargeAllocBytes(names.length, span);
-        return V.enumv('builtin-res', 'Ok', [V.vec(names.map(n => V.str(n)))]);
+        return V.enumv('builtin-res', 'Ok', [V.vec(names.map(n => taintStr(V.str(n))))]);
       }
       case 'fs.make_dir': {
         try {
@@ -2077,7 +2112,8 @@ export class Interp {
       case 'proc.exec': return this.procExec(args[0].v, args[1], span);
       case 'env.get': {
         const v = process.env[args[0].v];
-        return v === undefined ? V.enumv('builtin-opt', 'None', []) : V.enumv('builtin-opt', 'Some', [V.str(v)]);
+        // v1.0.0-rc.2(ADR-012):污源标记(to_bytes 字节 i64 拓宽的传播起点)
+        return v === undefined ? V.enumv('builtin-opt', 'None', []) : V.enumv('builtin-opt', 'Some', [taintStr(V.str(v))]);
       }
       case 'env.set': {
         try { process.env[args[0].v] = args[1].v; return V.enumv('builtin-res', 'Ok', [V.bool(true)]); }
@@ -2092,12 +2128,15 @@ export class Interp {
       // 运行时擦除:Untrusted 值就是载体值,无污点位——这里只按值形态判定,不做能力检查
       // (效果门禁在 checker 侧签名;族内全无效果 → 契约内可调用,M4015 场景)。
       case 'unstr.mark':
-        // 标脏不改值:返回实参原值(值即载体;span 透传由调用层承担)
-        return args[0];
+        // 标脏不改值(值即载体;span 透传由调用层承担)。v1.0.0-rc.2(ADR-012):返回
+        // **新建**载体对象并打运行时污标记——实参可能是池共享常量(OP.CONST 直推)或
+        // 变量持有的值,原地打标会跨值污染;标记唯一消费位 = bytes/to_bytes 字节化边界。
+        return taintStr({ ...args[0] });
       case 'unstr.mark_json':
-        // v0.68/ADR-004 §3.3:标脏入口(Json→Untrusted[Json])——运行时擦除直返,与 mark 同款
-        // (值即载体,无污点位;span 透传由调用层承担)
-        return args[0];
+        // v0.68/ADR-004 §3.3:标脏入口(Json→Untrusted[Json])——值即载体,span 透传由
+        // 调用层承担。审查 B1(b):返回**新建**根对象并打 __taint(实参可能是共享对象,
+        // 原地打标会跨值污染;投影链 get/at/as_str 的标记起点)
+        return { ...args[0], __taint: true };
       case 'unstr.sanitize_path': {
         // Err 判定顺序固定(ADR §3.4):空串 → 绝对路径 → .. 段 → 空段
         const raw = args[0].v;
@@ -2203,7 +2242,10 @@ export class Interp {
         // v0.59(#49):按结果长度计费,与 Vec 方法 join(interp 内 out.length)及 `+` 同口径;
         // 此前不计费 → 同程序 std.join 在紧配额下 exit 0 而 Vec.join M4011(不对称)。
         this.chargeAllocBytes(out.length, span);
-        return V.str(out);
+        // v1.0.0-rc.2(ADR-012):任一元素污 str → 结果跟随(污点只增不减)
+        const joined = V.str(out);
+        if (parts.some(x => x.__taint)) joined.__taint = true;
+        return joined;
       }
       // v0.77(ADR-007 清单 4):str.index_of(hay, needle) -> Option[i64]——污值代数最小集
       // 补齐(定位唯一匹配;mingkit/edit 迁移面缺口)。返回**字符**(码点)下标,与
@@ -2224,7 +2266,11 @@ export class Interp {
       }
       case 'json.parse': {
         try {
-          return V.enumv('builtin-res', 'Ok', [parseJsonText(args[0].v)]);
+          const root = parseJsonText(args[0].v);
+          // 审查 B1(b):污 str 解析出的 Json 树根打 __taint(污进污出的运行时承载,
+          // 投影链 get/at/as_str 的标记起点;parseJsonText 每次新建根对象,打标安全)
+          if (args[0].__taint) root.__taint = true;
+          return V.enumv('builtin-res', 'Ok', [root]);
         } catch (e) {
           return V.enumv('builtin-res', 'Err', [V.str(String(e.message))]);
         }
@@ -2475,8 +2521,23 @@ export class Interp {
     }
   }
 
-  // Json 方法(recv.t === 'json')
+  // Json 方法(recv.t === 'json')。审查 B1(b):污 Json 接收者的投影链标记包装——
+  // as_str 新建 str 打标;get/at 载荷(Json 子树,父已污、子树只经污上下文可达,
+  // 向下打标一致)与 as_arr 元素打标;as_bool/as_num 净标量不触碰(ADR-004 清单 9)。
   jsonMethodImpl(recv, name, args, span) {
+    const r = this.jsonMethodImplInner(recv, name, args, span);
+    if (recv.__taint && r) {
+      if (r.t === 'str') r.__taint = true;
+      else if (r.t === 'enum' && r.def === 'builtin-opt' && r.tag === 'Some') {
+        const p = r.vals[0];
+        if (p?.t === 'str' || p?.t === 'json') p.__taint = true;
+        else if (p?.t === 'vec') for (const x of p.a) { if (x.t === 'json') x.__taint = true; }
+      }
+    }
+    return r;
+  }
+
+  jsonMethodImplInner(recv, name, args, span) {
     const j = recv;
     switch (name) {
       case 'is_null': return V.bool(j.kind === 'null');
@@ -2591,8 +2652,8 @@ export class Interp {
     this.chargeAllocBytes(parsed.stdout.length + parsed.stderr.length, span);
     return V.enumv('builtin-res', 'Ok', [V.tuple([
       V.int(BigInt(parsed.exit)),
-      V.str(parsed.stdout),
-      V.str(parsed.stderr),
+      taintStr(V.str(parsed.stdout)), // v1.0.0-rc.2(ADR-012):污源标记
+      taintStr(V.str(parsed.stderr)),
     ])]);
   }
 
@@ -3339,7 +3400,9 @@ export class Interp {
       '}',
       'function dispatch(task) {',
       '  active += 1; // 名额占用;启动失败/结果取回/超时时同步释放(清单 16)',
-      '  const argWire = JSON.stringify([{ w: "json", kind: "obj", v: task.reqJson }]);',
+      // 审查终修 3:serve 载荷恒为 Untrusted[Json](checker 签名硬约束)→ wire 恒带
+      // t 键——handler 投影链(get/as_str)在请求 worker 内从根级恢复污标记
+      '  const argWire = JSON.stringify([{ w: "json", kind: "obj", v: task.reqJson, t: 1 }]);',
       '  const sab = new SharedArrayBuffer(8 + workerData.cap);', // 清单 6:复用 spawn 的 32MB/请求 SAB 预留
       '  const wi32 = new Int32Array(sab);',
       '  let worker;',
@@ -3531,11 +3594,12 @@ export class Interp {
     this.chargeAllocBytes(body.length, span);
     const hdrJson = hlen > 0 ? Buffer.from(sab, 8 + CAP, hlen).toString('utf8') : '{}';
     const headersMap = new Map();
-    for (const [k, v] of Object.entries(JSON.parse(hdrJson))) headersMap.set(k, V.str(v));
+    // v1.0.0-rc.2(ADR-012):污源标记(响应头键值同污 v0.82 口径;values() 元素 → to_bytes 传播起点)
+    for (const [k, v] of Object.entries(JSON.parse(hdrJson))) headersMap.set(k, taintStr(V.str(v)));
     if (o.withHeaders) {
-      return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), V.map(headersMap), V.str(body)])]);
+      return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), V.map(headersMap), taintStr(V.str(body))])]);
     }
-    return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), V.str(body)])]);
+    return V.enumv('builtin-res', 'Ok', [V.tuple([V.int(BigInt(status)), taintStr(V.str(body))])]);
   }
 
   httpRequest(method, url, headersVal, body, span) {
@@ -3723,6 +3787,23 @@ export class Interp {
         }
         return V.str(buf.toString('utf8'));
       }
+      // v1.0.0-rc.2(ADR-012 清单 7):字节 → hex 编码(纯函数;小写无前缀,与
+      // fmt.hex/crypto digest('hex') 同风格)。污点擦除:净/污接收者同一实现,
+      // 输出类型标注(净 str vs Untrusted[str])由 checker 决定。逐字节查表编码
+      // 确定性;非法元素 panic 与 to_str 同轨(M4001,消息逐字风格)。
+      // 审查 B1(a):污接收者的输出 str 打 __taint(从接收者保标)——hex 是字节化的
+      // 逆变换,`to_hex().to_bytes()` 往返必须保持 i64 标签,否则二次字节化退回 u8 门。
+      case 'to_hex': {
+        let out = '';
+        for (let i = 0; i < a.length; i++) {
+          const el = a[i];
+          if (el.t !== 'int' || el.v < 0n || el.v > 255n) {
+            throw new Panic('M4001', `to_hex:元素 #${i} 不在 u8 范围(0-255)`, span);
+          }
+          out += el.v.toString(16).padStart(2, '0');
+        }
+        return recv.__taint ? taintStr(V.str(out)) : V.str(out);
+      }
       case 'sort': {
         const first = a[0];
         if (first && (first.t === 'int' || first.t === 'float')) a.sort((x, y) => (x.v < y.v ? -1 : x.v > y.v ? 1 : 0));
@@ -3829,7 +3910,30 @@ export class Interp {
     }
   }
 
+  // v1.0.0-rc.2(ADR-012):污 str 接收者的运行时污标记传播包装——recv.__taint(污源/
+  // mark 打标)沿 keep 代数面跟随派生 str(keep 家族输出全是新建对象,原地打标安全),
+  // 并在字节化边界(bytes/to_bytes)落为元素 i64 标签("元素读即 i64 拓宽"的运行时承载)。
+  // 结果按形态分流:str → 打标;vec-of-str(chars/split)→ 元素打标;Some(str)(get)→
+  // 载荷打标;vec-of-int(bytes/to_bytes)→ 元素 i64 标签重标(taintBytesOf 同口径)。
+  // 净接收者短路零开销(__taint 未定义 → falsy);clean 输出(bool/int/None)不触碰。
   strMethodImpl(recv, name, args, span) {
+    const r = this.strMethodImplInner(recv, name, args, span);
+    if (recv.__taint && r) {
+      if (r.t === 'str') r.__taint = true;
+      else if (r.t === 'vec') {
+        // 审查 B1(a):字节化产物 vec 打 vec 级标记(to_hex 从接收者保标的读取位;
+        // 元素 i64 标签之外的载体级信号——deepCopy/wire 沿 __taint 透传保持)
+        r.__taint = true;
+        if (r.a.length > 0 && r.a[0].t === 'str') { for (const x of r.a) x.__taint = true; }
+        else { for (let i = 0; i < r.a.length; i++) { if (r.a[i].t === 'int') r.a[i] = V.int(r.a[i].v); } }
+      } else if (r.t === 'enum' && r.def === 'builtin-opt' && r.tag === 'Some' && r.vals[0]?.t === 'str') {
+        r.vals[0].__taint = true;
+      }
+    }
+    return r;
+  }
+
+  strMethodImplInner(recv, name, args, span) {
     const s = recv.v;
     switch (name) {
       case 'eq': return V.bool(valueEquals(recv, args[0]));
@@ -4016,7 +4120,11 @@ export class Interp {
         }
         if (op === '+' && l.t === 'str' && r.t === 'str') {
           this.chargeAllocBytes(l.v.length + r.v.length, span);
-          return V.str(l.v + r.v);
+          const out = V.str(l.v + r.v);
+          // v1.0.0-rc.2(ADR-012):拼接传播的运行时承载——任一侧污 str,结果跟随
+          // (checker v0.77 微调①同构;标记沿 to_bytes 字节化边界继续生效)
+          if (l.__taint || r.__taint) out.__taint = true;
+          return out;
         }
         throw new Panic('M3008', `运算符 "${op}" 不支持 ${l.t} 与 ${r.t}`, span);
       }
@@ -4257,10 +4365,15 @@ export function vToWire(v) {
     case 'int': return { w: 'int', bits: v.bits, signed: v.signed, v: v.v.toString() };
     case 'float': return { w: 'float', bits: v.bits, v: floatToWire(v.v) };
     case 'bool': return { w: 'bool', v: v.v };
-    case 'str': return { w: 'str', v: v.v };
+    // 审查 B1(c):污 str 的 wire 值带 t 键(spawn 任务参数/serve 载荷/任务返回;
+    // 净 str 无 t 键 → wire 形态与修复前逐字相同)
+    case 'str': return { w: 'str', v: v.v, t: v.__taint ? 1 : undefined };
     case 'unit': return { w: 'unit' };
-    case 'json': return { w: 'json', kind: v.kind, v: jsonWireOf(v) };
-    case 'vec': return { w: 'vec', a: v.a.map(vToWire) };
+    // 审查终修 1:污 Json 的 wire 值带 t 键(spawn 任务参数/任务返回;净 Json 无 t 键
+    // → wire 形态与修复前逐字相同)
+    case 'json': return { w: 'json', kind: v.kind, v: jsonWireOf(v), t: v.__taint ? 1 : undefined };
+    // 审查 B1(c) vec 侧:污 vec 的 wire 值带 t 键(净 vec 无 t 键 → 形态逐字不变)
+    case 'vec': return { w: 'vec', a: v.a.map(vToWire), t: v.__taint ? 1 : undefined };
     case 'map': return { w: 'map', e: [...v.m.entries()].map(([k, val]) => [wireKey(k), vToWire(val)]) };
     case 'enum': {
       if (v.def === 'builtin-opt') {
@@ -4299,15 +4412,29 @@ export function wireToV(w) {
     case 'int': return V.int(BigInt(w.v), w.bits, w.signed);
     case 'float': return V.float(floatFromWire(w.v), w.bits ?? 64);
     case 'bool': return V.bool(w.v);
-    case 'str': return V.str(w.v);
+    // 审查 B1(c):污 str 跨任务/serve wire 保留 __taint(t 键仅在污值出现;
+    // JSON.stringify 丢弃 undefined → 净 str wire 形态逐字不变,双向兼容)
+    case 'str': return w.t ? taintStr(V.str(w.v)) : V.str(w.v);
     case 'unit': return UNIT;
     // v0.62(S2 serve 修复):顶层 Json 值此前被 jsonUnwire 多包一层(V.json 外壳)——
     // Ming Json obj 表示是 {t:'json', kind:'obj', v: Map},而非 v: V.json(...);
     // 双重包裹使 .get/.as_* 全部落 j.v.has is not a function。spawn/join 顶层 Json 载荷
     // 同受影响(潜伏 bug,serve 请求载荷首触达)。取 .v 解一层,nested 值(jsonUnwire
     // 返回的 V.json)不受影响——与 parseJsonText 的表示对齐。
-    case 'json': return { t: 'json', kind: w.kind, v: jsonUnwire(w.kind, w.v).v };
-    case 'vec': return V.vec(w.a.map(wireToV));
+    // 审查终修 2:污 Json 的 wire 值带 t 键——根级 __taint 恢复(jsonMethodImpl 包装器
+    // 向下传播已就绪,根级恢复即充分;净 Json 无 t 键 → 构造形态与修复前逐字相同)
+    case 'json': {
+      const outJ = { t: 'json', kind: w.kind, v: jsonUnwire(w.kind, w.v).v };
+      if (w.t) outJ.__taint = true;
+      return outJ;
+    }
+    // 审查 B1(c) vec 侧:污 vec 的 wire 值带 t 键(to_hex 从接收者保标的读取位跨
+    // spawn/serve 边界不断档;净 vec 无 t 键,wire 形态与修复前逐字相同)
+    case 'vec': {
+      const outV = V.vec(w.a.map(wireToV));
+      if (w.t) outV.__taint = true;
+      return outV;
+    }
     case 'map': {
       const m = new Map();
       for (const [k, val] of w.e) m.set(unwireKey(k), wireToV(val));

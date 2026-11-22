@@ -732,7 +732,9 @@ export const UNTRUSTED_METHODS = {
     'pad_left', 'pad_right', 'chars', 'split', 'get', 'bytes', 'to_bytes'],
   json: ['get', 'at', 'as_str', 'as_num', 'as_bool', 'as_arr', 'as_obj',
     'is_null', 'is_bool', 'is_num', 'is_str', 'is_arr', 'is_obj', 'eq'],
-  vec: ['len', 'is_empty'],
+  // v1.0.0-rc.2(ADR-012 清单 1/7):vec 键扩 get(元素读解锁,Option[Untrusted[i64]],
+  // 元素读即 i64 拓宽)与 to_hex(字节→hex 保污编码,Untrusted[str])。
+  vec: ['len', 'is_empty', 'get', 'to_hex'],
   map: ['len', 'is_empty', 'get', 'has', 'keys', 'values'],
 };
 
@@ -1021,6 +1023,9 @@ export class Checker {
           // v0.82(ADR-008 清单 4):白名单扩入 Map[str,str](第四载体,键值同污)——
           // http 响应头标污载体;argv 未曾需要新载体(元素级 Vec[Untrusted[str]] 复用
           // str 载体,ADR-008 清单 1),"待解锁清单"中的 argv 项就此销项。
+          // v1.0.0-rc.2(ADR-012 清单 3):白名单扩入 i64(污标量载体)——元素读/算术
+          // 衍生的污标量可声明(过 helper 签名);无 f64(无来源)、无直接 source、
+          // extern 返回污标量不预支(ADR-012 §8)。
           // 剩余待解锁清单 = u8 原始载体/其他容器,按净化器授权矩阵另裁决(ADR-004 §6.1)。
           if (parts.length === 1 && t.name === 'Untrusted') {
             if (t.args.length !== 1) {
@@ -1030,9 +1035,10 @@ export class Checker {
             const el = go(t.args[0]);
             const isVecU8 = el?.k === 'vec' && el.el?.k === 'int' && el.el.bits === 8 && el.el.signed === false;
             const isMapSS = el?.k === 'map' && el.kt?.k === 'str' && el.vt?.k === 'str';
-            if (el?.k !== 'str' && el?.k !== 'json' && !isVecU8 && !isMapSS) {
+            const isI64 = el?.k === 'int' && el.bits === 64 && el.signed === true;
+            if (el?.k !== 'str' && el?.k !== 'json' && !isVecU8 && !isMapSS && !isI64) {
               self.diags.push(err('M3050',
-                `Untrusted 的载体类型只支持 str/Json/Vec[u8]/Map[str,str],得到 ${typeStr(el)}(其余载体待解锁清单:u8 原始载体/其他容器等,按净化器授权矩阵另裁决,ADR-004 §6.1)`,
+                `Untrusted 的载体类型只支持 str/Json/Vec[u8]/Map[str,str]/i64,得到 ${typeStr(el)}(其余载体待解锁清单:u8 原始载体/其他容器等,按净化器授权矩阵另裁决,ADR-004 §6.1)`,
                 t.span, CODE_HINTS.M3050));
               return mkUntrusted(T_STR);
             }
@@ -1154,7 +1160,11 @@ export class Checker {
         ? '不可信 Json:先经 .as_str() 投影取出 Untrusted[str] 字段并净化(重建 Json 走 std.json.parse),或把目标改声明为 Untrusted[Json]'
         : carrier?.k === 'map'
           ? '不可信 Map:经投影表只读消费(get/has/keys/values,键为净 str),或把目标改声明为 Untrusted[Map[str, str]](v0.82 第四载体,无净化器——ADR-008)'
-          : '不可信值:先净化,或把目标改声明为 Untrusted[str]';
+          : carrier?.k === 'vec'
+            ? '不可信字节:经投影消费(len/is_empty/get 元素读/unpack_uN/to_hex 保污编码,ADR-012),或把目标改声明为 Untrusted[Vec[u8]]'
+            : carrier?.k === 'int'
+              ? '不可信标量:污标量无净化器(空白名单,ADR-012 §4.6),把目标改声明为 Untrusted[i64](污点只增不减;唯一净出口 = 比较输出 bool)'
+              : '不可信值:先净化,或把目标改声明为 Untrusted[str]';
     } else {
       remedy = '不可信值嵌套于复合类型:先投影取出污值(容器 .get/.unwrap/解构)再按其载体净化(str 载荷经 std.unstr.sanitize_*;Json 载荷经 .as_str() 投影后净化),或在目标类型对应位置承载 Untrusted';
     }
@@ -2724,6 +2734,15 @@ export class Checker {
         const baseT = this.checkExpr(e.base, ctx);
         const r = resolveT(baseT, new Map());
         const iT = this.checkExpr(e.index, ctx);
+        // v1.0.0-rc.2(ADR-012 清单 1)污字节元素读解锁:Untrusted[Vec[u8]] 下标读
+        // → Untrusted[i64](元素读即 i64 拓宽,不引入 Untrusted[u8] 载体;"校验 ≠ 净化",
+        // 读取不构成洗白出口——提取出的字节仍是攻击者可控原始数据)。越界 M4003 消息与
+        // 退出码 101 与净 Vec 同轨逐字(运行时擦除,同一求值路径);mut 元素写不做
+        // (ADR-012 §8——checkPlace 索引赋值位维持 M3020)。
+        if (r?.k === 'untrusted' && resolveT(r.el, new Map())?.k === 'vec') {
+          if (!unify(iT, INT_TYPES.i64, new Map())) this.diags.push(err('M3002', `Vec 索引必须是 i64,实际是 ${typeStr(iT)}`, e.index.span));
+          return mkUntrusted(INT_TYPES.i64);
+        }
         if (r?.k === 'vec') {
           if (!unify(iT, INT_TYPES.i64, new Map())) this.diags.push(err('M3002', `Vec 索引必须是 i64,实际是 ${typeStr(iT)}`, e.index.span));
           return r.el;
@@ -2764,6 +2783,9 @@ export class Checker {
             '先转换为 i64 再取负:-(x as i64)。'));
           return t;
         }
+        // v1.0.0-rc.2(ADR-012 §4.2)污标量取负传播对称:Untrusted[i64] → Untrusted[i64]
+        // (污点只增不减;运行时擦除,与净侧同一求值路径)。
+        if (r?.k === 'untrusted' && resolveT(r.el, new Map())?.k === 'int') return t;
         if (r?.k === 'int' || r?.k === 'float') return t;
         this.diags.push(err('M3008', `一元 "-" 要求数字类型,实际是 ${typeStr(r)}`, e.expr.span));
         return t;
@@ -5024,6 +5046,34 @@ export class Checker {
       }
       return f.fn.ret;
     }
+    // v1.0.0-rc.2(ADR-012 清单 6):bin.unpack_* 参数槽载体感知——污 Vec[u8] 合法流入
+    // 纯函数提取(端序在函数名中显式,不另造 to_uN 方法族 = ADR-007 清单 6"API 不对称 +
+    // 双份漂移"否决理由逐字适用),污路径输出 Result[Untrusted[i64], str](载荷保污,
+    // 提取语义同元素读);净路径逐字不变(签名面不动,只加感知)。Err 净 str 以 B1 审计
+    // 为前提(interp binUnpack 全部 Err 文本 = 位置/长度信息,无字节内容回显——实现期
+    // 复核存档,ADR-012 §4.3)。u64 > i64::MAX 的补码位型回绕净污同轨(同一实现)。
+    if (f.mod === 'bin' && f.fn.name.startsWith('unpack_') && e.args.length === 2) {
+      const bytesBase = mkVec(INT_TYPES.u8);
+      const bt = this.checkExpr(e.args[0], ctx, bytesBase, true);
+      const br = resolveT(bt, new Map());
+      const ot = this.checkExpr(e.args[1], ctx, INT_TYPES.i64, true);
+      if (br?.k === 'untrusted' && unify(br.el, bytesBase, new Map())) {
+        if (!this.untrustedMismatchDiag(ot, INT_TYPES.i64, e.args[1].span, '参数 #2 类型不匹配')
+          && !unify(ot, INT_TYPES.i64, binds)) {
+          this.diags.push(err('M3002', `参数 #2 类型不匹配:期望 i64,实际 ${typeStr(ot, binds)}`, e.args[1].span));
+        }
+        return mkRes(mkUntrusted(INT_TYPES.i64), T_STR);
+      }
+      if (!this.untrustedMismatchDiag(bt, bytesBase, e.args[0].span, '参数 #1 类型不匹配')
+        && !unify(bt, bytesBase, binds)) {
+        this.diags.push(err('M3002', `参数 #1 类型不匹配:期望 Vec[u8],实际 ${typeStr(bt, binds)}`, e.args[0].span));
+      }
+      if (!this.untrustedMismatchDiag(ot, INT_TYPES.i64, e.args[1].span, '参数 #2 类型不匹配')
+        && !unify(ot, INT_TYPES.i64, binds)) {
+        this.diags.push(err('M3002', `参数 #2 类型不匹配:期望 i64,实际 ${typeStr(ot, binds)}`, e.args[1].span));
+      }
+      return f.fn.ret;
+    }
     e.args.forEach((a, i) => {
       const p = f.fn.params[i];
       if (typeof p === 'string' && p === 'jsonval') {
@@ -5139,17 +5189,25 @@ export class Checker {
       const wl = UNTRUSTED_METHODS[carrier?.k] ?? [];
       if (!wl.includes(name)) {
         const surface = carrier?.k === 'vec'
-          ? `Untrusted[Vec[u8]] 只能用 ${wl.join(' / ')}(操作面 = 载体计数;元素消费面 re/bin/crypto 维持净槽)`
-          : `Untrusted[str] 只能用污值代数面 ${wl.join(' / ')}(逐函数裁决见 UNTRUSTED_STR_ALGEBRA);要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path`;
+          ? `Untrusted[Vec[u8]] 只能用 ${wl.join(' / ')}(载体计数/元素读解锁/hex 保污编码;re/crypto 消费面维持净槽,bin.unpack 已载体感知)`
+          : carrier?.k === 'int'
+            ? 'Untrusted[i64] 的方法面是空白名单(污标量无方法——唯一净出口 = 比较输出 bool;无 to_str 无净化器,防堵 污 i64 → 净 str → sink 串注入,ADR-012 §4.6)'
+            : `Untrusted[str] 只能用污值代数面 ${wl.join(' / ')}(逐函数裁决见 UNTRUSTED_STR_ALGEBRA);要产出净 str,先过 std.unstr.sanitize_path 或 std.unstr.sanitize_cli_path`;
         this.diags.push(err('M3050',
           `${typeStr(r)} 没有方法 ".${name}"(白名单外:${surface})`,
           fieldCallee.span, CODE_HINTS.M3050));
         return null;
       }
       if (carrier?.k === 'vec') {
-        // Untrusted[Vec[u8]] 接收者:按载体 vec 类型走既有 vec 方法(len/is_empty
-        // 不触元素,无洗白面;to_str 等在白名单外已拒)。
-        return this.vecMethod(carrier, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
+        // Untrusted[Vec[u8]] 接收者:len/is_empty 白名单计数不触元素;get = 元素读解锁
+        // (v1.0.0-rc.2 ADR-012 清单 1——Option[Untrusted[i64]],元素读即 i64 拓宽);
+        // to_hex = 保污编码(v1.0.0-rc.2 ADR-012 清单 7——Untrusted[str],hex 可逆变,
+        // 净输出 = 字节级洗白通道);其余按载体 vec 类型走既有面(to_str 在白名单外已拒)。
+        const ret = this.vecMethod(carrier, name, args, ctx, callNode, expected, mutNeeded, fieldCallee);
+        if (!ret) return ret;
+        if (name === 'get') return mkOpt(mkUntrusted(INT_TYPES.i64));
+        if (name === 'to_hex') return mkUntrusted(T_STR);
+        return ret;
       }
       // str 载体:污值代数分派
       const kind = UNTRUSTED_STR_ALGEBRA[name];
@@ -5382,6 +5440,17 @@ export class Checker {
         // v0.31:仅 Vec[u8] 支持(UTF-8 解码,无效序列 → U+FFFD)
         if (!(T && T.k === 'int' && T.bits === 8 && T.signed === false)) {
           this.diags.push(err('M3015', `Vec[${typeStr(T, binds)}] 没有方法 ".to_str"(只有 Vec[u8] 支持,UTF-8 解码)`, span));
+          return null;
+        }
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return T_STR;
+      }
+      case 'to_hex': {
+        // v1.0.0-rc.2(ADR-012 清单 7):字节→hex 编码(纯函数,无效果)——仅 Vec[u8]。
+        // 输出类型由接收者载体决定(污接收者的包装在污 vec 分派位:Untrusted[str] 保污——
+        // hex 是内容保持的双射编码,净输出 = 字节级洗白通道);净接收者 → 净 str。
+        if (!(T && T.k === 'int' && T.bits === 8 && T.signed === false)) {
+          this.diags.push(err('M3015', `Vec[${typeStr(T, binds)}] 没有方法 ".to_hex"(只有 Vec[u8] 支持)`, span));
           return null;
         }
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
@@ -6011,6 +6080,12 @@ export class Checker {
     }
     const both = (pred) => l && r && pred(l) && pred(r);
     const same = () => unify(l, r, binds);
+    // v1.0.0-rc.2(ADR-012 清单 4/5)污标量判定与底层展开:Untrusted[i64](载体白名单
+    // 唯一标量形态,ADR-012 清单 3)参与算术/位运算/比较。taintScalar 判污标量;
+    // underInt 展开到底层 int 型——宽度门禁按底层型执行(污标量仅与 i64 域自由组合,
+    // 净窄型不隐式拓宽,ADR-012 §4.2),错误消息用原类型渲染(污标签可见)。
+    const taintScalar = (t) => t?.k === 'untrusted' && resolveT(t.el, new Map())?.k === 'int';
+    const underInt = (t, taint) => (taint ? resolveT(t.el, new Map()) : t);
     switch (op) {
       case '+': case '-': case '*': case '/': {
         if (op === '+' && l?.k === 'str' && r?.k === 'str') return T_STR;
@@ -6021,6 +6096,22 @@ export class Checker {
           const isStrish = (t) => t?.k === 'str' || (t?.k === 'untrusted' && resolveT(t.el, new Map())?.k === 'str');
           if (isStrish(l) && isStrish(r) && (l.k === 'untrusted' || r.k === 'untrusted')) {
             return mkUntrusted(T_STR);
+          }
+        }
+        // v1.0.0-rc.2(ADR-012 清单 4)污标量算术传播:任一操作数为污标量 → 结果
+        // Untrusted[i64](i64 域封闭;拼接传播同构,拒绝位后移到消费 sink)。
+        const lT = taintScalar(l), rT = taintScalar(r);
+        if (lT || rT) {
+          const li = underInt(l, lT), ri = underInt(r, rT);
+          if (li?.k === 'int' && ri?.k === 'int') {
+            if (!unify(li, ri, binds)) {
+              const d = li.signed === ri.signed
+                ? err('M3013', `整数宽度不同:${typeStr(l)} 与 ${typeStr(r)} 不能直接运算`, span, CODE_HINTS.M3013)
+                : err('M3013', `有符号与无符号不能直接运算:${typeStr(l)} 与 ${typeStr(r)}`, span, CODE_HINTS.M3013);
+              this.diags.push(d); // 污标量组合不发射拓宽处方(fix 域不含污标注,登记)
+              return lT ? l : mkUntrusted(INT_TYPES.i64);
+            }
+            return mkUntrusted(INT_TYPES.i64);
           }
         }
         if (both(t => t.k === 'int')) {
@@ -6067,22 +6158,62 @@ export class Checker {
         return l ?? null;
       }
       case '%': {
+        // v1.0.0-rc.2(ADR-012 清单 4)污标量传播:任一污标量 → 按底层 int 判定,
+        // 同宽 → Untrusted[i64](位掩码/取模是协议解析主食)。
+        if ((taintScalar(l) || taintScalar(r))
+          && underInt(l, taintScalar(l))?.k === 'int' && underInt(r, taintScalar(r))?.k === 'int'
+          && unify(underInt(l, taintScalar(l)), underInt(r, taintScalar(r)), binds)) {
+          return mkUntrusted(INT_TYPES.i64);
+        }
         if (both(t => t.k === 'int') && same()) return l;
         this.diags.push(err('M3008', `"%" 只支持同宽度的整数(${typeStr(l)} 与 ${typeStr(r)})`, span));
         return l ?? null;
       }
       case '<<': case '>>': {
-        if (l?.k === 'int' && r?.k === 'int') return l;
+        // v1.0.0-rc.2(ADR-012 清单 4)污标量传播:移位位型沿左操作数(既有口径——
+        // 移位量宽度不参与 same 判定)。审查 B2:净窄型左操作数 × 污标量按 §4.2 拒绝
+        // (M3013,不放宽)——移位的运行时位型/回绕门沿左操作数值标签,静态 Untrusted[i64]
+        // 与 u8 门(0..bits-1)矛盾;污左(或净 i64 左)→ Untrusted[i64](运行时 i64 标签
+        // 一致);污移位量 × 净窄移位量语义与净 i64 << u8 同轨(位数越界 M4002 值判定)。
+        if (taintScalar(l) || taintScalar(r)) {
+          const li = underInt(l, taintScalar(l)), ri = underInt(r, taintScalar(r));
+          if (li?.k === 'int' && ri?.k === 'int') {
+            if (!taintScalar(l) && !(li.bits === 64 && li.signed === true)) {
+              const d = li.signed === ri.signed
+                ? err('M3013', `整数宽度不同:${typeStr(l)} 与 ${typeStr(r)} 不能直接运算`, span, CODE_HINTS.M3013)
+                : err('M3013', `有符号与无符号不能直接运算:${typeStr(l)} 与 ${typeStr(r)}`, span, CODE_HINTS.M3013);
+              this.diags.push(d);
+              return l;
+            }
+            return mkUntrusted(INT_TYPES.i64);
+          }
+        } else if (l?.k === 'int' && r?.k === 'int') return l;
         this.diags.push(err('M3008', `"${op}" 要求两侧都是整数(${typeStr(l)}, ${typeStr(r)})`, span));
         return l ?? null;
       }
       case '&': case '|': case '^': {
+        // v1.0.0-rc.2(ADR-012 清单 4)污标量传播:同宽度判定按底层 int(b & 0x0F
+        // 掩码拼接是协议解析主食);污标量 × 净窄型 → M3008 照旧(不放宽)。
+        if ((taintScalar(l) || taintScalar(r))
+          && underInt(l, taintScalar(l))?.k === 'int' && underInt(r, taintScalar(r))?.k === 'int'
+          && unify(underInt(l, taintScalar(l)), underInt(r, taintScalar(r)), binds)) {
+          return mkUntrusted(INT_TYPES.i64);
+        }
         if (both(t => t.k === 'int') && same()) return l;
         if (l?.k === 'bool' && r?.k === 'bool') this.diags.push(err('M3008', '布尔运算用 && / ||,不用 & / |', span));
         else this.diags.push(err('M3008', `"${op}" 只支持同宽度整数(${typeStr(l)}, ${typeStr(r)})`, span));
         return l ?? null;
       }
       case '<': case '<=': case '>': case '>=': {
+        // v1.0.0-rc.2(ADR-012 清单 5)污标量比较放宽(限标量 i64):任一侧污标量
+        // → 按底层 int 宽度判定(净窄型不隐式拓宽,M3008 照旧),输出净 bool
+        // (长度边界判定的基本原语;污点在布尔上终结,ADR-004 清单 9 先例)。
+        if (taintScalar(l) || taintScalar(r)) {
+          const okT = underInt(l, taintScalar(l))?.k === 'int' && underInt(r, taintScalar(r))?.k === 'int'
+            && unify(underInt(l, taintScalar(l)), underInt(r, taintScalar(r)), binds);
+          if (!okT) this.diags.push(err('M3008', `"${op}" 不能比较 ${typeStr(l)} 与 ${typeStr(r)}`, span));
+          return T_BOOL;
+        }
         const ok = (both(t => t.k === 'int') && same()) || (both(t => t.k === 'float') && same()) || (both(t => t.k === 'str'));
         if (!ok) {
           const d = err('M3008', `"${op}" 不能比较 ${typeStr(l)} 与 ${typeStr(r)}`, span);
@@ -6096,6 +6227,19 @@ export class Checker {
         return T_BOOL;
       }
       case '==': case '!=': {
+        // v1.0.0-rc.2(ADR-012 清单 5)污标量比较载体放宽(限标量 i64):任一侧污标量
+        // → 按底层 int 判定,输出净 bool(比较不外流载荷;"从帧里读一个字节与期望值
+        // 比较"是 G8 关闭的硬约束——mark 仅 str,常量侧无法标污)。范围限定:str/Json/
+        // Vec[u8]/Map 载体的跨污界 == 维持 M3002 现状(GAP-S3-3 口径不变);污污 ==
+        // 既有合法维持(unify 精确匹配,同标量路径自然覆盖)。
+        if (taintScalar(l) || taintScalar(r)) {
+          const okT = underInt(l, taintScalar(l))?.k === 'int' && underInt(r, taintScalar(r))?.k === 'int'
+            && unify(underInt(l, taintScalar(l)), underInt(r, taintScalar(r)), binds);
+          if (!okT) {
+            this.diags.push(err('M3002', `"${op}" 两侧类型不同:${typeStr(l, binds)} 与 ${typeStr(r, binds)}`, span));
+          }
+          return T_BOOL;
+        }
         if (!same()) {
           this.diags.push(err('M3002', `"${op}" 两侧类型不同:${typeStr(l, binds)} 与 ${typeStr(r, binds)}`, span));
           return T_BOOL;

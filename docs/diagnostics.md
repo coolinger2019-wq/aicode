@@ -64,7 +64,7 @@
 | M3017 | missing-return | 有返回类型的函数存在不产生值的路径 |
 | M3018 | generic-op-unavailable | 泛型参数上无操作(v0.1 泛型是参数化的;traits 在 v0.2) |
 | M3019 | invalid-cast | as 只支持数值类型(str→数字用 parse_i64) |
-| M3020 | cannot-index | str/元组不支持下标(用 get/chars/解构) |
+| M3020 | cannot-index | str/元组不支持下标(用 get/chars/解构)。(v1.0.0-rc.2 注记,ADR-012 清单 1:`Untrusted[Vec[u8]]` 下标读已解锁为 `Untrusted[i64]`,该类型停止触发;本码对其余形态——str/元组/Ptr/污 Map/索引赋值位——照发,码号不改不删) |
 | M3021 | not-callable | 调用了非函数值 |
 | M3022 | unknown-import | 模块文件不存在或 std 模块名错误 |
 | M3023 | missing-main | run 需要入口 main 函数(最多一个 `Vec[Untrusted[str]]` 参数——v0.82 ADR-008 元素级污点) |
