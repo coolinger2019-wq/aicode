@@ -1,0 +1,7 @@
+frame 1 OK type=DATA flags=none len=13
+frame 2 OK type=CTRL flags=ACK_REQ len=2
+frame 3 OK type=DATA flags=FRAG len=11
+frame 4 OK type=KEEPALIVE flags=ACK_REQ,FRAG len=0
+frame 5 OK type=DATA flags=none len=64
+frame 6 OK type=CTRL flags=FRAG len=1
+summary lines=6 ok=6 bad=0 blank=0 bytes=308

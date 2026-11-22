@@ -1,0 +1,21 @@
+frame 1 OK type=DATA flags=none len=11
+frame 2 OK type=CTRL flags=ACK_REQ len=5
+frame 3 OK type=DATA flags=FRAG len=11
+frame 4 OK type=KEEPALIVE flags=ACK_REQ,FRAG len=0
+frame 6 BAD_MAGIC
+frame 7 OK type=DATA flags=none len=64
+frame 8 BAD_HEX
+frame 9 BAD_TYPE
+frame 10 BAD_LENGTH
+frame 12 TRUNCATED
+frame 13 TRUNCATED
+frame 14 TRAILING
+frame 15 CRC_MISMATCH
+frame 16 OK type=CTRL flags=FRAG len=1
+frame 17 BAD_MAGIC
+frame 18 OK type=DATA flags=none len=1
+frame 19 BAD_LENGTH
+frame 20 TRUNCATED
+frame 21 OK type=KEEPALIVE flags=none len=0
+frame 22 CRC_MISMATCH
+summary lines=22 ok=8 bad=12 blank=2 bytes=680

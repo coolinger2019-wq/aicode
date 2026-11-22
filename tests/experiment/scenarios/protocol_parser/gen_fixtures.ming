@@ -1,0 +1,244 @@
+// S3 协议解析器 — fixture 生成脚本(确定性;重跑逐字节不变)。
+// 生成 input/:frames.hex(22 行主输入)/ clean.hex(6 合法帧)/ empty.hex(0 字节)/
+// bad_utf8.bin(中行 payload hex 两字符被 \xff\xfe 替换)/ oversize.hex(65537 字节 = 门禁+1)。
+// 帧格式(MGTP)与 Fletcher-16 定义见 spec.md §2.1;length/checksum 字段经 std.bin
+// pack_u32_be/pack_u16_be 大端打包。无随机源,输出全由代码决定。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/protocol_parser/gen_fixtures.ming
+use std.bin;
+
+use std.fs;
+
+fn hex_char(n: i64) -> str {
+    if n < 10 {
+        return str(n);
+    }
+    return "abcdef".slice_chars(n - 10, n - 9);
+}
+
+fn hex_byte(b: i64) -> str {
+    return hex_char(b >> 4 & 15) + hex_char(b & 15);
+}
+
+fn str_nib(c: str) -> i64 {
+    if c == "0" {
+        return 0;} else if c == "1" {
+        return 1;} else if c == "2" {
+        return 2;} else if c == "3" {
+        return 3;} else if c == "4" {
+        return 4;} else if c == "5" {
+        return 5;} else if c == "6" {
+        return 6;} else if c == "7" {
+        return 7;} else if c == "8" {
+        return 8;} else if c == "9" {
+        return 9;} else if c == "a" {
+        return 10;} else if c == "b" {
+        return 11;} else if c == "c" {
+        return 12;} else if c == "d" {
+        return 13;} else if c == "e" {
+        return 14;} else if c == "f" {
+        return 15;
+    }
+    return -1;
+}
+
+// Fletcher-16(spec §2.1):sum1/sum2 mod 255,返回大端合成值 sum2<<8|sum1
+fn fletcher16(bytes: Vec[u8], count: i64) -> i64 {
+    let mut s1 = 0;
+    let mut s2 = 0;
+    let mut i = 0;
+    while i < count {
+        s1 = (s1 + bytes[i] as i64) % 255;
+        s2 = (s2 + s1) % 255;
+        i += 1;
+    }
+    return s2 << 8 | s1;
+}
+
+// 帧字节序列 → hex 传输行(小写);覆盖域 = type||flags||length||payload
+fn frame_line(ty: i64, flags: i64, payload: Vec[u8]) -> str {
+    let mut cov: Vec[u8] = [];
+    cov.push(ty as u8);
+    cov.push(flags as u8);
+    let lenb = std.bin.pack_u32_be(payload.len());
+    let mut i = 0;
+    while i < lenb.len() {
+        cov.push(lenb[i]);
+        i += 1;
+    }
+    i = 0;
+    while i < payload.len() {
+        cov.push(payload[i]);
+        i += 1;
+    }
+    let ckb = std.bin.pack_u16_be(fletcher16(cov, cov.len()));
+    let mut line = "4d47";
+    line = line + hex_byte(ty);
+    line = line + hex_byte(flags);
+    i = 0;
+    while i < lenb.len() {
+        line = line + hex_byte(lenb[i] as i64);
+        i += 1;
+    }
+    i = 0;
+    while i < payload.len() {
+        line = line + hex_byte(payload[i] as i64);
+        i += 1;
+    }
+    i = 0;
+    while i < ckb.len() {
+        line = line + hex_byte(ckb[i] as i64);
+        i += 1;
+    }
+    return line;
+}
+
+fn bytes_of(s: str) -> Vec[u8] {
+    return s.to_bytes();
+}
+
+fn tail(l: str, from: i64) -> str {
+    return l.slice_chars(from, l.char_len());
+}
+
+// 校验和字段篡改(干净域,仅生成畸形样本用):末 4 字符按 delta 偏移重编
+fn corrupt_ck(l: str, delta: i64) -> str {
+    let cl = l.char_len();
+    let ck = (str_nib(l.slice_chars(cl - 4, cl - 3)) << 12 | str_nib(l.slice_chars(cl - 3, cl - 2)) << 8 | str_nib(l.slice_chars(cl - 2, cl - 1)) << 4 | str_nib(l.slice_chars(cl - 1, cl))) + delta;
+    let ck2 = ck % 65536;
+    return l.slice_chars(0, cl - 4) + hex_byte(ck2 >> 8) + hex_byte(ck2 & 255);
+}
+
+fn pattern64() -> Vec[u8] {
+    let unit = "0123456789abcdef";
+    let mut p = "";
+    let mut i = 0;
+    while i < 4 {
+        p = p + unit;
+        i += 1;
+    }
+    return bytes_of(p);
+}
+
+fn main() -> i64 with io, fs {
+    let dir = "tests/experiment/scenarios/protocol_parser/input";
+
+    // frames.hex:22 行(spec §2.3 行形态清单;空行 5/11;末尾 LF)
+    let good_hw = frame_line(1, 0, bytes_of("hello world"));
+    let good_ack = frame_line(2, 1, bytes_of("ack01"));
+    let good_xyz = frame_line(1, 0, bytes_of("xyz"));
+    let mut f: Vec[str] = [];
+    f.push(good_hw);
+    f.push(good_ack);
+    f.push(frame_line(1, 2, bytes_of("frag-part-1")));
+    f.push(frame_line(3, 3, bytes_of("")));
+    f.push("");
+    f.push("4e47" + tail(good_xyz, 4));
+    f.push(frame_line(1, 0, pattern64()));
+    f.push(good_ack.slice_chars(0, 16) + "g" + tail(good_ack, 17));
+    f.push(good_xyz.slice_chars(0, 4) + "04" + tail(good_xyz, 6));
+    f.push("4d470100ffffffffdeadbeef");
+    f.push("");
+    f.push("4d4701");
+    f.push("4d47010000000008a1b2c3");
+    f.push(good_hw + "dead");
+    f.push(corrupt_ck(good_hw, 1));
+    f.push(frame_line(2, 2, bytes_of("c")));
+    f.push("mg47" + tail(good_xyz, 4));
+    f.push(frame_line(1, 0, bytes_of("Z")));
+    f.push("4d4701000000100100");
+    f.push("4d47010000000002");
+    f.push(frame_line(3, 0, bytes_of("")));
+    f.push(good_ack.slice_chars(0, good_ack.char_len() - 4) + "0000");
+    match std.fs.write_file(dir + "/frames.hex", f.join("\n") + "\n") {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入 frames.hex: " + e);
+            return 1;
+        },
+    }
+
+    // clean.hex:6 合法帧(类型/标志/长度 0 边界混合)
+    let mut c: Vec[str] = [];
+    c.push(frame_line(1, 0, bytes_of("alpha payload")));
+    c.push(frame_line(2, 1, bytes_of("ok")));
+    c.push(frame_line(1, 2, bytes_of("frag-a-part")));
+    c.push(frame_line(3, 3, bytes_of("")));
+    c.push(frame_line(1, 0, pattern64()));
+    c.push(frame_line(2, 2, bytes_of("z")));
+    match std.fs.write_file(dir + "/clean.hex", c.join("\n") + "\n") {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入 clean.hex: " + e);
+            return 1;
+        },
+    }
+
+    // empty.hex:0 字节
+    match std.fs.write_file(dir + "/empty.hex", "") {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入 empty.hex: " + e);
+            return 1;
+        },
+    }
+
+    // bad_utf8.bin:3 帧行;中行(CTRL/ack01)payload hex 首两字符(行字节偏移
+    // 16/17)被 \xff\xfe 原字节替换 → U+FFFD ×2 → BAD_HEX;行宽不变
+    let l1 = frame_line(1, 0, bytes_of("hello world")) + "\n";
+    let l2 = frame_line(2, 1, bytes_of("ack01")) + "\n";
+    let l3 = frame_line(3, 0, bytes_of("")) + "\n";
+    let l1b = l1.to_bytes();
+    let l2b = l2.to_bytes();
+    let l3b = l3.to_bytes();
+    let mut bb: Vec[u8] = [];
+    let mut i = 0;
+    while i < l1b.len() {
+        bb.push(l1b[i]);
+        i += 1;
+    }
+    i = 0;
+    while i < l2b.len() {
+        if i == 16 {
+            bb.push(255 as u8);} else if i == 17 {
+
+            bb.push(254 as u8);} else {
+
+            bb.push(l2b[i]);
+        }
+        i += 1;
+    }
+    i = 0;
+    while i < l3b.len() {
+        bb.push(l3b[i]);
+        i += 1;
+    }
+    match std.fs.write_bytes(dir + "/bad_utf8.bin", bb) {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入 bad_utf8.bin: " + e);
+            return 1;
+        },
+    }
+
+    // oversize.hex:65537 字节(= 门禁 65536 + 1);门禁先于解析,内容不参与判定
+    let unit = good_hw + "\n";
+    let mut big = unit;
+    while big.byte_len() < 65537 {
+        big = big + big;
+    }
+    let oversize = big.slice_chars(0, 65537);
+    match std.fs.write_file(dir + "/oversize.hex", oversize) {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入 oversize.hex: " + e);
+            return 1;
+        },
+    }
+    print("fixture written: files=5 frames_lines=" + str(f.len()) + " clean_lines=" + str(c.len()) + " oversize_bytes=" + str(oversize.byte_len()));
+    return 0;
+}

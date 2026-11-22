@@ -1,0 +1,4 @@
+frame 1 OK type=DATA flags=none len=11
+frame 2 BAD_HEX
+frame 3 OK type=KEEPALIVE flags=none len=0
+summary lines=3 ok=2 bad=1 blank=0 bytes=95

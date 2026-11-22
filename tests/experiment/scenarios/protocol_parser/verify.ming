@@ -1,0 +1,189 @@
+// S3 黑盒验收(Ming):运行被测 .ming 程序,stdout 逐字节比对 + 退出码 + 参数级
+// 腿(缺参/不存在/目录/oversize 门禁)+ 负例腿(交叉喂入 S1/S2 参考实现预期 FAIL)
+// + 不 panic 专项(spec §4:input/ 全部文件 stderr 无引擎 panic 标记,exit ∈ {0,1})。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/protocol_parser/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.proc;
+
+fn exec_ming(prog: str, extra: Vec[str]) -> Result[(i64, Untrusted[str], Untrusted[str]), str] with proc {
+    let mut cmd: Vec[str] = ["bin/ming.js", "run", prog, "--"];
+    for a in extra {
+        cmd.push(a);
+    }
+    return std.proc.exec("node", cmd);
+}
+
+fn no_panic_markers(err: Untrusted[str]) -> bool {
+    if err.contains("panic") {
+        return false;
+    }
+    if err.contains("内部错误") {
+        return false;
+    }
+    if err.contains("RangeError") {
+        return false;
+    }
+    if err.contains("TypeError") {
+        return false;
+    }
+    if err.contains("Traceback") {
+        return false;
+    }
+    return true;
+}
+
+// 正例腿:exit 断言 + stdout 逐字节
+fn expect_run(tag: str, prog: str, arg: str, want_exit: i64, expected: Untrusted[str]) -> i64 with io, proc {
+    let r = exec_ming(prog, [arg]);
+    match r {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code != want_exit {
+                eprint("FAIL " + tag + ": exit=" + str(code) + "(预期 " + str(want_exit) + ")");
+                return 1;
+            }
+            if out != expected {
+                eprint("FAIL " + tag + ": stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected.byte_len()));
+                return 1;
+            }
+            if !no_panic_markers(err) {
+                eprint("FAIL " + tag + ": stderr 含引擎 panic 标记");
+                return 1;
+            }
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL " + tag + ": exec: " + e);
+            return 1;
+        },
+    }
+}
+
+fn expect_param_error(tag: str, r: Result[(i64, Untrusted[str], Untrusted[str]), str]) -> i64 with io {
+    match r {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code != 1 {
+                eprint("FAIL " + tag + ": exit=" + str(code) + "(预期 1)");
+                return 1;
+            }
+            if !out.is_empty() {
+                eprint("FAIL " + tag + ": stdout 非空(预期空)");
+                return 1;
+            }
+            if !err.starts_with("error:") {
+                eprint("FAIL " + tag + ": stderr 未以 error: 开头");
+                return 1;
+            }
+            if !no_panic_markers(err) {
+                eprint("FAIL " + tag + ": stderr 含引擎 panic 标记");
+                return 1;
+            }
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL " + tag + ": exec: " + e);
+            return 1;
+        },
+    }
+}
+
+// 不 panic 专项:input/ 全部文件跑被测程序,stderr 无 panic 标记且 exit ∈ {0,1}
+fn no_panic_sweep(tag: str, prog: str, files: Vec[str]) -> i64 with io, proc {
+    for f in files {
+        let r = exec_ming(prog, [f]);
+        match r {
+            Ok(t) => {
+                let (code, _out, err) = t;
+                if code != 0 && code != 1 {
+                    eprint("FAIL " + tag + ": " + f + " exit=" + str(code) + "(预期 0/1)");
+                    return 1;
+                }
+                if !no_panic_markers(err) {
+                    eprint("FAIL " + tag + ": " + f + " stderr 含引擎 panic 标记");
+                    return 1;
+                }
+            },
+            Err(e) => {
+                eprint("FAIL " + tag + ": " + f + " exec: " + e);
+                return 1;
+            },
+        }
+    }
+    return 0;
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, proc {
+    let mut prog = "tests/experiment/scenarios/protocol_parser/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let base = "tests/experiment/scenarios/protocol_parser";
+    std.fs.make_dir(".zcode/exp-s3-verify");
+    let e_frames = match std.fs.read_file(base + "/expected/expected_frames_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 frames stdout: " + e); return 1; } };
+    let e_clean = match std.fs.read_file(base + "/expected/expected_clean_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 clean stdout: " + e); return 1; } };
+    let e_empty = match std.fs.read_file(base + "/expected/expected_empty_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 empty stdout: " + e); return 1; } };
+    let e_badutf8 = match std.fs.read_file(base + "/expected/expected_badutf8_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 badutf8 stdout: " + e); return 1; } };
+
+    // 正例腿 1–4:逐字节 + 退出码
+    if expect_run("正例-frames", prog, base + "/input/frames.hex", 1, e_frames) != 0 {
+        return 1;
+    }
+    if expect_run("正例-clean", prog, base + "/input/clean.hex", 0, e_clean) != 0 {
+        return 1;
+    }
+    if expect_run("正例-empty", prog, base + "/input/empty.hex", 0, e_empty) != 0 {
+        return 1;
+    }
+    if expect_run("正例-badutf8", prog, base + "/input/bad_utf8.bin", 1, e_badutf8) != 0 {
+        return 1;
+    }
+
+    // 参数级腿 5–8:exit 1 + stdout 空 + stderr error: 开头
+    if expect_param_error("参数-oversize", exec_ming(prog, [base + "/input/oversize.hex"])) != 0 {
+        return 1;
+    }
+    if expect_param_error("参数-缺参", exec_ming(prog, [])) != 0 {
+        return 1;
+    }
+    if expect_param_error("参数-路径不存在", exec_ming(prog, [base + "/input/no_such.bin"])) != 0 {
+        return 1;
+    }
+    if expect_param_error("参数-目录输入", exec_ming(prog, [base + "/input"])) != 0 {
+        return 1;
+    }
+
+    // 负例腿 9:交叉喂入 S1/S2 参考实现 → 不得以期望输出成功
+    let cross_targets: Vec[str] = ["tests/experiment/scenarios/log_forensics/solutions/solution.ming", "tests/experiment/scenarios/file_integrity/solutions/solution.ming"];
+    for ct in cross_targets {
+        let cross = exec_ming(ct, [base + "/input/frames.hex", ".zcode/exp-s3-verify/cross_report.txt"]);
+        match cross {
+            Ok(t) => {
+                let (c, o, _e) = t;
+                if c == 0 && o == e_frames {
+                    eprint("FAIL 负例-交叉喂入: " + ct + " 竟通过 S3 验收");
+                    return 1;
+                }
+            },
+            Err(e) => {
+                eprint("FAIL 负例-交叉喂入 exec: " + e);
+                return 1;
+            },
+        }
+    }
+
+    // 不 panic 专项(硬验收):input/ 全部 5 文件
+    let sweep: Vec[str] = [base + "/input/frames.hex", base + "/input/clean.hex", base + "/input/empty.hex", base + "/input/bad_utf8.bin", base + "/input/oversize.hex"];
+    if no_panic_sweep("不panic专项", prog, sweep) != 0 {
+        return 1;
+    }
+    print("PASS");
+    return 0;
+}
