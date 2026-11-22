@@ -1,0 +1,12 @@
+# fixture file: alpha_report.txt
+created_by: gen_fixtures.ming
+index: 0
+line_a: alpha 13
+line_b: bravo 29
+line_c: charlie 43
+payload: alpha_report 0 0
+payload: alpha_report 0 0
+payload: alpha_report 0 0
+unicode: café naïve index 0
+tail_1: end of alpha_report.txt
+tail_2: index 00

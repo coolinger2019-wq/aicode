@@ -1,5 +1,8 @@
 node_modules/
 *.log
+# T3 场景语料 fixture 明确入库(*.log 全局忽略的例外;scenarios 目录任意深度的
+# .log = gen_fixtures.ming 确定性生成产物,与 docs/gap-log.md 对应)
+!tests/experiment/scenarios/**/*.log
 .DS_Store
 Thumbs.db
 __pycache__/

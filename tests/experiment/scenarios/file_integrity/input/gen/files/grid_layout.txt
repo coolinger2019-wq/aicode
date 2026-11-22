@@ -1,0 +1,12 @@
+# fixture file: grid_layout.txt
+created_by: gen_fixtures.ming
+index: 16
+line_a: alpha 125
+line_b: bravo 205
+line_c: charlie 315
+payload: grid_layout 16 48
+payload: grid_layout 16 80
+payload: grid_layout 16 112
+unicode: café naïve index 16
+tail_1: end of grid_layout.txt
+tail_2: index 16

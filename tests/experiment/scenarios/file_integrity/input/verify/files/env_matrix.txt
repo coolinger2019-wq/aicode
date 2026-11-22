@@ -1,0 +1,12 @@
+# fixture file: env_matrix.txt
+created_by: gen_fixtures.ming
+index: 9
+line_a: alpha 76
+line_b: bravo 128
+line_c: charlie 196
+payload: env_matrix 9 27
+payload: env_matrix 9 45
+payload: env_matrix 9 63
+unicode: café naïve index 9
+tail_1: end of env_matrix.txt
+tail_2: index 09

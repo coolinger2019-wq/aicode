@@ -1,0 +1,109 @@
+// S1 黑盒验收(Ming):运行被测 .ming 程序,stdout 与 report 逐字节比对 + 退出码
+// + 负例腿(缺参/不存在路径/交叉喂入 S2 参考实现预期 FAIL,spec §4)。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/log_forensics/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.proc;
+
+fn exec_ming(prog: str, extra: Vec[str]) -> Result[(i64, Untrusted[str], Untrusted[str]), str] with proc {
+    let mut cmd: Vec[str] = ["bin/ming.js", "run", prog, "--"];
+    for a in extra {
+        cmd.push(a);
+    }
+    return std.proc.exec("node", cmd);
+}
+
+fn expect_param_error(tag: str, r: Result[(i64, Untrusted[str], Untrusted[str]), str]) -> i64 with io {
+    match r {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code != 1 {
+                eprint("FAIL " + tag + ": exit=" + str(code) + "(预期 1)");
+                return 1;
+            }
+            if !out.is_empty() {
+                eprint("FAIL " + tag + ": stdout 非空(预期空)");
+                return 1;
+            }
+            if !err.starts_with("error:") {
+                eprint("FAIL " + tag + ": stderr 未以 error: 开头");
+                return 1;
+            }
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL " + tag + ": exec: " + e);
+            return 1;
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, proc {
+    let mut prog = "tests/experiment/scenarios/log_forensics/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let in_path = "tests/experiment/scenarios/log_forensics/input/main.log";
+    let report_out = ".zcode/exp-s1-verify/report.txt";
+    std.fs.make_dir(".zcode/exp-s1-verify");
+    std.fs.remove_file(report_out);
+    let expected_stdout = match std.fs.read_file("tests/experiment/scenarios/log_forensics/expected/expected_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 stdout: " + e); return 1; } };
+    let expected_report = match std.fs.read_file("tests/experiment/scenarios/log_forensics/expected/expected_report.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望报告: " + e); return 1; } };
+    let run = exec_ming(prog, [in_path, report_out]);
+    match run {
+        Ok(t) => {
+            let (code, out, _e) = t;
+            if code != 0 {
+                eprint("FAIL 正例腿 exit=" + str(code));
+                return 1;
+            }
+            if out != expected_stdout {
+                eprint("FAIL 正例腿 stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected_stdout.byte_len()));
+                return 1;
+            }
+            let report = match std.fs.read_file(report_out) { Ok(t2) => t2, Err(e) => { eprint("verify: 无法读取被测报告: " + e); return 1; } };
+            if report != expected_report {
+                eprint("FAIL 正例腿 report mismatch actual_len=" + str(report.byte_len()) + " expected_len=" + str(expected_report.byte_len()));
+                return 1;
+            }
+
+            // 负例腿 1:缺参 → exit 1,stdout 空,stderr 以 error: 开头
+            if expect_param_error("负例-缺参", exec_ming(prog, [])) != 0 {
+                return 1;
+            }
+
+            // 负例腿 2:不存在路径 → exit 1,stdout 空
+            if expect_param_error("负例-路径不存在", exec_ming(prog, ["tests/experiment/scenarios/log_forensics/input/no_such.log", report_out])) != 0 {
+                return 1;
+            }
+
+            // 负例腿 3:交叉喂入 S2 参考实现 → 预期 FAIL(不得以期望输出成功)
+            let cross = exec_ming("tests/experiment/scenarios/file_integrity/solutions/solution.ming", [in_path, report_out]);
+            match cross {
+                Ok(t3) => {
+                    let (c3, o3, _e3) = t3;
+                    if c3 == 0 && o3 == expected_stdout {
+                        eprint("FAIL 负例-交叉喂入: S2 参考实现竟通过 S1 验收");
+                        return 1;
+                    }
+                },
+                Err(e) => {
+                    eprint("FAIL 负例-交叉喂入 exec: " + e);
+                    return 1;
+                },
+            }
+            print("PASS");
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL exec: " + e);
+            return 1;
+        },
+    }
+}

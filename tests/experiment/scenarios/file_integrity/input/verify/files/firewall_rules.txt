@@ -1,0 +1,12 @@
+# fixture file: firewall_rules.txt
+created_by: gen_fixtures.ming
+index: 14
+line_a: alpha 111
+line_b: bravo 183
+line_c: charlie 281
+payload: firewall_rules 14 42
+payload: firewall_rules 14 70
+payload: firewall_rules 14 98
+unicode: café naïve index 14
+tail_1: end of firewall_rules.txt
+tail_2: index 14

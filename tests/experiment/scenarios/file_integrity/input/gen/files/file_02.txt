@@ -1,0 +1,12 @@
+# fixture file: file_02.txt
+created_by: gen_fixtures.ming
+index: 11
+line_a: alpha 90
+line_b: bravo 150
+line_c: charlie 230
+payload: file_02 11 33
+payload: file_02 11 55
+payload: file_02 11 77
+unicode: café naïve index 11
+tail_1: end of file_02.txt
+tail_2: index 11

@@ -1,0 +1,12 @@
+# fixture file: metrics_daily.txt
+created_by: gen_fixtures.ming
+index: 22
+line_a: alpha 167
+line_b: bravo 271
+line_c: charlie 417
+payload: metrics_daily 22 66
+payload: metrics_daily 22 110
+payload: metrics_daily 22 154
+unicode: café naïve index 22
+tail_1: end of metrics_daily.txt
+tail_2: index 22

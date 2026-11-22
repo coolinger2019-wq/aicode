@@ -1,0 +1,12 @@
+# fixture file: health_check.txt
+created_by: gen_fixtures.ming
+index: 17
+line_a: alpha 132
+line_b: bravo 216
+line_c: charlie 332
+payload: health_check 17 51
+payload: health_check 17 85
+payload: health_check 17 119
+unicode: café naïve index 17
+tail_1: end of health_check.txt
+tail_2: index 17

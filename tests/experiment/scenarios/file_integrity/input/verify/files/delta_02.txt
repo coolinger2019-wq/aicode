@@ -1,0 +1,12 @@
+# fixture file: delta_02.txt
+created_by: gen_fixtures.ming
+index: 5
+line_a: alpha 48
+line_b: bravo 84
+line_c: charlie 128
+payload: delta_02 5 15
+payload: delta_02 5 25
+payload: delta_02 5 35
+unicode: café naïve index 5
+tail_1: end of delta_02.txt
+tail_2: index 05

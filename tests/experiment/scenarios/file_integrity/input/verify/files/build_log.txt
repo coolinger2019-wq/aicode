@@ -1,0 +1,12 @@
+# fixture file: build_log.txt
+created_by: gen_fixtures.ming
+index: 3
+line_a: alpha 34
+line_b: bravo 62
+line_c: charlie 94
+payload: build_log 3 9
+payload: build_log 3 15
+payload: build_log 3 21
+unicode: café naïve index 3
+tail_1: end of build_log.txt
+tail_2: index 03

@@ -1,0 +1,12 @@
+# fixture file: job_queue.txt
+created_by: gen_fixtures.ming
+index: 19
+line_a: alpha 146
+line_b: bravo 238
+line_c: charlie 366
+payload: job_queue 19 57
+payload: job_queue 19 95
+payload: job_queue 19 133
+unicode: café naïve index 19
+tail_1: end of job_queue.txt
+tail_2: index 19

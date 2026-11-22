@@ -1,0 +1,12 @@
+# fixture file: release_check.txt
+created_by: gen_fixtures.ming
+index: 26
+line_a: alpha 195
+line_b: bravo 315
+line_c: charlie 485
+payload: release_check 26 78
+payload: release_check 26 130
+payload: release_check 26 182
+unicode: café naïve index 26
+tail_1: end of release_check.txt
+tail_2: index 26

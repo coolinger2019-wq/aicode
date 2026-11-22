@@ -1,0 +1,12 @@
+# fixture file: quota_report.txt
+created_by: gen_fixtures.ming
+index: 25
+line_a: alpha 188
+line_b: bravo 304
+line_c: charlie 468
+payload: quota_report 25 75
+payload: quota_report 25 125
+payload: quota_report 25 175
+unicode: café naïve index 25
+tail_1: end of quota_report.txt
+tail_2: index 25

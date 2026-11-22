@@ -1,0 +1,13 @@
+# fixture file: ops_runbook.txt
+created_by: gen_fixtures.ming
+index: 24
+line_a: alpha 181
+line_b: bravo 293
+line_c: charlie 451
+payload: ops_runbook 24 72
+payload: ops_runbook 24 120
+payload: ops_runbook 24 168
+unicode: café naïve index 24
+tail_1: end of ops_runbook.txt
+tail_2: index 24
+color: [31mred[0m

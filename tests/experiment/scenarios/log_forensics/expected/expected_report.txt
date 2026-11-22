@@ -1,0 +1,89 @@
+report tests/experiment/scenarios/log_forensics/input/main.log
+E 27 WARN auth login
+E 28 WARN net logout
+E 29 WARN db query
+E 30 WARN api timeout
+E 31 WARN sched retry
+E 32 WARN cache sync
+E 33 WARN worker flush
+E 34 WARN ingest probe
+E 35 WARN auth boot
+E 36 WARN net shutdown
+E 53 WARN auth login_fail
+E 54 WARN net timeout
+E 56 ERROR db corrupt
+E 70 WARN db login
+E 71 WARN api logout
+E 72 WARN sched query
+E 73 WARN cache timeout
+E 74 WARN worker retry
+E 75 WARN ingest sync
+E 76 WARN auth flush
+E 77 WARN net probe
+E 78 WARN db boot
+E 79 WARN api shutdown
+E 102 ERROR api boom
+E 103 ERROR worker crash
+E 107 ERROR auth login
+E 108 ERROR net logout
+E 109 ERROR db query
+E 110 ERROR api timeout
+E 111 ERROR sched retry
+E 112 ERROR cache sync
+E 113 ERROR worker flush
+E 114 ERROR ingest probe
+E 115 ERROR auth boot
+E 116 ERROR net shutdown
+E 119 WARN sched login
+E 120 WARN cache logout
+E 121 WARN worker query
+E 122 WARN ingest timeout
+E 123 WARN auth retry
+E 124 WARN net sync
+E 125 WARN db flush
+E 126 WARN api probe
+E 127 WARN sched boot
+E 128 WARN cache shutdown
+E 145 WARN auth brute_force
+E 146 WARN api rate_limit
+E 147 ERROR sched missed
+E 148 ERROR cache evict_fail
+E 150 ERROR db login
+E 151 ERROR api logout
+E 152 ERROR sched query
+E 153 ERROR cache timeout
+E 154 ERROR worker retry
+E 155 ERROR ingest sync
+E 156 ERROR auth flush
+E 157 ERROR net probe
+E 158 ERROR db boot
+E 159 ERROR api shutdown
+E 183 WARN net pkt_drop
+E 184 WARN db slow_query
+E 188 ERROR sched login
+E 189 ERROR cache logout
+E 190 ERROR worker query
+E 191 ERROR ingest timeout
+E 192 ERROR auth retry
+E 206 WARN worker login
+E 207 WARN ingest logout
+E 208 WARN auth query
+E 209 WARN net timeout
+E 210 WARN db retry
+E 211 WARN sched overrun
+E 212 WARN worker queue_full
+E 213 ERROR net reset
+E 214 ERROR auth lockout
+R 37 ctrl-char
+R 69 malformed
+R 80 overlong
+R 101 ctrl-char
+R 118 malformed
+R 144 overlong
+R 160 ctrl-char
+R 162 malformed
+R 193 ctrl-char
+R 205 malformed
+R 216 ctrl-char
+R 218 malformed
+R 219 malformed

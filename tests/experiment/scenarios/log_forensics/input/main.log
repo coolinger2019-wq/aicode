@@ -1,0 +1,219 @@
+2026-11-21T09:00:00Z INFO auth login user=alice ok=false ms=10
+2026-11-21T09:00:01Z INFO net logout user=bob ok=true ms=47
+2026-11-21T09:00:02Z INFO db query user=carol ok=true ms=84
+2026-11-21T09:00:03Z INFO api timeout user=dave ok=false ms=121
+2026-11-21T09:00:04Z INFO sched retry user=eve ok=true ms=158
+2026-11-21T09:00:05Z INFO cache sync user=alice ok=true ms=195
+2026-11-21T09:00:06Z INFO worker flush user=bob ok=false ms=232
+2026-11-21T09:00:07Z INFO ingest probe user=carol ok=true ms=269
+2026-11-21T09:00:08Z INFO auth boot user=dave ok=true ms=306
+2026-11-21T09:00:09Z INFO net shutdown user=eve ok=false ms=343
+2026-11-21T09:00:10Z INFO db login user=alice ok=true ms=380
+2026-11-21T09:00:11Z INFO api logout user=bob ok=true ms=417
+2026-11-21T09:00:12Z INFO sched query user=carol ok=false ms=454
+2026-11-21T09:00:13Z INFO cache timeout user=dave ok=true ms=491
+2026-11-21T09:00:14Z INFO worker retry user=eve ok=true ms=528
+2026-11-21T09:00:15Z INFO ingest sync user=alice ok=false ms=565
+2026-11-21T09:00:16Z INFO auth flush user=bob ok=true ms=602
+2026-11-21T09:00:17Z INFO net probe user=carol ok=true ms=639
+2026-11-21T09:00:18Z INFO db boot user=dave ok=false ms=676
+2026-11-21T09:00:19Z INFO api shutdown user=eve ok=true ms=713
+2026-11-21T09:00:20Z INFO sched login user=alice ok=true ms=750
+2026-11-21T09:00:21Z INFO cache logout user=bob ok=false ms=787
+2026-11-21T09:00:22Z INFO worker query user=carol ok=true ms=824
+2026-11-21T09:00:23Z INFO ingest timeout user=dave ok=true ms=861
+2026-11-21T09:00:24Z INFO auth retry user=eve ok=false ms=898
+
+2026-11-21T09:00:25Z WARN auth login user=alice ok=false ms=20
+2026-11-21T09:00:26Z WARN net logout user=bob ok=true ms=73
+2026-11-21T09:00:27Z WARN db query user=carol ok=false ms=126
+2026-11-21T09:00:28Z WARN api timeout user=dave ok=true ms=179
+2026-11-21T09:00:29Z WARN sched retry user=eve ok=false ms=232
+2026-11-21T09:00:30Z WARN cache sync user=alice ok=true ms=285
+2026-11-21T09:00:31Z WARN worker flush user=bob ok=false ms=338
+2026-11-21T09:00:32Z WARN ingest probe user=carol ok=true ms=391
+2026-11-21T09:00:33Z WARN auth boot user=dave ok=false ms=444
+2026-11-21T09:00:34Z WARN net shutdown user=eve ok=true ms=497
+2026-11-21T09:00:35Z INFO authlogin_backdoor ok=true ms=1
+2026-11-21T09:00:36Z INFO net sync user=alice ok=true ms=35
+2026-11-21T09:00:37Z INFO db flush user=bob ok=true ms=72
+2026-11-21T09:00:38Z INFO api probe user=carol ok=false ms=109
+2026-11-21T09:00:39Z INFO sched boot user=dave ok=true ms=146
+2026-11-21T09:00:40Z INFO cache shutdown user=eve ok=true ms=183
+2026-11-21T09:00:41Z INFO worker login user=alice ok=false ms=220
+2026-11-21T09:00:42Z INFO ingest logout user=bob ok=true ms=257
+2026-11-21T09:00:43Z INFO auth query user=carol ok=true ms=294
+2026-11-21T09:00:44Z INFO net timeout user=dave ok=false ms=331
+2026-11-21T09:00:45Z INFO db retry user=eve ok=true ms=368
+2026-11-21T09:00:46Z INFO api sync user=alice ok=true ms=405
+2026-11-21T09:00:47Z INFO sched flush user=bob ok=false ms=442
+2026-11-21T09:00:48Z INFO cache probe user=carol ok=true ms=479
+2026-11-21T09:00:49Z INFO worker boot user=dave ok=true ms=516
+2026-11-21T09:00:50Z INFO ingest shutdown user=eve ok=false ms=553
+{"level":"WARN","actor":"auth","event":"login_fail","user":"eve","ip":"10.0.0.7","attempt":3}
+{"level":"WARN","actor":"net","event":"timeout","user":"bob","ip":"10.0.0.8","attempt":2}
+{"level":"INFO","actor":"api","event":"probe","user":"carol","ip":"10.0.0.9","attempt":1}
+{"level":"ERROR","actor":"db","event":"corrupt","user":"dave","ip":"10.0.0.10","attempt":5}
+{"level":"DEBUG","actor":"sched","event":"tick","user":"eve","ip":"10.0.0.11","attempt":1}
+
+2026-11-21T09:00:51Z DEBUG auth login user=alice ok=true ms=5
+2026-11-21T09:00:52Z DEBUG net logout user=bob ok=true ms=6
+2026-11-21T09:00:53Z DEBUG db query user=carol ok=true ms=7
+2026-11-21T09:00:54Z DEBUG api timeout user=dave ok=true ms=8
+2026-11-21T09:00:55Z DEBUG sched retry user=eve ok=true ms=9
+2026-11-21T09:00:56Z DEBUG cache sync user=alice ok=true ms=10
+2026-11-21T09:00:57Z DEBUG worker flush user=bob ok=true ms=11
+2026-11-21T09:00:58Z DEBUG ingest probe user=carol ok=true ms=12
+2026-11-21T09:00:59Z DEBUG auth boot user=dave ok=true ms=13
+2026-11-21T09:01:00Z DEBUG net shutdown user=eve ok=true ms=14
+2026-11-21T09:01:01Z INFO auth login
+2026-11-21T09:01:02Z WARN db login user=alice ok=false ms=550
+2026-11-21T09:01:03Z WARN api logout user=bob ok=true ms=603
+2026-11-21T09:01:04Z WARN sched query user=carol ok=false ms=656
+2026-11-21T09:01:05Z WARN cache timeout user=dave ok=true ms=709
+2026-11-21T09:01:06Z WARN worker retry user=eve ok=false ms=762
+2026-11-21T09:01:07Z WARN ingest sync user=alice ok=true ms=815
+2026-11-21T09:01:08Z WARN auth flush user=bob ok=false ms=68
+2026-11-21T09:01:09Z WARN net probe user=carol ok=true ms=121
+2026-11-21T09:01:10Z WARN db boot user=dave ok=false ms=174
+2026-11-21T09:01:11Z WARN api shutdown user=eve ok=true ms=227
+2026-11-21T09:01:12Z INFO auth ping pad1=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026-11-21T09:01:13Z INFO auth login user=alice ok=true ms=590
+2026-11-21T09:01:14Z INFO net logout user=bob ok=true ms=627
+2026-11-21T09:01:15Z INFO db query user=carol ok=false ms=664
+2026-11-21T09:01:16Z INFO api timeout user=dave ok=true ms=701
+2026-11-21T09:01:17Z INFO sched retry user=eve ok=true ms=738
+2026-11-21T09:01:18Z INFO cache sync user=alice ok=false ms=775
+2026-11-21T09:01:19Z INFO worker flush user=bob ok=true ms=812
+2026-11-21T09:01:20Z INFO ingest probe user=carol ok=true ms=849
+2026-11-21T09:01:21Z INFO auth boot user=dave ok=false ms=886
+2026-11-21T09:01:22Z INFO net shutdown user=eve ok=true ms=23
+2026-11-21T09:01:23Z INFO db login user=alice ok=true ms=60
+2026-11-21T09:01:24Z INFO api logout user=bob ok=false ms=97
+2026-11-21T09:01:25Z INFO sched query user=carol ok=true ms=134
+2026-11-21T09:01:26Z INFO cache timeout user=dave ok=true ms=171
+2026-11-21T09:01:27Z INFO worker retry user=eve ok=false ms=208
+2026-11-21T09:01:28Z INFO ingest sync user=alice ok=true ms=245
+2026-11-21T09:01:29Z INFO auth flush user=bob ok=true ms=282
+2026-11-21T09:01:30Z INFO net probe user=carol ok=false ms=319
+2026-11-21T09:01:31Z INFO db boot user=dave ok=true ms=356
+2026-11-21T09:01:32Z INFO api shutdown user=eve ok=true ms=393
+2026-11-21T09:01:33Z WARN auth sessiontimeout ok=false ms=2
+{"level":"ERROR","actor":"api","event":"boom","user":"alice","ip":"10.0.0.12","attempt":9}
+{"level":"ERROR","actor":"worker","event":"crash","user":"bob","ip":"10.0.0.13","attempt":7}
+{"level":"INFO","actor":"cache","event":"hit","user":"carol","ip":"10.0.0.14","attempt":1}
+{"level":"INFO","actor":"ingest","event":"batch","user":"dave","ip":"10.0.0.15","attempt":4}
+{"level":"DEBUG","actor":"net","event":"dns","user":"eve","ip":"10.0.0.16","attempt":2}
+2026-11-21T09:01:34Z ERROR auth login user=alice ok=false ms=50
+2026-11-21T09:01:35Z ERROR net logout user=bob ok=false ms=111
+2026-11-21T09:01:36Z ERROR db query user=carol ok=false ms=172
+2026-11-21T09:01:37Z ERROR api timeout user=dave ok=false ms=233
+2026-11-21T09:01:38Z ERROR sched retry user=eve ok=false ms=294
+2026-11-21T09:01:39Z ERROR cache sync user=alice ok=false ms=355
+2026-11-21T09:01:40Z ERROR worker flush user=bob ok=false ms=416
+2026-11-21T09:01:41Z ERROR ingest probe user=carol ok=false ms=477
+2026-11-21T09:01:42Z ERROR auth boot user=dave ok=false ms=538
+2026-11-21T09:01:43Z ERROR net shutdown user=eve ok=false ms=599
+
+2026-11-21T09:01:44Z INFOX auth login ok=true ms=5
+2026-11-21T09:01:45Z WARN sched login user=alice ok=false ms=280
+2026-11-21T09:01:46Z WARN cache logout user=bob ok=true ms=333
+2026-11-21T09:01:47Z WARN worker query user=carol ok=false ms=386
+2026-11-21T09:01:48Z WARN ingest timeout user=dave ok=true ms=439
+2026-11-21T09:01:49Z WARN auth retry user=eve ok=false ms=492
+2026-11-21T09:01:50Z WARN net sync user=alice ok=true ms=545
+2026-11-21T09:01:51Z WARN db flush user=bob ok=false ms=598
+2026-11-21T09:01:52Z WARN api probe user=carol ok=true ms=651
+2026-11-21T09:01:53Z WARN sched boot user=dave ok=false ms=704
+2026-11-21T09:01:54Z WARN cache shutdown user=eve ok=true ms=757
+2026-11-21T09:01:55Z INFO sched login user=alice ok=false ms=430
+2026-11-21T09:01:56Z INFO cache logout user=bob ok=true ms=467
+2026-11-21T09:01:57Z INFO worker query user=carol ok=true ms=504
+2026-11-21T09:01:58Z INFO ingest timeout user=dave ok=false ms=541
+2026-11-21T09:01:59Z INFO auth retry user=eve ok=true ms=578
+2026-11-21T09:02:00Z INFO net sync user=alice ok=true ms=615
+2026-11-21T09:02:01Z INFO db flush user=bob ok=false ms=652
+2026-11-21T09:02:02Z INFO api probe user=carol ok=true ms=689
+2026-11-21T09:02:03Z INFO sched boot user=dave ok=true ms=726
+2026-11-21T09:02:04Z INFO cache shutdown user=eve ok=false ms=763
+2026-11-21T09:02:05Z INFO worker login user=alice ok=true ms=800
+2026-11-21T09:02:06Z INFO ingest logout user=bob ok=true ms=837
+2026-11-21T09:02:07Z INFO auth query user=carol ok=false ms=874
+2026-11-21T09:02:08Z INFO net timeout user=dave ok=true ms=11
+2026-11-21T09:02:09Z INFO db retry user=eve ok=true ms=48
+2026-11-21T09:02:10Z ERROR db stall pad2=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+{"level":"WARN","actor":"auth","event":"brute_force","user":"eve","ip":"10.0.0.17","attempt":12}
+{"level":"WARN","actor":"api","event":"rate_limit","user":"carol","ip":"10.0.0.18","attempt":6}
+{"level":"ERROR","actor":"sched","event":"missed","user":"alice","ip":"10.0.0.19","attempt":3}
+{"level":"ERROR","actor":"cache","event":"evict_fail","user":"bob","ip":"10.0.0.20","attempt":8}
+{"level":"INFO","actor":"worker","event":"drain","user":"dave","ip":"10.0.0.21","attempt":2}
+2026-11-21T09:02:11Z ERROR db login user=alice ok=false ms=660
+2026-11-21T09:02:12Z ERROR api logout user=bob ok=false ms=721
+2026-11-21T09:02:13Z ERROR sched query user=carol ok=false ms=82
+2026-11-21T09:02:14Z ERROR cache timeout user=dave ok=false ms=143
+2026-11-21T09:02:15Z ERROR worker retry user=eve ok=false ms=204
+2026-11-21T09:02:16Z ERROR ingest sync user=alice ok=false ms=265
+2026-11-21T09:02:17Z ERROR auth flush user=bob ok=false ms=326
+2026-11-21T09:02:18Z ERROR net probe user=carol ok=false ms=387
+2026-11-21T09:02:19Z ERROR db boot user=dave ok=false ms=448
+2026-11-21T09:02:20Z ERROR api shutdown user=eve ok=false ms=509
+2026-11-21T09:02:21Z ERROR db corruptrecord ok=false ms=3
+
+2026-11-21T09:02:22Z WARN ../passwd shadow_read ok=false ms=1
+2026-11-21T09:02:23Z INFO api sync user=alice ok=false ms=85
+2026-11-21T09:02:24Z INFO sched flush user=bob ok=true ms=122
+2026-11-21T09:02:25Z INFO cache probe user=carol ok=true ms=159
+2026-11-21T09:02:26Z INFO worker boot user=dave ok=false ms=196
+2026-11-21T09:02:27Z INFO ingest shutdown user=eve ok=true ms=233
+2026-11-21T09:02:28Z INFO auth login user=alice ok=true ms=270
+2026-11-21T09:02:29Z INFO net logout user=bob ok=false ms=307
+2026-11-21T09:02:30Z INFO db query user=carol ok=true ms=344
+2026-11-21T09:02:31Z INFO api timeout user=dave ok=true ms=381
+2026-11-21T09:02:32Z INFO sched retry user=eve ok=false ms=418
+2026-11-21T09:02:33Z INFO cache sync user=alice ok=true ms=455
+2026-11-21T09:02:34Z INFO worker flush user=bob ok=true ms=492
+2026-11-21T09:02:35Z INFO ingest probe user=carol ok=false ms=529
+2026-11-21T09:02:36Z INFO auth boot user=dave ok=true ms=566
+2026-11-21T09:02:37Z INFO net shutdown user=eve ok=true ms=603
+2026-11-21T09:02:38Z DEBUG db login user=alice ok=true ms=15
+2026-11-21T09:02:39Z DEBUG api logout user=bob ok=true ms=16
+2026-11-21T09:02:40Z DEBUG sched query user=carol ok=true ms=17
+2026-11-21T09:02:41Z DEBUG cache timeout user=dave ok=true ms=18
+2026-11-21T09:02:42Z DEBUG worker retry user=eve ok=true ms=19
+{"level":"WARN","actor":"net","event":"pkt_drop","user":"eve","ip":"10.0.0.22","attempt":5}
+{"level":"WARN","actor":"db","event":"slow_query","user":"alice","ip":"10.0.0.23","attempt":4}
+{"level":"INFO","actor":"api","event":"probe","note":"soft\twrap","user":"bob","ip":"10.0.0.24","attempt":9}
+{"level":"INFO","actor":"auth","event":"token_refresh","user":"bob","ip":"10.0.0.25","attempt":1}
+{"level":"DEBUG","actor":"ingest","event":"chunk","user":"carol","ip":"10.0.0.26","attempt":3}
+2026-11-21T09:02:43Z ERROR sched login user=alice ok=false ms=570
+2026-11-21T09:02:44Z ERROR cache logout user=bob ok=false ms=631
+2026-11-21T09:02:45Z ERROR worker query user=carol ok=false ms=692
+2026-11-21T09:02:46Z ERROR ingest timeout user=dave ok=false ms=53
+2026-11-21T09:02:47Z ERROR auth retry user=eve ok=false ms=114
+2026-11-21T09:02:48Z INFO api probedone ok=true ms=4
+2026-11-21T09:02:49Z INFO db login user=alice ok=false ms=640
+2026-11-21T09:02:50Z INFO api logout user=bob ok=true ms=677
+2026-11-21T09:02:51Z INFO sched query user=carol ok=true ms=714
+2026-11-21T09:02:52Z INFO cache timeout user=dave ok=false ms=751
+2026-11-21T09:02:53Z INFO worker retry user=eve ok=true ms=788
+2026-11-21T09:02:54Z INFO ingest sync user=alice ok=true ms=825
+2026-11-21T09:02:55Z INFO auth flush user=bob ok=false ms=862
+2026-11-21T09:02:56Z INFO net probe user=carol ok=true ms=899
+2026-11-21T09:02:57Z INFO db boot user=dave ok=true ms=36
+2026-11-21T09:02:58Z INFO api shutdown user=eve ok=false ms=73
+
+{"level":"WARN","actor":"auth","event":"boot
+2026-11-21T09:02:59Z WARN worker login user=alice ok=false ms=810
+2026-11-21T09:03:00Z WARN ingest logout user=bob ok=true ms=63
+2026-11-21T09:03:01Z WARN auth query user=carol ok=false ms=116
+2026-11-21T09:03:02Z WARN net timeout user=dave ok=true ms=169
+2026-11-21T09:03:03Z WARN db retry user=eve ok=false ms=222
+{"level":"WARN","actor":"sched","event":"overrun","user":"dave","ip":"10.0.0.27","attempt":2}
+{"level":"WARN","actor":"worker","event":"queue_full","user":"eve","ip":"10.0.0.28","attempt":10}
+{"level":"ERROR","actor":"net","event":"reset","user":"alice","ip":"10.0.0.29","attempt":6}
+{"level":"ERROR","actor":"auth","event":"lockout","user":"eve","ip":"10.0.0.30","attempt":15}
+{"level":"DEBUG","actor":"cache","event":"warm","user":"bob","ip":"10.0.0.31","attempt":1}
+2026-11-21T09:03:04Z WARN net dns‮spoof‬ ok=true ms=5
+
+{"level":"FATAL","actor":"api","event":"crash"}
+{"level":"ERROR","actor":"db","event":"drop;table"}

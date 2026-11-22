@@ -1,0 +1,115 @@
+// S2 文件完整性 — fixture 生成脚本(确定性;重跑逐字节不变)。
+// 生成:input/gen/files/(28 个原始 .txt)、input/verify/files/(同源变体:篡改 ×2、
+// 控制符内容 ×2、缺失 ×1[不落盘]、EXTRA ×1)、input/verify/manifest.txt
+// (对原始文件集以固定 key 的 HMAC 清单,key = integkey2026,spec §2.2)。
+// 无随机源,输出全由代码决定。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/file_integrity/gen_fixtures.ming
+use std.crypto;
+
+use std.fs;
+
+fn file_names() -> Vec[str] {
+
+    // 字节序升序(全 ASCII;含 数字/下标/字母 混排,锻炼排序口径)
+    return ["alpha_report.txt", "alpha_summary.txt", "app_config.txt", "build_log.txt", "delta_01.txt", "delta_02.txt", "delta_10.txt", "deploy_notes.txt", "edge_case.txt", "env_matrix.txt", "file_01.txt", "file_02.txt", "file_03.txt", "file_04.txt", "firewall_rules.txt", "fw_allowlist.txt", "grid_layout.txt", "health_check.txt", "ingest_feed.txt", "job_queue.txt", "kernel_params.txt", "load_test.txt", "metrics_daily.txt", "net_policy.txt", "ops_runbook.txt", "quota_report.txt", "release_check.txt", "zeta_last.txt"];
+}
+
+fn base_name(name: str) -> str {
+    return name.slice_chars(0, name.char_len() - 4);
+}
+
+fn pad2(n: i64) -> str {
+    if n < 10 {
+        return "0" + str(n);
+    }
+    return str(n);
+}
+
+// 原始文件内容(UTF-8、LF 行尾、无控制符;含非 ASCII 行以锻炼三语言 HMAC 编码一致性)
+fn original_content(name: str, i: i64) -> str {
+    let b = base_name(name);
+    let mut lines: Vec[str] = [];
+    lines.push("# fixture file: " + name);
+    lines.push("created_by: gen_fixtures.ming");
+    lines.push("index: " + str(i));
+    lines.push("line_a: alpha " + str(i * 7 + 13));
+    lines.push("line_b: bravo " + str(i * 11 + 29));
+    lines.push("line_c: charlie " + str(i * 17 + 43));
+    lines.push("payload: " + b + " " + str(i) + " " + str(i * 3));
+    lines.push("payload: " + b + " " + str(i) + " " + str(i * 5));
+    lines.push("payload: " + b + " " + str(i) + " " + str(i * 7));
+    lines.push("unicode: café naïve index " + str(i));
+    lines.push("tail_1: end of " + name);
+    lines.push("tail_2: index " + pad2(i));
+    return lines.join("\n") + "\n";
+}
+
+fn main() -> i64 with io, fs, crypto {
+    let gen_dir = "tests/experiment/scenarios/file_integrity/input/gen/files";
+    let verify_dir = "tests/experiment/scenarios/file_integrity/input/verify/files";
+    std.fs.make_dir(gen_dir);
+    std.fs.make_dir(verify_dir);
+    let key = "integkey2026";
+    let names = file_names();
+    let mut manifest: Vec[str] = [];
+    let mut i = 0;
+    while i < names.len() {
+        let name = names[i];
+        let content = original_content(name, i);
+        match std.fs.write_file(gen_dir + "/" + name, content) {
+            Ok(_) => {
+            },
+            Err(e) => {
+                eprint("error: 无法写入 " + name + ": " + e);
+                return 1;
+            },
+        }
+
+        // 校验腿变体(spec §2.2:篡改 ~2、控制符内容 ~2、缺失 1[不落盘]、EXTRA 另写)
+        if name != "zeta_last.txt" {
+            let mut vcontent = content;
+            if name == "file_01.txt" {
+                vcontent = content + "tampered_marker: appended by scenario\n";} else if name == "net_policy.txt" {
+
+                vcontent = content + "tampered_marker: net policy altered\n";} else if name == "health_check.txt" {
+
+                vcontent = content + "probe_beep: \u{1} injected\n";} else if name == "ops_runbook.txt" {
+
+                vcontent = content + "color: \u{1b}[31mred\u{1b}[0m\n";
+            }
+            match std.fs.write_file(verify_dir + "/" + name, vcontent) {
+                Ok(_) => {
+                },
+                Err(e) => {
+                    eprint("error: 无法写入校验腿 " + name + ": " + e);
+                    return 1;
+                },
+            }
+        }
+        manifest.push(name + " " + std.crypto.hmac_sha256(key, content));
+        i += 1;
+    }
+
+    // EXTRA 文件(不在清单;干净内容)
+    match std.fs.write_file(verify_dir + "/surprise_extra.txt", "# surprise extra file\nnot in manifest on purpose\n") {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入 EXTRA: " + e);
+            return 1;
+        },
+    }
+
+    // 校验腿清单 = 原始文件集的 HMAC 清单(zeta_last.txt 行保留,文件缺失 → MISSING)
+    let mf = manifest.join("\n") + "\n";
+    match std.fs.write_file("tests/experiment/scenarios/file_integrity/input/verify/manifest.txt", mf) {
+        Ok(_) => {
+        },
+        Err(e) => {
+            eprint("error: 无法写入清单: " + e);
+            return 1;
+        },
+    }
+    print("fixture written: " + str(names.len()) + " gen files, manifest lines=" + str(manifest.len()));
+    return 0;
+}

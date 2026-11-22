@@ -1,0 +1,12 @@
+# fixture file: load_test.txt
+created_by: gen_fixtures.ming
+index: 21
+line_a: alpha 160
+line_b: bravo 260
+line_c: charlie 400
+payload: load_test 21 63
+payload: load_test 21 105
+payload: load_test 21 147
+unicode: café naïve index 21
+tail_1: end of load_test.txt
+tail_2: index 21

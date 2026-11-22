@@ -1,0 +1,1 @@
+manifest 28 files rejected=0

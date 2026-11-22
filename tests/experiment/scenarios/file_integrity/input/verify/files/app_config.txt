@@ -1,0 +1,12 @@
+# fixture file: app_config.txt
+created_by: gen_fixtures.ming
+index: 2
+line_a: alpha 27
+line_b: bravo 51
+line_c: charlie 77
+payload: app_config 2 6
+payload: app_config 2 10
+payload: app_config 2 14
+unicode: café naïve index 2
+tail_1: end of app_config.txt
+tail_2: index 02

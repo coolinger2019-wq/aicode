@@ -1,0 +1,12 @@
+# fixture file: deploy_notes.txt
+created_by: gen_fixtures.ming
+index: 7
+line_a: alpha 62
+line_b: bravo 106
+line_c: charlie 162
+payload: deploy_notes 7 21
+payload: deploy_notes 7 35
+payload: deploy_notes 7 49
+unicode: café naïve index 7
+tail_1: end of deploy_notes.txt
+tail_2: index 07

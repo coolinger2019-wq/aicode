@@ -1,0 +1,260 @@
+// S2 黑盒验收(Ming):gen 腿(stdout + 清单逐字节)+ verify 腿(stdout 逐字节 +
+// 预期 exit 1)+ 负例腿(缺参/key 越值域/dir 不存在/清单行被改动/交叉喂入 S1 参考实现)。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/file_integrity/verify.ming [-- 被测程序路径]
+use std.fs;
+
+use std.proc;
+
+fn exec_ming(prog: str, extra: Vec[str]) -> Result[(i64, Untrusted[str], Untrusted[str]), str] with proc {
+    let mut cmd: Vec[str] = ["bin/ming.js", "run", prog, "--"];
+    for a in extra {
+        cmd.push(a);
+    }
+    return std.proc.exec("node", cmd);
+}
+
+fn expect_param_error(tag: str, r: Result[(i64, Untrusted[str], Untrusted[str]), str]) -> i64 with io {
+    match r {
+        Ok(t) => {
+            let (code, out, err) = t;
+            if code != 1 {
+                eprint("FAIL " + tag + ": exit=" + str(code) + "(预期 1)");
+                return 1;
+            }
+            if !out.is_empty() {
+                eprint("FAIL " + tag + ": stdout 非空(预期空)");
+                return 1;
+            }
+            if !err.starts_with("error:") {
+                eprint("FAIL " + tag + ": stderr 未以 error: 开头");
+                return 1;
+            }
+            return 0;
+        },
+        Err(e) => {
+            eprint("FAIL " + tag + ": exec: " + e);
+            return 1;
+        },
+    }
+}
+
+// 构造清单变体 fixture(mode 0 = 首行 hex 换等长合法 hex(≠ 原值)→ 预期 TAMPERED 而非
+// 参数错误;mode 1 = 首行只剩文件名(行格式非法)→ 结构性清单损坏 → exit 1 stdout 空)。
+fn write_manifest_variant(out_path: str, mode: i64) -> i64 with io, fs {
+    let content = match std.fs.read_file("tests/experiment/scenarios/file_integrity/input/verify/manifest.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取清单 fixture: " + e); return 1; } };
+    let lines = content.split("\n");
+    let mut n = lines.len();
+    if n > 0 && lines[n - 1].is_empty() {
+        n = n - 1;
+    }
+    if n < 1 {
+        eprint("verify: 清单 fixture 为空");
+        return 1;
+    }
+    let first = match std.unstr.sanitize_cli_path(lines[0]) { Ok(c) => c, Err(_) => { eprint("verify: 清单 fixture 首行含控制字符"); return 1; } };
+    let segs = first.split(" ");
+    if segs.len() != 2 {
+        eprint("verify: 清单 fixture 首行格式非法");
+        return 1;
+    }
+    let zeros = "0".repeat(64);
+    let fake_hex = if segs[1] == zeros { "1".repeat(64) } else { zeros };
+    let mut out_lines: Vec[str] = [];
+    if mode == 0 {
+        out_lines.push(segs[0] + " " + fake_hex);} else {
+
+        out_lines.push(segs[0]);
+    }
+    let mut i = 1;
+    while i < n {
+        let ln = lines[i];
+        i += 1;
+        match std.unstr.sanitize_cli_path(ln) {
+            Ok(c) => {
+                out_lines.push(c);
+            },
+            Err(_) => {
+                continue;
+            },
+        }
+    }
+    match std.fs.write_file(out_path, out_lines.join("\n") + "\n") {
+        Ok(_) => {
+            return 0;
+        },
+        Err(e) => {
+            eprint("verify: 无法写入被改清单: " + e);
+            return 1;
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, proc {
+    let mut prog = "tests/experiment/scenarios/file_integrity/solutions/solution.ming";
+    if args.len() >= 1 {
+        match std.unstr.sanitize_cli_path(args[0]) {
+            Ok(p) => {
+                prog = p;
+            },
+            Err(_) => {
+            },
+        }
+    }
+    let gen_dir = "tests/experiment/scenarios/file_integrity/input/gen/files";
+    let verify_dir = "tests/experiment/scenarios/file_integrity/input/verify/files";
+    let manifest = "tests/experiment/scenarios/file_integrity/input/verify/manifest.txt";
+    let key = "integkey2026";
+    let gen_out = ".zcode/exp-s2-verify/gen_manifest.txt";
+    std.fs.make_dir(".zcode/exp-s2-verify");
+    std.fs.remove_file(gen_out);
+    let expected_gen_stdout = match std.fs.read_file("tests/experiment/scenarios/file_integrity/expected/expected_gen_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 gen stdout: " + e); return 1; } };
+    let expected_manifest = match std.fs.read_file("tests/experiment/scenarios/file_integrity/expected/gen_manifest.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望清单: " + e); return 1; } };
+    let expected_verify_stdout = match std.fs.read_file("tests/experiment/scenarios/file_integrity/expected/expected_verify_stdout.txt") { Ok(t) => t, Err(e) => { eprint("verify: 无法读取期望 verify stdout: " + e); return 1; } };
+
+    // gen 腿:exit 0 + stdout 逐字节 + 清单逐字节
+    let run = exec_ming(prog, ["gen", gen_dir, gen_out, key]);
+    match run {
+        Ok(t) => {
+            let (code, out, _e) = t;
+            if code != 0 {
+                eprint("FAIL gen 腿 exit=" + str(code));
+                return 1;
+            }
+            if out != expected_gen_stdout {
+                eprint("FAIL gen 腿 stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected_gen_stdout.byte_len()));
+                return 1;
+            }
+            let got_manifest = match std.fs.read_file(gen_out) { Ok(m) => m, Err(e) => { eprint("verify: 无法读取被测清单: " + e); return 1; } };
+            if got_manifest != expected_manifest {
+                eprint("FAIL gen 腿 manifest mismatch actual_len=" + str(got_manifest.byte_len()) + " expected_len=" + str(expected_manifest.byte_len()));
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL gen 腿 exec: " + e);
+            return 1;
+        },
+    }
+
+    // all-OK 腿(审查 MINOR-1):gen/files + gen 腿刚产出的清单 → 全 OK → 预期 exit 0,
+    // 状态行(每清单名一行 "<name> OK")+ 汇总逐字节。期望输出由期望清单行名推导
+    // (fixture 保证清单名合法),mark 同型化后与污 stdout 比较。
+    let mut all_ok_lines: Vec[str] = [];
+    let mlines = expected_manifest.split("\n");
+    let mut mn = mlines.len();
+    if mn > 0 && mlines[mn - 1].is_empty() {
+        mn = mn - 1;
+    }
+    let mut mi = 0;
+    while mi < mn {
+        let clean_line = match std.unstr.sanitize_cli_path(mlines[mi]) { Ok(c) => c, Err(_) => { eprint("verify: 期望清单行含控制字符"); return 1; } };
+        let segs = clean_line.split(" ");
+        if segs.len() != 2 {
+            eprint("verify: 期望清单行格式非法");
+            return 1;
+        }
+        all_ok_lines.push(segs[0] + " OK");
+        mi += 1;
+    }
+    let expected_all_ok = std.unstr.mark(all_ok_lines.join("\n") + "\n" + "summary ok=" + str(mn) + " tampered=0 missing=0 rejected=0 extra=0" + "\n");
+    let run_all_ok = exec_ming(prog, ["verify", gen_dir, gen_out, key]);
+    match run_all_ok {
+        Ok(t) => {
+            let (code, out, _e) = t;
+            if code != 0 {
+                eprint("FAIL all-OK 腿 exit=" + str(code) + "(预期 0——gen/files 全净且清单吻合)");
+                return 1;
+            }
+            if out != expected_all_ok {
+                eprint("FAIL all-OK 腿 stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected_all_ok.byte_len()));
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL all-OK 腿 exec: " + e);
+            return 1;
+        },
+    }
+
+    // verify 腿:存在篡改 → 预期 exit 1,stdout 逐字节
+    let run2 = exec_ming(prog, ["verify", verify_dir, manifest, key]);
+    match run2 {
+        Ok(t) => {
+            let (code, out, _e) = t;
+            if code != 1 {
+                eprint("FAIL verify 腿 exit=" + str(code) + "(预期 1——fixture 含篡改)");
+                return 1;
+            }
+            if out != expected_verify_stdout {
+                eprint("FAIL verify 腿 stdout mismatch actual_len=" + str(out.byte_len()) + " expected_len=" + str(expected_verify_stdout.byte_len()));
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL verify 腿 exec: " + e);
+            return 1;
+        },
+    }
+
+    // 负例腿 1:缺参(仅子命令)→ exit 1,stdout 空
+    if expect_param_error("负例-缺参", exec_ming(prog, ["gen"])) != 0 {
+        return 1;
+    }
+
+    // 负例腿 2:key 越值域 → exit 1,stdout 空
+    if expect_param_error("负例-key越值域", exec_ming(prog, ["gen", gen_dir, gen_out, "bad_key!"])) != 0 {
+        return 1;
+    }
+
+    // 负例腿 3:dir 不存在 → exit 1,stdout 空
+    if expect_param_error("负例-dir不存在", exec_ming(prog, ["gen", "tests/experiment/scenarios/file_integrity/input/no_such_dir", gen_out, key])) != 0 {
+        return 1;
+    }
+
+    // 负例腿 4:清单行被改动(合法 hex64,值 ≠ 原)→ exit 1 但 stdout 含 TAMPERED(非参数错误)
+    let tampered_manifest = ".zcode/exp-s2-verify/manifest_tampered.txt";
+    if write_manifest_variant(tampered_manifest, 0) != 0 {
+        return 1;
+    }
+    let run3 = exec_ming(prog, ["verify", verify_dir, tampered_manifest, key]);
+    match run3 {
+        Ok(t) => {
+            let (code, out, _e) = t;
+            if code != 1 || out.is_empty() || !out.contains("TAMPERED") {
+                eprint("FAIL 负例-清单行被改动: exit=" + str(code) + "(预期 1 且 stdout 含 TAMPERED)");
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL 负例-清单行被改动 exec: " + e);
+            return 1;
+        },
+    }
+
+    // 负例腿 4b:清单结构损坏(首行只剩文件名,行格式非法)→ exit 1,stdout 空,stderr error:
+    let broken_manifest = ".zcode/exp-s2-verify/manifest_broken.txt";
+    if write_manifest_variant(broken_manifest, 1) != 0 {
+        return 1;
+    }
+    if expect_param_error("负例-清单损坏", exec_ming(prog, ["verify", verify_dir, broken_manifest, key])) != 0 {
+        return 1;
+    }
+
+    // 负例腿 5:交叉喂入 S1 参考实现 → 预期 FAIL(不得以期望输出成功)
+    let cross = exec_ming("tests/experiment/scenarios/log_forensics/solutions/solution.ming", ["gen", gen_dir, gen_out, key]);
+    match cross {
+        Ok(t) => {
+            let (c, o, _e) = t;
+            if c == 0 && o == expected_gen_stdout {
+                eprint("FAIL 负例-交叉喂入: S1 参考实现竟通过 S2 gen 验收");
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprint("FAIL 负例-交叉喂入 exec: " + e);
+            return 1;
+        },
+    }
+    print("PASS");
+    return 0;
+}

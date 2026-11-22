@@ -1,0 +1,258 @@
+// S1 日志取证 — fixture 生成脚本(确定性;重跑逐字节不变)。
+// 生成 input/main.log:合法文本行(INFO/WARN/ERROR/DEBUG)+ JSON 事件行 + 空行 +
+// 恶意行(ctrl-char ×5 / overlong ×2 / malformed ×6)。无随机源,输出全由代码决定。
+// 用法(从仓库根):node bin/ming.js run tests/experiment/scenarios/log_forensics/gen_fixtures.ming
+use std.fs;
+
+use std.json;
+
+fn pad2(n: i64) -> str {
+    if n < 10 {
+        return "0" + str(n);
+    }
+    return str(n);
+}
+
+fn ts_of(tick: i64) -> str {
+    return "2026-11-21T09:" + pad2(tick / 60) + ":" + pad2(tick % 60) + "Z";
+}
+
+fn pick(v: Vec[str], i: i64) -> str {
+    return v[i % v.len()];
+}
+
+fn text_line(ts: str, level: str, actor: str, event: str, user: str, ok: str, ms: i64) -> str {
+    return ts + " " + level + " " + actor + " " + event + " user=" + user + " ok=" + ok + " ms=" + str(ms);
+}
+
+fn json_line(level: str, actor: str, event: str, user: str, ip: str, attempt: i64) -> str {
+    return "{\"level\":\"" + level + "\",\"actor\":\"" + actor + "\",\"event\":\"" + event + "\",\"user\":\"" + user + "\",\"ip\":\"" + ip + "\",\"attempt\":" + str(attempt) + "}";
+}
+
+// 单码点构造(经 JSON \uXXXX 转义解码):源码保持 ASCII 可读,fmt 稳定不重写。
+// 用于 ≥ U+0080 的控制符样本(C1/双向);C0/DEL 直接用 \u{..} 字面转义(fmt 稳定)。
+fn cp(hex4: str) -> str {
+    let j = std.json.parse("\"\\u" + hex4 + "\"").unwrap();
+    return j.as_str().unwrap();
+}
+
+fn main() -> i64 with io, fs {
+    std.fs.make_dir("tests/experiment/scenarios/log_forensics/input");
+    let actors: Vec[str] = ["auth", "net", "db", "api", "sched", "cache", "worker", "ingest"];
+    let events: Vec[str] = ["login", "logout", "query", "timeout", "retry", "sync", "flush", "probe", "boot", "shutdown"];
+    let users: Vec[str] = ["alice", "bob", "carol", "dave", "eve"];
+    let mut lines: Vec[str] = [];
+    let mut tick = 0;
+
+    // 文本 INFO ×100(块 A/C/F/I/K/N)
+    let mut emitted_info = 0;
+    while emitted_info < 25 {
+        lines.push(text_line(ts_of(tick), "INFO", pick(actors, emitted_info), pick(events, emitted_info), pick(users, emitted_info), if emitted_info % 3 == 0 { "false" } else { "true" }, 10 + emitted_info * 37 % 900));
+        emitted_info += 1;
+        tick += 1;
+    }
+    lines.push("");
+
+    // 文本 WARN ×10(块 B)
+    let mut w = 0;
+    while w < 10 {
+        lines.push(text_line(ts_of(tick), "WARN", pick(actors, w), pick(events, w), pick(users, w), if w % 2 == 0 { "false" } else { "true" }, 20 + w * 53 % 800));
+        w += 1;
+        tick += 1;
+    }
+
+    // 恶意 ctrl-char #1:C0 SOH(\x01)
+    lines.push(ts_of(tick) + " INFO auth" + "\u{1}" + "login_backdoor ok=true ms=1");
+    tick += 1;
+
+    // 文本 INFO ×15(块 C)
+    while emitted_info < 40 {
+        lines.push(text_line(ts_of(tick), "INFO", pick(actors, emitted_info), pick(events, emitted_info), pick(users, emitted_info), if emitted_info % 3 == 0 { "false" } else { "true" }, 10 + emitted_info * 37 % 900));
+        emitted_info += 1;
+        tick += 1;
+    }
+
+    // JSON 事件行 ×5(块 a:WARN2 INFO1 ERROR1 DEBUG1)
+    lines.push(json_line("WARN", "auth", "login_fail", "eve", "10.0.0.7", 3));
+    lines.push(json_line("WARN", "net", "timeout", pick(users, 1), "10.0.0.8", 2));
+    lines.push(json_line("INFO", "api", "probe", pick(users, 2), "10.0.0.9", 1));
+    lines.push(json_line("ERROR", "db", "corrupt", pick(users, 3), "10.0.0.10", 5));
+    lines.push(json_line("DEBUG", "sched", "tick", pick(users, 4), "10.0.0.11", 1));
+    lines.push("");
+
+    // 文本 DEBUG ×10(块 D)
+    let mut d = 0;
+    while d < 10 {
+        lines.push(text_line(ts_of(tick), "DEBUG", pick(actors, d), pick(events, d), pick(users, d), "true", 5 + d));
+        d += 1;
+        tick += 1;
+    }
+
+    // 恶意 malformed #1:文本行段数不足(4 段)
+    lines.push(ts_of(tick) + " INFO auth login");
+    tick += 1;
+
+    // 文本 WARN ×10(块 E)
+    while w < 20 {
+        lines.push(text_line(ts_of(tick), "WARN", pick(actors, w), pick(events, w), pick(users, w), if w % 2 == 0 { "false" } else { "true" }, 20 + w * 53 % 800));
+        w += 1;
+        tick += 1;
+    }
+
+    // 恶意 overlong #1:ASCII > 4096 字符(4141)
+    lines.push(ts_of(tick) + " INFO auth ping pad1=" + "a".repeat(4100));
+    tick += 1;
+
+    // 文本 INFO ×20(块 F)
+    while emitted_info < 60 {
+        lines.push(text_line(ts_of(tick), "INFO", pick(actors, emitted_info), pick(events, emitted_info), pick(users, emitted_info), if emitted_info % 3 == 0 { "false" } else { "true" }, 10 + emitted_info * 37 % 900));
+        emitted_info += 1;
+        tick += 1;
+    }
+
+    // 恶意 ctrl-char #2:C0 BEL(\x07)
+    lines.push(ts_of(tick) + " WARN auth session" + "\u{7}" + "timeout ok=false ms=2");
+    tick += 1;
+
+    // JSON 事件行 ×5(块 b:ERROR2 INFO2 DEBUG1)
+    lines.push(json_line("ERROR", "api", "boom", pick(users, 0), "10.0.0.12", 9));
+    lines.push(json_line("ERROR", "worker", "crash", pick(users, 1), "10.0.0.13", 7));
+    lines.push(json_line("INFO", "cache", "hit", pick(users, 2), "10.0.0.14", 1));
+    lines.push(json_line("INFO", "ingest", "batch", pick(users, 3), "10.0.0.15", 4));
+    lines.push(json_line("DEBUG", "net", "dns", pick(users, 4), "10.0.0.16", 2));
+
+    // 文本 ERROR ×10(块 G)
+    let mut e = 0;
+    while e < 10 {
+        lines.push(text_line(ts_of(tick), "ERROR", pick(actors, e), pick(events, e), pick(users, e), "false", 50 + e * 61 % 700));
+        e += 1;
+        tick += 1;
+    }
+    lines.push("");
+
+    // 恶意 malformed #2:级别拼缀 INFOX
+    lines.push(ts_of(tick) + " INFOX auth login ok=true ms=5");
+    tick += 1;
+
+    // 文本 WARN ×10(块 H)
+    while w < 30 {
+        lines.push(text_line(ts_of(tick), "WARN", pick(actors, w), pick(events, w), pick(users, w), if w % 2 == 0 { "false" } else { "true" }, 20 + w * 53 % 800));
+        w += 1;
+        tick += 1;
+    }
+
+    // 文本 INFO ×15(块 I)
+    while emitted_info < 75 {
+        lines.push(text_line(ts_of(tick), "INFO", pick(actors, emitted_info), pick(events, emitted_info), pick(users, emitted_info), if emitted_info % 3 == 0 { "false" } else { "true" }, 10 + emitted_info * 37 % 900));
+        emitted_info += 1;
+        tick += 1;
+    }
+
+    // 恶意 overlong #2:ASCII > 4096 字符(4241)
+    lines.push(ts_of(tick) + " ERROR db stall pad2=" + "b".repeat(4200));
+    tick += 1;
+
+    // JSON 事件行 ×5(块 c:WARN2 ERROR2 INFO1)
+    lines.push(json_line("WARN", "auth", "brute_force", "eve", "10.0.0.17", 12));
+    lines.push(json_line("WARN", "api", "rate_limit", pick(users, 2), "10.0.0.18", 6));
+    lines.push(json_line("ERROR", "sched", "missed", pick(users, 0), "10.0.0.19", 3));
+    lines.push(json_line("ERROR", "cache", "evict_fail", pick(users, 1), "10.0.0.20", 8));
+    lines.push(json_line("INFO", "worker", "drain", pick(users, 3), "10.0.0.21", 2));
+
+    // 文本 ERROR ×10(块 J)
+    while e < 20 {
+        lines.push(text_line(ts_of(tick), "ERROR", pick(actors, e), pick(events, e), pick(users, e), "false", 50 + e * 61 % 700));
+        e += 1;
+        tick += 1;
+    }
+
+    // 恶意 ctrl-char #3:DEL(\x7f)
+    lines.push(ts_of(tick) + " ERROR db corrupt" + "\u{7f}" + "record ok=false ms=3");
+    tick += 1;
+    lines.push("");
+
+    // 恶意 malformed #3:文本行 actor 越值域(../passwd 含域外字符 /)
+    lines.push(ts_of(tick) + " WARN ../passwd shadow_read ok=false ms=1");
+    tick += 1;
+
+    // 文本 INFO ×15(块 K)
+    while emitted_info < 90 {
+        lines.push(text_line(ts_of(tick), "INFO", pick(actors, emitted_info), pick(events, emitted_info), pick(users, emitted_info), if emitted_info % 3 == 0 { "false" } else { "true" }, 10 + emitted_info * 37 % 900));
+        emitted_info += 1;
+        tick += 1;
+    }
+
+    // 文本 DEBUG ×5(块 L)
+    while d < 15 {
+        lines.push(text_line(ts_of(tick), "DEBUG", pick(actors, d), pick(events, d), pick(users, d), "true", 5 + d));
+        d += 1;
+        tick += 1;
+    }
+
+    // JSON 事件行 ×5(块 d:WARN2 INFO2 DEBUG1;首个 INFO 行含 \t 转义序列两字符)
+    lines.push(json_line("WARN", "net", "pkt_drop", pick(users, 4), "10.0.0.22", 5));
+    lines.push(json_line("WARN", "db", "slow_query", pick(users, 0), "10.0.0.23", 4));
+    lines.push("{\"level\":\"INFO\",\"actor\":\"api\",\"event\":\"probe\",\"note\":\"soft\\twrap\",\"user\":\"bob\",\"ip\":\"10.0.0.24\",\"attempt\":9}");
+    lines.push(json_line("INFO", "auth", "token_refresh", pick(users, 1), "10.0.0.25", 1));
+    lines.push(json_line("DEBUG", "ingest", "chunk", pick(users, 2), "10.0.0.26", 3));
+
+    // 文本 ERROR ×5(块 M)
+    while e < 25 {
+        lines.push(text_line(ts_of(tick), "ERROR", pick(actors, e), pick(events, e), pick(users, e), "false", 50 + e * 61 % 700));
+        e += 1;
+        tick += 1;
+    }
+
+    // 恶意 ctrl-char #4:C1 NEL(U+0085)
+    lines.push(ts_of(tick) + " INFO api probe" + cp("0085") + "done ok=true ms=4");
+    tick += 1;
+
+    // 文本 INFO ×10(块 N)
+    while emitted_info < 100 {
+        lines.push(text_line(ts_of(tick), "INFO", pick(actors, emitted_info), pick(events, emitted_info), pick(users, emitted_info), if emitted_info % 3 == 0 { "false" } else { "true" }, 10 + emitted_info * 37 % 900));
+        emitted_info += 1;
+        tick += 1;
+    }
+    lines.push("");
+
+    // 恶意 malformed #4:JSON 行 parse 失败(截断,缺右括号)
+    lines.push("{\"level\":\"WARN\",\"actor\":\"auth\",\"event\":\"boot");
+
+    // 文本 WARN ×5(块 O)
+    while w < 35 {
+        lines.push(text_line(ts_of(tick), "WARN", pick(actors, w), pick(events, w), pick(users, w), if w % 2 == 0 { "false" } else { "true" }, 20 + w * 53 % 800));
+        w += 1;
+        tick += 1;
+    }
+
+    // JSON 事件行 ×5(块 e:WARN2 ERROR2 DEBUG1)
+    lines.push(json_line("WARN", "sched", "overrun", pick(users, 3), "10.0.0.27", 2));
+    lines.push(json_line("WARN", "worker", "queue_full", pick(users, 4), "10.0.0.28", 10));
+    lines.push(json_line("ERROR", "net", "reset", pick(users, 0), "10.0.0.29", 6));
+    lines.push(json_line("ERROR", "auth", "lockout", "eve", "10.0.0.30", 15));
+    lines.push(json_line("DEBUG", "cache", "warm", pick(users, 1), "10.0.0.31", 1));
+
+    // 恶意 ctrl-char #5:双向控制符(U+202E RLO + U+202C PDF)
+    lines.push(ts_of(tick) + " WARN net dns" + cp("202e") + "spoof" + cp("202c") + " ok=true ms=5");
+    tick += 1;
+    lines.push("");
+
+    // 恶意 malformed #5:JSON 行 level 越级别集(FATAL)
+    lines.push("{\"level\":\"FATAL\",\"actor\":\"api\",\"event\":\"crash\"}");
+
+    // 恶意 malformed #6:JSON 行 event 越值域(含域外字符 ;)
+    lines.push("{\"level\":\"ERROR\",\"actor\":\"db\",\"event\":\"drop;table\"}");
+
+    // 落盘:单 \n 分行,末尾以 \n 结尾;空行计数、末尾换行空行不计行(spec §2.1)
+    let content = lines.join("\n") + "\n";
+    match std.fs.write_file("tests/experiment/scenarios/log_forensics/input/main.log", content) {
+        Ok(_) => {
+            print("fixture written: " + str(lines.len()) + " lines");
+            return 0;
+        },
+        Err(e) => {
+            eprint("error: 无法写入 fixture: " + e);
+            return 1;
+        },
+    }
+}

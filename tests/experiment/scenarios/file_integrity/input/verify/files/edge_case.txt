@@ -1,0 +1,12 @@
+# fixture file: edge_case.txt
+created_by: gen_fixtures.ming
+index: 8
+line_a: alpha 69
+line_b: bravo 117
+line_c: charlie 179
+payload: edge_case 8 24
+payload: edge_case 8 40
+payload: edge_case 8 56
+unicode: café naïve index 8
+tail_1: end of edge_case.txt
+tail_2: index 08

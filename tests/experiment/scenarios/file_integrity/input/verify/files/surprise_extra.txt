@@ -1,0 +1,2 @@
+# surprise extra file
+not in manifest on purpose

@@ -1,0 +1,12 @@
+# fixture file: fw_allowlist.txt
+created_by: gen_fixtures.ming
+index: 15
+line_a: alpha 118
+line_b: bravo 194
+line_c: charlie 298
+payload: fw_allowlist 15 45
+payload: fw_allowlist 15 75
+payload: fw_allowlist 15 105
+unicode: café naïve index 15
+tail_1: end of fw_allowlist.txt
+tail_2: index 15

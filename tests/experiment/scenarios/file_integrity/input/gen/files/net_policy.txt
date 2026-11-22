@@ -1,0 +1,12 @@
+# fixture file: net_policy.txt
+created_by: gen_fixtures.ming
+index: 23
+line_a: alpha 174
+line_b: bravo 282
+line_c: charlie 434
+payload: net_policy 23 69
+payload: net_policy 23 115
+payload: net_policy 23 161
+unicode: café naïve index 23
+tail_1: end of net_policy.txt
+tail_2: index 23

@@ -7,6 +7,8 @@
 > 承诺面口径:验收只依赖 docs/stability-contract.md §2 P1–P8 已交付能力,不依赖
 > §3 N1–N7(不断言性能/引擎归属,契约 §5.6 口径)。
 
+实现登记(2026-11-22):见 gap-log.md
+
 ## 1. 场景目标(真实场景,非玩具)
 
 发布物完整性校验(release verification):维护者发布前对文本文件集生成 keyed
