@@ -24,7 +24,7 @@
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
 //   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
-//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111
+//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
 //   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -27692,6 +27692,298 @@ secBegin('112');
     check('v112.29:审查终修回归——wire Json 分支保标(spawn 收 Untrusted[Json] → worker 内 get/as_str/to_bytes[0]×1000 = 66000 → join Ok(1))三腿逐字',
       legsOk112(legs112(f), '1\n'), legsBrief112(legs112(f)));
   }
+}
+
+secBegin('113');
+{
+  // ==================== §113 S-1:--proof-format smt-lib(v1.1 首批,plan §4.21)====================
+  // 义务 → SMT-LIB 2.0 导出:旗标解析/未知值拒绝/逐字节确定性/结构 sanity/proven 与反例的
+  // solver_status 可区分/--json 加法字段(带旗标才出现,无旗标逐字节不变)/无契约行为/
+  // --proof-report 并存/保留字重写/循环 scope/不可线性化/多文件/退出码零变化。
+  // 规范见 docs/proof-protocol.md;编码模块 src/proofsmt.js(纯函数,判定与编码分离)。
+  // Z3 消费验证待外部环境(2026-11-23 实测本机无 z3)——本节以严格语法自检器兜底,不谎称已验证。
+  const dir113 = path.join(TMP, 'v113');
+  fs.mkdirSync(dir113, { recursive: true });
+  const mk113 = (name, src) => { const f = path.join(dir113, name); fs.writeFileSync(f, src.endsWith('\n') ? src : src + '\n', 'utf8'); return f; };
+
+  // ---- SMT-LIB 结构自检器(零依赖;规范 §3.1 五条结构不变式 + declare 前置 + 保留字)----
+  // 保留字单一事实来源 = src/proofsmt.js 导出(2026-11-23 审查 MINOR-1:双源手抄表先例漂移 HEX≠HEXADECIMAL,废除)。
+  const { SMT_RESERVED: SMT_RESERVED_113 } = await import('../src/proofsmt.js');
+  const smtStruct113 = (script) => {
+    const lines = script.split('\n');
+    if (lines[0] !== '(set-logic QF_LIA)') return '首行非 (set-logic QF_LIA)';
+    if (lines[lines.length - 1] !== '' || lines[lines.length - 2] !== '(exit)') return '末尾非 (exit)';
+    let depth = 0, inPush = 0, checks = 0, seenAssert = false;
+    const blockSyms = new Set();
+    for (const raw of lines.slice(1, lines.length - 2)) {
+      const line = raw.trim();
+      if (line === '' || line.startsWith(';')) continue;
+      const noStr = line.replace(/"[^"]*"/g, '""'); // 字符串字面量先剥离再数括号
+      for (const ch of noStr) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if (depth < 0) return '括号配平(负深度)';
+      }
+      if (noStr === '(push)') { inPush++; seenAssert = false; blockSyms.clear(); continue; }
+      if (noStr === '(pop)') { if (inPush <= 0) return 'pop 无配对 push'; inPush--; continue; }
+      const dm = noStr.match(/^\(declare-const (\S+) Int\)$/);
+      if (dm) {
+        if (inPush === 0) return 'declare-const 在 push 块外';
+        if (seenAssert) return 'declare-const 出现在 assert 之后';
+        if (blockSyms.has(dm[1])) return `块内重复声明:${dm[1]}`;
+        if (SMT_RESERVED_113.has(dm[1])) return `声明了保留字:${dm[1]}`;
+        blockSyms.add(dm[1]);
+        continue;
+      }
+      if (noStr.startsWith('(assert ') || noStr.startsWith('(check-sat')) {
+        if (inPush === 0) return `块外命令:${line}`;
+        if (noStr === '(check-sat)') checks++;
+        else seenAssert = true;
+        continue;
+      }
+      if (noStr.startsWith('(set-info ')) { if (inPush > 0) return 'set-info 在 push 块内'; continue; }
+      return `未识别命令:${line}`;
+    }
+    if (depth !== 0) return '括号配平(残余深度)';
+    if (inPush !== 0) return 'push/pop 未配平';
+    return checks;
+  };
+
+  // ---- 语料(proven / violated / unproven / 混合 / 无契约 / 无索引 / 循环 / 保留字 / 不可线性化)----
+  const okF = mk113('ok.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1))); }',
+  ].join('\n'));
+  const badF = mk113('bad.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+  ].join('\n'));
+  const unprovF = mk113('unprov.ming', [
+    'fn g(buf: Vec[i64], n: i64) -> i64 requires n <= buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(g([1, 2], 0))); }',
+  ].join('\n'));
+  const mixedF = mk113('mixed.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1)) + str(f([1, 2], 2))); }',
+  ].join('\n'));
+  const emptyF = mk113('empty.ming', 'fn main() with io { print("hi"); }');
+  const noidxF = mk113('noidx.ming', [
+    'fn h(buf: Vec[i64], n: i64) -> i64 requires n >= 0 { return n + 1; }',
+    'fn main() with io { print(str(h([1], 0))); }',
+  ].join('\n'));
+  const loopF = mk113('loop.ming', [
+    'fn sum(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    let mut s = 0;',
+    '    for i in 0..n { s += buf[i]; }',
+    '    return s;',
+    '}',
+    'fn main() with io { print(str(sum([1, 2, 3], 3))); }',
+  ].join('\n'));
+  const resvF = mk113('resv.ming', [
+    'fn r(div: i64, buf: Vec[i64]) -> i64 requires div >= 0 && div < buf.len() {',
+    '    return buf[div];',
+    '}',
+    'fn main() with io { print(str(r(0, [1]))); }',
+  ].join('\n'));
+  const nlF = mk113('nl.ming', [
+    'fn nl(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    return buf[n * n];',
+    '}',
+    'fn main() with io { print(str(nl([1], 1))); }',
+  ].join('\n'));
+
+  // v113.1 文本模式:旗标接受;stdout 纯脚本;stderr 零输出;退出码 0(零语义变化)
+  const r113ok = runMing(['check', okF, '--proof-format', 'smt-lib']);
+  check('v113.1:proven 语料文本模式——exit 0/stdout 纯脚本(首行 set-logic,末行 exit)/stderr 空',
+    r113ok.code === 0 && r113ok.stderr === '' && r113ok.stdout.startsWith('(set-logic QF_LIA)\n') && r113ok.stdout.endsWith('(exit)\n'),
+    `code=${r113ok.code} stderr=${JSON.stringify(r113ok.stderr.slice(0, 120))} head=${JSON.stringify(r113ok.stdout.slice(0, 60))}`);
+
+  // v113.2 违反语料:退出码口径零变化(exit 1 + M3045 在 stderr),脚本仍在 stdout
+  const r113bad = runMing(['check', badF, '--proof-format', 'smt-lib']);
+  check('v113.2:违反语料退出码零变化——exit 1 + M3045 走 stderr + stdout 仍为完整脚本',
+    r113bad.code === 1 && r113bad.stderr.includes('M3045[index-bounds-violated]') && r113bad.stdout.includes('(check-sat)') && !r113bad.stdout.includes('M3045'),
+    `code=${r113bad.code} stderr=${JSON.stringify(r113bad.stderr.slice(0, 120))}`);
+
+  // v113.3 未知取值拒绝(空格形式 + 等号形式):不静默,exit 1,不输出脚本
+  const r113u1 = runMing(['check', okF, '--proof-format', 'json']);
+  const r113u2 = runMing(['check', okF, '--proof-format=json']);
+  check('v113.3:未知取值拒绝(--proof-format json / =json 两形式)——exit 1 + stderr 具名 + 无脚本输出',
+    r113u1.code === 1 && r113u1.stderr.includes('--proof-format 仅支持 "smt-lib"') && r113u1.stderr.includes('"json"') && !r113u1.stdout.includes('set-logic')
+    && r113u2.code === 1 && r113u2.stderr.includes('仅支持 "smt-lib"') && r113u2.stderr.includes('"json"'),
+    `space=${r113u1.code}/${JSON.stringify(r113u1.stderr.slice(0, 80))} eq=${r113u2.code}/${JSON.stringify(r113u2.stderr.slice(0, 80))}`);
+
+  // v113.4 缺值拒绝(解析层)
+  const r113u3 = runMing(['check', okF, '--proof-format']);
+  check('v113.4:缺值拒绝——exit 1 + "需要一个值"', r113u3.code === 1 && r113u3.stderr.includes('--proof-format 需要一个值'),
+    `code=${r113u3.code} stderr=${JSON.stringify(r113u3.stderr.slice(0, 80))}`);
+
+  // v113.5 逐字节确定性:同输入跑两遍,stdout 与 stderr 完全一致
+  const r113d1 = runMing(['check', mixedF, '--proof-format', 'smt-lib']);
+  const r113d2 = runMing(['check', mixedF, '--proof-format', 'smt-lib']);
+  check('v113.5:逐字节确定性——两遍 stdout/stderr 完全一致(无时间戳/无随机序)',
+    r113d1.stdout === r113d2.stdout && r113d1.stderr === r113d2.stderr && r113d1.code === r113d2.code,
+    `len=${r113d1.stdout.length}/${r113d2.stdout.length}`);
+
+  // v113.6 结构 sanity(全部语料过结构自检器;check-sat 计数 = 2×可编码义务)
+  const scripts113 = {};
+  for (const [nm, f] of [['ok', okF], ['bad', badF], ['unprov', unprovF], ['mixed', mixedF], ['empty', emptyF], ['noidx', noidxF], ['loop', loopF], ['resv', resvF], ['nl', nlF]]) {
+    const rr = runMing(['check', f, '--proof-format', 'smt-lib']);
+    scripts113[nm] = rr.stdout;
+  }
+  const stOk = smtStruct113(scripts113.ok);
+  const stMixed = smtStruct113(scripts113.mixed);
+  const stAll = ['bad', 'unprov', 'loop', 'resv'].map((nm) => smtStruct113(scripts113[nm])).every((v) => typeof v === 'number');
+  check('v113.6:结构 sanity——ok=2 块/mixed=4 块 check-sat;bad/unprov/loop/resv 全过自检器(括号/declare 前置/push-pop 配平/保留字)',
+    stOk === 2 && stMixed === 4 && stAll,
+    `ok=${JSON.stringify(stOk)} mixed=${JSON.stringify(stMixed)} all=${stAll}`);
+
+  // v113.7 零义务脚本:无契约函数 / 有 requires 无索引 → 头 + "; 无证明义务" + (exit),exit 0
+  const emptyWant = ['(set-logic QF_LIA)', '(set-info :source "Ming 证明义务导出(QF_LIA 子集;规范见 docs/proof-protocol.md)")', '; 无证明义务', '(exit)', ''].join('\n');
+  const r113e = runMing(['check', emptyF, '--proof-format', 'smt-lib']);
+  const r113n = runMing(['check', noidxF, '--proof-format', 'smt-lib']);
+  check('v113.7:零义务脚本(empty/无索引两语料)——恰 4 行诚实声明,不伪装成可检事实,exit 0',
+    r113e.code === 0 && r113e.stdout === emptyWant && r113n.code === 0 && r113n.stdout === emptyWant,
+    `empty=${JSON.stringify(r113e.stdout.slice(0, 80))} noidx=${JSON.stringify(r113n.stdout.slice(0, 80))}`);
+
+  // v113.8 内部判定注释:proven/refuted/unknown 逐块如实(期望文本与义务状态一一对应;
+  // refuted 注记携带假设集可满足性豁免口径——2026-11-23 审查 MAJOR-3,见协议 §3.4/§6.2)
+  const REFUTED_113 = 'refuted(内部判定违反方向被假设集强制;期望 sat——若外部 unsat,先核对假设集自身可满足性,见协议 §6.3)';
+  const okProv = (scripts113.ok.match(/proven\(期望 unsat\)/g) ?? []).length;
+  const badRef = scripts113.bad.includes(REFUTED_113) && scripts113.bad.includes('unknown(内部未判定;外部结论不设期望)');
+  check('v113.8:判定注释如实——ok 恰 2 处 proven(期望 unsat)零 refuted/unknown;bad 同义务含 refuted(豁免口径全文)+ unknown',
+    okProv === 2 && !scripts113.ok.includes('refuted') && !scripts113.ok.includes('unknown') && badRef,
+    `okProv=${okProv} badRef=${badRef}`);
+
+  // v113.9 --json 义务条目 solver_status 可区分:proven→unsat / violated→sat,id 同一方案
+  const r113j = runMing(['check', mixedF, '--json', '--proof-report', '--proof-format', 'smt-lib']);
+  let j113 = null;
+  try { j113 = JSON.parse(r113j.stdout); } catch { /* 下面的 check 报具名失败 */ }
+  const obl113 = (nm) => j113?.proofs?.functions?.find((x) => x.fn === nm)?.obligations ?? [];
+  check('v113.9:JSON 义务条目 solver_status 可区分——get(proven)→unsat / f(violated)→sat,id=vc:<fn>:1',
+    r113j.code === 1 && j113?.proof_smt?.length > 0
+    && obl113('get')[0]?.solver_status === 'unsat' && obl113('get')[0]?.proof_obligation_id === 'vc:get:1'
+    && obl113('f')[0]?.solver_status === 'sat' && obl113('f')[0]?.proof_obligation_id === 'vc:f:1',
+    `code=${r113j.code} get=${JSON.stringify(obl113('get')[0]?.solver_status)}/${JSON.stringify(obl113('get')[0]?.proof_obligation_id)} f=${JSON.stringify(obl113('f')[0]?.solver_status)}/${JSON.stringify(obl113('f')[0]?.proof_obligation_id)}`);
+
+  // v113.10 诊断加法字段:M3045→sat(vc:f:1);W3105→unknown
+  const r113d = runMing(['check', badF, '--json', '--proof-format', 'smt-lib']);
+  const j113d = JSON.parse(r113d.stdout);
+  const m3045 = j113d.diagnostics.find((x) => x.code === 'M3045');
+  const r113w = runMing(['check', unprovF, '--json', '--warn-unproven-index', '--proof-format', 'smt-lib']);
+  const j113w = JSON.parse(r113w.stdout);
+  const w3105 = j113w.diagnostics.find((x) => x.code === 'W3105');
+  check('v113.10:诊断加法字段——M3045 带 proof_obligation_id=vc:f:1 + solver_status=sat;W3105 带 solver_status=unknown',
+    m3045?.proof_obligation_id === 'vc:f:1' && m3045?.solver_status === 'sat'
+    && w3105?.proof_obligation_id === 'vc:g:1' && w3105?.solver_status === 'unknown',
+    `M3045=${JSON.stringify(m3045?.proof_obligation_id)}/${JSON.stringify(m3045?.solver_status)} W3105=${JSON.stringify(w3105?.proof_obligation_id)}/${JSON.stringify(w3105?.solver_status)}`);
+
+  // v113.11 加法式锁定:无旗标 --json 既有键集逐字不变;带旗标恰增 2 键,共同字段值相等
+  const jBase = JSON.parse(runMing(['check', badF, '--json']).stdout);
+  const baseKeys = Object.keys(jBase.diagnostics[0]);
+  const wantKeys = ['code', 'name', 'severity', 'message', 'file', 'line', 'col', 'endLine', 'endCol', 'hint'];
+  const withKeys = Object.keys(j113d.diagnostics[0]);
+  const commonSame = wantKeys.every((k) => JSON.stringify(jBase.diagnostics[0][k]) === JSON.stringify(j113d.diagnostics[0][k]));
+  check('v113.11:加法式锁定——无旗标诊断键集恰为既有 10 键且无 proof_smt;带旗标恰增 proof_obligation_id/solver_status 两键,共同字段逐字相等',
+    JSON.stringify(baseKeys) === JSON.stringify(wantKeys) && !('proof_smt' in jBase)
+    && withKeys.length === wantKeys.length + 2 && withKeys.includes('proof_obligation_id') && withKeys.includes('solver_status') && commonSame,
+    `base=${JSON.stringify(baseKeys)} with=${JSON.stringify(withKeys)} same=${commonSame}`);
+
+  // v113.12 --proof-report 并存:文本 stdout = 摘要行 + 脚本;JSON proofs 与 proof_smt 共存
+  const r113p = runMing(['check', mixedF, '--proof-report', '--proof-format', 'smt-lib']);
+  const setLogicAt = r113p.stdout.indexOf('(set-logic QF_LIA)');
+  check('v113.12:--proof-report 并存——文本 stdout 先摘要行(义务 1,proven/violated)后脚本;JSON proofs+proof_smt 同对象',
+    r113p.code === 1 && setLogicAt > 0 && r113p.stdout.slice(0, setLogicAt).includes('义务 1') && r113p.stdout.includes('proven 1') && r113p.stdout.includes('violated 1')
+    && 'proofs' in j113 && 'proof_smt' in j113,
+    `code=${r113p.code} setLogicAt=${setLogicAt} head=${JSON.stringify(r113p.stdout.slice(0, 80))}`);
+
+  // v113.13 循环义务:scope: loop 注释 + i$0 符号 + 区间约束入假设集
+  check('v113.13:循环义务——scope: loop 注记/i$0 声明/区间约束 (<= 0 i$0) 与 (< i$0 n) 断言,两方向 proven',
+    scripts113.loop.includes('(scope: loop)') && scripts113.loop.includes('(declare-const i$0 Int)')
+    && scripts113.loop.includes('(assert (<= 0 i$0))') && scripts113.loop.includes('(assert (< i$0 n))')
+    && (scripts113.loop.match(/proven\(期望 unsat\)/g) ?? []).length === 2,
+    `has=${scripts113.loop.includes('(scope: loop)')}/${scripts113.loop.includes('(declare-const i$0 Int)')} prov=${(scripts113.loop.match(/proven\(期望 unsat\)/g) ?? []).length}`);
+
+  // v113.14 保留字重写:参数名 div → div_v(双射;原样保留面不动)
+  check('v113.14:保留字重写——div 参数声明为 div_v,原符号 div 不再出现于 declare',
+    scripts113.resv.includes('(declare-const div_v Int)') && !scripts113.resv.includes('(declare-const div Int)') && scripts113.resv.includes('(>= div_v 0)'),
+    `has=${scripts113.resv.includes('(declare-const div_v Int)')}/${scripts113.resv.includes('(>= div_v 0)')}`);
+
+  // v113.15 不可线性化义务:目标未编码 → 只留注释,无 check-sat;W3105 仍 unknown
+  const stNl = smtStruct113(scripts113.nl);
+  const r113nl = runMing(['check', nlF, '--json', '--warn-unproven-index', '--proof-format', 'smt-lib']);
+  const j113nl = JSON.parse(r113nl.stdout);
+  const wNl = j113nl.diagnostics.find((x) => x.code === 'W3105');
+  check('v113.15:不可线性化义务(n*n)——脚本含诚实注释且 0 个 check-sat(仍过结构自检);W3105=unknown/id=vc:nl:1',
+    scripts113.nl.includes('索引表达式不可线性化') && stNl === 0
+    && wNl?.proof_obligation_id === 'vc:nl:1' && wNl?.solver_status === 'unknown',
+    `stNl=${JSON.stringify(stNl)} W=${JSON.stringify(wNl?.proof_obligation_id)}/${JSON.stringify(wNl?.solver_status)}`);
+
+  // v113.16 多文件:文件分节注释按命令行顺序;义务 id 各文件独立
+  const r113m = runMing(['check', mixedF, resvF, '--proof-format', 'smt-lib']);
+  const filesAt = [...r113m.stdout.matchAll(/; ===== 文件:(.+) =====/g)].map((m) => m[1]);
+  check('v113.16:多文件——两处文件分节按命令行顺序(mixed 前 resv 后),结构与 id 方案跨文件一致',
+    r113m.code === 1 && filesAt.length === 2 && filesAt[0].endsWith('mixed.ming') && filesAt[1].endsWith('resv.ming')
+    && smtStruct113(r113m.stdout) === 6,
+    `code=${r113m.code} files=${JSON.stringify(filesAt)} checks=${JSON.stringify(smtStruct113(r113m.stdout))}`);
+
+  // v113.17 其他命令不消费:run 忽略 --proof-format(值被解析但程序照常运行,非脚本输出)
+  const r113r = runMing(['run', emptyF, '--proof-format', 'smt-lib']);
+  check('v113.17:ming run 不消费旗标——程序输出 hi(非 SMT 脚本),exit 0',
+    r113r.code === 0 && r113r.stdout === 'hi\n' && !r113r.stdout.includes('set-logic'),
+    `code=${r113r.code} out=${JSON.stringify(r113r.stdout.slice(0, 40))}`);
+
+  // v113.18 无旗标 --proof-report 黄金零校准:义务条目键集恰为既有 8 键(无新增字段)
+  const jNoFlag = JSON.parse(runMing(['check', unprovF, '--json', '--proof-report']).stdout);
+  const obKeys = Object.keys(jNoFlag.proofs.functions[0].obligations[0]);
+  const wantObKeys = ['file', 'fn', 'index', 'kind', 'obligation', 'line', 'col', 'counterexample', 'scope'];
+  check('v113.18:无旗标 --proof-report 零校准——义务条目恰为既有 9 键,无 proof_obligation_id/solver_status',
+    JSON.stringify(obKeys) === JSON.stringify(wantObKeys) && !('proof_smt' in jNoFlag),
+    `keys=${JSON.stringify(obKeys)}`);
+
+  // v113.19 审查修复回归(2026-11-23 独立审查 3 MAJOR):_ 保留字重写 / 跨行索引注释空白折叠 /
+  // refuted 假设集不可满足豁免语料(n+m<=len 差分编码 skip 形态,外部必答 unsat)。
+  const usF = mk113('us.ming', [
+    'fn pick(buf: Vec[i64], _: i64) -> i64 requires _ >= 0 && _ < buf.len() {',
+    '    return buf[_];',
+    '}',
+    'fn main() with io { print(str(pick([1, 2], 1))); }',
+  ].join('\n'));
+  const mlineF = mk113('mline.ming', [
+    'fn m(buf: Vec[i64], n: i64) -> i64 requires n >= 0 && n + 1 < buf.len() {',
+    '    return buf[',
+    '        n + 1',
+    '    ];',
+    '}',
+    'fn main() with io { print(str(m([1, 2], 0))); }',
+  ].join('\n'));
+  const lsatF = mk113('lsat.ming', [
+    'fn ls(buf: Vec[i64], n: i64, m: i64) -> i64 requires n >= 1 && m >= 1 && n + m <= buf.len() && buf.len() <= 1 {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(ls([1], 1, 1))); }',
+  ].join('\n'));
+  const r113us = runMing(['check', usF, '--proof-format', 'smt-lib']);
+  const r113ml = runMing(['check', mlineF, '--proof-format', 'smt-lib']);
+  const r113ls = runMing(['check', lsatF, '--proof-format', 'smt-lib']);
+  // 裸 token 行检测:非空行必须以 ; 或 ( 起(注释破裂即脚本非法——SMT-LIB 注释以 ; 起行、行尾终止)
+  const mlLinesOk = r113ml.stdout.split('\n').every((l) => l === '' || l.startsWith(';') || l.startsWith('('));
+  const lsM3045 = (() => { try { return JSON.parse(runMing(['check', lsatF, '--json', '--proof-format', 'smt-lib']).stdout).diagnostics.some((d) => d.code === 'M3045' && d.solver_status === 'sat'); } catch { return false; } })();
+  check('v113.19:审查 MAJOR-1/2/3 回归——_ 参数声明 __v(保留字)/跨行索引注释折叠单行无裸 token/refuted 语料带假设集豁免口径注记 + M3045 solver_status=sat',
+    r113us.code === 0 && r113us.stdout.includes('(declare-const __v Int)') && smtStruct113(r113us.stdout) === 2
+    && r113ml.code === 0 && smtStruct113(r113ml.stdout) === 2 && mlLinesOk && r113ml.stdout.includes('索引 n + 1(scope: body)')
+    && r113ls.code === 1 && r113ls.stdout.includes(REFUTED_113) && smtStruct113(r113ls.stdout) === 2 && lsM3045,
+    `us=${r113us.code}/${r113us.stdout.includes('(declare-const __v Int)')} ml=${r113ml.code}/${mlLinesOk}/${r113ml.stdout.includes('索引 n + 1(scope: body)')} ls=${r113ls.code}/${r113ls.stdout.includes(REFUTED_113)}/${lsM3045}`);
 }
 
 secEndAll();

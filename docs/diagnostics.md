@@ -2,6 +2,7 @@
 
 诊断码是 Ming 工具链对外协议的一部分:**已发布的码含义不变**;新码只增不改。v0.27-v0.30 无新增码(错误链复用既有码面,新增可选字段)。
 所有命令 `--json` 时输出 `{code, name, severity, message, file, line, col, endLine, endCol, hint?}`。
+v1.1 起 `ming check --proof-format smt-lib` 开启时,义务诊断(M3045/W3105)additive 携带 `proof_obligation_id`(`vc:<函数名>:<序号>`)与 `solver_status`(Ming 内部 QF_LIA 证明器口径:`unsat`/`sat`/`unknown`——非外部求解器结论);不带该旗标时既有输出逐字节不变(语义见 docs/proof-protocol.md)。
 
 **运行时 panic 的错误链(v0.30)**:当 panic 由下级错误引起(scoped 块子任务 panic 传播到主任务),panic 诊断额外携带可选 `cause` 字段:
 

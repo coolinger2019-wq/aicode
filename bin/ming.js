@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -38,10 +38,11 @@ let getDeepCopyCount, resetDeepCopyCount; // O0.1:MING_STATS deepCopy 计数(int
 let Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY, diagJson;
 let compile, CompileError, serializeArtifact, deserializeArtifact, makeCheckLike;
 let Unsupported, wasmLayerStatus;
+let renderProofScript; // v1.1 S-1:src/proofsmt.js — 证明义务 → SMT-LIB 文本(纯函数,check --proof-format smt-lib)
 let _core = null;
 async function loadCore() {
   if (_core) return _core;
-  const [mChecker, mInterp, mVm, mParser, mDiag, mCompiler, mArtifact, mWasm] = await Promise.all([
+  const [mChecker, mInterp, mVm, mParser, mDiag, mCompiler, mArtifact, mWasm, mProofSmt] = await Promise.all([
     import('../src/checker.js'),
     import('../src/interp.js'),
     import('../src/vm.js'),
@@ -50,6 +51,7 @@ async function loadCore() {
     import('../src/compiler.js'),
     import('../src/artifact.js'),
     import('../src/wasm.js'),
+    import('../src/proofsmt.js'),
   ]);
   Checker = mChecker.Checker;
   ({ Interp, Panic, getDeepCopyCount, resetDeepCopyCount } = mInterp);
@@ -60,6 +62,7 @@ async function loadCore() {
   ({ compile, CompileError } = mCompiler);
   ({ serializeArtifact, deserializeArtifact, makeCheckLike } = mArtifact);
   ({ Unsupported, wasmLayerStatus } = mWasm);
+  renderProofScript = mProofSmt.renderProofScript;
   _core = true;
   return _core;
 }
@@ -78,7 +81,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--no-opt] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
-  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--strict-wasm]
+  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib] [--strict-wasm]
   ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--no-opt] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
   ming build [--json] [--clean-cache] [--with-source] [--no-dist] [--no-opt]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
@@ -106,7 +109,7 @@ function parseArgs(argv) {
   const dashRest = []; // v0.52:'--' 之后的程序参数,不再混入文件位置参数
   const errors = [];
   let afterDoubleDash = false;
-  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out']); // 空格分隔取值的参数
+  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out', 'proof-format']); // 空格分隔取值的参数
   const NUMERIC_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms']);
   const takeValue = (name, i) => {
     const nxt = argv[i + 1];
@@ -390,13 +393,20 @@ function panicDiag(p, result) {
 }
 
 // ---------- check ----------
-async function cmdCheck(files, flags) {
+async function cmdCheck(files, flags, opts = {}) {
   await loadCore();
   const json = flags.has('json');
   // v0.52 阶段 3:--proof-report 证明报告 + --warn-unproven-index W3105 观测旗标。
   // 两旗标仅 check 消费;其他命令按既有风格忽略未知旗标(命令只读取自己认识的旗标)。
   const proofReport = flags.has('proof-report');
   const warnUnprovenIndex = flags.has('warn-unproven-index');
+  // v1.1 S-1(plan §4.21):--proof-format smt-lib —— 把 checker 采集的证明义务 VC 导出为
+  // SMT-LIB 2.0 文本(纯输出选项;退出码口径零变化)。未知取值不静默:显式报错 exit 1。
+  const proofFormat = opts['proof-format'];
+  if (proofFormat !== undefined && proofFormat !== 'smt-lib') {
+    return fail(`--proof-format 仅支持 "smt-lib"(得到 "${proofFormat}")`, json);
+  }
+  const proofSmt = proofFormat === 'smt-lib';
   // v0.53:--strict-wasm 仅在 check 通过后做 wasm 分层存活验证(fallback → 退出码 2);
   // 与 --tree/--no-wasm 互斥;非 strict 时 check 不编译,JSON 也不带 wasm_status。
   if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
@@ -405,7 +415,9 @@ async function cmdCheck(files, flags) {
   const allDiags = [];
   const checked = [];
   for (const f of files) {
-    const checker = new Checker(f, null, { warnUnprovenIndex });
+    // proofAnnotate:仅 --proof-format 生效时让 M3045/W3105 挂 proof_obligation_id/solver_status
+    // (additive;不带新旗标时诊断对象零额外字段,既有 --json 逐字节不变)。
+    const checker = new Checker(f, null, { warnUnprovenIndex, proofAnnotate: proofSmt });
     try {
       const result = checker.run();
       for (const m of result.modules) cacheSourceLines(m.file, m.src);
@@ -421,7 +433,12 @@ async function cmdCheck(files, flags) {
   if (hasError) allOk = false;
   // --proof-report:证明摘要(additive;不带旗标时 JSON 与文本输出逐字不变)。
   // 违反诊断(M3045)仍走既有诊断通道,proofs 字段与之共存不冲突。
-  const proofs = proofReport ? collectProofs(checked) : null;
+  // v1.1 S-1:--proof-format smt-lib 生效时,义务条目额外携带 proof_obligation_id/solver_status
+  // (additive;映射口径见 docs/proof-protocol.md —— proven→unsat/有反例→sat/未证明→unknown)。
+  const proofs = proofReport ? collectProofs(checked, proofSmt) : null;
+  // v1.1 S-1:SMT-LIB 导出 —— 义务 VC(线性约束 + 逐方向内部判定)经 src/proofsmt.js 渲染;
+  // 文本模式 stdout 承载脚本(诊断/摘要在 stderr 与既有行);JSON 模式 additive `proof_smt` 字段。
+  const smtScript = proofSmt ? renderProofScript(collectVcs(checked)) : null;
   // v0.53:strict wasm —— check 通过后逐文件验证分层存活;任一 fallback → 退出码 2 并点名原因。
   // 聚合语义:有 fallback → 'fallback';否则有 ok → 'ok';否则 'none'。仅 strict 时计算与输出。
   // 审查修复:fallback 不再走独立输出路径——与正常路径共用同一 out 构造(ok/diagnostics/proofs/
@@ -446,11 +463,13 @@ async function cmdCheck(files, flags) {
   if (json) {
     const out = { ok: wasmFallback ? false : allOk, diagnostics: diagJson(diags) };
     if (proofs) out.proofs = proofs;
+    if (smtScript !== null) out.proof_smt = smtScript;
     if (wasmAgg) out.wasm_status = wasmAgg;
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
     printDiags(diags, false);
     if (proofs) printProofs(proofs);
+    if (smtScript !== null) process.stdout.write(smtScript);
   }
   for (const why of strictReasons) process.stderr.write(`strict-wasm: ${why}\n`);
   if (wasmFallback) return 2;
@@ -478,7 +497,11 @@ function printProofs(proofs) {
 // 证明记录与摘要只报首次出现的一份(per-entry 调用点计数不再保留;可读性优先)。
 // v0.56(B1):去重键直接取记录自带的 abs(checker 的 Module.absPath),不再用展示路径反查:
 // 不同目录的 util.ming 在各自入口下展示路径同为 "util.ming",反查会跨目录误合并。
-function collectProofs(checked) {
+// v1.1 S-1(--proof-format smt-lib):annotateSolver=true 时义务条目 additive 携带
+// proof_obligation_id(vc:<fn>:<序号>,序号 = 采集顺序 1 起,与 checker VC 采集同序)与
+// solver_status(Ming 内部 QF_LIA 证明器口径:proven→unsat / violated→sat / unproven→unknown;
+// 不是外部求解器结论)。false(默认)时逐字保持既有输出。
+function collectProofs(checked, annotateSolver = false) {
   const functions = [];
   const summaries = [];
   const seenProof = new Set();
@@ -490,7 +513,14 @@ function collectProofs(checked) {
       const key = keyOf(rec);
       if (seenProof.has(key)) continue;
       seenProof.add(key);
-      functions.push(rec);
+      functions.push(annotateSolver ? {
+        ...rec,
+        obligations: rec.obligations.map((o, i) => ({
+          ...o,
+          proof_obligation_id: `vc:${rec.fn}:${i + 1}`,
+          solver_status: o.kind === 'proven' ? 'unsat' : o.kind === 'violated' ? 'sat' : 'unknown',
+        })),
+      } : rec);
       summary.functions += 1;
       summary.obligations += rec.total;
       summary.proven += rec.proven;
@@ -513,6 +543,23 @@ function collectProofs(checked) {
     }
   }
   return { summary, functions, summaries };
+}
+
+// v1.1 S-1(--proof-format smt-lib):聚合各 checker 结果的义务 VC(proofVcs;含 BigInt 线性形式,
+// 只进 SMT 渲染、严禁进 JSON)。去重口径与 collectProofs 同源(abs+fn),义务级再按采集序号区分;
+// 多入口共享模块只取首次出现的一份(展示路径不变,不向输出引入绝对路径)。
+function collectVcs(checked) {
+  const out = [];
+  const seen = new Set();
+  for (const r of checked) {
+    for (const vc of r.vcs ?? []) {
+      const key = (vc.abs ?? path.resolve(vc.file)) + '\u0000' + vc.fn + '\u0000' + vc.index;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(vc);
+    }
+  }
+  return out;
 }
 
 // ---------- test ----------
@@ -1557,7 +1604,7 @@ async function main() {
     case 'check': {
       const { files, error } = await projectEntry('check', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
-      return cmdCheck(files, flags);
+      return cmdCheck(files, flags, opts);
     }
     case 'test': {
       const { files, error } = await projectEntry('test', rest, flags.has('json'));

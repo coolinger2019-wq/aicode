@@ -801,6 +801,10 @@ export class Checker {
     this.entryFile = entryFile;
     this.options = options ?? {};  // v0.52:checker 选项(--warn-unproven-index 由阶段 3 接 CLI)
     this.proofRecords = [];  // v0.52 阶段 3:边界证明逐义务记录(--proof-report 消费;只记录,不改诊断)
+    // v1.1 S-1(--proof-format smt-lib,plan §4.21):逐义务线性 VC 采集(additive;本数组不被
+    // --proof-report/--json 既有输出消费,仅 bin/ming.js 的 SMT-LIB 导出经 src/proofsmt.js 渲染)。
+    // 元素含 BigInt 线性形式,严禁进入 JSON.stringify 通道(proofs 通道只挑白名单字段)。
+    this.proofVcs = [];
     // v0.55:跨函数契约摘要表(module → Map<name, summary>)。阶段 1 只建立(任务 1),
     // 调用后置条件假设(阶段 2)与 --proof-report 摘要统计(阶段 3)后续消费。
     this.summariesByMod = new Map();
@@ -1214,7 +1218,7 @@ export class Checker {
           '把内层 serve 移到入口函数(main)或独立程序;v1 一个进程只挂一个服务,嵌套服务随外层超时被硬杀。'));
       }
     }
-    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords, summaries: this.buildSummaryReport() };
+    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords, summaries: this.buildSummaryReport(), vcs: this.proofVcs };
   }
 
   resolveSigs(mod) {
@@ -4427,18 +4431,26 @@ export class Checker {
     //    直线体义务的假设集不变(与 v0.56 逐字同一引用,零行为漂移)
     const cmpHold = (x, op, y) => op === '==' ? x === y : op === '<=' ? x <= y : op === '<' ? x < y : op === '>=' ? x >= y : x > y;
     const obResults = [];
-    for (const ob of obligations) {
+    for (let oi = 0; oi < obligations.length; oi++) {
+      const ob = obligations[oi];
+      const obIdx = oi + 1; // 义务标识 vc:<fn>:<序号> 的序号(采集顺序,1 起;规范见 docs/proof-protocol.md)
+      const vcFile = ob.span.file ?? mod.file;
       const lf = { coeffs: new Map([[ob.lenVar, 1n]]), c: 0n };
       const eff = ob.extra && ob.extra.length ? assumptions.concat(ob.extra) : assumptions;
       if (!ob.form) {
         const goals = [`0 <= ${ob.idxText}`, `${ob.idxText} < len$${ob.baseName}`];
-        unproven.push({ ob, goals });
+        unproven.push({ ob, goals, idx: obIdx });
         obResults.push({ ob, kind: 'unproven', obligation: goals.join('; '), counterexample: null });
+        // v1.1 S-1:目标不可线性化 → VC 只留注释面(无 check-sat),内部判定两方向均 unknown
+        this.proofVcs.push({ file: vcFile, abs: mod.absPath, fn: d.name, index: obIdx, scope: ob.scope ?? 'body', line: ob.span.line ?? null, col: ob.span.col ?? null, idxText: ob.idxText, form: null, lenVar: ob.lenVar, assumptions: eff, low: 'unknown', high: 'unknown' });
         continue;
       }
       const lowOk = proveImplication(eff, { lhs: ob.form, op: '>=', rhs: linFromInt(0n) }).kind === 'proven';
       const highOk = proveImplication(eff, { lhs: ob.form, op: '<', rhs: lf }).kind === 'proven';
+      // v1.1 S-1:逐方向内部判定(proven = 该方向可证;refuted = 取反可证 = 有反例;unknown = 其余)
+      const vc = { file: vcFile, abs: mod.absPath, fn: d.name, index: obIdx, scope: ob.scope ?? 'body', line: ob.span.line ?? null, col: ob.span.col ?? null, idxText: ob.idxText, form: ob.form, lenVar: ob.lenVar, assumptions: eff, low: lowOk ? 'proven' : 'unknown', high: highOk ? 'proven' : 'unknown' };
       if (lowOk && highOk) {
+        this.proofVcs.push(vc);
         obResults.push({ ob, kind: 'proven', obligation: `0 <= ${ob.idxText} && ${ob.idxText} < len$${ob.baseName}`, counterexample: null });
         continue; // 两向都成立 → 可证安全,不报告
       }
@@ -4448,10 +4460,14 @@ export class Checker {
         const goals = [];
         if (!lowOk) goals.push(`0 <= ${ob.idxText}`);
         if (!highOk) goals.push(`${ob.idxText} < len$${ob.baseName}`);
-        unproven.push({ ob, goals });
+        unproven.push({ ob, goals, idx: obIdx });
         obResults.push({ ob, kind: 'unproven', obligation: goals.join('; '), counterexample: null });
+        this.proofVcs.push(vc);
         continue;
       }
+      if (lowBad) vc.low = 'refuted';
+      if (highBad) vc.high = 'refuted';
+      this.proofVcs.push(vc);
       const kind = lowBad ? 'low' : 'high';
       const oblText = kind === 'low' ? `0 <= ${ob.idxText}` : `${ob.idxText} < len$${ob.baseName}`;
       // 反例:i64 参数从 {-2,-1,0,1,2}、len$x 从 0..8 确定性枚举(签名序,首个变量最慢);
@@ -4505,10 +4521,17 @@ export class Checker {
       const cex = parts.length ? `(反例:${parts.join(', ')})` : '';
       const msgSuffix = d.requires.msg ? ';' + d.requires.msg : '';
       obResults.push({ ob, kind: 'violated', obligation: oblText, counterexample: parts.length ? parts.join(', ') : null });
-      this.diags.push(err('M3045',
+      const dg = err('M3045',
         `函数 "${d.name}" 的索引 "${ob.text}" 可静态证明越界(违反义务:${oblText})${cex}${msgSuffix}`,
         ob.span,
-        `让索引满足 ${oblText} 对所有满足 requires 的调用成立(调整 requires 边界或索引表达式);该越界在运行时本会以 M4003 panic。`));
+        `让索引满足 ${oblText} 对所有满足 requires 的调用成立(调整 requires 边界或索引表达式);该越界在运行时本会以 M4003 panic。`);
+      // v1.1 S-1(--proof-format smt-lib):义务追溯字段(additive;仅该 checker 选项开启时挂载,
+      // 不带新旗标的既有 --json 逐字节不变)。violated = 内部已证反例存在 → solver_status 'sat'。
+      if (this.options?.proofAnnotate) {
+        dg.proofId = `vc:${d.name}:${obIdx}`;
+        dg.solverStatus = 'sat';
+      }
+      this.diags.push(dg);
     }
 
     // 5) 未证明清单:默认只收集;options.warnUnprovenIndex(--warn-unproven-index)下发 W3105。
@@ -4518,9 +4541,15 @@ export class Checker {
       const hasError = this.diags.some((x) => x.severity === 'error' && (x.span?.file ?? null) === file);
       if (!hasError) {
         for (const u of unproven) {
-          this.diags.push(warn('W3105',
+          const dg = warn('W3105',
             `函数 "${d.name}" 的索引 "${u.ob.text}" 无法静态证明在界内(未证明:${u.goals.join('; ')})`,
-            u.ob.span));
+            u.ob.span);
+          // v1.1 S-1:义务追溯字段(additive;同 M3045 口径)。unproven = 内部放弃判定 → 'unknown'。
+          if (this.options?.proofAnnotate) {
+            dg.proofId = `vc:${d.name}:${u.idx}`;
+            dg.solverStatus = 'unknown';
+          }
+          this.diags.push(dg);
         }
       }
     }

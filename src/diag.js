@@ -134,6 +134,13 @@ export class Diagnostic {
     if (this.hint) j.hint = this.hint;
     if (this.fix) j.fix = this.fix;
     if (this.notes.length) j.notes = this.notes.map(n => ({ message: n.message, file: n.span?.file, line: n.span?.line, col: n.span?.col }));
+    // v1.1 S-1(--proof-format smt-lib,plan §4.21):证明义务追溯字段(additive;只增不改——
+    // 仅 checker 选项 proofAnnotate 开启时由 M3045/W3105 发射点挂载 proofId/solverStatus,
+    // 其余诊断恒不带这两个字段,不带新旗标的既有 --json 输出逐字节不变)。
+    // solver_status 是 Ming 内部 QF_LIA 证明器的判定口径(proven→unsat/有反例→sat/放弃→unknown),
+    // 不是外部求解器结论——语义见 docs/proof-protocol.md。
+    if (this.proofId) j.proof_obligation_id = this.proofId;
+    if (this.solverStatus) j.solver_status = this.solverStatus;
     return j;
   }
 }
