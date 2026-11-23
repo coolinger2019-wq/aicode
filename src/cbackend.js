@@ -449,48 +449,56 @@ class CEmit {
     }
   }
 
-  // match 表达式(C2:整数字面量臂 + 通配 + 可选 guard → if/else 链;穷尽由检查器保证)
+  // match 表达式(C2:整数字面量臂 + 通配 + 可选 guard → 顺序命中链;穷尽由检查器保证)
+  // v1.2.1(#85):guard 必须惰性求值——旧实现把 guard 用 C && 拼进 else-if 文本,纯表达式
+  // 可借 C 短路,但 guard 内的 checked 算术/&& 物化语句在构造期被提升到链外 → 未命中臂
+  // (或前序臂已命中)的 guard 也会求值(panic 分歧)。改为 done 旗标顺序块:模式测试与
+  // guard 的语句都落在对应条件块内,表达式只在双重命中时求值。
   emitMatch(e, ty, ctx) {
     const st = this.inferTy(e.scrutinee, ctx);
     if (st !== 'i64' && st !== 'u64') throw new Unsupported('match 宗量 ' + st + '(C2 仅整数)');
     const svT = this.newTmp(ctx, st);
     ctx.line(`${svT} = ${this.emitExpr(e.scrutinee, st, ctx)};`);
     const t = this.newTmp(ctx, ty === 'bool' ? 'i64' : ty);
-    // 臂分类:条件臂(字面量 ± guard,含带 guard 的通配)与无 guard 兜底
+    // 臂分类(2026-11-23 审查 MAJOR-1 修复):**全部臂按源序**参与 done 链——无 guard 通配
+    // 是恒真臂(test=null),同样按源序发射;旧实现把无 guard 通配特判留到最后 → 通配之后
+    // 的臂抢先命中(`match 5 { _ => 1, 5 => 2 }` cc 曾输出 2,tree/VM 输出 1 首臂语义)。
     // (AST 实测:PLit 的值在 pat.val(字符串数字);通配在解析后是 PIdent 无 name)
-    const conds = [];
-    let wildArm = null;
+    const arms = [];
     for (const arm of e.arms) {
       const p = arm.pat;
       const isWild = p.nt === 'PWild' || (p.nt === 'PIdent' && (p.name === undefined || p.name === '_'));
-      if (isWild && !arm.guard) { wildArm = arm; continue; }
-      let cond;
-      if (isWild) {
-        cond = this.emitCond(arm.guard, ctx);
-      } else if (p.nt === 'PLit' && p.lit && typeof p.lit.val !== 'object') {
-        const pv = BigInt(p.lit.val) * (p.neg ? -1n : 1n);
-        cond = `${svT} == ${pv}${CSUF[st]}`;
-        if (arm.guard) cond = `(${cond}) && ${this.emitCond(arm.guard, ctx)}`;
-      } else {
-        throw new Unsupported('match 模式(C2 仅整数字面量)');
+      if (isWild && !arm.guard) { arms.push({ test: null, guard: null, expr: arm.expr }); continue; }
+      let test = null;
+      if (!isWild) {
+        if (p.nt === 'PLit' && p.lit && typeof p.lit.val !== 'object') {
+          const pv = BigInt(p.lit.val) * (p.neg ? -1n : 1n);
+          test = `${svT} == ${pv}${CSUF[st]}`;
+        } else {
+          throw new Unsupported('match 模式(C2 仅整数字面量)');
+        }
       }
-      conds.push({ cond, arm });
+      arms.push({ test, guard: arm.guard, expr: arm.expr });
     }
-    let first = true;
-    for (const { cond, arm } of conds) {
-      ctx.line(`${first ? 'if (' : '} else if ('}${cond}) {`);
-      ctx.line(`    ${t} = ${this.emitValue(arm.expr, ty, ctx)};`);
-      first = false;
+    const done = this.newTmp(ctx, 'i64', '0');
+    for (const a of arms) {
+      ctx.open(`if (!${done}) {`);
+      if (a.test) ctx.open(`if (${a.test}) {`);
+      if (a.guard) {
+        const g = this.emitCond(a.guard, ctx);
+        ctx.open(`if (${g}) {`);
+      }
+      ctx.line(`${t} = ${this.emitValue(a.expr, ty, ctx)};`);
+      ctx.line(`${done} = 1;`);
+      if (a.guard) ctx.close('}');
+      if (a.test) ctx.close('}');
+      ctx.close('}');
     }
-    ctx.line(`${first ? '{' : '} else {'}`);
-    if (wildArm) {
-      ctx.line(`    ${t} = ${this.emitValue(wildArm.expr, ty, ctx)};`);
-    } else {
-      // 检查器保证穷尽;防御分支与 VM 一致(内部错误 panic)
-      ctx.line('    ming_panic("内部错误:match 未命中\\n");');
-      ctx.line('    exit(101);');
-    }
-    ctx.line('}');
+    ctx.open(`if (!${done}) {`);
+    // 检查器保证穷尽(含无 guard 通配臂,已按源序在链内);此分支与 VM 一致(内部错误 panic)。
+    ctx.line('ming_panic("内部错误:match 未命中\\n");');
+    ctx.line('exit(101);');
+    ctx.close('}');
     return t;
   }
 
@@ -509,8 +517,9 @@ class CEmit {
     // 逻辑/比较作为值(C 的比较与短路天然 0/1,与 Ming bool 一致)
     if (op === '&&' || op === '||') {
       if (ty !== 'bool' && ty !== 'i64' && ty !== 'u64') throw new Unsupported('逻辑值位置');
-      const text = `(${this.emitCond(e.l, ctx)} ${op} ${this.emitCond(e.r, ctx)})`;
-      return ty === 'bool' ? text : `((long long)(${text}))`;
+      // v1.2.1(#85):短路 RHS 惰性——文本 && 的 C 短路不救语句提升(见 emitLogical 头注)
+      const t = this.emitLogical(e, ctx);
+      return ty === 'bool' ? t : `((long long)(${t}))`;
     }
     if (['==', '!=', '<', '<=', '>', '>='].includes(op)) {
       const lt = this.inferTy(e.l, ctx);
@@ -833,7 +842,13 @@ class CEmit {
         if (m === 'is_some' && e.args.length === 0) return { call: `(${baseText}.some)`, retTy: 'bool' };
         if (m === 'is_none' && e.args.length === 0) return { call: `(!${baseText}.some)`, retTy: 'bool' };
         if (m === 'unwrap' && e.args.length === 0) return { call: `ming_opt_unwrap(${baseText}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`, retTy: 'i64' };
-        if (m === 'unwrap_or' && e.args.length === 1) return { call: `(${baseText}.some ? ${baseText}.v : ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'i64' };
+        if (m === 'unwrap_or' && e.args.length === 1) {
+          // v1.2.1(审查 MAJOR-2):回退实参物化为临时——C 三元对**无语句文本**的实参
+          // (裸调用 `boom()`/取负 `-m`)惰性跳过,而 JS 急切求值(tree/VM panic,cc 曾静默出值)。
+          const fe = this.emitExpr(e.args[0], 'i64', ctx);
+          const ft = this.newTmp(ctx, 'i64', fe);
+          return { call: `(${baseText}.some ? ${baseText}.v : ${ft})`, retTy: 'i64' };
+        }
         throw new Unsupported('Option.' + m + '(C3 面:unwrap/unwrap_or/is_some/is_none)');
       }
       if (bt === 'ri64') {
@@ -842,7 +857,12 @@ class CEmit {
         if (m === 'is_err' && e.args.length === 0) return { call: `(!${baseText}.ok)`, retTy: 'bool' };
         if (m === 'unwrap' && e.args.length === 0) return { call: `ming_res_unwrap(${baseText}, ${SPm})`, retTy: 'i64' };
         if (m === 'unwrap_err' && e.args.length === 0) return { call: `ming_res_unwrap_err(${baseText}, ${SPm})`, retTy: 'str' };
-        if (m === 'unwrap_or' && e.args.length === 1) return { call: `(${baseText}.ok ? ${baseText}.v : ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'i64' };
+        if (m === 'unwrap_or' && e.args.length === 1) {
+          // 同 Option.unwrap_or(审查 MAJOR-2):回退实参物化,急切求值对齐 JS。
+          const fe = this.emitExpr(e.args[0], 'i64', ctx);
+          const ft = this.newTmp(ctx, 'i64', fe);
+          return { call: `(${baseText}.ok ? ${baseText}.v : ${ft})`, retTy: 'i64' };
+        }
         throw new Unsupported('Result.' + m + '(C3.5 面:unwrap/unwrap_err/unwrap_or/is_ok/is_err)');
       }
     }
@@ -927,6 +947,34 @@ class CEmit {
     return call;
   }
 
+  // v1.2.1(#85,plan §5.1):&&/|| 的 RHS 必须惰性求值。
+  // emitCond 返回 C 表达式文本,但子表达式(checked 算术/值型 if/容器字面量等)以语句
+  // 形式三地址化进 ctx——直接拼文本 "(L && R)" 时 R 的语句在构造期就被提升到当前语句位,
+  // R 在 JS 会短路跳过时仍被求值(seed 39039:cc 在 JS 跳过的位置 panic M4002)。
+  // 改为物化 i64 临时量 + C if/else 块:L 的语句落在当前位置(L 恒求值);R 的语句严格
+  // 落在守卫块内(R 只在 JS 会求值时才求值)。返回值恒 0/1(与 bool 载体一致)。
+  emitLogical(e, ctx) {
+    const t = this.newTmp(ctx, 'i64');
+    const L = this.emitCond(e.l, ctx);
+    ctx.open(`if (${L}) {`);
+    if (e.op === '&&') {
+      const R = this.emitCond(e.r, ctx);
+      ctx.line(`${t} = (${R}) ? 1LL : 0LL;`);
+    } else {
+      ctx.line(`${t} = 1LL;`);
+    }
+    ctx.close('}');
+    ctx.open('else {');
+    if (e.op === '&&') {
+      ctx.line(`${t} = 0LL;`);
+    } else {
+      const R = this.emitCond(e.r, ctx);
+      ctx.line(`${t} = (${R}) ? 1LL : 0LL;`);
+    }
+    ctx.close('}');
+    return t;
+  }
+
   // ---- 条件(语句位;C int 0/1)----
   emitCond(e, ctx) {
     switch (e.nt) {
@@ -935,9 +983,7 @@ class CEmit {
         if (e.op !== '!') throw new Unsupported('条件一元 ' + e.op);
         return `(!(${this.emitCond(e.expr, ctx)}))`;
       case 'Binary': {
-        if (e.op === '&&' || e.op === '||') {
-          return `(${this.emitCond(e.l, ctx)} ${e.op} ${this.emitCond(e.r, ctx)})`;
-        }
+        if (e.op === '&&' || e.op === '||') return this.emitLogical(e, ctx);
         if (!['==', '!=', '<', '<=', '>', '>='].includes(e.op)) throw new Unsupported('条件 ' + e.op);
         const lt = this.inferTy(e.l, ctx);
         const rt = this.inferTy(e.r, ctx);
@@ -1098,7 +1144,13 @@ class CEmit {
         return;
       }
       case 'While': {
-        ctx.open(`while (${this.emitCond(s.cond, ctx)}) {`);
+        // v1.2.1(#85):条件每轮重新求值。C 没有表达式内置语句——原 `while (<cond text>)`
+        // 把 emitCond 的语句式子表达式(checked 算术/&& 物化/值型 if)提升到循环外,条件
+        // 只求值一次(依赖循环变量的条件 → 死循环/错值;JS 每轮求值)。改为语句化条件:
+        // for (;;) { <cond stmts>; if (!(cond)) break; <body> }——continue 仍回到条件求值。
+        ctx.open('for (;;) {');
+        const c = this.emitCond(s.cond, ctx);
+        ctx.line(`if (!(${c})) break;`);
         this.emitBlock(s.body, ctx);
         ctx.close('}');
         return;

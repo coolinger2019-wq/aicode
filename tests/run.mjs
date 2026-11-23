@@ -24,7 +24,7 @@
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
 //   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
-//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114
+//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
 //   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -2048,14 +2048,14 @@ secBegin('34b');
   }
 
   // 模糊器 v0.39 快速档(新形态:f64+math/match/loop/Option/Vec/str 方法)。
-  // v1.0.0-rc.2 校准(ADR-012 清单 12):生成器扩污字节形态(tbytes)改变 rng 流,
-  // seed 39039 的程序集随之变化并命中一个**既有 C 后端缺陷**(纯 i64 程序,深嵌套
-  // 值型 if 条件 + && + NaN float cast 派生的近 i64::MIN 乘法溢出——cc 在 JS 短路
-  // 跳过的位置求值 panic 子表达式;git worktree HEAD 纯净副本逐字复现,与本批语言
-  // 改动无关,已登记报告交架构师另批裁决)。快速档重钉为标准验收种子 44044
-  // (本批三验收种子 44044/777/20261 ×40 全 0 分歧,含 tbytes 程序 4/9/6 个)。
-  const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '44044'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
-  check('v39:模糊器加深形态(40 程序一致;v1.0.0-rc.2 种子重钉 39039→44044,理由见上注——39039 程序集命中既有 cc 缺陷与本批无关)',
+  // v1.0.0-rc.2 曾因生成器扩污字节形态(tbytes)改变 rng 流,新 seed 39039 程序集命中
+  // 一个**既有 C 后端缺陷**(纯 i64:深嵌套值型 if 条件 + && + NaN float cast 派生的
+  // 近 i64::MIN 乘法溢出——cc 在 JS 短路跳过的位置求值 panic 子表达式;plan §5.1 #85),
+  // 临时重钉为标准验收种子 44044。v1.2.1 #85 修复(emitLogical 守卫块 / match guard
+  // 惰性 / while 条件语句化)后**恢复原种子 39039**:实测 40/40 程序 0 分歧(含 C 腿;
+  // 专项回归见 §115)。标准验收种子集 44044/777/20261 的快速档按文档手动跑。
+  const fuzz39 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'fuzz.mjs'), '--count', '40', '--seed', '39039'], { encoding: 'utf8', cwd: ROOT, timeout: 300000 });
+  check('v39:模糊器加深形态(40 程序一致;v1.2.1 #85 修复后种子恢复原 39039)',
     fuzz39.status === 0 && /分歧 0/.test(fuzz39.stdout ?? ''), 'code=' + fuzz39.status + ' tail=' + (fuzz39.stdout ?? '').slice(-150));
 }
 
@@ -28361,6 +28361,316 @@ secBegin('114');
     && cnt(t114df2, '/// 文档行一') === 1 && cnt(t114df2, '/// 文档行二') === 1 && cnt(t114df2, '/// 结构体文档') === 1
     && r114dfc.code === 0,
     `code=${r114df1.code}/${r114df2.code} docs=${cnt(t114df2, '/// 文档行一')} check=${r114dfc.code} same=${t114df1 === t114df2}`);
+}
+
+// ===================== §115 #85:cc 短路求值序(&&/|| + 值型 if / match guard / while 条件;v1.2.1)====================
+// 缺陷(plan §5.1 #85,pre-existing 四引擎 gap):JS 引擎(tree/VM)对 && 与值型 if 条件中
+// 短路跳过的 panic 子表达式不求值;cc(C 侧)仍求值。原始命中 = seed 39039 程序集(纯 i64:
+// 深嵌套值型 if 条件 + && + NaN float cast 派生的近 i64::MIN 乘法溢出)——cc 腿在 JS 短路
+// 跳过的位置求值并 panic M4002。根因 = cbackend 表达式发射的三地址化:checked 算术/值型 if
+// 以**语句**形式提升到当前语句位,`(L && R)` 的 C 短路救不了已提升的 R 语句。
+// 修复(v1.2.1):emitLogical(物化 i64 临时量 + C if/else 守卫块,R 语句严格落在守卫块内)+
+// match guard 惰性(done 旗标顺序块)+ while 条件语句化(for(;;){ cond stmts; if(!c) break; })
+// ——后者是 && 物化后 while 条件只求值一次的必然配套(全引擎每轮求值)。
+// 差分口径:stdout/退出码全等 + panic stderr 首行逐字(AGENTS §9:cc 只复刻 panic 首行)。
+// 无编译器 → 具名 skip 保持绿(§58/§77 同款探测顺序 MING_CC → PATH → 已知便携位置)。
+secBegin('115');
+{
+  const dir115 = path.join(TMP, 'v115');
+  fs.mkdirSync(dir115, { recursive: true });
+  const w115 = (name, src) => { const f = path.join(dir115, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  const detectCC115 = () => {
+    const candidates = [];
+    if (process.env.MING_CC) candidates.push(process.env.MING_CC);
+    candidates.push('gcc', 'clang', 'cc');
+    for (const p of ['C:/w64devkit/bin/gcc.exe', 'C:/mingw64/bin/gcc.exe', 'C:/msys64/mingw64/bin/gcc.exe', 'C:/TDM-GCC-64/bin/gcc.exe']) {
+      if (fs.existsSync(p)) candidates.push(p);
+    }
+    for (const c of candidates) {
+      try { const r = spawnSync(c, ['--version'], { encoding: 'utf8', timeout: 15000 }); if (r.status === 0) return c; } catch { /* 试下一个 */ }
+    }
+    return null;
+  };
+  const hasCC115 = !!detectCC115();
+  const first115 = (s) => (s ?? '').split('\n')[0];
+  const legs115 = (f, tag) => {
+    const tree = runMing(['run', f, '--tree']);
+    const vm = runMing(['run', f]);
+    const cc = hasCC115 ? spawnT(process.execPath, [MING, 'cc', f, '--out', path.join(dir115, 'c-' + tag)], { timeout: 180000 }) : null;
+    return { tree, vm, cc };
+  };
+  // 正常腿:退出码 + stdout 全等(cc 仅在有编译器时参与);panic 腿另比 stderr 首行逐字。
+  const sameLegs115 = (r, panic = false) => {
+    const all = [r.tree, r.vm, ...(r.cc ? [r.cc] : [])];
+    return all.every((x) => x.code === all[0].code && x.stdout === all[0].stdout
+      && (!panic || first115(x.stderr) === first115(all[0].stderr)));
+  };
+  const fmtLegs115 = (r) => `tree=${r.tree.code}/${JSON.stringify(r.tree.stdout)}/${JSON.stringify(first115(r.tree.stderr))}`
+    + ` vm=${r.vm.code}/${JSON.stringify(r.vm.stdout)}/${JSON.stringify(first115(r.vm.stderr))}`
+    + ` cc=${r.cc ? r.cc.code + '/' + JSON.stringify(r.cc.stdout) + '/' + JSON.stringify(first115(r.cc.stderr)) : 'skip'}`;
+  const pint115 = (r) => r.tree.code === 101 && r.vm.code === 101 && (!r.cc || r.cc.code === 101)
+    && r.tree.stdout === '' && first115(r.tree.stderr).includes('M4002')
+    && sameLegs115(r, true);
+
+  // ---- v115.1 最小复现:&& 左假 → RHS(溢出乘法)在 JS 短路跳过,cc 不得求值 ----
+  const min115 = w115('min_and.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    if (0 > 1) && ((b * c) > 0) { print("t"); } else { print("f"); }',
+    '    print("end");',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(min115, 'min-and');
+    check('v115.1:#85 最小复现——&& 左假时 RHS 溢出乘法不求值(tree/vm/cc 退出码 0 + stdout 逐字 "f/end";修复前 cc 在 JS 跳过的位置 M4002 exit 101)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === 'f\nend\n' && (!r.cc || r.cc.stdout === 'f\nend\n'),
+      fmtLegs115(r));
+  }
+
+  // ---- v115.2 || 对称:左真 → RHS 不求值 ----
+  const or115 = w115('or_skip.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    if (1 > 0) || ((b * c) > 0) { print("hit"); } else { print("miss"); }',
+    '    print("end");',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(or115, 'or-skip');
+    check('v115.2:#85 || 对称——左真时 RHS 溢出乘法不求值(三腿 0 + "hit/end")',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === 'hit\nend\n' && (!r.cc || r.cc.stdout === 'hit\nend\n'),
+      fmtLegs115(r));
+  }
+
+  // ---- v115.3 逻辑作为值(emitBin 位置):&& 左假 / || 左真 均不得求值 RHS ----
+  const val115 = w115('logic_value.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    let x = (0 > 1) && ((b * c) > 0);',
+    '    let y = (1 > 0) || ((b * c) > 0);',
+    '    if x { print("x-true"); } else { print("x-false"); }',
+    '    if y { print("y-true"); } else { print("y-false"); }',
+    '    print("end");',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(val115, 'logic-val');
+    check('v115.3:#85 逻辑值位置——let x = (假 && 溢出) / y = (真 || 溢出) RHS 惰性(三腿 0 + "x-false/y-true/end")',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === 'x-false\ny-true\nend\n',
+      fmtLegs115(r));
+  }
+
+  // ---- v115.4/v115.5 值型 if 深嵌套:左假整段跳过(含 else 分支溢出);左真按条件选分支 ----
+  const deepSrc115 = (x) => [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    `    let x = ${x};`,
+    '    if (x > 5) && ((if (x > 4) { 1 } else { (b * c) }) > 0) { print("hit"); } else { print("miss"); }',
+    '    print("end");',
+    '}',
+  ].join('\n');
+  {
+    const r = legs115(w115('deep_skip.ming', deepSrc115(3)), 'deep-skip');
+    check('v115.4:#85 值型 if 深嵌套条件——&& 左假时含溢出 else 分支的整个值型 if 不求值(三腿 0 + "miss/end")',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === 'miss\nend\n' && (!r.cc || r.cc.stdout === 'miss\nend\n'),
+      fmtLegs115(r));
+  }
+  {
+    const r = legs115(w115('deep_take.ming', deepSrc115(10)), 'deep-take');
+    check('v115.5:#85 值型 if 深嵌套条件——&& 左真时值型 if 按条件选 then 分支,picked 分支不含溢出(三腿 0 + "hit/end")',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === 'hit\nend\n' && (!r.cc || r.cc.stdout === 'hit\nend\n'),
+      fmtLegs115(r));
+  }
+
+  // ---- v115.6/v115.7 对照形态:JS 会求值时 cc 必须同样求值,panic 首行逐字 ----
+  const andTake115 = w115('and_take.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    if (1 > 0) && ((b * c) > 0) { print("hit"); } else { print("miss"); }',
+    '    print("end");',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(andTake115, 'and-take');
+    check('v115.6:#85 对照——&& 左真时 RHS 仍求值(三腿 exit 101 + stderr 首行 M4002 逐字 + stdout 空)',
+      pint115(r), fmtLegs115(r));
+  }
+  const orTake115 = w115('or_take.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    if (0 > 1) || ((b * c) > 0) { print("hit"); } else { print("miss"); }',
+    '    print("end");',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(orTake115, 'or-take');
+    check('v115.7:#85 对照——|| 左假时 RHS 仍求值(三腿 exit 101 + stderr 首行 M4002 逐字)',
+      pint115(r), fmtLegs115(r));
+  }
+
+  // ---- v115.8/v115.9 match guard 惰性(done 旗标顺序块):命中臂之后的 guard 不求值 ----
+  const guardLazy115 = w115('guard_lazy.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    let x = match 0 { 0 => 1, _ if (b * c) > 0 => 2, _ => 3 };',
+    '    print(str(x));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(guardLazy115, 'guard-lazy');
+    check('v115.8:#85 match guard 惰性——首臂命中后,后续臂 guard 中的溢出乘法不求值(三腿 0 + "1";修复前 cc M4002)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '1\n' && (!r.cc || r.cc.stdout === '1\n'),
+      fmtLegs115(r));
+  }
+  const guardTake115 = w115('guard_take.ming', [
+    'fn main() with io {',
+    '    let b = 9223372036854775807;',
+    '    let c = 2;',
+    '    let x = match 1 { 0 => 1, _ if (b * c) > 0 => 2, _ => 3 };',
+    '    print(str(x));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(guardTake115, 'guard-take');
+    check('v115.9:#85 对照——match guard 真正需要求值时仍求值(三腿 exit 101 + stderr 首行 M4002 逐字)',
+      pint115(r), fmtLegs115(r));
+  }
+
+  // ---- v115.10 while 条件每轮求值(语句化条件):算术语义 + && 组合 ----
+  const while115 = w115('while_cond.ming', [
+    'fn main() with io {',
+    '    let mut i = 0;',
+    '    while (i * 2) < 10 { i = i + 1; }',
+    '    print(str(i));',
+    '    let mut j = 0;',
+    '    while j < 3 && j >= 0 { j = j + 1; }',
+    '    print(str(j));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(while115, 'while-cond');
+    check('v115.10:#85 while 条件每轮求值——(i*2)<10 → 5 与 j<3 && j>=0 → 3(三腿 0 + "5/3";修复前 cc 条件提升到循环外死循环/错值)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '5\n3\n' && (!r.cc || r.cc.stdout === '5\n3\n'),
+      fmtLegs115(r));
+  }
+
+  // ---- v115.11 既有 cc 黄金零回归:examples/fib.ming(while + 递归 eligible + 插值) ----
+  {
+    const rf = legs115(path.join(ROOT, 'examples', 'fib.ming'), 'fib');
+    check('v115.11:#85 既有 cc 黄金零回归——examples/fib.ming(while/递归/插值)三腿 stdout 逐字',
+      rf.tree.code === 0 && rf.vm.code === 0 && rf.tree.stdout === rf.vm.stdout
+      && (!rf.cc || (rf.cc.code === 0 && rf.cc.stdout === rf.vm.stdout)),
+      fmtLegs115(rf));
+  }
+
+  // ---- v115.12 §77 asm 存活抽查(cc 真实执行;asm 仅 x86-64 gcc 形态)----
+  if (hasCC115 && process.arch === 'x64') {
+    const asm115 = w115('asm_alive.ming', [
+      'fn bswap64(x: i64) -> i64 with asm {',
+      '    let mut r: i64 = 0;',
+      '    asm { "mov %1, %0\\n\\tbswap %0" out("=r", mut r) in("r", x) }',
+      '    return r;',
+      '}',
+      'fn main() with io, asm {',
+      '    print(str(bswap64(72623859790382856) == 578437695752307201));',
+      '}',
+    ].join('\n'));
+    const r = spawnT(process.execPath, [MING, 'cc', asm115, '--out', path.join(dir115, 'c-asm')], { timeout: 180000 });
+    check('v115.12:#85 §77 asm 存活抽查——bswap64 经 cc 真实执行 exit 0 + stdout "true"(C6 旗标面零改动)',
+      r.code === 0 && r.stdout === 'true\n', `cc=${r.code}/${JSON.stringify(r.stdout)}/${JSON.stringify(first115(r.stderr))}`);
+  } else {
+    check('v115.12:#85 §77 asm 存活抽查(跳过)', true, 'skip: 无 C 编译器或非 x64 架构');
+  }
+
+  // ---- 2026-11-23 审查回归(v115.13–v115.16):同族 pre-existing 缺陷 ——
+  // v115.13 无 guard 通配非末尾:全部臂按源序命中(旧实现通配留最后 → 其后臂抢先,cc 静默错值)
+  const wild115 = w115('wild_order.ming', [
+    'fn main() with io {',
+    '    let x = match 5 { _ => 1, 5 => 2 };',
+    '    let y = match 5 { 1 => 10, _ => 20, 5 => 30 };',
+    '    print(str(x));',
+    '    print(str(y));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(wild115, 'wild-order');
+    check('v115.13:审查 MAJOR-1 通配非末尾——match 5 { _ => 1, 5 => 2 } 三腿 "1";_ 居中时 "20"(源序首臂命中;修复前 cc 输出 2/30)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '1\n20\n' && (!r.cc || r.cc.stdout === '1\n20\n'),
+      fmtLegs115(r));
+  }
+
+  // v115.14 while 条件每轮重算 + continue(条件含 checked 算术;i 的推进每轮重判)
+  const cont115 = w115('while_continue.ming', [
+    'fn main() with io {',
+    '    let mut i = 0;',
+    '    let mut s = 0;',
+    '    while (i * 2) < 12 {',
+    '        i = i + 1;',
+    '        if i == 2 { continue; }',
+    '        s = s + i;',
+    '    }',
+    '    print(str(s));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(cont115, 'while-continue');
+    check('v115.14:while 条件每轮重算 + continue——(i*2)<12 + i==2 continue 时三腿 "19"(修复前 cc 条件单次求值死循环)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '19\n' && (!r.cc || r.cc.stdout === '19\n'),
+      fmtLegs115(r));
+  }
+
+  // v115.15 match 位于循环体内:done 旗标每轮重初始化
+  const loopMatch115 = w115('match_in_loop.ming', [
+    'fn main() with io {',
+    '    let mut i = 0;',
+    '    let mut s = 0;',
+    '    while i < 4 {',
+    '        s = s + match i { 0 => 1, 1 => 2, 2 => 4, _ => 8 };',
+    '        i = i + 1;',
+    '    }',
+    '    print(str(s));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(loopMatch115, 'match-loop');
+    check('v115.15:match 在循环体内——done 旗标每轮重初始化,三腿累加 "15"',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '15\n' && (!r.cc || r.cc.stdout === '15\n'),
+      fmtLegs115(r));
+  }
+
+  // v115.16 unwrap_or 回退实参急切求值(审查 MAJOR-2):裸调用与取负溢出均须 panic
+  const uw115a = w115('unwrap_or_call.ming', [
+    'fn boom() -> i64 {',
+    '    let z = 9223372036854775807;',
+    '    return z + 1;',
+    '}',
+    'fn main() with io {',
+    '    let o = Some(1);',
+    '    let y = o.unwrap_or(boom());',
+    '    print(str(y));',
+    '}',
+  ].join('\n'));
+  const uw115b = w115('unwrap_or_neg.ming', [
+    'fn main() with io {',
+    '    let m = -9223372036854775808;',
+    '    let o = Some(1);',
+    '    print(str(o.unwrap_or(-m)));',
+    '}',
+  ].join('\n'));
+  {
+    const ra = legs115(uw115a, 'uw-call');
+    const rb = legs115(uw115b, 'uw-neg');
+    check('v115.16:审查 MAJOR-2 unwrap_or 急切求值——Some(1).unwrap_or(boom()/ -i64::MIN) 三腿 exit 101 + M4002 首行逐字(修复前 cc 三元惰性跳过静默出 1)',
+      pint115(ra) && pint115(rb),
+      `${fmtLegs115(ra)} | ${fmtLegs115(rb)}`);
+  }
 }
 
 secEndAll();
