@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.1.0** (2026-11-23) |
-| Regression suite | **1704 checks, all green** (§1–§113; full run every time) |
+| Current version | **v1.2.0** (2026-11-23) |
+| Regression suite | **1726 checks, all green** (§1–§114; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.2.0 | 2026-11-23 | Contract bridge MVP: `ming bridge extract --from ts` (JSDoc → deterministic .mingi contract stubs) + `ming check --stub` (M3052 signature check / bilateral carrier equivalence / poisoned-extern skip) + spec doc + end-to-end example; plus two fmt data-loss fixes (extern declarations silently deleted / `///` doc comments duplicated on every write); 1 MAJOR + 5 MINOR review fixes | 1726 |
 | v1.1.0 | 2026-11-23 | Proof protocol first slice: `ming check --proof-format smt-lib` (QF_LIA obligations → SMT-LIB 2.0, pure output option, zero semantic change) + docs/proof-protocol.md spec + additive --json obligation fields (3 MAJOR review fixes; Z3 consumption validation pending external environment) | 1704 |
 | v1.0.0 | 2026-11-23 | 1.0 GA (rc.1 admission + rc.2 G8/scenarios 5/5) | 1685 |
 | v1.0.0-rc.2 | 2026-11-23 | R-6 G8 taint-bytes channel (ADR-012) + R-5 two scenarios (T3 5/5) | 1685 |

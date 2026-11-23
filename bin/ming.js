@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -69,23 +69,25 @@ async function loadCore() {
 
 // 命令特有模块按命令加载(fmt/cbackend/lsp/repl/manifest 对 tools/version/run/check/test
 // 是纯开销;emitC/lsp/repl 另需自身模块)。
-let _fmtMod = null, _manifestMod = null, _lspMod = null, _replMod = null, _cbackendMod = null;
+let _fmtMod = null, _manifestMod = null, _lspMod = null, _replMod = null, _cbackendMod = null, _bridgeMod = null;
 async function lazyFmt() { if (!_fmtMod) _fmtMod = await import('../src/fmt.js'); return _fmtMod; }
 async function lazyManifest() { if (!_manifestMod) _manifestMod = await import('../src/manifest.js'); return _manifestMod; }
 async function lazyLsp() { if (!_lspMod) _lspMod = await import('../src/lsp.js'); return _lspMod; }
 async function lazyRepl() { if (!_replMod) _replMod = await import('../src/repl.js'); return _replMod; }
 async function lazyCbackend() { if (!_cbackendMod) _cbackendMod = await import('../src/cbackend.js'); return _cbackendMod; }
+async function lazyBridge() { if (!_bridgeMod) _bridgeMod = await import('../src/bridge.js'); return _bridgeMod; }
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--no-opt] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
-  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib] [--strict-wasm]
+  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib] [--stub <目录|文件>] [--strict-wasm]
   ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--no-opt] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
   ming build [--json] [--clean-cache] [--with-source] [--no-dist] [--no-opt]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
   ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
+  ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]   (TS JSDoc → .mingi 契约桩)
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
   ming doc   <file.ming...> [--json] [--index]
@@ -97,6 +99,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   * 诊断同时输出人类可读格式与 --json 结构化格式,错误码稳定(见 docs/diagnostics.md)
   * doc --json schema:{ok,file,items:[{kind:fn|struct|enum|trait|const|impl,name,line,doc,signature}]};doc 为 /// 行去前缀原文(无文档为 []),signature 为 AST 重建(impl 方法含 with 效果与 requires/ensures);impl 的 name 为 "impl <trait> for <类型>"(v0.58)
   * doc --index:多文件聚合 {ok,files:N,items:[{file,...同上}]};单文件也可用;错误路径与 --json 协议一致(v0.58)
+  * bridge:--from 仅支持 ts(MVP);生成物确定性(无时间戳);规范见 docs/bridge-protocol.md;check --stub 对同名 extern fn 做签名核对(失配 M3052)
   * 副作用必须显式声明:fn main() with io { ... };v0.4 无文件系统/网络能力(io/time 之外)
   * 顶层声明:fn / struct / enum / use / test / const / trait / impl
   * 项目模式:run/check/test/build 不带文件参数时,自动向上查找 ming.toml
@@ -109,7 +112,7 @@ function parseArgs(argv) {
   const dashRest = []; // v0.52:'--' 之后的程序参数,不再混入文件位置参数
   const errors = [];
   let afterDoubleDash = false;
-  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out', 'proof-format']); // 空格分隔取值的参数
+  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out', 'proof-format', 'from', 'stub']); // 空格分隔取值的参数
   const NUMERIC_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms']);
   const takeValue = (name, i) => {
     const nxt = argv[i + 1];
@@ -428,6 +431,27 @@ async function cmdCheck(files, flags, opts = {}) {
       throw e;
     }
   }
+  // v1.2 S-4(plan §4.21/R-16):--stub <目录|文件> —— 契约桥消费侧:同名 extern fn 的
+  // 参数个数/映射类型逐位核对,失配发 M3052[bridge-signature-mismatch]。MVP 只核对有桩的
+  // extern(无桩零报告);不带本旗标时输出逐字节不变。桩格式见 docs/bridge-protocol.md;
+  // 桩本身不可解析 = 工具输入错误(exit 1 具名,不静默跳过)。
+  let bridgeSummary = null;
+  if (opts.stub !== undefined) {
+    const bridge = await lazyBridge();
+    let loaded;
+    try {
+      loaded = bridge.loadStubs(opts.stub);
+    } catch (e) {
+      return fail(`--stub 无法读取 "${opts.stub}": ${e.message}`, json);
+    }
+    if (loaded.errors.length) {
+      const first = loaded.errors[0];
+      return fail(`契约桩格式错误:${first.file}:${first.line}: ${first.message}(共 ${loaded.errors.length} 处)`, json);
+    }
+    const bridgeCheck = bridge.checkExternsAgainstStubs(checked, loaded.index, opts.stub);
+    allDiags.push(...bridgeCheck.diags);
+    bridgeSummary = bridgeCheck.summary;
+  }
   const diags = sortDiags(allDiags);
   const hasError = diags.some(d => d.severity === SEVERITY.ERROR);
   if (hasError) allOk = false;
@@ -464,6 +488,7 @@ async function cmdCheck(files, flags, opts = {}) {
     const out = { ok: wasmFallback ? false : allOk, diagnostics: diagJson(diags) };
     if (proofs) out.proofs = proofs;
     if (smtScript !== null) out.proof_smt = smtScript;
+    if (bridgeSummary) out.stub_contract = bridgeSummary;
     if (wasmAgg) out.wasm_status = wasmAgg;
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   } else {
@@ -817,6 +842,79 @@ function sigType(t) {
     case 'TFn': return `(${t.ps.map(sigType).join(', ')}) -> ${sigType(t.ret)}`;
     default: return '?';
   }
+}
+
+// ---------- bridge(S-4 契约桥 MVP,v1.2;plan §4.21/R-16)----------
+// `ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]`
+// CLI 工具域(Node fs 直用,与 ming doc/build 同类):逐 TS 文件生成同名 .mingi 契约桩。
+// 确定性:输出无时间戳/无随机序;目录输入按相对路径码元序扫描,输出目录内保留子目录结构。
+// 未知 --from 取值显式报错 exit 1(不静默);表外类型 → 该函数跳过并在桩头具名注记。
+async function cmdBridge(rest, flags, opts) {
+  const json = flags.has('json');
+  const sub = rest[0];
+  if (sub !== 'extract') return fail(`bridge 仅支持 extract 子命令(得到 "${sub ?? ''}")`, json);
+  const from = opts.from;
+  if (from === undefined) return fail('bridge extract 需要 --from ts', json);
+  if (from !== 'ts') return fail(`--from 仅支持 "ts"(得到 "${from}")`, json);
+  const input = rest[1];
+  if (!input) return fail('bridge extract 需要 <file.ts|目录>', json);
+  if (rest.length > 2) return fail(`bridge extract 只接受一个输入 <file.ts|目录>(多余参数:"${rest.slice(2).join(' ')}")`, json);
+  const outDir = opts.out;
+  if (!outDir) return fail('bridge extract 需要 --out <目录>', json);
+  // 输入校验:文件必须是 .ts;目录递归 .ts(隐藏项/node_modules 跳过)且不得为空。
+  let st;
+  try {
+    st = fs.statSync(input);
+  } catch (e) {
+    return fail(`bridge extract 无法读取输入 "${input}": ${e.message}`, json);
+  }
+  if (st.isFile() && !input.endsWith('.ts')) {
+    return fail(`bridge extract 的输入文件必须是 .ts(得到 "${input}")`, json);
+  }
+  const bridge = await lazyBridge();
+  let inputs;
+  try {
+    inputs = bridge.collectTsFiles(input);
+  } catch (e) {
+    return fail(`bridge extract 无法读取输入 "${input}": ${e.message}`, json);
+  }
+  if (!inputs.length) return fail(`目录中没有 .ts 文件:${input}`, json);
+  try {
+    fs.mkdirSync(outDir, { recursive: true });
+  } catch (e) {
+    return fail(`bridge extract 无法创建输出目录 "${outDir}": ${e.message}`, json);
+  }
+  const reports = [];
+  for (const it of inputs) {
+    let src;
+    try {
+      src = fs.readFileSync(it.abs, 'utf8');
+    } catch (e) {
+      return fail(`bridge extract 无法读取 "${it.abs}": ${e.message}`, json);
+    }
+    const extracted = bridge.extractTs(src, it.source);
+    const outPath = path.join(outDir, it.source.replace(/\.ts$/, '.mingi'));
+    try {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, bridge.renderMingi(extracted), 'utf8');
+    } catch (e) {
+      return fail(`bridge extract 无法写入 "${outPath}": ${e.message}`, json);
+    }
+    reports.push({
+      source: it.source,
+      input: it.abs,
+      output: outPath,
+      functions: extracted.entries.map((e) => e.name),
+      skipped: extracted.skipped,
+    });
+    if (!json) {
+      process.stdout.write(`${it.source} -> ${outPath} (fn ${extracted.entries.length}, skip ${extracted.skipped.length})\n`);
+    }
+  }
+  if (json) {
+    process.stdout.write(JSON.stringify({ ok: true, from: 'ts', out: outDir, files: reports }, null, 2) + '\n');
+  }
+  return 0;
 }
 
 function fail(msg, json) {
@@ -1624,6 +1722,7 @@ async function main() {
     case 'repl': (await lazyRepl()).startRepl(); return null; // 常驻:不退出进程
     case 'fmt': return cmdFmt(rest, flags);
     case 'doc': return cmdDoc(rest, flags);
+    case 'bridge': return await cmdBridge(rest, flags, opts);
     default:
       process.stderr.write(`未知命令 "${cmd}"\n\n${usage}\n`);
       return 1;

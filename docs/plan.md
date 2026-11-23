@@ -1954,7 +1954,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | R-13 | CI 深化：windows node18 全量恢复 | node18 冒烟级是 runner 性能妥协——若 GitHub 提供 arm→x64 固定 runner 或 node18 性能补丁，恢复全量；**windows fuzz 腿评估收口（2026-11-23，no-go 零改动）**：评估前提纠偏——push/PR 的 fuzz×25+proof×100 本就随矩阵跑满九组合（ci.yml 无条件步骤，"ubuntu node22 独占"仅 nightly 成立）；六轮事故链四实锤平台缺陷全为测试基建面（OS 矩阵抓出已修），fuzz 语料纯计算构造 → 平台分歧面语料可达 0——合取判据失败 no-go；给 nightly 加 windows 深模糊只加数量不加检出面。未决：windows runner 上 gcc 探测（现有 fuzz C 腿是否真实激活）留 CI 日志观测 | 第六轮归因 |
 | R-14 | 实验协议 v2.3 | 温度受控通道（API 直调）+ 每格样本量提升 + 多模型快照——支撑 R-10 | experiment-report 偏差 1 |
 | R-15 | 证明协议切片 S-1/S-2：`ming check --proof-format smt-lib`（prover.js VC→SMT-LIB 2.0 纯输出选项，零语义改动）+ docs/proof-protocol.md 规范 **✅ 落地（v1.1.0，2026-11-23：src/proofsmt.js 编码模块 + §113 19 check，1704 项全绿；独立审查 3 MAJOR 修复——`_` 保留字/跨行索引注释折叠/refuted 假设集豁免口径；**剩余子项：Z3 消费验证待外部环境**（本机实测无 z3，协议 §8 回填位——R-15 完全收口以该回填为准））** | roadmap 裁决降门槛（§4.21.5.3）：纯输出 + Z3 外部消费实测即可入库，无需既有外部消费者——**v1.1 首批落位**（S-3 Alethe/S-4 契约桥沿 §4.21.2 切片表节奏） | §4.21（roadmap §5.1） |
-| R-16 | 契约桥 MVP（S-4）：TS JSDoc → .mingi 契约桩 + 跨语言调用点一致性检查 + 端到端示例 | roadmap 裁决降门槛（§4.21.5.3）：前置 = S-1/S-2 落地 + 端到端示例——**v1.2–v1.3 落位** | §4.21（roadmap §5.2） |
+| R-16 | 契约桥 MVP（S-4）：TS JSDoc → .mingi 契约桩 + 跨语言调用点一致性检查 + 端到端示例 **✅ 落地（v1.2.0，2026-11-23：`ming bridge extract --from ts`（映射表 7 项/确定性/诚实跳过）+ `ming check --stub`（M3052 签名核对/载体双侧等价/毒化跳过）+ examples/bridge_demo 端到端 + docs/bridge-protocol.md 规范 + §114 22 check，1726 项全绿；独立审查 1 MAJOR+5 MINOR 全修——词边界最大 token 扫描/双侧载体/毒化跳过/export declare/线性时间/fmt `///` 翻倍修复；派生新语言面零新增效果零改语义）** | roadmap 裁决降门槛（§4.21.5.3）：前置 = S-1/S-2 落地 + 端到端示例——**v1.2–v1.3 落位** | §4.21（roadmap §5.2） |
 
 **P3——维持门槛/登记（不动工）**
 
@@ -2238,7 +2238,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | 82 | ~~**树引擎闭包复制不完整**~~ **已修(v0.100.0,ADR-011 P2):deepCopy closure → captureEnvFor 过滤重建(23 文件×4 腿全矩阵恰 7 槽翻绿;间接引用链无 2^n;零自由快路径)——原缺陷**:`deepCopy(closure)` 的 `env.parent` 浅拷贝——内层闭包经 let 复制后与外层块级 let 捕获链共享(tree n3:wrapA 无 let `1/1/2` 快照 vs wrapB 有 let `1/2/3` 共享,自相矛盾;违反 design.md '无共享可变结构';VM 经 #81 修复为正确面) | P1 | **登记未修(v0.97 审查 B1 回退)**:递归 snapshotEnv 实现呈 **2^n 复制**(22 层嵌套块合法程序 4GB OOM exit 134;1M 次闭包绑定 tree +55%)——修法需 free-variable 捕获计划(对齐 VM capture plan)或持久化 env/COW;待专门设计批次(ADR 级)。**同源形态勘误(v0.99 验证 Agent P2-B 实测)**:p_flat_80 在 v0.97 时代 OOM 属实,但 **P1 创建点过滤已治愈**——v0.99 HEAD 实测 146ms/deepCopy 6,963 全绿(OOM 口径属 v0.97 pre-P1 时代,创建侧全链快照级联);flat-block 变体已入 ADR-011 G2 验收 |
 | — | **bench WARN 不覆盖 vm/tree 绝对耗时回退**(只盯 cc/vm 加速比;审查 m4)——**已修(v0.94)**:bench.mjs reportBaseline 增 vm/tree 绝对回退 >20% WARN(与 cc/vm 比值告警同阈值) | P3 | ✅ 已交付(2026-11-20) |
 
-### 新登记(2026-11-23,v1.0.0-rc.2/R-6 G8 实现期;#84 已修,#85 登记未修)
+### 新登记(2026-11-23,v1.0.0-rc.2/R-6 G8 实现期 + v1.2 S-4 期;#84/#86/#87 已修,#85 登记未修)
 
 > 编号跳过 #83:§4.20.1 已将"#83 族"预指 CI 七轮事故链 12+ 处平台缺陷(叙述登记于 §4.19(e),未落本表行)——该族留号,本批自 #84 起编。
 
@@ -2246,6 +2246,8 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 |---|------|--------|------|
 | 84 | **worker wire Json 载荷丢根级 `__taint` 运行时污标**:spawn/join 与 serve 跨 worker 边界的 wire 序列化(interp.js `vToWire`/`wireToV`)json 分支未携带污标键(`t`)→ worker 侧根级 `__taint` 恢复失败 → 投影链(`get`/`as_str`)断污 → 下游污字节运算退 u8 fits 门 M4002 → join Err——污点机制跨 worker 边界静默失真(tree/VM 共享 interp 同形态)。发现于 rc.2 三轮审查(Json wire 分支,审查终修 2;同轮 2 BLOCKER 三路径不闭合与第四路径 read_bytes_range 漏改一并实测收口) | **P1** | **已修(v1.0.0-rc.2,c86af82)**:wire str/json/vec 三分支保标(`t` 键仅在污值出现)+ serve argWire 恒 t:1(载荷恒 Untrusted[Json] 硬约束)+ deepCopy `__taint` 透传;回归锁定 tests/run.mjs v112.29(spawn 递 Untrusted[Json] → worker 内 get/as_str/to_bytes[0]×1000 = 66000 → join Ok(1))三腿逐字;§112 共 29 check;**1685 项全绿** |
 | 85 | **cc 后端 &&/深嵌套值型 if 短路求值序差分(四引擎 gap,pre-existing)**:JS 引擎(tree/VM)对 `&&` 与值型 if 条件短路跳过的 panic 子表达式,cc(C 侧)仍求值——seed 39039 程序集(纯 i64 程序,深嵌套值型 if 条件 + && + NaN float cast 派生的近 i64::MIN 乘法溢出)cc 腿在 JS 短路跳过的位置求值并 panic → 引擎间分歧;git worktree HEAD 纯净副本逐字复现,与本批语言改动无关。发现于 rc.2(ADR-012 清单 12 生成器扩 tbytes 形态改变 rng 流,39039 程序集随之命中) | P2 | **登记未修**:rc.2 快速档种子重钉 39039→44044 临时遮蔽(tests/run.mjs v39 注记锁定理由;标准验收种子 44044/777/20261 ×40 全 0 分歧);修法需 cc 求值序对齐 JS 短路语义(C 侧条件短路化,cbackend 求值序重构),另批裁决 |
+| 86 | **fmt 对 `ExternFnDecl` 无分支 → `--write` 静默删除 extern 声明(数据丢失,P1)**:`ming fmt f.ming --write` 对 `extern "lib" fn a(...) -> T;` 整条声明静默删除,仅留其余项——与 v0.56 #36(契约丢弃)同族;pre-existing(v1.1.0 前全版本,tests 语料无 extern+fmt 组合故 CI 绿)。发现于 v1.2 S-4(示例 demo.ming 使用时) | **P1** | **已修(v1.2.0,2026-11-23)**:src/fmt.js 增加 externFn 渲染(库名 JSON 转义/参数/返回逐字保真,Ptr[mut u8] 与转义库名可往返);§114 v114.15 锁定两遍幂等与保真 |
+| 87 | **fmt `///` 文档注释每次 `--write` 翻倍复制(数据损坏,P1,pre-existing)**:源含 `///` 文档注释时,`fmt --write` 每跑一遍注释翻倍(2→4→8 行,且每轮多前导空格),`fmt --check` 对含 `///` 文件永不通过。根因:item() 的 flushComments 经 emitComment(c.doc)已输出 doc 注释,各渲染器又经 docs(it) 重发 it.docs 一遍(双重发射)。纯净 v1.1.0 HEAD(git archive)复现;本仓语料无 `///` 故 CI 绿。发现于 v1.2 S-4 独立审查(对外部语料实测) | **P1** | **已修(v1.2.0,2026-11-23)**:删除 fmt.js `docs()` 方法及全部 8 处调用(注释流 = parse() 同一 comments 列表,attachDocs 只是把同一批注释挂到 item,不存在仅 docs 可见的注释——零注释丢失);§114 v114.22 锁定两遍 --write 字节相等 + 文档行恰一次 + --check 绿 |
 
 ## 6. 过程纪律（所有版本适用）
 

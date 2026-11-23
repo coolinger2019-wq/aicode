@@ -62,6 +62,8 @@ node bin/ming.js tools patch f.ming 旧串 新串      # 精确替换恰好 1 �
 node bin/ming.js tools diff f.ming                # 多引擎差分（engdiff 路由）
 node bin/ming.js cc    f.ming                     # C 原生后端（需 gcc/clang）
 node bin/ming.js cc    f.ming --emit-c|--no-run|--static
+node bin/ming.js bridge extract --from ts f.ts --out 目录   # TS JSDoc → .mingi 契约桩（v1.2 S-4；确定性输出）
+node bin/ming.js check f.ming --stub 目录          # 契约桥核对：同名 extern fn 签名失配 → M3052
 node bin/ming.js repl|lsp|doc|version
 ```
 

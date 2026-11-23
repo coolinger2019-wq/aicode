@@ -1,0 +1,14 @@
+// demo.ming — 契约桥端到端示例(S-4,plan §4.21 / R-16)的 Ming 侧。
+// demo.mingi 由 `ming bridge extract --from ts demo.ts --out .` 生成(确定性输出;入库黄金)。
+// 一致性检查:`ming check demo.ming --stub .`(失配 → M3052[bridge-signature-mismatch])。
+// 实际 FFI 执行需要 C 原生后端(ming cc)与 libdemo;JS 引擎对 extern 调用以 M4001 拒绝。
+extern "libdemo" fn clamp(x: f64, lo: f64, hi: f64) -> f64;
+
+// 真实 FFI 调用点(效果逐层声明为 ffi);main 不调用它,`ming run` 不触发 FFI。
+fn clamp_or(x: f64, lo: f64, hi: f64) -> f64 with ffi {
+    clamp(x, lo, hi)
+}
+
+fn main() with io {
+    print("契约桩:demo.mingi;检查:ming check demo.ming --stub .");
+}

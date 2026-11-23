@@ -110,16 +110,19 @@ class Writer {
       case 'ConstDecl': return this.constDecl(it);
       case 'TraitDecl': return this.traitDecl(it);
       case 'ImplDecl': return this.implDecl(it);
+      case 'ExternFnDecl': return this.externFn(it);
       default: return;
     }
   }
 
-  docs(it) {
-    for (const d of it.docs ?? []) this.line('/// ' + d, it.span.line);
-  }
+  // 2026-11-23 审查修复(预存数据损坏,纯净 v1.1.0 HEAD 可复现):`///` 文档注释此前
+  // 被双重发射——item() 的 flushComments 经 emitComment(c.doc)已输出一遍,各渲染器又经
+  // docs(it) 重发 it.docs 一遍 → 每次 `fmt --write` 翻倍复制(2→4→8 行)。
+  // flushComments 对全部注释(含 doc)本就按源行位输出,故删除本方法及各渲染器调用
+  // (注释流 = parse() 返回的同一 comments 列表,attachDocs 只是把同一批注释挂到 item 上,
+  // 不存在仅 docs 可见的注释——删除后零注释丢失)。
 
   fn(it) {
-    this.docs(it);
     const pub = it.pub ? 'pub ' : '';
     const tps = it.tparams?.length ? '[' + it.tparams.map(n => {
       const b = it.bounds?.find(x => x.name === n);
@@ -139,8 +142,16 @@ class Writer {
     this.line('}');
   }
 
+  // extern fn(v0.42 FFI 声明):fmt 此前对 ExternFnDecl 无分支 → `--write` 静默删声明
+  // (与 v0.56 #36 契约丢弃同族的数据丢失;v1.2 S-4 示例使用时发现并修复)。
+  externFn(it) {
+    const lib = it.lib != null ? ' ' + JSON.stringify(it.lib) : '';
+    const params = it.params.map(p => `${p.name}: ${typeAst(p.type)}`).join(', ');
+    const ret = it.ret ? ' -> ' + typeAst(it.ret) : '';
+    this.line(`extern${lib} fn ${it.name}(${params})${ret};`, it.span.line);
+  }
+
   traitDecl(it) {
-    this.docs(it);
     const pub = it.pub ? 'pub ' : '';
     this.line(`${pub}trait ${it.name} {`, it.span.line);
     this.indent++;
@@ -169,14 +180,12 @@ class Writer {
   }
 
   constDecl(it) {
-    this.docs(it);
     const pub = it.pub ? 'pub ' : '';
     const t = it.type ? ': ' + typeAst(it.type) : '';
     this.line(`${pub}const ${it.name}${t} = ${expr(it.init)};`, it.span.line);
   }
 
   test(it) {
-    this.docs(it);
     this.line(`test ${it.name} {`, it.span.line);
     this.indent++;
     this.blockBody(it.body);
@@ -185,7 +194,6 @@ class Writer {
   }
 
   struct(it) {
-    this.docs(it);
     const pub = it.pub ? 'pub ' : '';
     const tps = it.tparams.length ? '[' + it.tparams.join(', ') + ']' : '';
     const invs = it.invariants ?? [];
@@ -207,7 +215,6 @@ class Writer {
   }
 
   enumDecl(it) {
-    this.docs(it);
     const pub = it.pub ? 'pub ' : '';
     const tps = it.tparams.length ? '[' + it.tparams.join(', ') + ']' : '';
     if (it.variants.length === 0) { this.line(`${pub}enum ${it.name}${tps} {}`); return; }
@@ -223,7 +230,6 @@ class Writer {
   }
 
   use(it) {
-    this.docs(it);
     const alias = it.alias ? ` as ${it.alias}` : '';
     this.line(`use ${it.segs.join('.')}${alias};`, it.span.line);
   }

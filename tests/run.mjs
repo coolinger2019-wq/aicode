@@ -24,7 +24,7 @@
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
 //   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
-//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113
+//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
 //   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -27984,6 +27984,383 @@ secBegin('113');
     && r113ml.code === 0 && smtStruct113(r113ml.stdout) === 2 && mlLinesOk && r113ml.stdout.includes('索引 n + 1(scope: body)')
     && r113ls.code === 1 && r113ls.stdout.includes(REFUTED_113) && smtStruct113(r113ls.stdout) === 2 && lsM3045,
     `us=${r113us.code}/${r113us.stdout.includes('(declare-const __v Int)')} ml=${r113ml.code}/${mlLinesOk}/${r113ml.stdout.includes('索引 n + 1(scope: body)')} ls=${r113ls.code}/${r113ls.stdout.includes(REFUTED_113)}/${lsM3045}`);
+}
+
+secBegin('114');
+{
+  // ==================== §114 S-4:契约桥 MVP(v1.2,plan §4.21/R-16)====================
+  // 覆盖:提取黄金逐字节确定性/类型映射命中与跳过注记/JSDoc 不等式正例与不可解析诚实跳过/
+  // .mingi 头部与来源回链/目录子结构保留与过滤/--stub 一致通过 + JSON stub_contract 注记/
+  // M3052 三类失配(参数类型/个数/返回)/无桩零干扰/未知 --from 拒绝/桩格式错误/
+  // extern M3049 零校准与 Untrusted[str] 载体等价/fmt extern 保真/示例黄金。
+  // 规范:docs/bridge-protocol.md;实现:src/bridge.js。
+  const dir114 = path.join(TMP, 'v114');
+  const tsDir = path.join(dir114, 'ts_src');
+  fs.mkdirSync(path.join(tsDir, 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(tsDir, 'node_modules'), { recursive: true });
+  fs.mkdirSync(path.join(tsDir, '.hidden'), { recursive: true });
+  const w114 = (p, src) => { fs.writeFileSync(p, src.endsWith('\n') ? src : src + '\n', 'utf8'); return p; };
+  const rd114 = (p) => fs.readFileSync(p, 'utf8');
+
+  // ---- 语料:demo.ts(7 项映射 + 契约 + 5 类跳过)/ sub/mod.ts / 应被过滤的两个目录 ----
+  const demo114Src = [
+    '/**',
+    ' * @param a 数字(`a >= 0`)',
+    ' * @param xs 数组(`xs.length > 0` 才合法)',
+    ' * @returns 结果(`result >= a`)',
+    ' */',
+    'export function all(a: number, b: bigint, s: string, t: boolean, xs: number[], ys: readonly number[], ss: readonly string[]): number {',
+    '  return a;',
+    '}',
+    '',
+    '/**',
+    ' * 契约解析不了的形态:自然语言(`必须为正`)不解析,`n ~~ 3` 不是不等式;',
+    ' * @param n 数量(必须为正)',
+    ' * @returns 结果(引用 `n < 100` 但无 result → 按规则忽略)',
+    ' */',
+    'export function noContract(n: number): number { return f(n); }',
+    '',
+    'export function anyFn(x: any): number { return 0; }',
+    'export function voidFn(x: number): void {}',
+    'export async function asyncFn(x: number): Promise<number> { return 0; }',
+    'export function optFn(x?: number): number { return 0; }',
+    'export function strArr(x: string[]): number { return 0; }',
+    '',
+  ].join('\n');
+  const demo114File = w114(path.join(tsDir, 'demo.ts'), demo114Src);
+  w114(path.join(tsDir, 'sub', 'mod.ts'), 'export function mod(x: number): number { return x; }');
+  w114(path.join(tsDir, 'node_modules', 'ignored.ts'), 'export function ignored(x: number): number { return x; }');
+  w114(path.join(tsDir, '.hidden', 'h.ts'), 'export function hidden(x: number): number { return x; }');
+  w114(path.join(tsDir, 'notes.txt'), 'not a ts file');
+
+  const out1 = path.join(dir114, 'out1');
+  const out2 = path.join(dir114, 'out2');
+  const r114x1 = runMing(['bridge', 'extract', '--from', 'ts', tsDir, '--out', out1]);
+  const r114x2 = runMing(['bridge', 'extract', '--from', 'ts', tsDir, '--out', out2]);
+  const demoStub = path.join(out1, 'demo.mingi');
+  const modStub = path.join(out1, 'sub', 'mod.mingi');
+  const demoStubText = fs.existsSync(demoStub) ? rd114(demoStub) : '';
+  const modStubText = fs.existsSync(modStub) ? rd114(modStub) : '';
+
+  // ---- 紧凑黄金:逐字节精确断言(含头部/来源回链/requires/ensures/行号) ----
+  const goldenDir = path.join(dir114, 'golden');
+  fs.mkdirSync(goldenDir, { recursive: true });
+  w114(path.join(goldenDir, 'golden.ts'), [
+    '/**',
+    ' * 夹取。',
+    ' * @param x 输入(`x >= lo`)',
+    ' * @param lo 下界(`lo <= hi`)',
+    ' * @returns 结果(`result >= lo`)',
+    ' */',
+    'export function clamp(x: number, lo: number, hi: number): number {',
+    '  return x;',
+    '}',
+  ].join('\n'));
+  const goldenOut = path.join(dir114, 'golden_out');
+  const r114g1 = runMing(['bridge', 'extract', '--from', 'ts', path.join(goldenDir, 'golden.ts'), '--out', goldenOut]);
+  const goldenWant = [
+    '// mingi 1',
+    '// source: golden.ts',
+    '// generated by: ming bridge extract --from ts(MVP;格式规范见 docs/bridge-protocol.md)',
+    '',
+    'fn clamp(x: f64, lo: f64, hi: f64) -> f64',
+    '  // from golden.ts:7',
+    '  requires x >= lo',
+    '  requires lo <= hi',
+    '  ensures result >= lo',
+    '',
+  ].join('\n');
+  const goldenGot = fs.existsSync(path.join(goldenOut, 'golden.mingi')) ? rd114(path.join(goldenOut, 'golden.mingi')) : '';
+  check('v114.1:紧凑黄金逐字节——头部版本/source/确定序签名/来源回链行号/requires(参数序)/ensures 全文精确相等',
+    r114g1.code === 0 && r114g1.stderr === '' && goldenGot === goldenWant,
+    `code=${r114g1.code} stderr=${JSON.stringify(r114g1.stderr.slice(0, 100))} got=${JSON.stringify(goldenGot.slice(0, 160))}`);
+
+  // v114.2 双跑逐字节确定性(目录输入;两个输出目录内容一致)
+  check('v114.2:提取确定性——同输入两次 extract,demo.mingi 与 sub/mod.mingi 逐字节相等(无时间戳/无随机序)',
+    r114x1.code === 0 && r114x2.code === 0 && r114x1.stderr === '' && demoStubText.length > 0
+    && demoStubText === rd114(path.join(out2, 'demo.mingi')) && modStubText === rd114(path.join(out2, 'sub', 'mod.mingi')),
+    `x1=${r114x1.code} x2=${r114x2.code} demoLen=${demoStubText.length} modLen=${modStubText.length}`);
+
+  // v114.3 类型映射 7 项命中(all 的签名行逐字)+ 函数条目与顺序
+  const allLine114 = demo114Src.split('\n').findIndex((l) => l.includes('export function all')) + 1;
+  check('v114.3:类型映射命中——number→f64/bigint→i64/string→str/boolean→bool/number[]·readonly number[]→Vec[f64]/readonly string[]→Vec[str]',
+    demoStubText.includes('fn all(a: f64, b: i64, s: str, t: bool, xs: Vec[f64], ys: Vec[f64], ss: Vec[str]) -> f64')
+    && demoStubText.includes('fn noContract(n: f64) -> f64')
+    && demoStubText.includes(`// from demo.ts:${allLine114}`)
+    && demoStubText.indexOf('fn all(') < demoStubText.indexOf('fn noContract('),
+    `hasAll=${demoStubText.includes('fn all(a: f64, b: i64, s: str, t: bool, xs: Vec[f64], ys: Vec[f64], ss: Vec[str]) -> f64')} line=${allLine114}`);
+
+  // v114.4 跳过注记:表外类型/不支持形态 → 桩头具名(函数名 + 原因),且不产生条目
+  const skipped114 = [
+    ['anyFn', '不在映射表'],
+    ['voidFn', '不在映射表'],
+    ['asyncFn', 'async 函数不在 MVP 范围'],
+    ['optFn', '可选参数不在 MVP 范围'],
+    ['strArr', '不在映射表'],
+  ];
+  check('v114.4:诚实跳过具名——any/void/string[]/可选参数/async 五个函数各有桩头 skipped 注记且无 fn 条目',
+    skipped114.every(([nm, why]) => demoStubText.includes(`// skipped: ${nm} `) && demoStubText.includes(why))
+    && !demoStubText.includes('fn anyFn(') && !demoStubText.includes('fn voidFn(') && !demoStubText.includes('fn asyncFn(')
+    && !demoStubText.includes('fn optFn(') && !demoStubText.includes('fn strArr('),
+    `skipped=${JSON.stringify(demoStubText.split('\n').filter((l) => l.startsWith('// skipped:')).map((l) => l.slice(0, 60)))}`);
+
+  // v114.5 JSDoc 不等式:requires(参数序:a >= 0 → len$xs > 0)+ ensures(result >= a);不可解析形态零子句
+  const noContractBlock114 = demoStubText.split('\n\n').find((b) => b.includes('fn noContract(')) ?? '';
+  check('v114.5:JSDoc 不等式提取——requires a >= 0 / len$xs > 0,ensures result >= a;无 result 的 @returns 与自然语言/`~~` 零子句',
+    demoStubText.includes('  requires a >= 0\n') && demoStubText.includes('  requires len$xs > 0\n')
+    && demoStubText.includes('  ensures result >= a\n')
+    && noContractBlock114.length > 0 && !noContractBlock114.includes('requires') && !noContractBlock114.includes('ensures'),
+    `req=${demoStubText.includes('  requires a >= 0\n')}/${demoStubText.includes('  requires len$xs > 0\n')} ens=${demoStubText.includes('  ensures result >= a\n')} nc=${JSON.stringify(noContractBlock114.slice(0, 120))}`);
+
+  // v114.6 目录子结构保留 + 过滤:sub/mod.mingi 存在(// source: sub/mod.ts),node_modules/.hidden 无产物
+  check('v114.6:目录提取——sub/mod.mingi 生成且 source 为相对路径;node_modules/.hidden 与 .txt 不产桩',
+    modStubText.startsWith('// mingi 1\n// source: sub/mod.ts\n')
+    && !fs.existsSync(path.join(out1, 'node_modules')) && !fs.existsSync(path.join(out1, '.hidden'))
+    && !fs.existsSync(path.join(out1, 'notes.mingi')),
+    `modHead=${JSON.stringify(modStubText.slice(0, 40))} nm=${fs.existsSync(path.join(out1, 'node_modules'))} hidden=${fs.existsSync(path.join(out1, '.hidden'))}`);
+
+  // v114.7 extract --json schema:files 按相对路径码元序(demo.ts → sub/mod.ts),字段完整
+  const r114j = runMing(['bridge', 'extract', '--from', 'ts', tsDir, '--out', path.join(dir114, 'out3'), '--json']);
+  let j114x = null;
+  try { j114x = JSON.parse(r114j.stdout); } catch { /* 下条 check 具名失败 */ }
+  check('v114.7:extract --json —— {ok:true,from:ts,files:[{source,input,output,functions,skipped}]};目录序 demo.ts 先于 sub/mod.ts',
+    r114j.code === 0 && j114x?.ok === true && j114x?.from === 'ts' && Array.isArray(j114x?.files) && j114x.files.length === 2
+    && j114x.files[0].source === 'demo.ts' && j114x.files[0].functions.join(',') === 'all,noContract'
+    && j114x.files[0].skipped.length === 5 && j114x.files[1].source === 'sub/mod.ts'
+    && typeof j114x.files[0].input === 'string' && typeof j114x.files[0].output === 'string',
+    `code=${r114j.code} files=${JSON.stringify(j114x?.files?.map((f) => f.source))} skipped=${j114x?.files?.[0]?.skipped?.length}`);
+
+  // ---- --stub 消费侧语料 ----
+  const okMing114 = w114(path.join(dir114, 'ok.ming'), [
+    'extern "libdemo" fn all(a: f64, b: i64, s: str, t: bool, xs: Vec[f64], ys: Vec[f64], ss: Vec[str]) -> f64;',
+    'extern "libdemo" fn noContract(n: f64) -> f64;',
+    'extern "libdemo" fn mod(x: f64) -> f64;',
+    '',
+    'fn main() with io { print("ok"); }',
+  ].join('\n'));
+  const badMing114 = w114(path.join(dir114, 'bad.ming'), [
+    'extern "libdemo" fn all(a: i64, b: i64, s: str, t: bool, xs: Vec[f64], ys: Vec[f64], ss: Vec[str]) -> f64;',
+    'extern "libdemo" fn noContract(n: f64, extra: f64) -> f64;',
+    'extern "libdemo" fn mod(x: f64) -> i64;',
+    '',
+    'fn main() with io { print("bad"); }',
+  ].join('\n'));
+  const noStubMing114 = w114(path.join(dir114, 'nostub.ming'), [
+    'extern "libdemo" fn other(x: i64) -> i64;',
+    '',
+    'fn main() with io { print("nostub"); }',
+  ].join('\n'));
+
+  // v114.8 一致通过(目录 --stub):exit 0/零诊断;JSON stub_contract 注记(entries/checked/matched/候选契约)
+  const r114ok = runMing(['check', okMing114, '--stub', out1]);
+  const r114okj = runMing(['check', okMing114, '--stub', out1, '--json']);
+  let j114ok = null;
+  try { j114ok = JSON.parse(r114okj.stdout); } catch { /* 下条 check 具名失败 */ }
+  const sc114 = j114ok?.stub_contract;
+  check('v114.8:--stub 一致通过——文本 exit 0 零输出;JSON stub_contract entries_loaded=3/checked=3/mismatched=0,clamp 类候选契约随注记出现',
+    r114ok.code === 0 && r114ok.stdout === '' && r114ok.stderr === ''
+    && r114okj.code === 0 && j114ok?.ok === true && sc114?.entries_loaded === 3 && sc114?.checked?.length === 3 && sc114?.mismatched === 0
+    && sc114.checked.every((c) => c.matched === true)
+    && sc114.checked[0].requires.includes('a >= 0') && sc114.checked[0].ensures.includes('result >= a')
+    && sc114.checked[0].signature === 'fn all(a: f64, b: i64, s: str, t: bool, xs: Vec[f64], ys: Vec[f64], ss: Vec[str]) -> f64',
+    `code=${r114ok.code}/${r114okj.code} sc=${JSON.stringify({ e: sc114?.entries_loaded, c: sc114?.checked?.length, m: sc114?.mismatched })}`);
+
+  // v114.9 无桩零干扰 + 无 --stub 无注记:other 无同名桩 → 零报告;ok.ming 不带旗标 → 无 stub_contract 键
+  const r114no = runMing(['check', noStubMing114, '--stub', out1, '--json']);
+  let j114no = null;
+  try { j114no = JSON.parse(r114no.stdout); } catch { /* 下条 check 具名失败 */ }
+  const j114plain = JSON.parse(runMing(['check', okMing114, '--json']).stdout);
+  check('v114.9:无桩 extern 零报告(MVP 只核对有桩的)——other 无同名桩 exit 0 checked=0;不带 --stub 的 JSON 无 stub_contract(逐字零变化)',
+    r114no.code === 0 && j114no?.ok === true && j114no?.stub_contract?.checked?.length === 0 && j114no?.diagnostics?.length === 0
+    && !('stub_contract' in j114plain) && j114plain.ok === true,
+    `code=${r114no.code} checked=${j114no?.stub_contract?.checked?.length} plainKeys=${JSON.stringify(Object.keys(j114plain))}`);
+
+  // v114.10 M3052 三类失配:参数类型/参数个数/返回类型 → 3 条 M3052,exit 1
+  const r114bad = runMing(['check', badMing114, '--stub', out1, '--json']);
+  let j114bad = null;
+  try { j114bad = JSON.parse(r114bad.stdout); } catch { /* 下条 check 具名失败 */ }
+  const m3052 = (j114bad?.diagnostics ?? []).filter((d) => d.code === 'M3052');
+  const msgOf = (fn) => m3052.find((d) => d.message.includes(`extern 函数 "${fn}"`))?.message ?? '';
+  check('v114.10:M3052 三类失配——参数 #1 类型(桩=f64/extern=i64)/参数个数(1 vs 2)/返回类型(f64 vs i64)各 1 条,exit 1',
+    r114bad.code === 1 && m3052.length === 3 && m3052.every((d) => d.name === 'bridge-signature-mismatch' && d.severity === 'error' && d.hint)
+    && msgOf('all').includes('参数 #1 类型 桩=f64、extern=i64')
+    && msgOf('noContract').includes('参数个数 桩=1、extern=2')
+    && msgOf('mod').includes('返回类型 桩=f64、extern=i64'),
+    `code=${r114bad.code} n=${m3052.length} all=${JSON.stringify(msgOf('all').slice(0, 100))}`);
+
+  // v114.11 文本模式 M3052 走既有诊断格式(含 code[name]/源码行/hint)
+  const r114badT = runMing(['check', badMing114, '--stub', out1]);
+  check('v114.11:M3052 文本模式——stderr 含 code[name] 与 extern 源码行摘录,hint 指向修正路径,标准退出码 1',
+    r114badT.code === 1 && r114badT.stderr.includes('M3052[bridge-signature-mismatch]')
+    && r114badT.stderr.includes('extern "libdemo" fn all(') && r114badT.stderr.includes('hint:') && r114badT.stdout === '',
+    `code=${r114badT.code} head=${JSON.stringify(r114badT.stderr.slice(0, 140))}`);
+
+  // ---- 载体等价与 M3049 零校准 ----
+  w114(path.join(dir114, 'name.mingi'), [
+    '// mingi 1',
+    '// source: name.ts',
+    '// generated by: ming bridge extract --from ts(MVP;格式规范见 docs/bridge-protocol.md)',
+    '',
+    'fn name() -> str',
+    '  // from name.ts:1',
+    '',
+  ].join('\n'));
+  const strRet114 = w114(path.join(dir114, 'strret.ming'), 'extern "libdemo" fn name() -> str;\n\nfn main() with io { print("s"); }');
+  const strOk114 = w114(path.join(dir114, 'strok.ming'), 'extern "libdemo" fn name() -> Untrusted[str];\n\nfn main() with io { print("s"); }');
+  const r114str = runMing(['check', strRet114, '--stub', path.join(dir114, 'name.mingi'), '--json']);
+  const j114str = JSON.parse(r114str.stdout);
+  const r114strok = runMing(['check', strOk114, '--stub', path.join(dir114, 'name.mingi')]);
+  check('v114.12:extern M3049 零校准——裸 str 返回仍逐字报 M3049 且不叠加 M3052(桩 str 载体等价);Untrusted[str] 合规声明 exit 0',
+    r114str.code === 1 && j114str.diagnostics.some((d) => d.code === 'M3049'
+      && d.message === 'extern 函数 "name" 返回 str 必须声明为 Untrusted[str](C 世界返回值没有可信的)')
+    && !j114str.diagnostics.some((d) => d.code === 'M3052')
+    && r114strok.code === 0 && r114strok.stderr === '',
+    `str=${r114str.code}/${j114str.diagnostics.map((d) => d.code).join(',')} strok=${r114strok.code}/${JSON.stringify(r114strok.stderr.slice(0, 80))}`);
+
+  // v114.13 CLI 拒绝面:未知 --from / 缺 --out / 缺输入 → exit 1 具名(不静默)
+  const r114f = runMing(['bridge', 'extract', '--from', 'python', path.join(goldenDir, 'golden.ts'), '--out', path.join(dir114, 'nope1')]);
+  const r114o = runMing(['bridge', 'extract', '--from', 'ts', path.join(goldenDir, 'golden.ts')]);
+  const r114i = runMing(['bridge', 'extract', '--from', 'ts', '--out', path.join(dir114, 'nope2')]);
+  const r114extra = runMing(['bridge', 'extract', '--from', 'ts', path.join(goldenDir, 'golden.ts'), path.join(goldenDir, 'golden.ts'), '--out', path.join(dir114, 'nope3')]);
+  check('v114.13:bridge 拒绝面——未知 --from("python")/缺 --out/缺输入/多余位置参数 四形态 exit 1 且 stderr 具名',
+    r114f.code === 1 && r114f.stderr.includes('--from 仅支持 "ts"') && r114f.stderr.includes('"python"')
+    && r114o.code === 1 && r114o.stderr.includes('bridge extract 需要 --out <目录>')
+    && r114i.code === 1 && r114i.stderr.includes('bridge extract 需要 <file.ts|目录>')
+    && r114extra.code === 1 && r114extra.stderr.includes('只接受一个输入'),
+    `from=${r114f.code}/${JSON.stringify(r114f.stderr.slice(0, 60))} out=${r114o.code} in=${r114i.code} extra=${r114extra.code}`);
+
+  // v114.14 桩格式错误 → 工具输入错误具名 exit 1(不静默跳过)
+  const badStub114 = w114(path.join(dir114, 'bad.mingi'), '// mingi 1\n\nthis is not a stub line\n');
+  const r114bs = runMing(['check', okMing114, '--stub', badStub114]);
+  check('v114.14:桩格式错误——无法识别的行 → exit 1 + "契约桩格式错误" + 文件:行号,不静默丢弃',
+    r114bs.code === 1 && r114bs.stderr.includes('契约桩格式错误') && r114bs.stderr.includes('bad.mingi') && r114bs.stderr.includes(':3:'),
+    `code=${r114bs.code} err=${JSON.stringify(r114bs.stderr.slice(0, 140))}`);
+
+  // v114.15 fmt extern 保真(顺带修复:此前 ExternFnDecl 无 fmt 分支 → --write 静默删声明)
+  const fmtF114 = w114(path.join(dir114, 'fmtprobe.ming'), [
+    'extern "libx" fn a(x: f64) -> f64;',
+    '',
+    'extern fn b(x: i64);',
+    '',
+    'fn main() with io { print("fmt"); }',
+  ].join('\n'));
+  runMing(['fmt', fmtF114, '--write']);
+  const fmtA114 = rd114(fmtF114);
+  runMing(['fmt', fmtF114, '--write']);
+  const fmtB114 = rd114(fmtF114);
+  const r114fc = runMing(['fmt', fmtF114, '--check']);
+  check('v114.15:fmt extern 保真——--write 后两条 extern 声明逐字仍在(含无库/无返回形态),两遍字节相等且 --check exit 0',
+    fmtA114.includes('extern "libx" fn a(x: f64) -> f64;') && fmtA114.includes('extern fn b(x: i64);')
+    && fmtA114 === fmtB114 && r114fc.code === 0,
+    `hasA=${fmtA114.includes('extern "libx" fn a(x: f64) -> f64;')} hasB=${fmtA114.includes('extern fn b(x: i64);')} stable=${fmtA114 === fmtB114} chk=${r114fc.code}`);
+
+  // v114.16 仓库示例黄金:重提取 examples/bridge_demo/demo.ts 与入库 demo.mingi 逐字节一致
+  const demoExample = path.join(ROOT, 'examples', 'bridge_demo', 'demo.ts');
+  const exOut114 = path.join(dir114, 'ex_out');
+  const r114ex = runMing(['bridge', 'extract', '--from', 'ts', demoExample, '--out', exOut114]);
+  const exRegen = fs.existsSync(path.join(exOut114, 'demo.mingi')) ? rd114(path.join(exOut114, 'demo.mingi')) : '';
+  const exGolden = rd114(path.join(ROOT, 'examples', 'bridge_demo', 'demo.mingi'));
+  const r114exc = runMing(['check', path.join(ROOT, 'examples', 'bridge_demo', 'demo.ming'), '--stub', path.join(ROOT, 'examples', 'bridge_demo')]);
+  check('v114.16:示例黄金——重提取与 examples/bridge_demo/demo.mingi 逐字节一致;示例 check --stub exit 0',
+    r114ex.code === 0 && exRegen.length > 0 && exRegen === exGolden && r114exc.code === 0 && r114exc.stdout === '',
+    `code=${r114ex.code} same=${exRegen === exGolden} check=${r114exc.code}`);
+
+  // ---- 2026-11-23 独立审查回归(v114.17–v114.22;1 MAJOR + 5 MINOR)----
+  // v114.17 M1 词边界:未知名不截断/成员访问/下标/非十进制数字/算术邻接 → 整条丢弃;链式/负字面量保留
+  const m1ts = w114(path.join(dir114, 'm1.ts'), [
+    '/**',
+    ' * @param {number} x - requires max >= 0 and index <= 5 and x >= y.z and x > zs[0] and x <= 1e9 and 0 <= x - 1',
+    ' * @param {number} k - requires 0 <= k <= 10 and k >= -5',
+    ' * @returns {number}',
+    ' */',
+    'export function m1(x: number, k: number): number { return x; }',
+  ].join('\n'));
+  const m1out = path.join(dir114, 'm1out');
+  const r114m1 = runMing(['bridge', 'extract', '--from', 'ts', m1ts, '--out', m1out]);
+  const m1text = fs.existsSync(path.join(m1out, 'm1.mingi')) ? rd114(path.join(m1out, 'm1.mingi')) : '';
+  const m1reqs = m1text.split('\n').filter((l) => l.trim().startsWith('requires')).map((l) => l.trim());
+  check('v114.17:词边界(审查 M1)——未知名 max/index 不截断、y.z/zs[0]/1e9/算术邻接 x-1 零子句;链式 0<=k<=10 两条 + 负字面量 k>=-5 保留(requires 恰 3 条)',
+    r114m1.code === 0 && JSON.stringify(m1reqs) === JSON.stringify(['requires 0 <= k', 'requires k <= 10', 'requires k >= -5']),
+    `code=${r114m1.code} reqs=${JSON.stringify(m1reqs)}`);
+
+  // v114.18 M1(m1) 载体等价双侧:桩写 Untrusted[str] 与 extern 同文本不误报 M3052
+  const m1bMing = w114(path.join(dir114, 'm1b.ming'), [
+    'extern "liby" fn ub() -> Untrusted[str];',
+    'fn main() with io { print("x"); }',
+  ].join('\n'));
+  const m1bStub = w114(path.join(dir114, 'm1b.mingi'), '// mingi 1\nfn ub() -> Untrusted[str]');
+  const r114m1b = runMing(['check', m1bMing, '--stub', m1bStub]);
+  check('v114.18:载体等价双侧(审查 m1)——桩与 extern 同为 Untrusted[str] 不误报 M3052,exit 0 零诊断输出',
+    r114m1b.code === 0 && r114m1b.stderr === '' && r114m1b.stdout === '',
+    `code=${r114m1b.code} stderr=${JSON.stringify(r114m1b.stderr.slice(0, 100))}`);
+
+  // v114.19 m2 毒化跳过:extern 签名含未解析类型 Foo → 只报根因 M3001,不叠加 M3052(skipped_poisoned=1)
+  const m2Ming = w114(path.join(dir114, 'm2.ming'), [
+    'extern "libz" fn pf(x: Foo) -> f64;',
+    'fn main() with io { print("x"); }',
+  ].join('\n'));
+  const m2Stub = w114(path.join(dir114, 'm2.mingi'), '// mingi 1\nfn pf(x: f64) -> f64');
+  const r114m2 = runMing(['check', m2Ming, '--stub', m2Stub, '--json']);
+  let j114m2 = null;
+  try { j114m2 = JSON.parse(r114m2.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m2codes = (j114m2?.diagnostics ?? []).map((d) => d.code);
+  check('v114.19:毒化跳过(审查 m2)——extern 签名含未解析类型仅报根因 M3001、不叠加 M3052;stub_contract.skipped_poisoned=1',
+    r114m2.code === 1 && m2codes.includes('M3001') && !m2codes.includes('M3052') && j114m2?.stub_contract?.skipped_poisoned === 1,
+    `code=${r114m2.code} codes=${JSON.stringify(m2codes)} skipped=${j114m2?.stub_contract?.skipped_poisoned}`);
+
+  // v114.20 m3 export declare function(.d.ts 形态)提取
+  const m3ts = w114(path.join(dir114, 'm3.ts'), [
+    '/**',
+    ' * @param v 下界(`v >= 0`)',
+    ' * @returns 结果(`result >= v`)',
+    ' */',
+    'export declare function decl(x: number, v: number): number;',
+  ].join('\n'));
+  const m3out = path.join(dir114, 'm3out');
+  const r114m3 = runMing(['bridge', 'extract', '--from', 'ts', m3ts, '--out', m3out]);
+  const m3text = fs.existsSync(path.join(m3out, 'm3.mingi')) ? rd114(path.join(m3out, 'm3.mingi')) : '';
+  check('v114.20:export declare function 提取(审查 m3)——.d.ts 形态进入桩且契约候选保留(v>=0/result>=v)',
+    r114m3.code === 0 && m3text.includes('fn decl(x: f64, v: f64) -> f64') && m3text.includes('requires v >= 0') && m3text.includes('ensures result >= v'),
+    `code=${r114m3.code} has=${m3text.includes('fn decl(')}`);
+
+  // v114.21 m5 超长 JSDoc 线性时间探针:100k 字符描述必须完成(旧正则实测 22.7s,新扫描 0.13s;上限 10s 留百倍余量)
+  const longDesc = '1'.repeat(100000);
+  const m5ts = w114(path.join(dir114, 'm5.ts'), '/**\n * @param {number} x - ' + longDesc + '\n * @returns {number}\n */\nexport function lf(x: number): number { return x; }\n');
+  const m5out = path.join(dir114, 'm5out');
+  const t114m5 = Date.now();
+  const r114m5 = runMing(['bridge', 'extract', '--from', 'ts', m5ts, '--out', m5out]);
+  const dt114m5 = Date.now() - t114m5;
+  check('v114.21:超长 JSDoc 线性时间探针(审查 m5)——100k 字符描述提取完成(<10s;零子句,不因截断发明)',
+    r114m5.code === 0 && dt114m5 < 10000
+    && (fs.existsSync(path.join(m5out, 'm5.mingi')) ? rd114(path.join(m5out, 'm5.mingi')) : '').includes('fn lf(x: f64) -> f64'),
+    `code=${r114m5.code} ms=${dt114m5}`);
+
+  // v114.22 fmt /// 幂等(预存数据损坏修复):两遍 --write 字节相等,文档行不翻倍,--check exit 0
+  const docFmt = w114(path.join(dir114, 'docfmt.ming'), [
+    '/// 文档行一',
+    '/// 文档行二',
+    'fn df(x: i64) -> i64 {',
+    '    x',
+    '}',
+    '',
+    '/// 结构体文档',
+    'struct DS {',
+    '    a: i64,',
+    '}',
+    '',
+    'fn main() with io { print(str(df(1))); }',
+  ].join('\n'));
+  const r114df1 = runMing(['fmt', docFmt, '--write']);
+  const t114df1 = rd114(docFmt);
+  const r114df2 = runMing(['fmt', docFmt, '--write']);
+  const t114df2 = rd114(docFmt);
+  const r114dfc = runMing(['fmt', docFmt, '--check']);
+  const cnt = (s, sub) => s.split(sub).length - 1;
+  check('v114.22:fmt /// 幂等(预存数据损坏修复)——两遍 --write 字节相等,文档行恰一次(旧行为翻倍 2→4),--check exit 0',
+    r114df1.code === 0 && r114df2.code === 0 && t114df1 === t114df2
+    && cnt(t114df2, '/// 文档行一') === 1 && cnt(t114df2, '/// 文档行二') === 1 && cnt(t114df2, '/// 结构体文档') === 1
+    && r114dfc.code === 0,
+    `code=${r114df1.code}/${r114df2.code} docs=${cnt(t114df2, '/// 文档行一')} check=${r114dfc.code} same=${t114df1 === t114df2}`);
 }
 
 secEndAll();

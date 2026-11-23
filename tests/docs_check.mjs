@@ -12,8 +12,8 @@
 // 3. 自举工具数:tools/*.ming 实际文件数 vs README 状态表"**N 个**"断言
 //    (README.md / README.plain.md;README.en.md 无工具计数行、GUIDE.md 只载历史修订
 //    条目——历史条目如"共 12 个"是版本快照不是当前断言,校验会误报,故不纳入);
-// 4. 能力矩阵计数:docs/capabilities.md 判定列 ✅/🟡/❌ 行数 == 42/10/3
-//    (数字来源:2026-11-19 架构师复核,capabilities.md 尾注 2026-11-18 复算同口径;矩阵行变更必须同步此处);
+// 4. 能力矩阵计数:docs/capabilities.md 判定列 ✅/🟡/❌ 行数 == 42/11/3
+//    (数字来源:2026-11-19 架构师复核,capabilities.md 尾注 2026-11-18 复算同口径;v1.2 契约桥行使 🟡 10→11;矩阵行变更必须同步此处);
 // 5. README 版本历史表首行版本 == package.json version(README.md / README.en.md)。
 //
 // 明确不校验(轻量一致性边界):测试总数(1539 类——需 6 分钟套件,CI 全量回归另行保证)、
@@ -141,7 +141,7 @@ function checkToolCount() {
 }
 
 // ---------- 4. 能力矩阵计数 ----------
-const CAP_EXPECT = { ok: 42, partial: 10, missing: 3 }; // 来源:2026-11-19 架构师复核(capabilities 尾注 2026-11-18 复算同口径)
+const CAP_EXPECT = { ok: 42, partial: 11, missing: 3 }; // 来源:2026-11-19 架构师复核(capabilities 尾注 2026-11-18 复算同口径)+ v1.2 契约桥行(🟡,56 行口径)
 
 function checkCapabilityCounts() {
   console.log(`[4] 能力矩阵判定列计数(docs/capabilities.md == ${CAP_EXPECT.ok}✅ ${CAP_EXPECT.partial}🟡 ${CAP_EXPECT.missing}❌)`);

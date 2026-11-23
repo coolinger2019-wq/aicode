@@ -67,6 +67,7 @@ export const CODES = {
   M3049: 'untrusted-mismatch', // v0.61(ADR-002):Untrusted 实参进入非 Untrusted 槽(sink 免费门禁)
   M3050: 'untrusted-method-forbidden', // v0.61(ADR-002):Untrusted 白名单外方法/洗白通道禁面
   M3051: 'slice-escape', // v0.87(ADR-009 S2):Slice 视图违反块内线性/构造规则(不可逃逸/跨函数/被捕获)
+  M3052: 'bridge-signature-mismatch', // v1.2(S-4 契约桥 MVP):同名 extern fn 与 .mingi 契约桩签名不一致
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',
@@ -109,6 +110,7 @@ export const CODE_HINTS = {
   M3049: "先净化(str 载体:std.unstr.sanitize_path / sanitize_cli_path)或投影后净化(Json 载体:.as_str() 取出 Untrusted[str] 字段再净化);或让形参/目标在对应位置承载 Untrusted(直传位可改声明为 Untrusted[str] / Untrusted[Json];复合位在目标类型对应位置承载)。Ming 无任何隐式转换,Untrusted 不能当载体类型用。",
   M3050: "Untrusted 的操作面只有载体白名单(str:污值代数面——数值/布尔/计数 5 项 + 保污纯函数集 trim*/to_upper/to_lower/replace/repeat/slice_chars/pad_*/chars/split/get/bytes/to_bytes/starts_with/ends_with/contains/is_alpha 等,逐函数裁决见 checker UNTRUSTED_STR_ALGEBRA(ADR-007);Json:投影表 get/at/as_*/is_*/eq,见 ADR-004;Vec[u8]:len/is_empty/get 元素读/to_hex(ADR-012);Map[str,str]:投影表 len/is_empty/get/has/keys/values(只读 v1.3,ADR-008);i64(污标量,ADR-012):方法面空白名单——污域算术/位运算与比较(净 bool 出)是唯一处理面,无净化器);产出净 str 的唯一出口是 std.unstr.sanitize_path / sanitize_cli_path(经 as_str 投影)。",
   M3051: "Slice 是块内线性只读视图(ADR-009 §2.2):只能由非 mut Vec[u8] 绑定的 .view(start, len) 创建,并以 len/get/at 就地消费;不可 return、不可存入 Vec/Map/结构体/变体载荷、不可作为实参传递、不可再绑定/赋值、不可被闭包捕获、不可出现在函数形参/返回类型——底层存储生命周期钉在词法块内,无借用检查器的语言里视图逃逸即悬垂风险。",
+  M3052: "契约桥只核对有桩的 extern 函数:按 .mingi 桩修正 extern 声明(参数个数/映射类型),或重新运行 ming bridge extract 更新桩。格式与比较规则见 docs/bridge-protocol.md。",
   M4016: 'unsafe 指针操作仅由 C 原生后端(ming cc)执行;tree/VM 不伪装内存语义。',
   M4017: '内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义。', // v0.74(ADR-006);panic 消息为同一句式(无句号),三引擎逐字一致
   W3105: '这是"无法证明"而非"确定越界":证明器只处理 requires 线性边界下的直线体。可补充线性 requires(如 i < buf.len() && i >= 0),或改用 buf.get(i)。',
