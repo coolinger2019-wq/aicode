@@ -1951,7 +1951,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | R-10 | T1.2 实验迭代 | rc 发布后真实用户数据；三态"不确定"→ 需更大样本/更多任务/温度受控（协议 v2.3 候选：温度可设的 API 通道） | experiment-report 局限 |
 | R-11 | checker.js 拆分（T4.2） | 1.0 后 + 快照对照先行（§4.15.7 原门槛；P0 单源化先例已验证模式可行） | §4.15.7 |
 | R-12 | 窄型 DX 批 | 零校准审计 | §4.15.7 |
-| R-13 | CI 深化：windows node18 全量恢复 | node18 冒烟级是 runner 性能妥协——若 GitHub 提供 arm→x64 固定 runner 或 node18 性能补丁，恢复全量；另 fuzz/nightly 已在 ubuntu node22，评估 windows fuzz 腿 | 第六轮归因 |
+| R-13 | CI 深化：windows node18 全量恢复 | node18 冒烟级是 runner 性能妥协——若 GitHub 提供 arm→x64 固定 runner 或 node18 性能补丁，恢复全量；**windows fuzz 腿评估收口（2026-11-23，no-go 零改动）**：评估前提纠偏——push/PR 的 fuzz×25+proof×100 本就随矩阵跑满九组合（ci.yml 无条件步骤，"ubuntu node22 独占"仅 nightly 成立）；六轮事故链四实锤平台缺陷全为测试基建面（OS 矩阵抓出已修），fuzz 语料纯计算构造 → 平台分歧面语料可达 0——合取判据失败 no-go；给 nightly 加 windows 深模糊只加数量不加检出面。未决：windows runner 上 gcc 探测（现有 fuzz C 腿是否真实激活）留 CI 日志观测 | 第六轮归因 |
 | R-14 | 实验协议 v2.3 | 温度受控通道（API 直调）+ 每格样本量提升 + 多模型快照——支撑 R-10 | experiment-report 偏差 1 |
 | R-15 | 证明协议切片 S-1/S-2：`ming check --proof-format smt-lib`（prover.js VC→SMT-LIB 2.0 纯输出选项，零语义改动）+ docs/proof-protocol.md 规范 **✅ 落地（v1.1.0，2026-11-23：src/proofsmt.js 编码模块 + §113 19 check，1704 项全绿；独立审查 3 MAJOR 修复——`_` 保留字/跨行索引注释折叠/refuted 假设集豁免口径；**剩余子项：Z3 消费验证待外部环境**（本机实测无 z3，协议 §8 回填位——R-15 完全收口以该回填为准））** | roadmap 裁决降门槛（§4.21.5.3）：纯输出 + Z3 外部消费实测即可入库，无需既有外部消费者——**v1.1 首批落位**（S-3 Alethe/S-4 契约桥沿 §4.21.2 切片表节奏） | §4.21（roadmap §5.1） |
 | R-16 | 契约桥 MVP（S-4）：TS JSDoc → .mingi 契约桩 + 跨语言调用点一致性检查 + 端到端示例 | roadmap 裁决降门槛（§4.21.5.3）：前置 = S-1/S-2 落地 + 端到端示例——**v1.2–v1.3 落位** | §4.21（roadmap §5.2） |
