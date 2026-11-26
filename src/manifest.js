@@ -1,8 +1,9 @@
 // manifest.js — Ming 的两类"清单",互不依赖:
 //   ① 项目清单(ming.toml)解析与查找(v0.4):Ming 的包管理从最小清单开始——
 //      [project] 的 name / version / entry;只解析用到的 TOML 子集。
-//   ② 证明工件 provenance manifest(v1.2.6,R-20/ADR-013):`ming check --proof-format
-//      smt-lib --proof-manifest <path>` 的 sidecar 出处清单(纯构造,零求解,零时间戳)。
+//   ② 证明工件 provenance manifest(v1.2.6,R-20/ADR-013;v1.3.1 manifest v2):`ming check
+//      --proof-format smt-lib|cert --proof-manifest <path>` 的 sidecar 出处清单(纯构造,
+//      零求解,零时间戳)。
 //      两者同处本模块只因文件名 src/manifest.js 已被项目清单占用(ADR-013 §5 允许);
 //      各自的函数/常量前缀(parseManifest/findManifest/initProject vs
 //      PROVENANCE_* / buildProofManifest / computePassHash)不相交。
@@ -115,10 +116,18 @@ export function initProject(dir, name) {
 }
 
 // ==================== provenance manifest(v1.2.6,R-20/ADR-013)====================
-// 证明工件出处清单:与 SMT-LIB 脚本同为 `ming check --proof-format smt-lib` 的产物,
-// 但作为旁车文件输出,脚本字节零变化(docs/proof-protocol.md §4.5)。
+// 证明工件出处清单:与 SMT-LIB 脚本 / 线性证书同为 `ming check --proof-format` 的产物,
+// 但作为旁车文件输出,工件字节零变化(docs/proof-protocol.md §4.5)。
 //
-// 确定性契约(v1,冻结):
+// 版本(v1.3.1 manifest v2):
+//   v2 = v1 的 8 键(原序、原义)**之后**追加第 9 键 `artifacts`,manifest_format 升为 2。
+//   artifacts 绑定"manifest ↔ 该次导出实际产出的工件文本字节"(ADR-013 §6 v2 候选 +
+//   ADR-014 §9 U8 合流;闭合 v1.3.0 审查登记的 TOCTOU 诚实限制"cert 与 smt-lib 两次独立
+//   导出无哈希互绑"的**单次导出**部分——跨导出互绑仍不做,各自 manifest 各自绑定)。
+//   smt-lib 模式 obligations 条目形状与 v1 逐字节相同;cert 模式在每条 obligation 上追加
+//   `cert: {low, high}`(has_cert/uses_goal/vacuous/reason,与证书文本逐项同源)。
+//
+// 确定性契约(v1 起冻结;v2 沿袭):
 //   - 键序固定(对象字面量插入序 = 协议字段表序)、数组序固定(采集序/首次出现序);
 //   - 无时间戳、无主机名、无随机序、不引入绝对路径(源文件路径按命令行展示路径原样回显;
 //     项目模式按 ming.toml 所在目录相对化 —— 见 collectSourceEntries);
@@ -128,7 +137,8 @@ export function initProject(dir, name) {
 
 const REPO_ROOT = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), '..');
 
-export const PROVENANCE_FORMAT = 1;
+// schema 版本:v2(自 v1.3.1)= v1 的 8 键 + 末尾 `artifacts`;字段只增不改。
+export const PROVENANCE_FORMAT = 2;
 export const PROVENANCE_SPEC = 'ming-proof-protocol/1';
 export const PROVENANCE_PASS = 'checkIndexBoundsStatically';
 // pass_hash 范围(ADR-013 §2 裁决口径 = 采集相关源文件全集;v1 冻结):
@@ -151,6 +161,10 @@ export const PROVENANCE_ENGINE_CONTRACT = Object.freeze({
 export const PROVENANCE_HASH_PREFIX = 'sha256:';
 
 const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+// 工件文本 → "sha256:<hex>":哈希对象 = 完整文本的 UTF-8 字节,不做换行/空白规范化
+// (文本模式 stdout 的工件部分与 --json 的 proof_smt/proof_cert 字符串是同一构造)。
+const hashArtifactText = (text) => PROVENANCE_HASH_PREFIX + sha256Hex(Buffer.from(text, 'utf8'));
 
 // 输出路径与输入/工具链文件重合 → 具名拒绝(否则会静默覆盖源文件)。由 CLI 转述为 exit 1。
 export class ProvenancePathCollision extends Error {
@@ -228,11 +242,55 @@ export function buildProvenanceObligations(vcs) {
   }));
 }
 
-// 完整 manifest 对象。tool.version 必须由 bin/ming.js 的 VERSION 传入(单一事实来源,
+// artifacts 字段(manifest v2;键序固定 smt_lib_sha256 → cert_sha256,各自存在才输出)。
+// 输入 = 该次导出实际产出的工件**完整文本**(bin 传入与文本模式 stdout / --json
+// proof_smt·proof_cert 同一对象);文本为 null/undefined 的工件不出键(未来双导出可并存)。
+// 公开导出:入参整体缺省/显式 null 都按空对象处理(CLI 恒传对象;此处只做防御,不改变语义)。
+export function buildProvenanceArtifacts(arg) {
+  const { smtLibText = null, certText = null } = arg ?? {};
+  const out = {};
+  if (typeof smtLibText === 'string') out.smt_lib_sha256 = hashArtifactText(smtLibText);
+  if (typeof certText === 'string') out.cert_sha256 = hashArtifactText(certText);
+  return out;
+}
+
+// 证书模式的义务视图(cert 模式追加 `cert: {low, high}`;smt-lib 模式**不**调用本函数,
+// obligations 条目形状与 v1 逐字节相同)。逐项与证书文本同源(输入 = proofcert.buildCerts
+// 的逐条输出):
+//   has_cert = 该方向有可独立复核的证书(refs 为数组)        ← 文本 `; refs:`/`; 无证书:`
+//   uses_goal = 是否引用取反目标(协议 §10.4;无证书 = null) ← 文本 `; uses_goal:`(无证书为 n/a)
+//   vacuous   = 有效假设集自身不可满足(§10.4;proven 方向恒有值,非 proven = null) ← 文本 `; vacuous:`
+//   reason    = 无证书的机器可读标记(refuted/unknown/const-false/...;有证书 = null) ← 文本 `; 无证书:<提示>`
+// 形态纪律(2026-11-27 审查 M2):refs 只认**数组**;`refs === null` 是"无证书但视图完好"
+// (refuted/unknown 的合法形态,reason 原样携带),refs 缺失/非数组 = 内部一致性缺口
+// (即使 `{}` 也不能误报 has_cert,统一具名 'missing' —— 与证书文本的 missing 原因同词)。
+function certDirView(dir) {
+  if (!dir || typeof dir !== 'object') return { has_cert: false, uses_goal: null, vacuous: null, reason: 'missing' };
+  if (!Array.isArray(dir.refs)) {
+    if (dir.refs === null) {
+      return { has_cert: false, uses_goal: dir.usesGoal ?? null, vacuous: dir.vacuous ?? null, reason: dir.reason ?? 'missing' };
+    }
+    return { has_cert: false, uses_goal: null, vacuous: null, reason: 'missing' };
+  }
+  return {
+    has_cert: true,
+    uses_goal: dir.usesGoal ?? null,
+    vacuous: dir.vacuous ?? null,
+    reason: dir.reason ?? null,
+  };
+}
+
+// 完整 manifest 对象(v2)。tool.version 必须由 bin/ming.js 的 VERSION 传入(单一事实来源,
 // 不在本模块手抄版本号);其余字段为常量或确定性派生。
 // manifestPath(可选):输出路径安全校验 —— 与本次 sources 或工具链 pass 文件重合时抛
 // ProvenancePathCollision(静默覆盖源文件 = 数据丢失;CLI 转述为 exit 1 具名)。
-export function buildProofManifest({ toolVersion, inputs, checked, vcs, baseDir = null, manifestPath = null }) {
+// artifacts(可选):{ smtLibText, certText } —— 本次导出实际产出的工件文本(各自存在才出键)。
+// certs(可选):cert 模式下 proofcert.buildCerts(vcs) 的逐条输出,与 vcs 一一对应;
+//   提供时每条 obligation 追加 `cert: {low, high}`(数量不齐 = 内部一致性缺口,具名抛出)。
+export function buildProofManifest({
+  toolVersion, inputs, checked, vcs, baseDir = null, manifestPath = null,
+  artifacts = null, certs = null,
+}) {
   const entries = collectSourceEntries(inputs, checked, baseDir);
   if (typeof manifestPath === 'string' && manifestPath !== '') {
     const outKey = normPathForCompare(nodePath.resolve(manifestPath));
@@ -244,6 +302,19 @@ export function buildProofManifest({ toolVersion, inputs, checked, vcs, baseDir 
       if (normPathForCompare(nodePath.join(REPO_ROOT, ...rel.split('/'))) === outKey) {
         throw new ProvenancePathCollision(`--proof-manifest 输出路径 "${manifestPath}" 与工具链源文件 "${rel}" 重合;拒绝覆盖(请换一个输出路径)`);
       }
+    }
+  }
+  const obligations = buildProvenanceObligations(vcs);
+  if (Array.isArray(certs)) {
+    // 长度平齐守卫(2026-11-27 审查 M3):放在"非空"判断**之外**——空数组 + 非空义务
+    // 同样抛具名内部缺口,不静默丢视图。两数组同源于同一份 vcs(bin 的 collectVcs →
+    // buildCerts 去重键同口径),数量不一致只可能是内部缺口,按内部错误具名暴露。
+    if (certs.length !== obligations.length) {
+      throw new Error(`manifest 内部一致性缺口:证书条目数 ${certs.length} 与义务数 ${obligations.length} 不一致(请报告)`);
+    }
+    for (let i = 0; i < obligations.length; i++) {
+      const c = certs[i] ?? {};
+      obligations[i].cert = { low: certDirView(c.low), high: certDirView(c.high) };
     }
   }
   return {
@@ -264,8 +335,11 @@ export function buildProofManifest({ toolVersion, inputs, checked, vcs, baseDir 
       eval_order: PROVENANCE_ENGINE_CONTRACT.eval_order,
       differential: PROVENANCE_ENGINE_CONTRACT.differential,
     },
-    obligations: buildProvenanceObligations(vcs),
+    obligations,
     solver: null,
+    // v2 追加键(第 9 键,固定最后):绑定本次导出的工件文本字节;不带工件时为空对象
+    // (CLI 不可达——manifest 只与 --proof-format smt-lib|cert 同用,恒有一件)。
+    artifacts: buildProvenanceArtifacts(artifacts ?? {}),
   };
 }
 

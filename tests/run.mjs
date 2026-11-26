@@ -28006,16 +28006,17 @@ secBegin('113');
   const manifestPath113 = path.join(dir113, 'mixed.manifest.json');
   const prevManifest113 = path.join(dir113, 'mixed.manifest.prev.json');
 
-  // v113.20 旗标组合:缺 --proof-format(空格/= 两形式)→ exit 1 具名;缺值 → 解析层"需要一个值";
-  // `-`(空格/= 两形式)→ exit 1 具名 + 替代指引(写文件),零脚本输出、零 manifest 落盘。
+  // v113.20 旗标组合:缺 --proof-format(空格/= 两形式)→ exit 1 具名(v1.3.1:消息列出
+  // smt-lib 与 cert 两取值——manifest v2 放开 cert);缺值 → 解析层"需要一个值";
+  // `-`(空格/= 两形式)→ exit 1 具名 + 替代指引(写文件),零工件输出、零 manifest 落盘。
   const rMnoFmt = runMing(['check', okF, '--proof-manifest', manifestPath113]);
   const rMnoFmtEq = runMing(['check', okF, '--proof-manifest=' + manifestPath113]);
   const rMval = runMing(['check', okF, '--proof-format', 'smt-lib', '--proof-manifest']);
   const rMstdout = runMing(['check', okF, '--proof-format', 'smt-lib', '--proof-manifest', '-']);
   const rMstdoutEq = runMing(['check', okF, '--proof-format=smt-lib', '--proof-manifest=-']);
-  check('v113.20:--proof-manifest 旗标组合——缺 --proof-format(空格/= 两形式)exit 1 具名;缺值"需要一个值";`-`(两形式)exit 1 具名 + 替代指引 + 零脚本/零落盘',
-    rMnoFmt.code === 1 && rMnoFmt.stdout === '' && rMnoFmt.stderr.includes('--proof-manifest 需要与 --proof-format smt-lib 同用')
-    && rMnoFmtEq.code === 1 && rMnoFmtEq.stderr.includes('需要与 --proof-format smt-lib 同用')
+  check('v113.20:--proof-manifest 旗标组合——缺 --proof-format(空格/= 两形式)exit 1 具名(消息含 smt-lib 与 cert);缺值"需要一个值";`-`(两形式)exit 1 具名 + 替代指引 + 零工件/零落盘',
+    rMnoFmt.code === 1 && rMnoFmt.stdout === '' && rMnoFmt.stderr.includes('--proof-manifest 需要与 --proof-format smt-lib 或 cert 同用')
+    && rMnoFmtEq.code === 1 && rMnoFmtEq.stderr.includes('需要与 --proof-format smt-lib 或 cert 同用')
     && rMval.code === 1 && rMval.stderr.includes('--proof-manifest 需要一个值')
     && rMstdout.code === 1 && rMstdout.stdout === '' && rMstdout.stderr.includes('不支持 "-"') && rMstdout.stderr.includes('文件路径')
     && rMstdoutEq.code === 1 && rMstdoutEq.stdout === '' && rMstdoutEq.stderr.includes('文件路径')
@@ -28038,11 +28039,11 @@ secBegin('113');
     : (iv.low === 'refuted' || iv.high === 'refuted') ? 'violated' : 'unproven';
   const reportObl113 = jM?.proofs?.functions?.flatMap((f) => f.obligations.map((o) => ({ id: o.proof_obligation_id, kind: o.kind }))) ?? [];
   const manObl113 = (m?.obligations ?? []).map((o) => ({ id: o.id, kind: kindFromVerdict113(o.internal_verdict) }));
-  const wantTop113 = ['manifest_format', 'spec', 'tool', 'collection', 'integer_model', 'engine_contract', 'obligations', 'solver'];
-  check('v113.21:manifest 字段形状——顶层 8 键固定序/format=1/spec/tool.version 与 ming version 及 package.json 同源/pass_hash 前缀/integer_model 与 engine_contract 逐字/solver===null/义务 id+方向与 --proof-report 聚合互推/unknown 不折叠/零义务空数组',
+  const wantTop113 = ['manifest_format', 'spec', 'tool', 'collection', 'integer_model', 'engine_contract', 'obligations', 'solver', 'artifacts'];
+  check('v113.21:manifest 字段形状——顶层 9 键固定序(v1 的 8 键原序 + 末尾 artifacts)/format=2/spec/tool.version 与 ming version 及 package.json 同源/pass_hash 前缀/integer_model 与 engine_contract 逐字/solver===null/smt 模式义务条目仍为 v1 三键(无 cert)/义务 id+方向与 --proof-report 聚合互推/unknown 不折叠/零义务空数组',
     rMjson.code === 1 && m !== null
     && JSON.stringify(Object.keys(m)) === JSON.stringify(wantTop113)
-    && m.manifest_format === 1 && m.spec === 'ming-proof-protocol/1'
+    && m.manifest_format === 2 && m.spec === 'ming-proof-protocol/1'
     && m.tool?.name === 'ming' && m.tool?.version === ver113 && ver113 === verPkg113
     && m.collection?.pass === 'checkIndexBoundsStatically'
     && /^sha256:[0-9a-f]{64}$/.test(m.collection?.pass_hash ?? '')
@@ -28050,6 +28051,7 @@ secBegin('113');
     && JSON.stringify(m.engine_contract) === JSON.stringify({ eval_order: 'source-order (v1.2.5: #90/#92/#93 materialized)', differential: '4 legs × 40 programs (PR: seed 44044 × 25; nightly: 3 seeds × 120)' })
     && m.solver === null
     && JSON.stringify(m.obligations.map((o) => o.id)) === JSON.stringify(['vc:get:1', 'vc:f:1'])
+    && m.obligations.every((o) => JSON.stringify(Object.keys(o)) === JSON.stringify(['id', 'scope', 'internal_verdict']))
     && m.obligations.every((o) => o.scope === 'body'
       && ['proven', 'refuted', 'unknown'].includes(o.internal_verdict.low)
       && ['proven', 'refuted', 'unknown'].includes(o.internal_verdict.high))
@@ -28057,9 +28059,12 @@ secBegin('113');
     && m.obligations.some((o) => o.id === 'vc:f:1' && o.internal_verdict.low === 'unknown' && o.internal_verdict.high === 'refuted')
     && JSON.stringify(reportObl113) === JSON.stringify(manObl113)
     && scripts113.mixed.includes('vc:get:1') && scripts113.mixed.includes('vc:f:1')
+    && JSON.stringify(Object.keys(m.artifacts ?? {})) === JSON.stringify(['smt_lib_sha256'])
+    && /^sha256:[0-9a-f]{64}$/.test(m.artifacts?.smt_lib_sha256 ?? '')
     && rMempty.code === 0 && Array.isArray(mEmpty?.obligations) && mEmpty.obligations.length === 0
-    && mEmpty.collection.sources.length === 1,
-    `code=${rMjson.code} keys=${JSON.stringify(Object.keys(m ?? {}))} ver=${ver113}/${verPkg113}/${m?.tool?.version} obl=${JSON.stringify(manObl113)} report=${JSON.stringify(reportObl113)} solver=${JSON.stringify(m?.solver)} empty=${rMempty.code}/${JSON.stringify(mEmpty?.obligations)}`);
+    && mEmpty.collection.sources.length === 1
+    && JSON.stringify(Object.keys(mEmpty.artifacts ?? {})) === JSON.stringify(['smt_lib_sha256']),
+    `code=${rMjson.code} keys=${JSON.stringify(Object.keys(m ?? {}))} ver=${ver113}/${verPkg113}/${m?.tool?.version} obl=${JSON.stringify(manObl113)} report=${JSON.stringify(reportObl113)} solver=${JSON.stringify(m?.solver)} artifacts=${JSON.stringify(m?.artifacts)} empty=${rMempty.code}/${JSON.stringify(mEmpty?.obligations)}`);
 
   // v113.22 逐字节确定性:独立进程双跑;末尾恰一个 LF、无 CR(UTF-8 LF 口径);
   // 文本模式 stdout 与不带 manifest 的脚本输出逐字节相同(旁车不改变脚本字节)。
@@ -28153,8 +28158,12 @@ secBegin('113');
     && baseText.stdout === '' && !baseText.stderr.includes('provenance manifest'),
     `same=${JSON.stringify(jM?.proof_manifest) === JSON.stringify(m)} additiveRaw=${additiveRaw113} twice=${baseJson1.stdout === baseJson2.stdout} leak=${baseJson1.stdout.includes('proof_manifest')}/${baseText.stderr.includes('provenance manifest')}`);
 
-  // v113.26 项目模式(审查 MAJOR-1):裸 check + ming.toml 时 sources.file 必须是项目相对路径
-  // (相对 ming.toml 所在目录;无盘符/无前导 / 或 \);两个不同临时根(内容相同)生成逐字节相同 manifest。
+  // v113.26 项目模式(审查 MAJOR-1;v1.3.1 v2 语义更新):裸 check + ming.toml 时 sources.file
+  // 必须是项目相对路径(相对 ming.toml 所在目录);**v1 面(除 artifacts 外全部字段)在两个不同
+  // 临时根下逐字节相同**;同一根重跑 manifest 逐字节相同(v2 的权威确定性口径)。
+  // 已知例外(§4.5 v2 / §3.3 传导):脚本文件分节在项目模式沿用入口解析路径(绝对),而 v2 的
+  // artifacts 如实绑定该脚本字节 ⇒ 两个不同根下 artifacts.smt_lib_sha256 必然不同、manifest
+  // 字节不同——差异**仅限** artifacts(本断言锁定该限制,不假装跨根字节相同)。
   const projA113 = path.join(dir113, 'projA');
   const projB113 = path.join(dir113, 'projB');
   const projSrc113 = [
@@ -28171,21 +28180,32 @@ secBegin('113');
   }
   const rProjA113 = runMing(['check', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'm.json'], { cwd: projA113 });
   const rProjB113 = runMing(['check', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'm.json'], { cwd: projB113 });
-  let mProjA113 = null, jProjA113 = null;
+  let mProjA113 = null, jProjA113 = null, mProjB113 = null;
   try { mProjA113 = JSON.parse(fs.readFileSync(path.join(projA113, 'm.json'), 'utf8')); jProjA113 = JSON.parse(rProjA113.stdout); } catch { /* 下方具名失败 */ }
+  try { mProjB113 = JSON.parse(fs.readFileSync(path.join(projB113, 'm.json'), 'utf8')); } catch { /* 下方具名失败 */ }
   const projBytesA113 = fs.existsSync(path.join(projA113, 'm.json')) ? fs.readFileSync(path.join(projA113, 'm.json')) : Buffer.alloc(0);
   const projBytesB113 = fs.existsSync(path.join(projB113, 'm.json')) ? fs.readFileSync(path.join(projB113, 'm.json')) : Buffer.alloc(0);
   const projFile113 = mProjA113?.collection?.sources?.[0]?.file ?? '';
+  // 同一根重跑(v2 确定性权威口径):再次运行 projA,字节必须一致。
+  const rProjA113b = runMing(['check', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'm.json'], { cwd: projA113 });
+  const projBytesA2_113 = fs.readFileSync(path.join(projA113, 'm.json'));
+  // v1 面比较:去掉 artifacts 后两不同根的 JSON 逐字节相同(序列化口径:同一键序)。
+  const stripArt113 = (mm) => { const c = { ...(mm ?? {}) }; delete c.artifacts; return JSON.stringify(c); };
+  const projV1Same113 = mProjA113 !== null && mProjB113 !== null && stripArt113(mProjA113) === stripArt113(mProjB113);
   // 脚本侧项目模式例外(§3.3 登记):文件分节仍为入口解析路径(绝对)——本断言锁定"例外存在",
   // 与 manifest 侧相对化互不掩盖;未来修脚本侧时本断言随协议 §3.3 同步更新。
   const projSect113 = (jProjA113?.proof_smt ?? '').match(/; ===== 文件:(.+) =====/)?.[1] ?? '';
   const projScriptAbs113 = projSect113 !== '' && path.isAbsolute(projSect113) && projSect113.endsWith('main.ming');
-  check('v113.26:项目模式 sources 项目相对(MAJOR-1)——裸 check + ming.toml 的 sources.file="main.ming"(无盘符/无前导 / 或 \\),两不同临时根生成 manifest 逐字节相同;脚本侧例外(§3.3)仍为绝对路径',
+  // artifacts 差异 = 脚本字节差异的如实传导(两根本质上导出了两份不同字节的脚本)。
+  const projArtDiff113 = mProjA113?.artifacts?.smt_lib_sha256 !== undefined
+    && mProjA113.artifacts.smt_lib_sha256 !== mProjB113?.artifacts?.smt_lib_sha256;
+  check('v113.26:项目模式 sources 项目相对(MAJOR-1;v2 更新)——sources.file="main.ming"(无盘符/无前导 / 或 \\)/脚本侧例外(§3.3)仍为绝对路径/v1 面(去 artifacts)两不同根逐字节相同/同一根重跑逐字节相同/**artifacts 跨根必不同(脚本字节含入口解析路径,§4.5 登记的 v2 传导限制)**',
     rProjA113.code === 0 && rProjB113.code === 0 && projFile113 === 'main.ming'
     && !/[A-Za-z]:/.test(projFile113) && !projFile113.startsWith('/') && !projFile113.includes('\\')
-    && projBytesA113.length > 0 && projBytesA113.equals(projBytesB113)
+    && projBytesA113.length > 0 && projV1Same113 && projArtDiff113
+    && rProjA113b.code === 0 && projBytesA113.equals(projBytesA2_113)
     && mProjA113?.collection?.sources?.length === 1 && projScriptAbs113,
-    `code=${rProjA113.code}/${rProjB113.code} file=${JSON.stringify(projFile113)} bytes=${projBytesA113.length}/${projBytesB113.length} same=${projBytesA113.equals(projBytesB113)} scriptAbs=${projScriptAbs113}`);
+    `code=${rProjA113.code}/${rProjB113.code} file=${JSON.stringify(projFile113)} bytes=${projBytesA113.length}/${projBytesB113.length} v1Same=${projV1Same113} artDiff=${projArtDiff113} rerunSame=${projBytesA113.equals(projBytesA2_113)} scriptAbs=${projScriptAbs113}`);
 
   // v113.27 输出路径重合拒绝(审查 m1):manifest 路径 = 源文件 → exit 1 具名"拒绝覆盖",
   // 源文件字节不变、无脚本输出(防静默覆盖数据丢失)。
@@ -28214,9 +28234,10 @@ secBegin('113');
     && rUnread113.stderr.indexOf('M3022') < rUnread113.stderr.indexOf('provenance manifest 已写入'),
     `code=${rUnread113.code} script=${rUnread113.stdout.startsWith('(set-logic QF_LIA)\n')} src=${JSON.stringify(mUnread113?.collection?.sources)} stderr=${JSON.stringify(rUnread113.stderr.slice(0, 140))}`);
 
-  // v113.29 同名跨目录重复 id 的登记性断言(NOTE-3;记录 v2 候选,不阻断):§2.3 口径下
+  // v113.29 同名跨目录重复 id 的登记性断言(NOTE-3;记录后续版本候选,不阻断):§2.3 口径下
   // 不同模块可有同名 vc:f:1——manifest 无 file 字段消歧,消费者按 obligations 序对照脚本
-  // 文件分节;sources 提供文件清单。当前行为锁定,消歧方案 = v2 候选(id 携带文件限定)。
+  // 文件分节;sources 提供文件清单。当前行为锁定,消歧方案 = 后续版本候选(id 携带文件限定;
+  // v1.3.1 的 manifest v2 已用于 artifacts 证书指纹绑定,本项未随 v2 交付)。
   const dupSrc113 = [
     'fn f(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
     '    return buf[i];',
@@ -28237,12 +28258,210 @@ secBegin('113');
   let mDup113 = null, jDup113 = null;
   try { mDup113 = JSON.parse(fs.readFileSync(dupMan113, 'utf8')); jDup113 = JSON.parse(rDup113.stdout); } catch { /* 下方具名失败 */ }
   const dupIds113 = (mDup113?.obligations ?? []).map((o) => o.id);
-  check('v113.29:同名跨目录重复 id 登记(NOTE-3)——两目录各含 f.ming(fn f)时 obligations 为 ["vc:f:1","vc:f:1"](§2.3 跨模块消歧靠 file/脚本分节,manifest v1 无 file 字段;v2 候选:条目携带文件限定),sources 2 条、脚本 2 个文件分节',
+  check('v113.29:同名跨目录重复 id 登记(NOTE-3)——两目录各含 f.ming(fn f)时 obligations 为 ["vc:f:1","vc:f:1"](§2.3 跨模块消歧靠 file/脚本分节,manifest 无 file 字段;后续版本候选:条目携带文件限定——v1.3.1 的 v2 已用于 artifacts,本项未随 v2 交付),sources 2 条、脚本 2 个文件分节',
     rDup113.code === 0 && dupIds113.length === 2 && dupIds113[0] === 'vc:f:1' && dupIds113[1] === 'vc:f:1'
     && mDup113?.collection?.sources?.length === 2
     && (jDup113?.proof_smt?.match(/; ===== 文件:/g) ?? []).length === 2
     && mDup113.collection.sources[0].file !== mDup113.collection.sources[1].file,
     `code=${rDup113.code} ids=${JSON.stringify(dupIds113)} src=${mDup113?.collection?.sources?.length} sections=${(jDup113?.proof_smt?.match(/; ===== 文件:/g) ?? []).length}`);
+
+  // ==================== v1.3.1:manifest v2(证书指纹绑定,ADR-013 §6 / ADR-014 §9 U8)====================
+  // v2 = v1 的 8 键原序 + **末尾** artifacts(manifest_format 升 2;字段只增不改);
+  // artifacts 绑定"manifest ↔ 该次导出实际产出的工件文本字节"(键序 smt_lib_sha256 →
+  // cert_sha256,各自存在才输出);smt 模式 obligations 条目形状与 v1 逐字节相同;
+  // cert 模式追加 cert{low,high}={has_cert,uses_goal,vacuous,reason}(与证书文本逐项同源)。
+  // 规范:docs/proof-protocol.md §4.5(v2 节);实现:src/manifest.js(buildProvenanceArtifacts)。
+  const shaText113 = (t) => 'sha256:' + createHash('sha256').update(t, 'utf8').digest('hex');
+  const CERT_HEAD_113 = '; ===== Ming 线性不可满足证书(cert v1)=====';
+  const certDirKeys113 = ['has_cert', 'uses_goal', 'vacuous', 'reason'];
+
+  // v113.30 smt 侧工件指纹:测试侧对**工件文本**独立复算 sha256(文本模式 stdout = 纯脚本);
+  // --json 的 proof_smt 与文本 stdout 逐字节相同且哈希一致;text/JSON 两次落盘 manifest
+  // 逐字节相同(artifacts 进入确定性面,不是随机/时间派生)。
+  const hashMan113 = path.join(dir113, 'hash.manifest.json');
+  const hashManPrev113 = path.join(dir113, 'hash.manifest.prev.json');
+  const rMhashText113 = runMing(['check', mixedF, '--proof-format', 'smt-lib', '--proof-manifest', hashMan113]);
+  let mHashText113 = null;
+  try { mHashText113 = JSON.parse(fs.readFileSync(hashMan113, 'utf8')); } catch { /* 下方具名失败 */ }
+  fs.copyFileSync(hashMan113, hashManPrev113);
+  const rMhashJson113 = runMing(['check', mixedF, '--json', '--proof-format', 'smt-lib', '--proof-manifest', hashMan113]);
+  let mHashJson113 = null, jMhash113 = null;
+  try { mHashJson113 = JSON.parse(fs.readFileSync(hashMan113, 'utf8')); jMhash113 = JSON.parse(rMhashJson113.stdout); } catch { /* 下方具名失败 */ }
+  // 审查 M4:两次构造的确定性比较用**落盘原始字节**(Buffer.equals),不是 parse 后的对象级相等。
+  const hashBytesText113 = fs.readFileSync(hashManPrev113);
+  const hashBytesJson113 = fs.readFileSync(hashMan113);
+  check('v113.30:manifest v2 工件指纹(smt 侧)——artifacts 恰 [smt_lib_sha256];测试侧对 stdout 文本独立复算 sha256 == manifest 值;--json 的 proof_smt 与文本 stdout 逐字节相同且哈希一致;text/JSON 两次落盘 manifest **原始字节**相同(Buffer.equals)',
+    rMhashText113.code === 1 && rMhashText113.stderr.includes('provenance manifest 已写入')
+    && JSON.stringify(Object.keys(mHashText113?.artifacts ?? {})) === JSON.stringify(['smt_lib_sha256'])
+    && mHashText113?.artifacts?.smt_lib_sha256 === shaText113(rMhashText113.stdout)
+    && rMhashJson113.code === 1 && jMhash113?.proof_smt === rMhashText113.stdout
+    && mHashJson113?.artifacts?.smt_lib_sha256 === shaText113(jMhash113?.proof_smt ?? '')
+    && hashBytesText113.length > 0 && hashBytesText113.equals(hashBytesJson113),
+    `code=${rMhashText113.code}/${rMhashJson113.code} art=${JSON.stringify(mHashText113?.artifacts)} want=${shaText113(rMhashText113.stdout)} sameJson=${jMhash113?.proof_smt === rMhashText113.stdout} bytes=${hashBytesText113.length}/${hashBytesJson113.length} byteEq=${hashBytesText113.equals(hashBytesJson113)}`);
+
+  // v113.31 cert 模式放开 + v2 结构:--proof-format cert --proof-manifest 合法(此前具名拒绝);
+  // 证书 stdout 与不带 manifest 逐字节相同(旁车不改工件);artifacts 恰 [cert_sha256] 且
+  // == 测试侧对证书 stdout 的 sha256;顶层 9 键/format=2;义务条目追加 cert(low/high 各四键)。
+  const certManOk113 = path.join(dir113, 'ok.cert.manifest.json');
+  const rMcertOk113 = runMing(['check', okF, '--proof-format', 'cert', '--proof-manifest', certManOk113]);
+  const rCertOnly113 = runMing(['check', okF, '--proof-format', 'cert']);
+  let mCertOk113 = null;
+  try { mCertOk113 = JSON.parse(fs.readFileSync(certManOk113, 'utf8')); } catch { /* 下方具名失败 */ }
+  const certObl113 = mCertOk113?.obligations?.[0];
+  check('v113.31:cert 模式被接受(v2 放开)——exit 0/回执/证书 stdout 与不带 manifest 逐字节相同;artifacts 恰 [cert_sha256] 且 == 独立复算证书文本 sha256;顶层 9 键(artifacts 末尾)/format=2;obligations[0] 追加 cert(low/high 各恰 has_cert/uses_goal/vacuous/reason)',
+    rMcertOk113.code === 0 && rMcertOk113.stderr.includes('provenance manifest 已写入')
+    && rMcertOk113.stdout === rCertOnly113.stdout && rMcertOk113.stdout.startsWith(CERT_HEAD_113 + '\n')
+    && JSON.stringify(Object.keys(mCertOk113 ?? {})) === JSON.stringify(wantTop113)
+    && mCertOk113?.manifest_format === 2
+    && JSON.stringify(Object.keys(mCertOk113?.artifacts ?? {})) === JSON.stringify(['cert_sha256'])
+    && mCertOk113?.artifacts?.cert_sha256 === shaText113(rMcertOk113.stdout)
+    && JSON.stringify(Object.keys(certObl113 ?? {})) === JSON.stringify(['id', 'scope', 'internal_verdict', 'cert'])
+    && JSON.stringify(Object.keys(certObl113?.cert ?? {})) === JSON.stringify(['low', 'high'])
+    && JSON.stringify(Object.keys(certObl113?.cert?.low ?? {})) === JSON.stringify(certDirKeys113)
+    && JSON.stringify(Object.keys(certObl113?.cert?.high ?? {})) === JSON.stringify(certDirKeys113),
+    `code=${rMcertOk113.code} same=${rMcertOk113.stdout === rCertOnly113.stdout} keys=${JSON.stringify(Object.keys(mCertOk113 ?? {}))} fmt=${mCertOk113?.manifest_format} art=${JSON.stringify(mCertOk113?.artifacts)} obKeys=${JSON.stringify(Object.keys(certObl113 ?? {}))}`);
+
+  // v113.32 cert obligations 与**证书文本**逐项一致(单一事实来源 = 同一次渲染):
+  //   proven 方向:has_cert=true + uses_goal/vacuous 与文本 `; uses_goal:`/`; vacuous:` 同值;
+  //   unknown/refuted:has_cert=false + uses_goal/vacuous 为 null + reason 为对应标记;
+  //   常量索引 proven 但无证书:reason='const-false'(文本 `; 无证书:常量矛盾`)。
+  const constF113 = mk113('const.ming', [
+    'fn c(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    return buf[0];',
+    '}',
+    'fn main() with io { print(str(c([1, 2], 2))); }',
+  ].join('\n'));
+  const certManMix113 = path.join(dir113, 'mix.cert.manifest.json');
+  const rMcertMix113 = runMing(['check', mixedF, '--proof-format', 'cert', '--proof-manifest', certManMix113]);
+  let mCertMix113 = null;
+  try { mCertMix113 = JSON.parse(fs.readFileSync(certManMix113, 'utf8')); } catch { /* 下方具名失败 */ }
+  const certManConst113 = path.join(dir113, 'const.cert.manifest.json');
+  const rMcertConst113 = runMing(['check', constF113, '--proof-format', 'cert', '--proof-manifest', certManConst113]);
+  let mCertConst113 = null;
+  try { mCertConst113 = JSON.parse(fs.readFileSync(certManConst113, 'utf8')); } catch { /* 下方具名失败 */ }
+  const mixCertObl113 = (id) => (mCertMix113?.obligations ?? []).find((o) => o.id === id)?.cert;
+  const get113 = mixCertObl113('vc:get:1') ?? {};
+  const f113 = mixCertObl113('vc:f:1') ?? {};
+  const constCert113 = mCertConst113?.obligations?.[0]?.cert ?? {};
+  const textUsesGoal113 = (dirText) => dirText.includes('; uses_goal: true') ? true : dirText.includes('; uses_goal: false') ? false : null;
+  const textVacuous113 = (dirText) => dirText.includes('; vacuous: true') ? true : dirText.includes('; vacuous: false') ? false : null;
+  const dirText113 = (txt, vcId, dir) => {
+    const seg = txt.split(/(?=^; ---- vc:)/m).find((s) => s.startsWith(`; ---- ${vcId} `)) ?? '';
+    return seg.split(/(?=^; dir: )/m).find((s) => s.startsWith(`; dir: ${dir}`)) ?? '';
+  };
+  const getLowText113 = dirText113(rMcertMix113.stdout, 'vc:get:1', 'low');
+  const getHighText113 = dirText113(rMcertMix113.stdout, 'vc:get:1', 'high');
+  check('v113.32:cert obligations 与证书文本逐项一致——proven(两方向):has_cert=true + uses_goal/vacuous 文本同值 + reason=null;unknown/refuted:has_cert=false + uses_goal/vacuous=null + reason=unknown/refuted;常量索引 proven 无证书:reason=const-false + uses_goal=null + vacuous=false(proven 方向恒有值,文本 `; 无证书:常量矛盾`)',
+    rMcertMix113.code === 1 && rMcertConst113.code === 0
+    && get113.low?.has_cert === true && get113.high?.has_cert === true
+    && get113.low?.uses_goal === textUsesGoal113(getLowText113) && get113.low?.uses_goal === true
+    && get113.high?.uses_goal === textUsesGoal113(getHighText113)
+    && get113.low?.vacuous === textVacuous113(getLowText113) && get113.low?.vacuous === false
+    && get113.high?.vacuous === textVacuous113(getHighText113)
+    && get113.low?.reason === null && get113.high?.reason === null
+    && f113.low?.has_cert === false && f113.low?.uses_goal === null && f113.low?.vacuous === null && f113.low?.reason === 'unknown'
+    && f113.high?.has_cert === false && f113.high?.uses_goal === null && f113.high?.vacuous === null && f113.high?.reason === 'refuted'
+    && constCert113.low?.has_cert === false && constCert113.low?.reason === 'const-false'
+    && constCert113.low?.uses_goal === null && constCert113.low?.vacuous === false
+    && rMcertConst113.stdout.includes('; 无证书:常量矛盾'),
+    `get=${JSON.stringify(get113)} f=${JSON.stringify(f113)} const=${JSON.stringify(constCert113)} lowText=${JSON.stringify(getLowText113.slice(0, 120))}`);
+
+  // v113.33 组合矩阵:cert + --proof-report(文本 stdout = 摘要行 + 证书;工件哈希 = **证书文本**
+  // 而不是整段 stdout——旁车绑定的是工件,不是混合流);JSON 侧 proof_cert 与文本尾部逐字相同
+  // 且哈希一致;cert 模式 `--proof-manifest -` 仍拒绝(两工件争用 stdout)。
+  const certManPr113 = path.join(dir113, 'pr.cert.manifest.json');
+  const rMcertPr113 = runMing(['check', badF, '--proof-report', '--proof-format', 'cert', '--proof-manifest', certManPr113]);
+  let mCertPr113 = null;
+  try { mCertPr113 = JSON.parse(fs.readFileSync(certManPr113, 'utf8')); } catch { /* 下方具名失败 */ }
+  const rCertPrJson113 = runMing(['check', badF, '--json', '--proof-report', '--proof-format', 'cert']);
+  let jCertPr113 = null;
+  try { jCertPr113 = JSON.parse(rCertPrJson113.stdout); } catch { /* 下方具名失败 */ }
+  const rMcertDash113 = runMing(['check', okF, '--proof-format', 'cert', '--proof-manifest', '-']);
+  check('v113.33:组合矩阵(cert)——--proof-report 并存时 stdout = 摘要行 + 证书且以证书文本结尾;manifest 的 cert_sha256 == JSON proof_cert 的 sha256(工件 ≠ 整段 stdout);`--proof-manifest -` 在 cert 模式仍 exit 1 具名 + 零证书/零落盘',
+    rMcertPr113.code === 1 && rMcertPr113.stdout.endsWith(jCertPr113?.proof_cert ?? '\u0000')
+    && rMcertPr113.stdout.indexOf('义务 1') < rMcertPr113.stdout.indexOf(CERT_HEAD_113)
+    && mCertPr113?.artifacts?.cert_sha256 === shaText113(jCertPr113?.proof_cert ?? '')
+    && rMcertDash113.code === 1 && rMcertDash113.stdout === '' && rMcertDash113.stderr.includes('不支持 "-"') && rMcertDash113.stderr.includes('文件路径'),
+    `code=${rMcertPr113.code} tail=${rMcertPr113.stdout.endsWith(jCertPr113?.proof_cert ?? '')} order=${rMcertPr113.stdout.indexOf('义务 1') < rMcertPr113.stdout.indexOf(CERT_HEAD_113)} hash=${mCertPr113?.artifacts?.cert_sha256 === shaText113(jCertPr113?.proof_cert ?? '')} dash=${rMcertDash113.code}/${JSON.stringify(rMcertDash113.stderr.slice(0, 80))}`);
+
+  // v113.34 v1→v2 兼容锚点(文档级,不冒充有 v1 消费者解析器):去掉 artifacts 后顶层恰为
+  // v1 的 8 键且**原序**——v2 只增不改;协议**头部状态/范围行**(§4.5 入口)与 §4.5 兼容句
+  // 同锚定(2026-11-27 审查 M1:防头部与正文漂移——头部过期即失败),并锁定严格校验
+  // `manifest_format === 1` 的消费者拒绝 v2 的预期口径(M7)。
+  const v1View113 = { ...(mHashText113 ?? {}) };
+  delete v1View113.artifacts;
+  const protoText113 = fs.readFileSync(path.join(ROOT, 'docs', 'proof-protocol.md'), 'utf8');
+  check('v113.34:v1→v2 兼容锚点——删掉 artifacts 后顶层恰为 v1 的 8 键且原序(v2 字段只增不改);协议头部含 "v1.3.1 manifest v2" 与 "schema v2(v1→v2,§4.5)"(M1 防头部漂移);§4.5 含兼容句("v2 = v1"/"字段只增不改"/严格校验 manifest_format === 1 的预期口径)',
+    JSON.stringify(Object.keys(v1View113)) === JSON.stringify(wantTop113.slice(0, 8))
+    && protoText113.includes('v2 = v1')
+    && protoText113.includes('字段只增不改')
+    && protoText113.includes('v1.3.1 manifest v2')
+    && protoText113.includes('schema v2(v1→v2,§4.5)')
+    && protoText113.includes('manifest_format === 1'),
+    `keys=${JSON.stringify(Object.keys(v1View113))} doc=${protoText113.includes('v2 = v1')}/${protoText113.includes('字段只增不改')}/${protoText113.includes('v1.3.1 manifest v2')}/${protoText113.includes('schema v2(v1→v2,§4.5)')}/${protoText113.includes('manifest_format === 1')}`);
+
+  // v113.35 cert 视图的 vacuous:true 锁定(空区间 0..0:eff 自身矛盾)——proven 两方向
+  // has_cert:true + uses_goal:false + vacuous:true + reason:null,与证书文本 `; uses_goal: false`
+  // / `; vacuous: true` 逐项一致。真空 proven 不得被折成"边界已证"(§10.4),manifest 如实携带。
+  const vacF113 = mk113('vac.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    let mut s = 0;',
+    '    for k in 0..0 { s += buf[k]; }',
+    '    return s;',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+  ].join('\n'));
+  const vacMan113 = path.join(dir113, 'vac.cert.manifest.json');
+  const rMvac113 = runMing(['check', vacF113, '--proof-format', 'cert', '--proof-manifest', vacMan113]);
+  let mVac113 = null;
+  try { mVac113 = JSON.parse(fs.readFileSync(vacMan113, 'utf8')); } catch { /* 下方具名失败 */ }
+  const vacCert113 = mVac113?.obligations?.[0]?.cert ?? {};
+  check('v113.35:cert 视图 vacuous:true 锁定(空区间)——obligations[0].cert low/high 均 has_cert:true + uses_goal:false + vacuous:true + reason:null;证书文本同值(uses_goal: false ×2 / vacuous: true ×2);artifacts.cert_sha256 == 证书 stdout 独立复算',
+    rMvac113.code === 0 && mVac113?.obligations?.length === 1
+    && vacCert113.low?.has_cert === true && vacCert113.low?.uses_goal === false && vacCert113.low?.vacuous === true && vacCert113.low?.reason === null
+    && vacCert113.high?.has_cert === true && vacCert113.high?.uses_goal === false && vacCert113.high?.vacuous === true && vacCert113.high?.reason === null
+    && (rMvac113.stdout.match(/; uses_goal: false/g) ?? []).length === 2
+    && (rMvac113.stdout.match(/; vacuous: true/g) ?? []).length === 2
+    && mVac113?.artifacts?.cert_sha256 === shaText113(rMvac113.stdout),
+    `code=${rMvac113.code} cert=${JSON.stringify(vacCert113)} text=${(rMvac113.stdout.match(/; uses_goal: false/g) ?? []).length}/${(rMvac113.stdout.match(/; vacuous: true/g) ?? []).length} art=${mVac113?.artifacts?.cert_sha256 === shaText113(rMvac113.stdout)}`);
+
+  // v113.36 多文件 + cert + manifest 的下标对齐(2026-11-27 审查 M5b):两个文件都有 `fn get`
+  // (跨文件重复 id `vc:get:1`)——obligations[i] 必须与**同一次渲染**的 certs[i] 对齐;用可区分
+  // 形态锁定:文件 A = body 义务(uses_goal:true/vacuous:false),文件 B = loop 义务(空区间,
+  // uses_goal:false/vacuous:true)。若视图错位,scope/vacuous 必互换而失败。
+  const alignA113 = mk113('al_a.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1))); }',
+  ].join('\n'));
+  const alignB113 = mk113('al_b.ming', [
+    'fn get(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    let mut s = 0;',
+    '    for k in 0..0 { s += buf[k]; }',
+    '    return s;',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 2))); }',
+  ].join('\n'));
+  const alignMan113 = path.join(dir113, 'align.cert.manifest.json');
+  const rAlign113 = runMing(['check', alignA113, alignB113, '--proof-format', 'cert', '--proof-manifest', alignMan113]);
+  let mAlign113 = null;
+  try { mAlign113 = JSON.parse(fs.readFileSync(alignMan113, 'utf8')); } catch { /* 下方具名失败 */ }
+  const alignObls113 = mAlign113?.obligations ?? [];
+  const alignCertA113 = alignObls113[0]?.cert ?? {};
+  const alignCertB113 = alignObls113[1]?.cert ?? {};
+  check('v113.36:多文件 + cert + manifest 下标对齐——两文件同名 fn（跨文件重复 id vc:get:1）时 obligations 序 = [body(uses_goal:true/vacuous:false), loop(空区间:uses_goal:false/vacuous:true)];cert 视图逐条与同一次渲染对齐(A/B 不互换);证书文本两文件分节、第二分节 vacuous:true;artifacts.cert_sha256 == 证书 stdout 独立复算',
+    rAlign113.code === 0 && alignObls113.length === 2
+    && alignObls113[0].id === 'vc:get:1' && alignObls113[0].scope === 'body'
+    && alignObls113[1].id === 'vc:get:1' && alignObls113[1].scope === 'loop'
+    && alignCertA113.low?.has_cert === true && alignCertA113.low?.uses_goal === true && alignCertA113.low?.vacuous === false
+    && alignCertB113.low?.has_cert === true && alignCertB113.low?.uses_goal === false && alignCertB113.low?.vacuous === true
+    && alignCertA113.high?.uses_goal === true && alignCertA113.high?.vacuous === false
+    && alignCertB113.high?.uses_goal === false && alignCertB113.high?.vacuous === true
+    && (rAlign113.stdout.match(/^; ===== 文件:/gm) ?? []).length === 2
+    && (rAlign113.stdout.match(/^; ---- vc:get:1 /gm) ?? []).length === 2
+    && mAlign113?.artifacts?.cert_sha256 === shaText113(rAlign113.stdout),
+    `code=${rAlign113.code} obl=${JSON.stringify(alignObls113.map((o) => ({ id: o.id, scope: o.scope })))} A=${JSON.stringify(alignCertA113)} B=${JSON.stringify(alignCertB113)} sect=${(rAlign113.stdout.match(/^; ===== 文件:/gm) ?? []).length}/${(rAlign113.stdout.match(/^; ---- vc:get:1 /gm) ?? []).length} art=${mAlign113?.artifacts?.cert_sha256 === shaText113(rAlign113.stdout)}`);
 }
 
 secBegin('114');
@@ -29620,7 +29839,8 @@ secBegin('117');
   // 证书 = 判定阶段负环的直接视图:`Σ λ_i c_i = 0`(逐变量)且 `Σ λ_i K_i < 0`。
   // 面覆盖:旗标值矩阵(新增 cert 取值 / 未知值具名)、文本形状、proven/loop/vacuous/常量矛盾/
   // 不可线性化/保留字符号面、uses_goal 与 vacuous 两字段独立、`--json` additive `proof_cert`、
-  // 无旗标零变化、`--proof-manifest` 具名拒绝、`--proof-report` 并存、多文件分节(含**同名
+  // 无旗标零变化、`--proof-manifest` 与 cert 同用(v1.3.1 manifest v2 放开 + 证书指纹绑定)、
+  // `--proof-report` 并存、多文件分节(含**同名
   // vc:<fn>:<n> 按文件节分家**)、零义务、参考检查器(tests/cert_check.mjs)全绿 + 三负例经
   // import 直测、SMT 输出零变化、run 不消费、纵深防御原因渲染契约。
   // 规范:docs/proof-protocol.md §10(证书);渲染:src/proofcert.js(纯函数,证书数据由 prover 同次求解产出)。
@@ -29796,13 +30016,20 @@ secBegin('117');
     && r117baseText.stdout === '' && r117base1.stdout === r117base2.stdout,
     `keys=${JSON.stringify(Object.keys(j117base))} obKeys=${JSON.stringify(obKeys117)} text=${JSON.stringify(r117baseText.stdout.slice(0, 40))}`);
 
-  // v117.14 --proof-manifest 只与 smt-lib 同用:cert 模式 → exit 1 具名 + 不写盘 + 零证书输出
+  // v117.14 --proof-manifest 与 cert 同用(v1.3.1 manifest v2 放开,ADR-014 §9 U8):
+  // 合法——manifest 落盘、证书 stdout 逐字节不变(旁车不改工件)、artifacts 恰 cert_sha256
+  // (测试侧独立复算)+ 回执一行。
   const manifest117 = path.join(dir117, 'c.manifest.json');
   const r117mf = runMing(['check', ok117, '--proof-format', 'cert', '--proof-manifest', manifest117]);
-  check('v117.14:--proof-manifest 与 cert 同用 → exit 1 具名(`需要与 --proof-format smt-lib 同用`)+ 零 stdout + 零落盘',
-    r117mf.code === 1 && r117mf.stderr.includes('--proof-manifest 需要与 --proof-format smt-lib 同用')
-    && r117mf.stdout === '' && !fs.existsSync(manifest117),
-    `code=${r117mf.code} stderr=${JSON.stringify(r117mf.stderr.slice(0, 100))} exists=${fs.existsSync(manifest117)}`);
+  const r117certOnly = runMing(['check', ok117, '--proof-format', 'cert']);
+  let m117 = null;
+  try { m117 = JSON.parse(fs.readFileSync(manifest117, 'utf8')); } catch { /* 下方具名失败 */ }
+  check('v117.14:--proof-manifest 与 cert 同用(v2 放开)→ exit 0 + 证书 stdout 与不带 manifest 逐字节相同 + manifest 落盘(artifacts 恰 cert_sha256,独立复算相符)+ 回执',
+    r117mf.code === 0 && r117mf.stdout === r117certOnly.stdout
+    && r117mf.stderr.includes('provenance manifest 已写入')
+    && JSON.stringify(Object.keys(m117?.artifacts ?? {})) === JSON.stringify(['cert_sha256'])
+    && m117?.artifacts?.cert_sha256 === 'sha256:' + createHash('sha256').update(r117mf.stdout, 'utf8').digest('hex'),
+    `code=${r117mf.code} same=${r117mf.stdout === r117certOnly.stdout} stderr=${JSON.stringify(r117mf.stderr.slice(0, 100))} art=${JSON.stringify(m117?.artifacts)}`);
 
   // v117.15 --proof-report 并存:文本 stdout = 摘要行 + 证书(顺序固定);JSON proofs 与 proof_cert 共存
   const r117pr = runMing(['check', bad117, '--proof-report', '--proof-format', 'cert']);
@@ -29905,6 +30132,40 @@ secBegin('117');
     r117dup.code === 0 && dupFiles117.length === 2 && dupFiles117[0].endsWith('dupa.ming') && dupFiles117[1].endsWith('dupb.ming')
     && dupVc117 === 2 && vDup117.ok === true && vDup117.checks.identities === 4,
     `code=${r117dup.code} files=${JSON.stringify(dupFiles117)} vcs=${dupVc117} ok=${vDup117.ok}/${vDup117.checks.identities} errs=${JSON.stringify(vDup117.errors.slice(0, 2))}`);
+
+  // v117.24 cert + manifest 的 --json additive(manifest v2):proof_manifest 与落盘文件深相等;
+  // `proof_manifest` 之前的**原始字节**与不带 manifest 的 JSON 输出逐字节相同(不 parse 重排);
+  // proof_cert 字符串的 sha256 == artifacts.cert_sha256(同一工件,两个视图)。
+  const r117mfJson = runMing(['check', ok117, '--json', '--proof-format', 'cert', '--proof-manifest', manifest117]);
+  let j117mf = null, m117b = null;
+  try { j117mf = JSON.parse(r117mfJson.stdout); m117b = JSON.parse(fs.readFileSync(manifest117, 'utf8')); } catch { /* 下方具名失败 */ }
+  const r117jsonBase = runMing(['check', ok117, '--json', '--proof-format', 'cert']);
+  const jsonBaseHead117 = r117jsonBase.stdout.slice(0, r117jsonBase.stdout.lastIndexOf('\n}'));
+  const additive117 = jsonBaseHead117.length > 0
+    && r117mfJson.stdout.startsWith(jsonBaseHead117 + ',\n  "proof_manifest": ')
+    && r117mfJson.stdout.endsWith('\n}\n');
+  check('v117.24:cert + manifest 的 --json additive——proof_manifest 与落盘深相等;proof_manifest 之前的字节与不带 manifest 的 JSON 逐字节相同(原始字节);proof_cert 字符串 sha256 == artifacts.cert_sha256',
+    r117mfJson.code === 0 && additive117 && JSON.stringify(j117mf?.proof_manifest) === JSON.stringify(m117b)
+    && m117b?.artifacts?.cert_sha256 === 'sha256:' + createHash('sha256').update(j117mf?.proof_cert ?? '', 'utf8').digest('hex'),
+    `code=${r117mfJson.code} additive=${additive117} same=${JSON.stringify(j117mf?.proof_manifest) === JSON.stringify(m117b)} art=${JSON.stringify(m117b?.artifacts)}`);
+
+  // v117.25 确定性与 refuted 标注:cert manifest 独立进程双跑逐字节相同;证书 stdout 不带/带
+  // manifest 逐字节同一;bad 语料的 refuted 方向在 obligations.cert 中如实(has_cert:false /
+  // reason:'refuted';uses_goal 与 vacuous 不适用 = null——不把"无证书"折成 false 结论)。
+  const manifestBad117 = path.join(dir117, 'bad.cert.manifest.json');
+  const r117mb1 = runMing(['check', bad117, '--proof-format', 'cert', '--proof-manifest', manifestBad117]);
+  const bytesBadA117 = fs.readFileSync(manifestBad117);
+  const r117mb2 = runMing(['check', bad117, '--proof-format', 'cert', '--proof-manifest', manifestBad117]);
+  const bytesBadB117 = fs.readFileSync(manifestBad117);
+  let mBad117 = null;
+  try { mBad117 = JSON.parse(bytesBadB117.toString('utf8')); } catch { /* 下方具名失败 */ }
+  const badCert117 = mBad117?.obligations?.[0]?.cert?.high ?? {};
+  check('v117.25:cert manifest 双跑逐字节相同 + 工件 stdout 零变化 + refuted 方向如实(has_cert:false/reason:"refuted"/uses_goal,vacuous:null)',
+    r117mb1.code === 1 && r117mb2.code === 1 && bytesBadA117.equals(bytesBadB117) && bytesBadA117.length > 0
+    && r117mb1.stdout === r117bad.stdout
+    && badCert117.has_cert === false && badCert117.reason === 'refuted'
+    && badCert117.uses_goal === null && badCert117.vacuous === null,
+    `code=${r117mb1.code}/${r117mb2.code} bytes=${bytesBadA117.length}/${bytesBadB117.length} same=${bytesBadA117.equals(bytesBadB117)} stdoutSame=${r117mb1.stdout === r117bad.stdout} cert=${JSON.stringify(badCert117)}`);
 }
 // ---- §117-END
 

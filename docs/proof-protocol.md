@@ -1,7 +1,7 @@
 # Ming 证明协议 v1——义务标识、SMT-LIB 导出与可独立复核证书规范
 
-> **状态**:v1.1 首批(S-1 + S-2,plan §4.21 切片表)+ v1.2.6 R-20(provenance manifest,ADR-013)+ v1.3.0 S-3a(自产线性证书,ADR-014)· **日期**:2026-11-23(manifest 增补 2026-11-27;证书 2026-11-27) · **实现**:`src/proofsmt.js`(SMT 编码)/ `src/prover.js`(判定 + 负环边出处)/ `src/proofcert.js`(证书渲染)/ `src/checker.js`(VC 采集,`checkIndexBoundsStatically`)/ `src/manifest.js`(provenance manifest 构造)/ `bin/ming.js`(旗标与协议字段)
-> **范围**:本文档规范五件事——①证明义务标识(`proof_obligation_id`)的文法与语义;②`ming check --proof-format smt-lib` 的 SMT-LIB 2.0 输出格式;③`--json` 协议的加法式字段(`proof_obligation_id` / `solver_status` / `proof_smt` / `proof_cert`);④`--proof-manifest <path>` 的 provenance manifest schema v1(§4.5);⑤`ming check --proof-format cert` 的**可独立复核证书**(判据/归一/引用规则/覆盖边界,§10)。
+> **状态**:v1.1 首批(S-1 + S-2,plan §4.21 切片表)+ v1.2.6 R-20(provenance manifest,ADR-013)+ v1.3.1 manifest v2(证书指纹绑定,ADR-014 §9 U8)+ v1.3.0 S-3a(自产线性证书,ADR-014)· **日期**:2026-11-23(manifest 增补 2026-11-27;manifest v2 2026-11-27;证书 2026-11-27) · **实现**:`src/proofsmt.js`(SMT 编码)/ `src/prover.js`(判定 + 负环边出处)/ `src/proofcert.js`(证书渲染)/ `src/checker.js`(VC 采集,`checkIndexBoundsStatically`)/ `src/manifest.js`(provenance manifest 构造)/ `bin/ming.js`(旗标与协议字段)
+> **范围**:本文档规范五件事——①证明义务标识(`proof_obligation_id`)的文法与语义;②`ming check --proof-format smt-lib` 的 SMT-LIB 2.0 输出格式;③`--json` 协议的加法式字段(`proof_obligation_id` / `solver_status` / `proof_smt` / `proof_cert`);④`--proof-manifest <path>` 的 provenance manifest schema v2(v1→v2,§4.5);⑤`ming check --proof-format cert` 的**可独立复核证书**(判据/归一/引用规则/覆盖边界,§10)。
 > **立场声明**:Ming 的证明器是 **QF_LIA 限定子集**(线性整数算术的差分约束求解,`src/prover.js`)。本文档只描述**它实际做了什么**,不描述"理想证明器应该做什么";每一处能力边界都以"内部证明器不证明什么"一节如实登记。`solver_status` 是 **Ming 内部证明器的判定口径**,不是外部求解器结论——外部求解器对同一义务可能给出更强或不同的回答,这正是外部审计的价值,解读规则见"外部求解器消费方式"。证书(§10)**不是** Alethe、不冒充 Alethe,也不证"程序正确"——它证的是"该义务按本协议编码后的约束集不可满足"。
 > **关联**:[GUIDE.md §6 契约与静态边界证明](../GUIDE.md) / [docs/diagnostics.md](diagnostics.md)(M3045/W3105)/ [docs/stability-contract.md](stability-contract.md)(承诺面口径)/ [docs/roadmap-infrastructure.md §5.1](roadmap-infrastructure.md)(原始需求)/ plan §4.21(裁决与切片)/ [ADR-014](adr-014-alethe-feasibility.md)(S-3 重定义与证书裁决)。
 
@@ -137,37 +137,48 @@ proof_obligation_id ::= "vc:" <函数名> ":" <序号>
 
 **未知旗标值不静默**:`--proof-format <smt-lib|cert 之外的取值>` → stderr 具名报错 + exit 1(消息逐字 `--proof-format 仅支持 "smt-lib" 或 "cert"(得到 "<值>")`;v1.3.0 取值扩展时由 §113.3 与 §117.3 双锚点锁定);缺值 → 解析层 `--proof-format 需要一个值` + exit 1。其他命令(run/test/…)不消费本旗标(按既有"命令只读自己认识的旗标"风格忽略)。
 
-### 4.5 provenance manifest(`--proof-manifest <path>`,v1.2.6 / ADR-013)
+### 4.5 provenance manifest(`--proof-manifest <path>`,v1.2.6 / ADR-013;v1.3.1 manifest v2)
 
-脚本逐字节确定,但消费者无法仅凭脚本回答"哪个工具版本、哪版采集逻辑、什么整数模型、对应哪份源码"(外部评审 cwahq/Klara,2026-11-26 指向的 provenance 缺口)。`--proof-manifest <path>` 在脚本**旁车**写一份确定性 JSON 出处清单(sidecar)——脚本字节零变化,清单可被 git diff 审查(`pass_hash`/源哈希变化即提示重证)。
+脚本逐字节确定,但消费者无法仅凭脚本回答"哪个工具版本、哪版采集逻辑、什么整数模型、对应哪份源码"(外部评审 cwahq/Klara,2026-11-26 指向的 provenance 缺口)。`--proof-manifest <path>` 在工件**旁车**写一份确定性 JSON 出处清单(sidecar)——工件字节零变化,清单可被 git diff 审查(`pass_hash`/源哈希变化即提示重证)。
+
+**v1 → v2(自 v1.3.1)**:v2 在 v1 的 8 键**原序之后**追加第 9 键 `artifacts`,`manifest_format` 升为 `2`——**字段只增不改**;`--proof-manifest` 同时放开到 `--proof-format cert`(cert 模式的 `obligations[]` 每条**多出 `cert` 键**——`{id, scope, internal_verdict, cert}`,smt-lib 模式仍恰三键)。因此 **v2 = v1 + `artifacts` + cert 模式义务字段**;v1 的 8 键字段语义、键序、`sources` 路径口径、`solver` 回填位语义均不变。本仓库**不提供** v1 消费者解析器(我们只是产出方)——v1 消费者按"忽略未知字段"读取 v2 的前 8 键即为兼容路径;**严格校验 `manifest_format === 1` 的消费者会拒绝 v2(这是预期:兼容实现应接受 `1..2`,并按 `manifest_format` 决定 `artifacts`/`cert` 是否存在)**;反之 v2 消费者遇到 `manifest_format: 1` 应知道 `artifacts`/`cert` 不存在。
 
 **用法与约束**:
 
 ```bash
 ming check f.ming --proof-format smt-lib --proof-manifest f.manifest.json
 ming check f.ming --proof-format smt-lib --proof-manifest f.manifest.json --json   # 顶层 additive proof_manifest
+ming check f.ming --proof-format cert --proof-manifest f.cert.manifest.json         # v1.3.1:cert 模式放开
+ming check f.ming --proof-format cert --proof-manifest f.cert.manifest.json --json  # 同上,JSON 模式
 ```
 
-- 必须与 `--proof-format smt-lib` **同用**:缺该旗标(含 `--proof-format cert`)→ stderr 具名 + exit 1(manifest 描述的就是 SMT-LIB 工件,不是证书);缺值(**空格形式**)→ 解析层 `--proof-manifest 需要一个值` + exit 1。`--proof-manifest=` 空值 = 空路径(写盘失败,exit 1 具名)。路径含 `=` 时请用空格形式 `--proof-manifest <path>`(等号形式在第二个 `=` 处截断,是 `parseArgs` 的既有行为,不在本协议范围)。
-- **`-`(stdout)拒绝**:脚本与 manifest 同时写 stdout 会互相污染(消费者无法区分两个工件的边界),这是对 ADR-013 §3 的 `<path|->` 的**实现期收窄**;拒绝消息给出替代指引(写文件路径),exit 1。
+- 必须与 `--proof-format smt-lib` **或** `--proof-format cert` **同用**:缺该旗标 → stderr 具名 + exit 1(消息逐字 `--proof-manifest 需要与 --proof-format smt-lib 或 cert 同用(manifest 描述的就是该证明工件)`;v1.3.1 前置消息只列 smt-lib,随 cert 放开同步更新——§113.20 锁定);缺值(**空格形式**)→ 解析层 `--proof-manifest 需要一个值` + exit 1。`--proof-manifest=` 空值 = 空路径(写盘失败,exit 1 具名)。路径含 `=` 时请用空格形式 `--proof-manifest <path>`(等号形式在第二个 `=` 处截断,是 `parseArgs` 的既有行为,不在本协议范围)。
+- **`-`(stdout)拒绝**:工件与 manifest 同时写 stdout 会互相污染(消费者无法区分两个工件的边界),这是对 ADR-013 §3 的 `<path|->` 的**实现期收窄**;拒绝消息给出替代指引(写文件路径),exit 1。smt-lib 与 cert 两种模式同口径(§113.20/§113.33)。
 - **输出路径安全校验**:manifest 路径解析后与本次检查的任一源文件、或采集 pass 涉及的三个工具链源文件(`src/checker.js` / `src/prover.js` / `src/proofsmt.js`)重合 → **拒绝覆盖**并 exit 1 具名(静默覆盖源文件 = 数据丢失;Windows 下按大小写不敏感比较)。
-- 文本模式:stdout 仍为纯脚本(逐字节不变),stderr 在诊断之后追加一行回执 `provenance manifest 已写入 <path>`;`--json` 模式:顶层 additive `proof_manifest` 对象(与落盘文件**同一构造**),既有字段与不带旗标输出逐字节不变。
+- 文本模式:stdout 仍为纯工件(逐字节不变;`--proof-report` 并存时 stdout = 摘要行 + 工件),stderr 在诊断之后追加一行回执 `provenance manifest 已写入 <path>`;`--json` 模式:顶层 additive `proof_manifest` 对象(与落盘文件**同一构造**),既有字段与不带旗标输出逐字节不变。
 - 写盘失败(目录不存在/不可写)= 命令行输入错误:stderr 具名 + exit 1;**不影响任何证明判定与退出码语义**(清单是纯输出选项)。构造期只把可预期的输入错误(路径重合/工具链源文件不可读)转述为 exit 1;意外内部错误按内部错误口径暴露,不伪装成用户输入错误。
 
-**字段(v1,冻结)**——键序即下表序;数组序见各行:
+**字段(v2,自 v1.3.1 冻结;v2 = v1 + 末尾 `artifacts`)**——键序即下表序;数组序见各行:
 
 | 字段 | 类型 | 语义 | 确定性来源 |
 |---|---|---|---|
-| `manifest_format` | int | schema 版本,当前 `1`(加法演进 = 升版) | 常量 |
-| `spec` | string | 协议标识 `"ming-proof-protocol/1"` | 常量 |
+| `manifest_format` | int | schema 版本,当前 `2`(`1` = v1.2.6 的 8 键形态;加法演进 = 升版,ADR-013 §4) | 常量 |
+| `spec` | string | 协议标识 `"ming-proof-protocol/1"`(协议版本,非 schema 版本) | 常量 |
 | `tool.name` / `tool.version` | string | `"ming"` / 工具版本(与 `ming version`、`package.json` 同源:CLI 的 `VERSION` 传入,不手抄) | 常量 |
 | `collection.pass` | string | 采集遍名 `"checkIndexBoundsStatically"` | 常量 |
 | `collection.pass_hash` | string | 采集 pass 指纹 `sha256:<hex>`,范围与拼接方案见下 | 三源文件内容 |
 | `collection.sources[]` | array | `{file, sha256}`:本次检查的源文件集合与哈希,见下 | 文件内容 |
 | `integer_model` | object | `{domain:"Int", semantics:"i64 checked", overflow:"panic M4002"}`:诚实声明语义域(i64 检查溢出,panic 先于值进入模型);**不虚构 SMT 侧假设** | 常量 |
 | `engine_contract` | object | `{eval_order, differential}` 语义面摘要——**自由文本,非机检**(见下) | 常量(随版本变更) |
-| `obligations[]` | array | `{id, scope, internal_verdict:{low,high}}`,采集序 | 采集序 |
+| `obligations[]` | array | `{id, scope, internal_verdict:{low,high}}`(smt-lib 模式)/ 同名条目 + `cert:{low,high}`(cert 模式),采集序 | 采集序 |
 | `solver` | null | **消费者回填位**,Ming 永不填充(见下) | — |
+| `artifacts` | object | **v2 新增**,固定最后:`{smt_lib_sha256?, cert_sha256?}`——本次导出实际产出的工件文本哈希,**各自存在才输出**(见下) | 工件文本字节 |
+
+**`artifacts`(v2 新增:manifest ↔ 工件字节绑定)**:键序固定 `smt_lib_sha256` → `cert_sha256`;每个值 = `"sha256:" + sha256(该工件**完整文本**的 UTF-8 字节)`,不做换行/空白规范化。**当前导出恒只产一件工件**——`--proof-format smt-lib` 只出 `smt_lib_sha256`,`--proof-format cert` 只出 `cert_sha256`(未来双导出可并存两键)。哈希对象与 `--json` 的 `proof_smt`/`proof_cert` 字符串**同一构造**,与文本模式 stdout 的工件部分逐字节相同(`--proof-report` 并存时工件是 stdout 的工件尾段,不是整段混合流)。
+
+**项目模式(§3.3 例外)在 v2 的如实传导**:项目模式下 SMT/证书的文件分节沿用入口的**解析路径**(§3.3/§10.6 既有例外),而 `artifacts` 如实绑定该工件字节——因此**同一项目在两个不同根/机器上导出的 manifest 字节会不同,差异仅限 `artifacts`**(其余 8 键仍逐字节相同);同一根重跑仍逐字节相同。这是既有脚本侧例外的如实传导,不是新机制;修掉脚本侧路径例外时本项随之消失(§113.26 锁定该限制)。
+
+**TOCTOU 闭环口径(诚实范围)**:`artifacts` 绑定的是"**manifest ↔ 该次导出的确切工件字节**"。这里的一致性核验默认是**三元组** = (manifest, 工件文件, 工件内的 vc 节):①`manifest.artifacts.smt_lib_sha256 == "sha256:" + sha256(脚本文件)`(或 `cert_sha256` 对证书文件)——否则 manifest 与工件不是同一次导出;②manifest 的 `obligations[]` 与工件内 `; ===== 文件:<展示路径> =====` 分节 + `; ---- vc:<fn>:<n> ----` 节按序对应——否则义务表与工件内容错位。**工件边界识别配方**:需要哈希核验时用文本模式且**不加 `--proof-report`**(此时 stdout 即完整工件);若已带 `--proof-report`,工件从首行 `(set-logic QF_LIA)`(SMT-LIB)或证书头注 `; ===== Ming 线性不可满足证书(cert v1)=====` 起,哈希前须剔除其前的摘要行(manifest 的哈希对象本就是工件文本,不是混合流)。这**闭合了单次导出内**"manifest 描述的是另一份工件"的窗口(ADR-014 §9 U8 与 v1.3.0 审查登记的诚实限制)。**未闭合(如实)**:smt-lib 与 cert 是**两次独立导出**,各自 manifest 各自绑定各自工件——**跨导出无互绑**(证书不记录脚本哈希,脚本不记录证书哈希,两份 manifest 之间也不互相引用)。需要交叉复核时,仍须**同一份输入、同一工具版本**重新生成两件工件;若两次导出之间源码/工具链发生变化,对应关系可能失真——v2 不假装消除这一点。
 
 **`collection.pass_hash` 范围(ADR-013 §2 裁决口径,v1 冻结)** = 采集相关源文件**全集**的三个文件内容:`src/checker.js`(采集遍 `checkIndexBoundsStatically` 本身)+ `src/prover.js`(逐方向判定)+ `src/proofsmt.js`(编码/符号面)。拼接方案(§113 测试侧按同一方案用 `node:crypto` 独立复算):
 
@@ -178,19 +189,28 @@ pass_hash = "sha256:" + sha256( "ming-proof-protocol/1\n"
                                 + "src/proofsmt.js\n" + sha256hex(文件原始字节) + "\n" )
 ```
 
-只用仓库相对路径常量与文件原始字节——不含绝对路径/时间戳,跨机同内容同值。范围过宽(无关改动使全量 manifest 失效)与过窄(采集逻辑改了 hash 不变)的风险按 ADR-013 §6 以"采集相关源文件全集"首版为准,证据驱动收窄(收窄 = manifest v2)。
+只用仓库相对路径常量与文件原始字节——不含绝对路径/时间戳,跨机同内容同值。范围过宽(无关改动使全量 manifest 失效)与过窄(采集逻辑改了 hash 不变)的风险按 ADR-013 §6 以"采集相关源文件全集"首版为准,证据驱动收窄(收窄 = 下一次 `manifest_format` 升版)。
 
 **`collection.sources[]`** = 本次检查**加载的源文件全集**:命令行输入(按命令行顺序)⊕ `use` 依赖(按加载序),按解析后绝对路径去重,`file` 取首次出现的**展示路径原样**(§3.3 口径:不绝对化/不规范化/不解析——用户传相对路径则清单含相对路径);**项目模式**(entry 来自 `ming.toml`)下 `file` 一律改为**项目相对路径**(相对 ming.toml 所在目录、正斜杠、不 `..` 逃逸)——项目入口在 CLI 内部是解析后绝对路径,不相对化会让同一项目在两台机器上 manifest 字节不同。`sha256` 为文件**原始字节**的哈希。**不可读源跳过**(检查阶段已发 M3022 等诊断;manifest 只列可读源,不让一个坏输入吞掉诊断与脚本)。依赖同样改变义务集,故与脚本分节同口径纳入(不是只记命令行文件名)。**注意**:同一项目模式下 SMT 脚本的文件分节仍是入口解析路径(§3.3 项目模式例外,脚本侧本批未相对化)——本节的"manifest 无绝对路径"只约束 manifest,脚本侧例外在 §3.3 如实登记,两侧不互相掩盖。
 
-**`obligations[]`**:`id` 与 §2 同一方案(`vc:<fn>:<序号>`,序号 = 采集序);`scope` = `body|loop`(§1);`internal_verdict` 携带**内部逐方向判定原值** `proven|refuted|unknown`——**不**做 §4.1 的 `solver_status` 三态折叠(折叠属诊断协议面;manifest 保留原值,`unknown` 如实保留,消费者可自行计数)。顺序 = 脚本块顺序 = `--proof-report` 义务条目顺序。**已知限制(v2 候选,§113.29 登记)**:§2.3 口径下不同模块可有同名 `vc:f:1`,而本数组条目**无 `file` 字段**消歧——消费者须按条目顺序对照脚本文件分节与 `sources[]` 定位归属;v2 候选 = 条目携带文件限定(加法演进,`manifest_format` 升版)。
+**`obligations[]`**:`id` 与 §2 同一方案(`vc:<fn>:<序号>`,序号 = 采集序);`scope` = `body|loop`(§1);`internal_verdict` 携带**内部逐方向判定原值** `proven|refuted|unknown`——**不**做 §4.1 的 `solver_status` 三态折叠(折叠属诊断协议面;manifest 保留原值,`unknown` 如实保留,消费者可自行计数)。顺序 = 脚本块顺序 = `--proof-report` 义务条目顺序。**smt-lib 模式条目形状与 v1 逐字节相同**(恰 `id`/`scope`/`internal_verdict` 三键);**cert 模式**每条追加 `cert: {low, high}`,每个方向 `{has_cert, uses_goal, vacuous, reason}`(键序即此序,与证书文本逐项同源):
+
+| `cert` 子字段 | 类型 | 语义 |
+|---|---|---|
+| `has_cert` | bool | 该方向有可独立复核的证书(`; refs:` 存在) |
+| `uses_goal` | bool \| null | 是否引用取反目标(§10.4);**无证书 = `null`**(对应文本 `uses_goal: n/a`) |
+| `vacuous` | bool \| null | 有效假设集自身不可满足(§10.4);**proven 方向恒有值**(即使无证书,与文本 `; vacuous:` 一致),非 proven 方向(refuted/unknown)= `null` |
+| `reason` | string \| null | 无证书的**机器可读标记**(`refuted`/`unknown`/`const-false`/`no-cycle`/`goal-split`/`goal-conjunction`/`unrenderable-assumption`/`missing`;提示文本映射见 §10.5);有证书 = `null` |
+
+**已知限制(后续版本候选,§113.29 登记)**:§2.3 口径下不同模块可有同名 `vc:f:1`,而本数组条目**无 `file` 字段**消歧——消费者须按条目顺序对照工件文件分节与 `sources[]` 定位归属;消歧方案 = 条目携带文件限定(加法演进,`manifest_format` 再升版——v1.3.1 的 v2 已用于 `artifacts`,本项**未随 v2 交付**)。
 
 **`engine_contract` 非机检**:该字段是自由文本的语义面摘要(`eval_order` = 源码序物化 #90/#92/#93 的对齐结论;`differential` = tree/VM/wasm/cc 四腿差分模糊证据指针——PR 门禁单种子 44044×25、nightly 3 seeds×120),**不随单次检查计算、不可由 manifest 自身验证**——它是诚实声明,不是机器可检断言。漂移风险由本文档与 §113 的逐字断言承担(改文本 = 测试与文档同步变更)。
 
 **`solver` 恒 `null`(消费者回填位)**:Ming 不跑外部求解器;该位留给消费者记录"哪个求解器/版本对哪些义务给出 sat/unsat"。回填工具与格式不在本协议(ADR-013 §6 登记 S-5+/Agent 协议候选)。`solver: null` **不是**"尚无结论"断言——内部判定在 `obligations[].internal_verdict` 如实携带;Klara 的"unknown 不得折叠为 pass"在 manifest 层 = `internal_verdict` 原值保留、消费者可计数。
 
-**确定性**:键序固定(表序)、数组序固定(命令行序/加载序/采集序);无时间戳、无主机名、无随机序;不引入绝对路径(展示路径是用户输入回显;项目模式按项目根相对化);同输入 + 同工具版本 → **逐字节相同 JSON**(2 空格缩进、UTF-8、LF、末尾恰一个换行)。
+**确定性**:键序固定(表序)、数组序固定(命令行序/加载序/采集序);无时间戳、无主机名、无随机序;不引入绝对路径(展示路径是用户输入回显;项目模式按项目根相对化);`artifacts` 哈希是工件文本的纯函数(不含路径/时间);同输入 + 同工具版本 → **逐字节相同 JSON**(2 空格缩进、UTF-8、LF、末尾恰一个换行)。§113 以 text/JSON 两次落盘逐字节相同 + 独立复算 sha256 锁定。
 
-**与 fixture(R-19)的关系**:manifest 是旁车,不改变脚本字节 → `tests/proof_fixtures/` 黄金不受影响;manifest 自身**不入 fixture 黄金**(它含工具版本与 `pass_hash`,版本升级即变;确定性由 §113 双跑 + 独立复算锁定)。
+**与 fixture(R-19)的关系**:manifest 是旁车,不改变工件字节 → `tests/proof_fixtures/` 与 `tests/cert_fixtures/` 黄金不受影响;manifest 自身**不入 fixture 黄金**(它含工具版本与 `pass_hash`,版本升级即变;确定性由 §113/§117 双跑 + 独立复算锁定)。
 
 ## 5. 稳定性承诺(与 docs/stability-contract.md 口径对齐,不越权)
 
@@ -208,7 +228,7 @@ pass_hash = "sha256:" + sha256( "ming-proof-protocol/1\n"
 | 证书的**有效性范围** | **不承诺** | 只证"该义务按协议编码后的约束集不可满足";**不含** (i) AST→约束的忠实性、(ii) 运行时安全(§7:proven 不消除 M4003)、(iii) 程序整体正确性 |
 | 与 **Alethe** 的关系 | **非承诺** | Ming 不产出、不校验 Alethe;外部求解器证明日志是**由用户发起**的运行期动作(§6.4 配方),不进入构建链、不进入 CI 门槛;不提供 `--proof-format alethe`(有旗标 = 有承诺) |
 | 保留字黑名单(§3.2) | 实验性(单射保证不变) | 黑名单扩圈只影响罕见冲突名的符号拼写,双射性质不变 |
-| provenance manifest schema v1(§4.5,`--proof-manifest`) | **冻结**(自 v1.2.6) | 字段集/键序/确定性口径/`sources` 路径口径(§3.3 展示路径 + 项目模式相对化)不变;加法演进 = `manifest_format` 升版(ADR-013 §4)。`solver` 位是**消费者回填**语义(非 Ming 断言),回填工具/格式不在本协议(ADR-013 §6) |
+| provenance manifest schema v2(§4.5,`--proof-manifest`) | **冻结**(v1 自 v1.2.6 / v2 自 v1.3.1) | 字段集(9 键)/键序(v1 的 8 键原序 + 末尾 `artifacts`)/确定性口径/`sources` 路径口径(§3.3 展示路径 + 项目模式相对化)/`artifacts` 哈希对象(= 工件完整文本的 UTF-8 sha256)不变;`obligations` 在 smt-lib 模式恒为 v1 三键形状,cert 模式追加 `cert{low,high}` 四字段(键序固定)。加法演进 = `manifest_format` 再升版(ADR-013 §4);**跨导出互绑**(smt-lib ↔ cert 工件之间)不在承诺面——各自 manifest 各自绑定,见 §4.5 TOCTOU 口径。**项目模式例外传导**:`artifacts` 随脚本文件分节的入口解析路径变化(§3.3 既有例外),跨根 manifest 字节不同、差异仅限 `artifacts`。`solver` 位是**消费者回填**语义(非 Ming 断言),回填工具/格式不在本协议(ADR-013 §6) |
 | 本协议(含 §10 证书面)是否纳入 P1–P8 承诺面 | **未纳入** | 新面按契约 §1.2 走 additive;纳入承诺面须契约修订,本文档不预支 |
 
 冻结面变更(改 id 文法/改值域/破结构不变式)自承诺生效日起走 stability-contract §4 弃用流程。
@@ -281,16 +301,16 @@ carcara check f.proof                                 # ③ 用户自选独立�
 | Z3 消费验证 | ✅ **CI 验证通过(2026-11-26,[run 45834397042 · z3-verify job](https://github.com/coolinger2019-wq/aicode/actions/runs/45834397042/job/139969754333),success)**——`tests/z3_check.mjs`(6 语料 × 逐块对照:全 proven / 违反(假设集可满足)/ 违反(假设集不可满足 → §6.2 规则 4 豁免)/ unknown / 零义务 / loop 作用域)+ `.github/workflows/ci.yml` 的 `z3-verify` job(ubuntu-latest,apt 装 z3 + `z3 --version` 探测;安装失败即 job 失败,不静默跳过)。**历史**:2026-11-23 实测本机无 z3 → 2026-11-26 接入 CI;接入前 pip z3 5.4.1 本机预检(6 语料 7 块断言全过,版本与 apt 包不同)。诚实边界:同 run 的 macos-latest/node20 测试腿被 runner 平台回收(15 分钟整点 cancelled、零 step 记录,基础设施抖动)导致 run 级红,已触发仅失败 job 重跑;与 z3-verify 无关,job 级证据独立成立 |
 | 跨求解器(CVC5 等) | ⏳ 未验证(无环境) |
 | fixture 黄金(R-19) | ✅ `tests/proof_fixtures/` 六语料 SMT-LIB 脚本逐字节入库(`proven` / `refuted-sat` / `refuted-unsat` / `unknown` / `zero` / `loop`,文件名与 `tests/z3_check.mjs` 的 `CORPORA` slug 对齐);比对在 z3 探测**之前**执行——**本机无 z3 也校验确定性黄金**,缺失 fixture 或不一致 = exit 1 并打印首处差异行(两侧截断 200 字符)。脚本以相对路径生成(`; ===== 文件:<slug>.ming =====`),无时间戳/绝对路径,入库即黄金;更新唯一通道 = `--update-fixtures`(逐文件打印 新增/变更/未变,幂等——无漂移时重跑零 diff);**fixture 通过只证明输出未变(确定性),不证明内部判定正确——语义有效性由 §6 z3 逐块消费与 §7 限制口径承担;`--update-fixtures` 拒绝为生成阶段失败的语料写盘(审查 MAJOR-1),孤儿 fixture(目录多出文件)判失败(审查 MINOR-3)。** |
-| provenance manifest(§4.5) | ✅ §113 v113.20–v113.29:旗标组合(缺 `--proof-format`/缺值/`-` 拒绝)/字段形状与固定序/义务与 `--proof-report` 互推(含 `unknown` 不折叠与零义务空数组)/`pass_hash` 与 `sources` 独立复算(含作用域敏感度与 use 依赖)/双跑逐字节/`--json` additive 原始字节同构造/无旗标输出零变化/**项目模式 sources 项目相对化 + 两临时根逐字节相同(审查 MAJOR-1)**/**输出路径重合拒绝(m1)**/**不可读输入诊断与脚本照常(m2)**/**同名跨文件重复 id 登记(v2 候选,NOTE-3)**。**诚实边界**:`pass_hash` 的"随源变化"以实例化副本(临时目录)验证,不修改仓库源文件;manifest 不证明脚本已由外部求解器复核——那是消费者动作(§6) |
-| 自产线性证书(§10) | ✅ §117 v117.1–v117.23:取值矩阵(cert 接受;json/alethe/=json 具名拒绝)/文本形状(纯注释面、首尾行)/违反语料退出码零变化 + 诊断走 stderr/双跑逐字节/proven 两方向 refs=2 与归一值逐字/loop `scope:loop` 与 `i$0`/vacuous 两字段独立(uses_goal:false + vacuous:true 的实锤形态)/常量矛盾与不可线性化的**具名无证书**/保留字符号面与 smt-lib 同重写面/`--json` additive `proof_cert` 与文本逐字相同/无旗标零变化(`--json` 顶层键集、义务条目 9 键)/`--proof-manifest` 与 cert 同用具名拒绝/`--proof-report` 并存/多文件分节/**两文件同名 fn 同序号 `vc:<fn>:<n>` 不合并(按文件节分家)**/零义务句/smt-lib 输出零变化/run 不消费/**纵深防御原因渲染契约**(`unrenderable-assumption`;该守卫在当前语言面不可达,测的是渲染契约)/**参考检查器**(`tests/cert_check.mjs`:从 SMT 脚本重算归一与恒等式 + uses_goal 机械对应 + 三负例)全绿。**诚实边界**:参考检查器与实现同仓、共享语料;它证明"证书与 SMT 块在归一与恒等式上一致且三负例可被拒",**不**证明编码忠实于源码(§7);它也**不重算 `vacuous`**、**不校验文件节的路径正确性**(文件节只作配对键)——见 §10.4/§10.7 |
+| provenance manifest(§4.5) | ✅ §113 v113.20–v113.29(v1)+ v113.30–v113.36(v2):旗标组合(缺 `--proof-format`/缺值/`-` 拒绝)/字段形状与固定序/义务与 `--proof-report` 互推(含 `unknown` 不折叠与零义务空数组)/`pass_hash` 与 `sources` 独立复算(含作用域敏感度与 use 依赖)/双跑逐字节/`--json` additive 原始字节同构造/无旗标输出零变化/**项目模式 sources 项目相对化 + v1 面跨根逐字节相同(v2 更新:artifacts 跨根必不同,§4.5 传导限制)**/**输出路径重合拒绝(m1)**/**不可读输入诊断与脚本照常(m2)**/**同名跨文件重复 id 登记(NOTE-3)**;**v2**:顶层 9 键固定序(`artifacts` 末尾)/`manifest_format:2`/smt 模式义务条目仍 v1 三键/**`artifacts` 哈希独立复算**(测试对工件文本用 `node:crypto` 重算,text 与 JSON 落盘原始字节相同)/cert 模式放开(证书 stdout 零变化 + `cert_sha256`)/`cert{low,high}` 四字段与证书文本逐项一致(proven/unknown/refuted/const-false)/**vacuous:true 锁定**(空区间:has_cert:true/uses_goal:false/vacuous:true)/**多文件下标对齐**(两文件同名 `vc:get:1`,cert 视图与 obligations 逐条对齐不互换)/`--proof-report` 并存时哈希对象是证书尾段而非混合 stdout/`-` 在 cert 模式仍拒绝/v1→v2 兼容锚点(去 artifacts 后恰 v1 八键原序 + 协议**头部**与 §4.5 兼容句 + 严格校验 `manifest_format === 1` 的预期口径)。**诚实边界**:`pass_hash` 的"随源变化"以实例化副本(临时目录)验证,不修改仓库源文件;manifest 不证明脚本已由外部求解器复核——那是消费者动作(§6);`artifacts` 只闭合**单次导出**的 manifest↔工件绑定,跨导出(smt ↔ cert)无互绑 |
+| 自产线性证书(§10) | ✅ §117 v117.1–v117.25:取值矩阵(cert 接受;json/alethe/=json 具名拒绝)/文本形状(纯注释面、首尾行)/违反语料退出码零变化 + 诊断走 stderr/双跑逐字节/proven 两方向 refs=2 与归一值逐字/loop `scope:loop` 与 `i$0`/vacuous 两字段独立(uses_goal:false + vacuous:true 的实锤形态)/常量矛盾与不可线性化的**具名无证书**/保留字符号面与 smt-lib 同重写面/`--json` additive `proof_cert` 与文本逐字相同/无旗标零变化(`--json` 顶层键集、义务条目 9 键)/**`--proof-manifest` 与 cert 同用合法(v1.3.1 v2 放开:证书 stdout 零变化 + `cert_sha256` 独立复算 + JSON additive 原始字节 + 双跑逐字节 + refuted 方向 reason 具名)**/`--proof-report` 并存/多文件分节/**两文件同名 fn 同序号 `vc:<fn>:<n>` 不合并(按文件节分家)**/零义务句/smt-lib 输出零变化/run 不消费/**纵深防御原因渲染契约**(`unrenderable-assumption`;该守卫在当前语言面不可达,测的是渲染契约)/**参考检查器**(`tests/cert_check.mjs`:从 SMT 脚本重算归一与恒等式 + uses_goal 机械对应 + 三负例)全绿。**诚实边界**:参考检查器与实现同仓、共享语料;它证明"证书与 SMT 块在归一与恒等式上一致且三负例可被拒",**不**证明编码忠实于源码(§7);它也**不重算 `vacuous`**、**不校验文件节的路径正确性**(文件节只作配对键)——见 §10.4/§10.7 |
 
 ## 9. 测试锚点
 
 | 面 | 锚点 |
 |---|---|
 | SMT-LIB 导出结构/内部判定面 | `tests/run.mjs` §113(S-1 专项:义务 id、逐方向判定注释、括号配平、保留字重写双射) |
-| provenance manifest 确定性/出处面 | `tests/run.mjs` §113(v113.20–v113.29:旗标约束、字段固定序、`solver===null`、义务互推与 `unknown` 原值、`pass_hash`/`sources` 独立复算、双跑逐字节、`--json` additive 原始字节同构造、无旗标零变化、项目模式相对化、路径重合拒绝、不可读输入、重复 id 登记) |
-| 自产线性证书(§10) | `tests/run.mjs` §117(v117.1–v117.23:旗标取值、文本形状、归一值逐字、`uses_goal`/`vacuous` 独立、具名无证书、`--json` additive、无旗标零变化、多文件(含同名 `vc` 按文件节分家)、零义务、纵深防御原因渲染、参考检查器全绿)+ `tests/cert_check.mjs`(阶段 A 结构断言 → 阶段 B `tests/cert_fixtures/<slug>.cert` 七语料逐字节黄金 → 阶段 C 从 SMT 脚本**重算**归一与恒等式 + `uses_goal` 机械对应 + 三负例:篡改系数/引用块外/漏引用必须因对应判据被拒)。**能力边界**:该参考检查器**不重算 `vacuous`**、**不校验文件节的路径正确性**(文件节只作配对键)、不覆盖源码→约束(§7/§10.4/§10.7) |
+| provenance manifest 确定性/出处面 | `tests/run.mjs` §113(v113.20–v113.29:旗标约束、字段固定序、`solver===null`、义务互推与 `unknown` 原值、`pass_hash`/`sources` 独立复算、双跑逐字节、`--json` additive 原始字节同构造、无旗标零变化、项目模式相对化(v2:仅 v1 面跨根相同)、路径重合拒绝、不可读输入、重复 id 登记;v113.30–v113.36 **v2**:工件指纹独立复算(smt/cert 两侧,落盘原始字节比较)、cert 模式义务 `cert` 字段与证书文本逐项一致(含 vacuous:true)、多文件下标对齐、`--proof-report` 并存时哈希对象是工件尾段、v1→v2 兼容与协议头部锚点) |
+| 自产线性证书(§10) | `tests/run.mjs` §117(v117.1–v117.25:旗标取值、文本形状、归一值逐字、`uses_goal`/`vacuous` 独立、具名无证书、`--json` additive、无旗标零变化、**cert + `--proof-manifest`(v2:证书指纹绑定、JSON additive 原始字节、双跑逐字节、refuted 方向 reason 具名)**、多文件(含同名 `vc` 按文件节分家)、零义务、纵深防御原因渲染、参考检查器全绿)+ `tests/cert_check.mjs`(阶段 A 结构断言 → 阶段 B `tests/cert_fixtures/<slug>.cert` 七语料逐字节黄金 → 阶段 C 从 SMT 脚本**重算**归一与恒等式 + `uses_goal` 机械对应 + 三负例:篡改系数/引用块外/漏引用必须因对应判据被拒)。**能力边界**:该参考检查器**不重算 `vacuous`**、**不校验文件节的路径正确性**(文件节只作配对键)、不覆盖源码→约束(§7/§10.4/§10.7) |
 | 静态证明模糊 | `tests/proof_fuzz.mjs`(边界证明 1/2 + summaries + loops 模式,反例独立求值) |
 | fixture 黄金 + Z3 外部消费 | `tests/z3_check.mjs`(R-19):阶段 A 生成 + 结构断言 → 阶段 B fixture 比对(`tests/proof_fixtures/<slug>.smt2`,缺失/不一致 = 失败,不依赖 z3)→ 阶段 C z3 逐块对照(z3 不可用打印跳过行 exit 0);`--update-fixtures` 为 fixtures 唯一更新通道,`--no-comments` 只看纯命令面 |
 | 文档数字 | `tests/docs_check.mjs`(版本三处 / README / 工具数 / 能力矩阵) |
@@ -307,7 +327,7 @@ carcara check f.proof                                 # ③ 用户自选独立�
 ming check f.ming --proof-format cert                 # 文本模式:stdout = 证书文本(诊断走 stderr)
 ming check f.ming --proof-format cert --json          # JSON 模式:顶层 additive proof_cert(字符串,内容逐字相同)
 ming check f.ming --proof-format cert --proof-report  # 并存:stdout = 摘要行 + 证书文本
-ming check f.ming --proof-format cert --proof-manifest m.json   # 拒绝(exit 1):manifest 只描述 smt-lib 工件
+ming check f.ming --proof-format cert --proof-manifest m.json   # v1.3.1:manifest v2,artifacts.cert_sha256 绑定证书文本(§4.5)
 ```
 
 退出码语义零变化(0 / 1 / 2);证书是**纯输出选项**,不改变任何判定、不改变 M3045/W3105 的发射、不改变 `--json` 既有字段(只增 `proof_cert`)。不带旗标时既有输出逐字节不变。**零义务**时输出"头注 + `; 无证明义务`"——空证书不伪装成有结论。
@@ -406,11 +426,11 @@ ming check f.ming --proof-format cert --proof-manifest m.json   # 拒绝(exit 1)
 4. **源码 → 义务**(索引点采集门槛、循环区间建立 —— §7 的"未采集 ≠ 已证明");
 5. **运行时安全**:`proven` 与证书都**不消除** M4003 边界 panic(§7 原文);证书**不是**"程序正确性证明"。
 
-`--proof-manifest`(§4.5)与证书**互补而非替代**:证书证数学,provenance 证"这份数学来自这份源码与这个工具链"。**但今天的证书产物没有 provenance 旁车**:`--proof-manifest` 只与 `--proof-format smt-lib` 同用(cert 模式具名拒绝,见 §4.5),证书指纹位属 manifest v2(ADR-013 §4:加法演进 = `manifest_format` 升版),不在本版范围。
+`--proof-manifest`(§4.5)与证书**互补而非替代**:证书证数学,provenance 证"这份数学来自这份源码与这个工具链"。**v1.3.1 起证书产物有 provenance 旁车**:`--proof-format cert --proof-manifest <path>` 合法,manifest v2 的 `artifacts.cert_sha256` 绑定该次导出的**证书文本字节**,`obligations[].cert` 携带逐方向 `has_cert`/`uses_goal`/`vacuous`/`reason`(与证书文本同源)。**边界**:旁车绑定的是"manifest ↔ 该次工件",它**不**把证书的数学结论变成"已由外部复核"——那仍是消费者动作(§6)。
 
 **另两条必须携带的边界**:
 
-6. **cert 与 smt-lib 是两次独立导出,无内容哈希互绑**:`ming check --proof-format cert` 与 `--proof-format smt-lib` 各自生成、各自落盘;两份工件之间**没有**互指纹(证书不记录脚本哈希,脚本不记录证书哈希)。消费者要交叉复核,唯一可靠的对应是 **(`; ===== 文件:<展示路径> =====` 文件节, `vc:<fn>:<n>`, `dir`, `#<n>`)四元组**;若两次导出之间源码/工具链发生变化,对应关系可能失真——**必须对同一份输入、同一工具版本重新生成两件工件再对照**(这是 TOCTOU 窗口,本版不消除)。
+6. **单次导出的工件指纹已绑定;跨导出(smt-lib ↔ cert)仍无互绑**:`artifacts`(v2)使消费者可校验 `manifest.artifacts.cert_sha256 == "sha256:" + sha256(证书文件)`(或 smt 侧的 `smt_lib_sha256`),**闭合"manifest 描述的是另一份工件"的窗口**。但 `ming check --proof-format cert` 与 `--proof-format smt-lib` 仍是**两次独立导出**:两份工件之间**没有**互指纹(证书不记录脚本哈希,脚本不记录证书哈希),两份 manifest 之间也不互相引用。消费者要交叉复核,唯一可靠的对应是 **(`; ===== 文件:<展示路径> =====` 文件节, `vc:<fn>:<n>`, `dir`, `#<n>`)四元组**,且若两次导出之间源码/工具链发生变化,对应关系可能失真——**必须对同一份输入、同一工具版本重新生成两件工件再对照**(这是跨导出的 TOCTOU 窗口,v2 如实不消除,不假装已闭合)。
 7. **参考检查器使用同一份 SMT 脚本作参照**:它校验的是"证书的引用与恒等式在**该脚本**的断言面上成立",不是"该脚本忠实于源码";文件节的**路径正确性不核**(只作配对键),`vacuous` 不重算(§10.4)。
 
 ---

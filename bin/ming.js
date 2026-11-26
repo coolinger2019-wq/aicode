@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -426,16 +426,16 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
   const proofSmt = proofFormat === 'smt-lib';
   const proofCert = proofFormat === 'cert';
   // v1.2.6 R-20(ADR-013):--proof-manifest <path> —— 证明工件 provenance manifest 旁车。
-  // 只与 --proof-format smt-lib 同用(它描述的就是 SMT 脚本对应的采集/语义面);
-  // cert 模式不产 manifest(具名错误:manifest 描述的是 SMT-LIB 工件,不是证书);
-  // `-`(stdout)拒绝:同一 stdout 同时承载脚本与 manifest 会互相污染,具名指向文件路径。
+  // v1.3.1(manifest v2):放开到 cert 模式——manifest 描述本次导出实际产出的那个工件
+  // (SMT-LIB 脚本或线性证书),`artifacts` 绑定该工件文本的 sha256(闭环单次导出的 TOCTOU 面)。
+  // `-`(stdout)拒绝:同一 stdout 同时承载工件与 manifest 会互相污染,具名指向文件路径。
   const proofManifestPath = opts['proof-manifest'];
   if (proofManifestPath !== undefined) {
-    if (!proofSmt) {
-      return fail('--proof-manifest 需要与 --proof-format smt-lib 同用(manifest 描述的就是 SMT-LIB 工件)', json);
+    if (!proofSmt && !proofCert) {
+      return fail('--proof-manifest 需要与 --proof-format smt-lib 或 cert 同用(manifest 描述的就是该证明工件)', json);
     }
     if (proofManifestPath === '-') {
-      return fail('--proof-manifest 不支持 "-":manifest 与 SMT 脚本同时写 stdout 会互相污染;请给出文件路径(如 --proof-manifest f.manifest.json)', json);
+      return fail('--proof-manifest 不支持 "-":manifest 与证明工件同时写 stdout 会互相污染;请给出文件路径(如 --proof-manifest f.manifest.json)', json);
     }
   }
   // v0.53:--strict-wasm 仅在 check 通过后做 wasm 分层存活验证(fallback → 退出码 2);
@@ -497,13 +497,18 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
   // v1.3.0 S-3a:证书导出 —— 证书数据由 checker 在同一次求解中附上;这里与 SMT 导出吃
   // **同一份** collectVcs 结果(单源去重,避免两处键口径分叉),经 src/proofcert.js 渲染;
   // JSON 模式 additive `proof_cert`。与 proof_smt 互斥(一个 --proof-format 值)。
+  // v1.3.1:certViews 保留下来供 manifest v2 的 obligations[].cert 使用(与证书文本同源)。
   let certText = null;
+  let certViews = null;
   if (proofCert) {
     await lazyProofcert();
-    certText = renderCertScript(buildCerts(vcs));
+    certViews = buildCerts(vcs);
+    certText = renderCertScript(certViews);
   }
   // v1.2.6 R-20(ADR-013):provenance manifest 旁车 —— 同一份 VC 集合 + 源文件集合构造
   // (纯函数,src/manifest.js);写盘失败 = 命令行输入错误(exit 1 具名),不改任何判定。
+  // v1.3.1(manifest v2):把本次导出的工件文本(smtScript/certText)交给 manifest 做
+  // `artifacts` 指纹绑定——哈希对象与文本模式 stdout / --json proof_smt·proof_cert 同一对象。
   // 审查修复(2026-11-27):① 项目模式传 projectDir 做 sources 项目相对化;
   // ② 输出路径与源/工具链文件重合 → ProvenancePathCollision 具名拒绝(防静默覆盖);
   // ③ 除碰撞与 fs 输入错误外不 catch —— 内部错误按内部错误口径暴露,不伪装成用户输入错误。
@@ -518,6 +523,8 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
         vcs,
         baseDir: projectDir,
         manifestPath: proofManifestPath,
+        artifacts: { smtLibText: smtScript, certText },
+        certs: proofCert ? certViews : null,
       });
     } catch (e) {
       if (e instanceof manifestMod.ProvenancePathCollision) return fail(e.message, json);
