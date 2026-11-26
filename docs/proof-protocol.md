@@ -194,7 +194,7 @@ z3 f.smt2
 | 内部判定面回归 | ✅ 全量套件既有分节(§56/§57 等)零校准全绿;本批新增 §113(S-1 专项) |
 | 独立审查(2026-11-23) | ✅ 3 MAJOR 修复:保留字 `_` 漏网(官方规范 §3.1 核实)→ `__v` 重写;跨行索引注释破裂 → 空白折叠;refuted 注记虚假声明(无反例说成有反例)→ 豁免口径改词——§113.19 回归锁定;单源化保留字表(废除测试手抄副本) |
 | SMT 语法自检 | ✅ 括号配平 / `(set-logic QF_LIA)` 首行 / `(exit)` 末行 / declare 前置于 assert / push-pop 配对 / 保留字重写双射——§113 结构断言锁定(保留字表单源 = `src/proofsmt.js`) |
-| Z3 消费验证 | 🔄 **CI 自动验证已接入,待首次全绿**——`tests/z3_check.mjs`(6 语料 × 逐块对照:全 proven / 违反(假设集可满足)/ 违反(假设集不可满足 → §6.2 规则 4 豁免)/ unknown / 零义务 / loop 作用域)+ `.github/workflows/ci.yml` 的 `z3-verify` job(ubuntu-latest,apt 装 z3;安装失败即 job 失败,不静默跳过)。**历史**:2026-11-23 实测本机(PATH + 常见安装位置)无 z3 → 2026-11-26 接入 CI;接入前以 pip 临时目录的 z3 5.4.1 做过一次本机预检(6 语料 7 块断言全过,版本与 CI apt 包不同——预检不等于交付验证,不据此声称已验证)。**首次 CI 全绿前本行不升 ✅**;全绿后由架构师回填 run 链接 |
+| Z3 消费验证 | ✅ **CI 验证通过(2026-11-26,[run 45834397042 · z3-verify job](https://github.com/coolinger2019-wq/aicode/actions/runs/45834397042/job/139969754333),success)**——`tests/z3_check.mjs`(6 语料 × 逐块对照:全 proven / 违反(假设集可满足)/ 违反(假设集不可满足 → §6.2 规则 4 豁免)/ unknown / 零义务 / loop 作用域)+ `.github/workflows/ci.yml` 的 `z3-verify` job(ubuntu-latest,apt 装 z3 + `z3 --version` 探测;安装失败即 job 失败,不静默跳过)。**历史**:2026-11-23 实测本机无 z3 → 2026-11-26 接入 CI;接入前 pip z3 5.4.1 本机预检(6 语料 7 块断言全过,版本与 apt 包不同)。诚实边界:同 run 的 macos-latest/node20 测试腿被 runner 平台回收(15 分钟整点 cancelled、零 step 记录,基础设施抖动)导致 run 级红,已触发仅失败 job 重跑;与 z3-verify 无关,job 级证据独立成立 |
 | 跨求解器(CVC5 等) | ⏳ 未验证(无环境) |
 
 ---

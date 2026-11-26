@@ -1,23 +1,42 @@
-// bridge.js — 契约桥 MVP(v1.2 S-4,plan §4.21.2 / roadmap-infrastructure §5.2)。
+// bridge.js — 契约桥 MVP(v1.2 S-4,plan §4.21.2 / roadmap-infrastructure §5.2;
+// v1.2.3 R-18 增补效果/污点签名,plan §4.20 P2)。
 // 范围(架构师 MVP 合同,边界固定):源语言 = TypeScript(JSDoc);边界形态 =
 // Ming `extern fn` ↔ TS 导出函数。不做 Python / WASM component / 运行时插桩。
 //
 // 本模块是纯 Node 侧工具域(与 ming doc/build 同类,零依赖):
 //   1. extractTs   —— 逐行扫描 TS 源(轻量正则/行扫描,不做完整 AST;限制见规范 §7),
-//                     把导出函数的 Ming 类型签名 + JSDoc 算术不等式候选契约提取为数据;
+//                     把导出函数的 Ming 类型签名 + JSDoc 算术不等式候选契约 +
+//                     桥接元数据(@effects 效果面 / @taint 污点面,R-18)提取为数据;
 //   2. renderMingi —— 确定性渲染 .mingi 契约桩(无时间戳/无随机序,逐字节可复现);
-//   3. parseMingi  —— 解析 .mingi(格式定义见 docs/bridge-protocol.md,单一定义处);
+//   3. parseMingi  —— 解析 .mingi(格式定义见 docs/bridge-protocol.md,单一定义处;
+//                     v1 与 v2 都接受——v1 桩零改动可读);
 //   4. loadStubs   —— 目录/单文件桩装载(目录递归,路径码元序排序,确定性);
 //   5. checkExternsAgainstStubs —— 同名 extern fn 签名逐位核对(参数个数/映射类型),
 //                     失配 → M3052[bridge-signature-mismatch](诊断码三处登记之一:diag.js CODES)。
 // 诚实边界:提取只认 docs/bridge-protocol.md 登记的类型映射表与 JSDoc 不等式模式;
 // 表外类型 → 该函数跳过并在桩头具名注记;解析不了的文本 → 桩只含签名,不发明语义。
+// 效果面(R-18)是**元数据**:extern fn 在 Ming 语言面隐含 ffi、无法再声明效果,
+// 因此 check --stub 只把它如实注记进 `stub_contract.checked[]`(下游工具/Agent 消费),
+// 不做语言层核对;污点面映射为既有 `Untrusted[str]` 载体,参与既有载体等价比对。
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { err, SEVERITY } from './diag.js';
+// 效果名单一事实来源:v0.54+ 的 Ming 已知效果集(io/time/fs/net/sync/proc/env/
+// rand/crypto/ffi/unsafe/eval/asm)。桥接提取期只用它做名字校验,不复制一份表。
+import { KNOWN_EFFECTS } from './checker.js';
 
 // .mingi 格式版本(头部注记 `// mingi <N>`;改格式必须改版本号并同步规范文档)。
-export const MINGI_VERSION = 1;
+// v1.2.3(R-18):版本 2 —— 函数条目新增可选 `effects <名, ...>` 行(效果面元数据)。
+// 解析器同时接受 1 与 2:v1 桩(无 effects 行)零报错可读,旧黄金继续有效;
+// 渲染器只发 2(新格式信号)。其余版本拒绝。
+export const MINGI_VERSION = 2;
+export const MINGI_SUPPORTED_VERSIONS = Object.freeze([1, 2]);
+
+// 污点载体白名单(桥接面):仅 str。Ming 侧 Untrusted 载体白名单 =
+// str/Json/Vec[u8]/Map[str,str]/i64(checker M3050),但 TS 映射表只把 string 映射为
+// 可作为 extern 边界载体的 str(ADR-012 §8:extern 返回污标量不预支);Vec[u8]/Json/
+// Map[str,str] 无 TS 映射来源。其余映射的 @taint 标注 → 忽略 + 桩头 note 具名。
+export const BRIDGE_TAINT_CARRIERS = Object.freeze(['str']);
 
 // TypeScript → Ming 类型映射表(MVP;规范文档 §4 单一定义处;测试经 CLI 端到端比对)。
 // 表外一律跳过(诚实跳过,不猜)。注意:可变 string[](string[])不在 MVP 表内。
@@ -55,14 +74,26 @@ const ARITH_CH = '+-*/%';
 
 // 把 JSDoc 文本拆成 tag 描述:Map<tag 名, 描述文本>。@param 按参数名区分(首个生效);
 // 描述行跨行累积,直到下一个 @tag。自由描述段(首个 tag 之前)按规范忽略。
-function parseJsDocTags(text) {
+// v1.2.3(R-18):额外收集桥接元数据标签的**原始**内容(校验/语义映射在 extractTs 侧):
+//   · `@effects <名, 名, ...>` —— 逗号分隔;只取标签行本身(描述续行不参与,行扫描风格)。
+//   · `@taint return|returns|param <名>` —— 形状不认识的按 kind:'bad' 原样带回,由调用方注记。
+// lineOf(可选)把文本行下标映射回源文件 1 起行号,用于 note 注记的精确行号。
+function parseJsDocTags(text, lineOf) {
   const lines = text.split(/\r?\n/).map((l) => l.replace(/^\s*\*?\s?/, ''));
   const params = new Map();
+  const effects = []; // [{name, line}] —— 出现序,同名保留首个
+  const taints = []; // [{kind:'return'|'param'|'bad', name?, raw, line}]
+  const tagNotes = []; // [{line, message}] —— 元数据标签的丢弃/截断注记(并入桩头 note)
   let returnsDesc = null;
   let cur = null;
   const flush = () => {
     if (!cur) return;
     const desc = cur.buf.join(' ').trim();
+    if (cur.tag === 'meta') {
+      if (desc !== '') tagNotes.push({ line: cur.line, message: `@${cur.metaKind} 标签续行不参与解析(仅取标签行本身)` });
+      cur = null;
+      return;
+    }
     if (cur.tag === 'param') {
       const m = cur.rest.match(/^([A-Za-z_$][\w$]*)\s*(.*)$/);
       if (m && !params.has(m[1])) params.set(m[1], (m[2] + ' ' + desc).trim());
@@ -71,7 +102,9 @@ function parseJsDocTags(text) {
     }
     cur = null;
   };
-  for (const raw of lines) {
+  const lineAt = (idx) => (Array.isArray(lineOf) && lineOf[idx] != null ? lineOf[idx] : null);
+  for (let idx = 0; idx < lines.length; idx++) {
+    const raw = lines[idx];
     const m = raw.match(/^@(\w+)\b\s*(.*)$/);
     if (m) {
       flush();
@@ -87,6 +120,33 @@ function parseJsDocTags(text) {
       } else if (tag === 'returns' || tag === 'return') {
         cur = { tag, rest: '', buf: [m[2]] };
         if (returnsDesc !== null) cur = { tag: 'ignore', rest: '', buf: [] };
+      } else if (tag === 'effects') {
+        const line = lineAt(idx);
+        let sawName = false;
+        for (const piece of m[2].split(',')) {
+          const pt = piece.trim();
+          if (pt === '') continue;
+          // 审查 MINOR-1:项内取首个标识符为效果名——`fs - 文字` 不再整体丢弃,剩余文字具名注记。
+          const nm = pt.match(/^([a-z][a-z0-9_]*)\b/);
+          if (!nm) { tagNotes.push({ line, message: `@effects 项不可解析(\"${pt.slice(0, 40)}\"),已忽略` }); continue; }
+          sawName = true;
+          if (nm[1].length < pt.length) {
+            tagNotes.push({ line, message: `@effects 项 \"${pt.slice(0, 40)}\" 仅取名字 \"${nm[1]}\",其余文字忽略` });
+          }
+          if (!effects.some((e) => e.name === nm[1])) effects.push({ name: nm[1], line });
+        }
+        if (!sawName) tagNotes.push({ line, message: '@effects 标签没有效果名' });
+        // 审查 MINOR-1:续行不参与解析,但须具名提示(不静默吞掉第二行)。
+        cur = { tag: 'meta', metaKind: 'effects', line, buf: [] };
+      } else if (tag === 'taint') {
+        const line = lineAt(idx);
+        const rest = m[2].trim();
+        const rm = rest.match(/^returns?\b\s*(.*)$/i);
+        const pm = rest.match(/^param\s+([A-Za-z_$][\w$]*)\s*(.*)$/);
+        if (rm) taints.push({ kind: 'return', raw: rest, line });
+        else if (pm) taints.push({ kind: 'param', name: pm[1], raw: rest, line });
+        else taints.push({ kind: 'bad', raw: rest, line });
+        cur = { tag: 'meta', metaKind: 'taint', line, buf: [] };
       } else {
         cur = { tag: 'ignore', rest: '', buf: [] };
       }
@@ -95,7 +155,7 @@ function parseJsDocTags(text) {
     if (cur) cur.buf.push(raw);
   }
   flush();
-  return { params, returnsDesc };
+  return { params, returnsDesc, effects, taints, tagNotes };
 }
 
 // 从一段描述中提取二元算术不等式。返回 {clauses, rawCount}(rawCount = 发现的操作符候选数,
@@ -206,18 +266,24 @@ function matchParenAt(line, open) {
   return -1;
 }
 
-// 提取单个 TS 源文本。返回 {source, entries, skipped};entries 按源码顺序,
+// 提取单个 TS 源文本。返回 {source, entries, skipped, notes};entries 按源码顺序,
 // skipped 同样按源码顺序(诚实跳过:表外类型/不支持的函数形态/重载)。
+// notes = 函数**保留**但其桥接元数据标注被丢弃的具名注记(R-18:未知效果名/不支持的
+// @taint 形态/载体白名单外的污点映射)——与 skipped 分开,避免"函数被跳过"的误读。
 // 输出确定性:不读取环境/时间,只依赖 source 文本。
 export function extractTs(source, sourceName) {
   const lines = source.split(/\r?\n/);
   const entries = [];
   const skipped = [];
+  const notes = [];
   const seenNames = new Set();
-  let pendingDoc = null; // {text}
+  let pendingDoc = null; // {text, lineOf}
 
   const skip = (name, line, reason) => {
     skipped.push({ name, line, reason });
+  };
+  const note = (name, line, reason) => {
+    notes.push({ name, line, reason });
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -227,6 +293,8 @@ export function extractTs(source, sourceName) {
     if (docStart >= 0) {
       let text = line.slice(docStart + 3);
       let j = i;
+      // lineOf:文本行下标 → 源文件 1 起行号(多行块逐行登记;单行块只一行)。
+      const lineOf = [i + 1];
       const end = text.indexOf('*/');
       if (end >= 0) {
         text = text.slice(0, end);
@@ -235,12 +303,13 @@ export function extractTs(source, sourceName) {
         j = i + 1;
         for (; j < lines.length; j++) {
           const e = lines[j].indexOf('*/');
+          lineOf.push(j + 1);
           if (e >= 0) { parts.push(lines[j].slice(0, e)); break; }
           parts.push(lines[j]);
         }
         text = parts.join('\n');
       }
-      pendingDoc = { text };
+      pendingDoc = { text, lineOf };
       i = j;
       continue;
     }
@@ -308,17 +377,57 @@ export function extractTs(source, sourceName) {
     const cut = retText.search(/[;{]/);
     if (cut >= 0) retText = retText.slice(0, cut).trim();
     if (retText === '') { skip(name, i + 1, '返回类型为空或形态不支持'); pendingDoc = null; continue; }
-    const mappedRet = mapTsType(retText);
+    let mappedRet = mapTsType(retText);
     if (mappedRet === null) { skip(name, i + 1, `返回类型 "${normalizeTypeText(retText)}" 不在映射表(MVP)`); pendingDoc = null; continue; }
 
     // JSDoc 不等式候选:参数描述 → requires;@returns 描述中含 result → ensures。
+    // v1.2.3(R-18):同一遍收集桥接元数据——效果面(@effects)与污点面(@taint)。
     const paramNames = params.map((p) => p.name);
     const vecParams = new Set(params.filter((p) => p.type.startsWith('Vec[')).map((p) => p.name));
     const allowed = { params: new Set(paramNames), vecParams, allowResult: false };
     const requires = [];
     const ensures = [];
+    const effects = [];
+    const taintParams = new Set();
+    let taintReturn = false;
     if (pendingDoc) {
-      const tags = parseJsDocTags(pendingDoc.text);
+      const tags = parseJsDocTags(pendingDoc.text, pendingDoc.lineOf);
+      // ---- 效果面(metadata,不新增 Ming 语言面):合法名字保序去重保留;
+      // 未知/非法名字**逐名丢弃**并注记具名(诚实,不猜;合法名字照常保留)。
+      for (const tn of tags.tagNotes) note(name, tn.line, tn.message);
+      for (const ef of tags.effects) {
+        if (KNOWN_EFFECTS.has(ef.name)) {
+          if (!effects.includes(ef.name)) effects.push(ef.name);
+        } else {
+          note(name, ef.line, `@effects 未知效果 "${ef.name.slice(0, 40)}" 已丢弃(已知效果名见 src/checker.js KNOWN_EFFECTS)`);
+        }
+      }
+      // ---- 污点面:@taint return → Untrusted[str];@taint param <名> → 该参数 Untrusted[str]。
+      // 载体白名单(桥接面)= str;形态不认识/参数不存在/载体不支持 → 忽略该标注 + 注记。
+      for (const tt of tags.taints) {
+        if (tt.kind === 'bad') {
+          note(name, tt.line, `@taint 形态不支持("${tt.raw.slice(0, 40)}");只支持 @taint return 或 @taint param <名>`);
+          continue;
+        }
+        if (tt.kind === 'return') {
+          if (!BRIDGE_TAINT_CARRIERS.includes(mappedRet)) {
+            note(name, tt.line, `@taint return 的返回类型 ${mappedRet} 不在污点载体白名单(桥接面仅 ${BRIDGE_TAINT_CARRIERS.join('/')}),标注已忽略`);
+            continue;
+          }
+          taintReturn = true;
+          continue;
+        }
+        const p = params.find((q) => q.name === tt.name);
+        if (!p) {
+          note(name, tt.line, `@taint param "${tt.name}" 不是本函数参数,标注已忽略`);
+          continue;
+        }
+        if (!BRIDGE_TAINT_CARRIERS.includes(p.type)) {
+          note(name, tt.line, `@taint param "${tt.name}" 的类型 ${p.type} 不在污点载体白名单(桥接面仅 ${BRIDGE_TAINT_CARRIERS.join('/')}),标注已忽略`);
+          continue;
+        }
+        taintParams.add(p.name);
+      }
       const seenReq = new Set();
       for (const p of params) {
         const desc = tags.params.get(p.name);
@@ -334,11 +443,16 @@ export function extractTs(source, sourceName) {
         ensures.push(...ens);
       }
     }
-    entries.push({ name, line: i + 1, params, ret: mappedRet, requires, ensures });
+    // 污点标注落进类型文本(载体等价比对自然生效):return 侧整体替换;参数侧逐名替换。
+    if (taintReturn) mappedRet = `Untrusted[${mappedRet}]`;
+    for (const p of params) if (taintParams.has(p.name)) p.type = `Untrusted[${p.type}]`;
+    entries.push({ name, line: i + 1, params, ret: mappedRet, requires, ensures, effects, taint: { return: taintReturn, params: params.filter((p) => taintParams.has(p.name)).map((p) => p.name) } });
     seenNames.add(name);
     pendingDoc = null;
   }
-  return { source: sourceName, entries, skipped };
+  // 注记按源行号升序(稳定排序,同行保持产生序)——与"节点顺序 = 源码出现序"一致。
+  notes.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  return { source: sourceName, entries, skipped, notes };
 }
 
 // ---------- .mingi 渲染(确定性) ----------
@@ -349,10 +463,14 @@ export function renderMingi(fileResult) {
   out.push(`// source: ${fileResult.source}`);
   out.push('// generated by: ming bridge extract --from ts(MVP;格式规范见 docs/bridge-protocol.md)');
   for (const s of fileResult.skipped) out.push(`// skipped: ${s.name} (line ${s.line}): ${s.reason}`);
+  // note = 函数保留、但某个桥接元数据标注被丢弃(R-18;与 skipped 区分,不误读为函数跳过)。
+  for (const n of fileResult.notes ?? []) out.push(`// note: ${n.name} (line ${n.line}): ${n.reason}`);
   for (const e of fileResult.entries) {
     out.push('');
     out.push(`fn ${e.name}(${e.params.map((p) => `${p.name}: ${p.type}`).join(', ')}) -> ${e.ret}`);
     out.push(`  // from ${fileResult.source}:${e.line}`);
+    // 效果面(可选行;无效果声明的条目零输出——v1 形态与旧黄金逐字不变的来源)。
+    if (e.effects?.length) out.push(`  effects ${e.effects.join(', ')}`);
     for (const c of e.requires) out.push(`  requires ${c}`);
     for (const c of e.ensures) out.push(`  ensures ${c}`);
   }
@@ -364,6 +482,8 @@ export function renderMingi(fileResult) {
 
 // 解析 .mingi 文本。返回 {version, source, entries, errors};errors 非空 = 桩不可用
 // (调用方按工具输入错误 exit 1 具名报告,不静默跳过)。
+// v1.2.3(R-18):接受版本 1 与 2 —— v1 桩(无 effects 行)零改动可读;`effects` 行
+// 只属于版本 2(出现在 v1 文件里按解析错误报告,不静默接受错版本形态)。
 export function parseMingi(text, displayName) {
   const lines = text.split(/\r?\n/);
   const entries = [];
@@ -404,10 +524,35 @@ export function parseMingi(text, displayName) {
       seen.add(fnM[1]);
       cur = {
         name: fnM[1], params, ret: fnM[3].replace(/\s+/g, ''),
-        requires: [], ensures: [], from: null,
+        requires: [], ensures: [], effects: [], from: null,
         line: i + 1, stub: displayName,
       };
       entries.push(cur);
+      continue;
+    }
+    const ef = t.match(/^effects(?:\s+(.*))?$/);
+    if (ef) {
+      if (!cur) { errors.push({ line: i + 1, message: 'effects 行不属于任何函数条目' }); continue; }
+      // 审查 NOTE-2:仅 v1 报"effects 行是 mingi 2 起"——不支持的版本(0/3+)交给版本错误单点报告。
+      if (version === 1) {
+        errors.push({ line: i + 1, message: 'effects 行是 mingi 2 起的格式,当前文件版本为 1' });
+        continue;
+      }
+      if (!ef[1]) { errors.push({ line: i + 1, message: 'effects 行没有效果名' }); continue; }
+      const names = [];
+      let bad = null;
+      for (const piece of ef[1].split(',')) {
+        const nm = piece.trim();
+        if (nm === '') continue;
+        // 语法形态校验(小写字母起头 + 小写/数字/下划线);名字是否在 Ming 已知效果集内
+        // 由 extract 侧校验,解析器不复制效果表(手工桩的未知名字如实透传到 stub_contract)。
+        if (!/^[a-z][a-z0-9_]*$/.test(nm)) { bad = `effects 行的效果名不合法 "${nm.slice(0, 40)}"`; break; }
+        if (!names.includes(nm)) names.push(nm);
+      }
+      if (bad) { errors.push({ line: i + 1, message: bad }); continue; }
+      if (!names.length) { errors.push({ line: i + 1, message: 'effects 行没有效果名' }); continue; }
+      // 多行合并(手工桩);出现序去重——与 extract 侧产物(0..1 行)口径一致。
+      for (const nm of names) if (!cur.effects.includes(nm)) cur.effects.push(nm);
       continue;
     }
     const rq = t.match(/^requires\s+(.+)$/);
@@ -426,8 +571,18 @@ export function parseMingi(text, displayName) {
     cur = null;
   }
   if (version === null) errors.push({ line: 1, message: '缺少头部 `// mingi <版本>`' });
-  else if (version !== MINGI_VERSION) errors.push({ line: 1, message: `不支持的 mingi 版本 ${version}(本工具支持 ${MINGI_VERSION})` });
+  else if (!MINGI_SUPPORTED_VERSIONS.includes(version)) errors.push({ line: 1, message: `不支持的 mingi 版本 ${version}(本工具支持 ${MINGI_SUPPORTED_VERSIONS.join('、')})` });
   return { version, source, entries, errors };
+}
+
+// 桩条目的污点标注(信息面):类型文本里的 `Untrusted[...]` 就是桩侧污点声明
+// (extract 把 @taint 落进类型,载体等价比对自然生效;这里只把它投影成注记字段)。
+export function entryTaint(entry) {
+  const isU = (s) => /^Untrusted\[/.test(String(s));
+  return {
+    return: isU(entry.ret),
+    params: entry.params.filter((p) => isU(p.type)).map((p) => p.name),
+  };
 }
 
 // ---------- 桩装载(目录/单文件;确定性路径排序) ----------
@@ -607,6 +762,11 @@ export function checkExternsAgainstStubs(checked, stubIndex, stubDisplay) {
           stub_signature: stubSignature(stubEntry),
           requires: stubEntry.requires.slice(),
           ensures: stubEntry.ensures.slice(),
+          // v1.2.3(R-18)additive 注记:桩侧效果声明(元数据——extern fn 在 Ming 面隐含
+          // ffi、无法再声明效果,受检查面在语言设计里不存在,故不做语言层核对:本字段
+          // 供下游工具/Agent 消费)与桩侧污点标注(载体等价比对已覆盖判定,这里只如实呈现)。
+          effects: (stubEntry.effects ?? []).slice(),
+          taint: entryTaint(stubEntry),
           matched: diffs.length === 0,
         });
         if (diffs.length) {

@@ -34,3 +34,32 @@ export function sum(xs: readonly number[]): number {
 export function parseAny(input: any): number {
   return 0;
 }
+
+/**
+ * 读取配置文件文本(演示桥接元数据的**效果面**与**污点面**,R-18)。
+ *
+ * TS 类型系统无法表达副作用;`@effects` 声明的是 Ming 侧 `with fs` 门禁需要、
+ * TypeScript 无法检查的那部分——桩携带它,下游工具/Agent 才能核对。
+ * 文件内容来自外部 → `@taint return` 标污,桩类型为 `Untrusted[str]`。
+ *
+ * @param path 配置文件路径(相对路径)
+ * @effects fs
+ * @taint return
+ * @returns 文件内容(外部输入)
+ */
+export function readConfig(path: string): string {
+  // 示例省略实现:真实实现由宿主提供(如 node:fs.readFileSync(path, "utf8"))。
+  return "";
+}
+
+/**
+ * 在外部文本中查找键(演示**参数级污点**:`@taint param raw`)。
+ *
+ * @param raw 外部文本(不可信 → 桩类型 `Untrusted[str]`)
+ * @param key 键名(干净参数)
+ * @taint param raw
+ * @returns 是否命中
+ */
+export function hasKey(raw: string, key: string): boolean {
+  return raw.indexOf(key) >= 0;
+}

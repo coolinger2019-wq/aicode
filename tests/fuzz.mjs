@@ -32,7 +32,21 @@
 //               实测 plain 通道三腿静默(260/2147483648)、后缀通道已 M4002(标签
 //               存活)——v0.89 归一落地后 plain 通道越界必须收敛 M4002 双引擎一致,
 //               归一不对称 → fuzz 直接抓出。全部 rng 驱动,确定性保持。
-// 用法:node tests/fuzz.mjs [--seed N] [--count N](默认种子固定,保证可复现)
+//   R-17(2026-11-26,moltbook 外部评审 Klara 实锤):强制短路副作用形态——随机表达式树
+//               系统性欠采样"&&/|| RHS、值型 if 条件与分支、match guard、while 条件内的
+//               副作用子表达式"(#85 家族正是靠种子 39039 偶然命中而非系统生成)。本扩展以
+//               --side-prob(默认 0.45)在右/后位置强制注入可 panic 的副作用子表达式:
+//               ① checked 大数算术(近 i64::MAX 的 * / + / 取负溢出,纯字面量形态);
+//               ② 自产纯 helper 调用(hsMul 参数驱动 M4002 / hsDiv 恒 M4004 / hsOpt M4006);
+//               ③ 同表达式两次调用(hsMul(2) < hsDiv(2) 及反向)——左先/右先由不同 M 码
+//               区分,norm(退出码+stdout+首个 M 码)口径不放宽;while 的 || 跳过形态另在
+//               循环体打印计数,使"RHS 是否被求值"落在 stdout 可观察面。
+//               明确排除 #92(% << >> 的 RHS 副作用调用形态——登记未修,强制生成会假红;
+//               `/` 仅存在于 hsDiv 体内且除数为常量 0,无两侧求值序面):这三个算子的 RHS
+//               恒为小字面量,注入点只在条件/分支/guard/while 条件位。
+//               注意:`--side-prob 0` 关闭注入但 rng 流照常前进——同 seed 的程序集与注入版
+//               不同,不能作同语料 A/B(因果结论由最小复现与 skip/guard 探针独立支撑)。
+// 用法:node tests/fuzz.mjs [--seed N] [--count N] [--side-prob P] [--stats](默认种子固定,保证可复现)
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -47,6 +61,14 @@ const SEED = opt('seed', 20261109);
 const COUNT = opt('count', 120);
 const TIMEOUT = opt('timeout', 8000);
 const DUMP = argv.indexOf('--dump') >= 0 ? Number(argv[argv.indexOf('--dump') + 1]) : -1; // 打印第 N 个程序并退出(复现用)
+
+// ---- R-17(2026-11-26):强制短路副作用形态 ----
+// --side-prob 可调注入概率(默认 0.45;0 = 关闭);--stats 打印分族明细。
+// 自证:生成摘要行恒打印强制形态命中计数(见文件末尾)。
+const SIDE_PROB = opt('side-prob', 0.45);
+const sideStats = { total: 0, by: {} };
+const sideHit = () => rng() < SIDE_PROB;
+const sideMark = (k) => { sideStats.total++; sideStats.by[k] = (sideStats.by[k] ?? 0) + 1; };
 
 // mulberry32:确定性 rng(与 std.rand 同款)
 function mulberry32(a) {
@@ -111,12 +133,85 @@ function genExpr(vars, depth) {
   if (kind === 'neg') return `(-(${l}))`;
   if (kind === 'logic') {
     // v0.39:逻辑作为值(短路语义差分;经 if 表达式转 i64)
-    return `(if ((${genCond(vars, depth - 1)}) ${pick(['&&', '||'])} (${genCond(vars, depth - 1)})) { 1 } else { 0 })`;
+    // R-17:两侧操作数各自以 SIDE_PROB 走强制副作用条件(右/后位)——短路本应
+    // 跳过的 panic 子表达式在被错误求值的引擎上会现形。
+    const l2 = genCondOrSide(vars, depth - 1, 'logic');
+    const r2 = genCondOrSide(vars, depth - 1, 'logic');
+    return `(if ((${l2}) ${pick(['&&', '||'])} (${r2})) { 1 } else { 0 })`;
   }
-  return `(if ${genCond(vars, depth - 1)} { ${l} } else { ${r} })`;
+  // R-17:值型 if——条件位/分支位强制副作用;未选分支的 panic 子表达式只允许
+  // 在被选中时求值(错误引擎提前求值未选分支 → 现形)。
+  let cond = genCondOrSide(vars, depth - 1, 'if-cond');
+  let bl = l, br = r;
+  if (sideHit()) {
+    sideMark('if-branch');
+    if (rng() < 0.5) bl = genSideI64(vars); else br = genSideI64(vars);
+  }
+  return `(if ${cond} { ${bl} } else { ${br} })`;
 }
 function genCond(vars, depth) {
   return `(${genExpr(vars, Math.max(1, depth - 1))} ${pick(['<', '<=', '>', '>='])} ${genExpr(vars, Math.max(1, depth - 1))})`;
+}
+
+// ---- R-17:强制短路副作用形态生成 ----
+// 纯 helper(i64 形参/返回,无 io/无效果;hsOpt 内部用 Option[i64] 属 C3 消费面——
+// cmdCC 无 tier 旗标统一按不支持前缀报错,与资格旗标无关;wide 族同用)。三族 panic 码互异,使
+// "哪个调用先求值"落在 norm 可观察面(首个 M 码),不依赖 panic 消息行号:
+//   hsMul(n):|n|>=2 → M4002 乘法溢出(参数驱动 always/maybe-panic)
+//   hsDiv(n):恒 M4004 除零(always-panic)
+//   hsOpt(n):n<=0 → M4006 unwrap None(参数驱动 always/maybe-panic)
+const SIDE_HELPERS = [
+  'fn hsMul(n: i64) -> i64 { return n * 9223372036854775807; }',
+  'fn hsDiv(n: i64) -> i64 { return n / 0; }',
+  'fn hsOpt(n: i64) -> i64 { let o: Option[i64] = if n > 0 { Some(n) } else { None }; return o.unwrap(); }',
+];
+
+// 恒 panic 的内联 checked 算术(既有语法,不发明新语法;与 #85 种子的"近 i64::MIN
+// 乘法溢出"同族)。内联形态是 #85 家族的判别主力:cc 对 checked 算术的溢出守卫是
+// **语句级**发射,旧实现把这些守卫语句提升到 &&/||/guard 之外(短路失效面正是这些
+// 被提升的守卫);纯 helper 调用没有守卫语句,单独用不足以暴露旧实现(实测 v1.2.0
+// 反向验证:call-only 形态 0 分歧,内联形态命中)。
+const SIDE_BIG = [
+  '(9223372036854775807 + 2)',
+  '(9223372036854775807 * 2)',
+  '(-(-9223372036854775807 - 1))',
+];
+
+// i64 位副作用子表达式。全部为纯表达式(同值同副作用)——checked 算术守卫的
+// 操作数重求值(#91,登记未修)对纯操作数不可观察,不会假红;helper 调用也从不
+// 落在 / % << >> 的操作数位(#92 排除面,见 genExpr 的 bin 分支 RHS 恒字面量)。
+function genSideI64(vars) {
+  const form = pick(['mul-var', 'mul-var', 'mul-var', 'add-big', 'add-big', 'neg-min', 'call-mul', 'call-div', 'call-opt', 'call-arg']);
+  if (form === 'mul-var') return `(${pick(vars)} * 9223372036854775807)`; // 变量驱动 maybe-panic M4002
+  if (form === 'add-big') return `(9223372036854775807 + ${int(1, 3)})`; // 恒 panic M4002
+  if (form === 'neg-min') return '(-(-9223372036854775807 - 1))'; // i64::MIN 取负 → M4002
+  if (form === 'call-div') return `hsDiv(${pick([0, 1, 2])})`; // 恒 M4004
+  if (form === 'call-opt') return `hsOpt(${pick([1, 0, -1])})`; // 1 → 不 panic;0/-1 → M4006
+  if (form === 'call-arg') return `hsMul(${pick(vars)})`; // 变量驱动 maybe-panic M4002
+  return `hsMul(${pick([2, 3, 0, 1, -1])})`; // 2/3 → M4002;0/1/-1 → 不 panic
+}
+
+// bool 条件位副作用形态(注入 &&/||、if/while 条件、match guard 的右/后位置)。
+// and-skip/or-skip 的 RHS 恒 panic(内联 checked 算术):短路本应跳过 → 正确引擎
+// 不 panic;错误引擎提前求值/把守卫语句提升到短路之外 → 立即 M4002 现形。
+// order-ab/order-ba 是同一表达式内两次调用:左先 → 首码 M4002/M4004,右先 → 首码
+// 互换(求值序判别力;norm 比首个 M 码,口径不放宽)。
+function genSideCond(vars) {
+  const big = () => pick(SIDE_BIG);
+  const form = pick(['and-skip', 'and-skip', 'or-skip', 'or-skip', 'and-eval', 'or-eval', 'order-ab', 'order-ba', 'side-cmp']);
+  if (form === 'and-skip') { const v = pick(vars); return `((${rng() < 0.5 ? '0 > 1' : `${v} > ${v}`}) && (${big()} > 0))`; } // LHS 恒 false → RHS 必须跳过
+  if (form === 'or-skip') { const v = pick(vars); return `((${rng() < 0.5 ? '1 < 2' : `${v} <= ${v}`}) || (${big()} > 0))`; } // LHS 恒 true → RHS 必须跳过
+  if (form === 'and-eval') return `((1 < 2) && (${big()} > 0))`; // LHS 真 → RHS 必须求值 → M4002
+  if (form === 'or-eval') return `((0 > 1) || (${big()} > 0))`; // LHS 假 → RHS 必须求值 → M4002
+  if (form === 'order-ab') return '(hsMul(2) < hsDiv(2))'; // 左先 M4002;右先 M4004
+  if (form === 'order-ba') return '(hsDiv(2) < hsMul(2))'; // 左先 M4004;右先 M4002
+  return `(${genSideI64(vars)} > 0)`; // 单侧右位副作用(maybe-panic)
+}
+
+// 条件位注入:以 SIDE_PROB 概率返回强制副作用条件,否则原 genCond。
+function genCondOrSide(vars, depth, tag) {
+  if (sideHit()) { sideMark(tag); return genSideCond(vars); }
+  return genCond(vars, depth);
 }
 
 // ---- 语句生成。v0.41:cc 族 = wide 全形态(C3 起 Option/f64/Map 全部入 C 面)----
@@ -132,8 +227,10 @@ function genStmt(s, vars, strVar, mode, lines, ctx) {
   void mode;
   if (kind === 'ifelse') {
     // v0.38:if/else 语句(含字符串分支,多后端分支求值差分)
+    // R-17:条件位以 SIDE_PROB 注入强制副作用(&&/|| 短路跳过的 panic / 双调用求值序)
     const other = vars.find(x => x !== v) ?? v;
-    lines.push(`    if ${genCond(vars, 2)} { ${v} = ${v} + ${int(1, 9)}; ${other} = ${other} - 1; } else { ${v} = ${v} - ${int(1, 5)}; ${other} = ${other} + 2; }`);
+    const cond = genCondOrSide(vars, 2, 'ifelse-cond');
+    lines.push(`    if ${cond} { ${v} = ${v} + ${int(1, 9)}; ${other} = ${other} - 1; } else { ${v} = ${v} - ${int(1, 5)}; ${other} = ${other} + 2; }`);
   } else if (kind === 'assign') {
     lines.push(`    ${v} = ${v} + ${genExpr(vars, int(1, 3))};`);
   } else if (kind === 'compound') {
@@ -160,7 +257,26 @@ function genStmt(s, vars, strVar, mode, lines, ctx) {
     const bodyInc = rng() < 0.4 ? `${v} += ${int(1, 9)}` : `${v} = ${v} + ${int(1, 9)}`;
     const cntInc = rng() < 0.5 ? `i${s} += 1` : `i${s} = i${s} + 1`;
     lines.push(`    let mut i${s} = 0;`);
-    lines.push(`    while i${s} < ${k} { ${bodyInc}; ${cntInc}; }`);
+    if (sideHit()) {
+      // R-17:while 条件位强制副作用(三种均可终止;不引入无限循环)。RHS 用内联
+      // checked 算术——旧 cc 把守卫语句提升到条件之外,跳过形态会立即现形。
+      sideMark('while-cond');
+      const form = pick(['and-eval', 'and-skip', 'or-print']);
+      const big = pick(SIDE_BIG);
+      if (form === 'and-eval') {
+        // LHS 真 → RHS 必须求值 → 首轮 M4002;错误引擎跳过 RHS → 循环跑完(无 panic)
+        lines.push(`    while (i${s} < ${k}) && (${big} > 0) { ${bodyInc}; ${cntInc}; }`);
+      } else if (form === 'and-skip') {
+        // LHS 恒假 → RHS 必须跳过 → 循环零次、无 panic;错误引擎提前求值 → M4002
+        lines.push(`    while (i${s} >= ${k}) && (${big} > 0) { ${bodyInc}; ${cntInc}; }`);
+      } else {
+        // LHS 真时跳过 RHS(循环体打印计数使 stdout 可观察);退出判定 LHS 假 →
+        // RHS 求值 → M4002。错误引擎提前求值 → panic 早于任何循环体打印。
+        lines.push(`    while (i${s} < ${k}) || (${big} > 0) { print("w"); ${bodyInc}; ${cntInc}; }`);
+      }
+    } else {
+      lines.push(`    while i${s} < ${k} { ${bodyInc}; ${cntInc}; }`);
+    }
   } else if (kind === 'vec') {
     // v0.40 修复:变量名带序号(vv${s})——固定名 "vv" 两条 vec 语句同名 → M3016
     // (wide 族三后端一致拒绝 → 假通过,被 cc 族的编译失败揭穿)
@@ -199,7 +315,11 @@ function genStmt(s, vars, strVar, mode, lines, ctx) {
       const p = int(-2, 5);
       if (used.has(p)) continue;
       used.add(p);
-      const guard = rng() < 0.3 ? ` if ${pick(vars)} > ${int(-5, 5)}` : '';
+      // R-17:guard 位强制副作用——模式不命中时 guard 不得求值(错误引擎提前
+      // 求值 → panic 现形);模式命中时两侧都必须按序 panic。
+      let guard = '';
+      if (sideHit()) { sideMark('match-guard'); guard = ` if ${genSideCond(vars)}`; }
+      else if (rng() < 0.3) guard = ` if ${pick(vars)} > ${int(-5, 5)}`;
       // v0.40 修复:guard 语法是 Rust 风格 "模式 if 条件 => 表达式"(guard 在 => 前);
       // 此前写成 "模式 => 表达式 if 条件"(非法),wide 族三后端一致拒绝 → 假通过
       arms.push(`${p}${guard} => ${int(-20, 40)}`);
@@ -208,7 +328,8 @@ function genStmt(s, vars, strVar, mode, lines, ctx) {
     lines.push(`    ${v} = ${v} + match ${subj} { ${arms.join(', ')} };`);
   } else if (kind === 'option') {
     // v0.39:Option(unwrap_or 常用;偶发 unwrap 触发 M4006 panic 路径差分)
-    const cond = genCond(vars, 2);
+    // R-17:值型 if 条件位以 SIDE_PROB 注入强制副作用
+    const cond = genCondOrSide(vars, 2, 'option-cond');
     if (rng() < 0.12) {
       lines.push(`    let p${s}: Option[i64] = if ${cond} { Some(${pick(vars)}) } else { None };`);
       lines.push(`    ${v} = ${v} + p${s}.unwrap();`);
@@ -449,7 +570,8 @@ function genProgram(mode) {
   // v0.88/v0.89:窄型形态上下文(wide 族专属)——struct/enum 声明与 HOF 声明按种子
   // 概率前置发射,供 genNarrowStmt 的 nstruct/nlambda/nlret/nenum 臂引用;其余程序零变化。
   const ctx = { nz: null, hz: null, hzArg: 0, ez: null, hr: null };
-  const pre = [];
+  // R-17:短路副作用 helper 恒前置(纯 i64,无 io → cc 族 C1 eligible;wide 族同用)
+  const pre = [...SIDE_HELPERS];
   if (mode === 'wide') {
     if (rng() < 0.6) {
       ctx.nz = 'NZ';
@@ -603,7 +725,11 @@ function genWasmProgram() {
   return { src: lines.join('\n'), helper };
 }
 
-const norm = (r) => JSON.stringify([r.code, r.stdout, (r.stderr.match(/M\d{4}/) ?? [null])[0]]);
+// R-17 附带修正:spawnSync 结果没有 code 属性(只有 status)——原 norm 的退出码槽
+// 恒为 undefined(JSON 化为 null),退出码实际从未参与比对。改比 status,落实头注
+// 声明的口径(退出码+stdout+首个 M 码),只收紧不放宽(四种子与 run.mjs 内嵌种子
+// 实测零分歧)。
+const norm = (r) => JSON.stringify([r.status, r.stdout, (r.stderr.match(/M\d{4}/) ?? [null])[0]]);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-fuzz-'));
 const prog = path.join(TMP, 'fuzz.ming');
 const ccDir = CCBIN ? path.join(TMP, 'ccout') : null;
@@ -689,5 +815,13 @@ for (let i = 0; i < COUNT; i++) {
   break;
 }
 fs.rmSync(TMP, { recursive: true, force: true });
-console.log(`模糊基线:种子 ${SEED},${COUNT} 程序,一致 ${passed}${CCBIN ? `(其中 C 腿 ${ccLegs})` : '(无编译器,C 腿未启用)'},wasm 真实执行 ${wasmLive} 程序,分歧 ${diverged},跳过 ${skipped}`);
+// R-17 自证:强制形态命中计数(生成摘要行恒打印;--stats 给分族明细)
+if (argv.includes('--stats')) {
+  const detail = Object.entries(sideStats.by).sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `${k}=${n}`).join(' ');
+  console.log(`强制短路形态明细:${detail || '(无)'}`);
+}
+if (COUNT >= 10 && SIDE_PROB > 0 && sideStats.total === 0) {
+  console.error('警告:强制短路形态命中 0 处(生成器回归?用 --dump 检查)');
+}
+console.log(`模糊基线:种子 ${SEED},${COUNT} 程序,一致 ${passed}${CCBIN ? `(其中 C 腿 ${ccLegs})` : '(无编译器,C 腿未启用)'},wasm 真实执行 ${wasmLive} 程序,强制短路形态 ${sideStats.total} 处(prob ${SIDE_PROB}),分歧 ${diverged},跳过 ${skipped}`);
 process.exit(diverged ? 1 : 0);

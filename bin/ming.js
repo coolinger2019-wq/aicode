@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.2.2';
+export const VERSION = '1.2.3';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -906,6 +906,11 @@ async function cmdBridge(rest, flags, opts) {
       output: outPath,
       functions: extracted.entries.map((e) => e.name),
       skipped: extracted.skipped,
+      // v1.2.3(R-18)additive:桥接元数据——按函数名的效果声明与污点标注,外加
+      // "函数保留但某标注被丢弃"的具名注记(notes;与 skipped 区分)。
+      effects: Object.fromEntries(extracted.entries.map((e) => [e.name, e.effects])),
+      taint: Object.fromEntries(extracted.entries.map((e) => [e.name, e.taint])),
+      notes: extracted.notes,
     });
     if (!json) {
       process.stdout.write(`${it.source} -> ${outPath} (fn ${extracted.entries.length}, skip ${extracted.skipped.length})\n`);

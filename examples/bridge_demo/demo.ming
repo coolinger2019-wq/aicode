@@ -4,6 +4,13 @@
 // 实际 FFI 执行需要 C 原生后端(ming cc)与 libdemo;JS 引擎对 extern 调用以 M4001 拒绝。
 extern "libdemo" fn clamp(x: f64, lo: f64, hi: f64) -> f64;
 
+// R-18:效果/污点面。桩携带 `effects fs`(元数据:extern fn 隐含 ffi,Ming 面无法
+// 再声明效果,check --stub 只把它注记进 stub_contract)与污点载体 Untrusted[str]
+// (载体等价比对:桩写 Untrusted[str]、extern 写 str 也不会假失配)。
+extern "libdemo" fn readConfig(path: str) -> Untrusted[str];
+
+extern "libdemo" fn hasKey(raw: Untrusted[str], key: str) -> bool;
+
 // 真实 FFI 调用点(效果逐层声明为 ffi);main 不调用它,`ming run` 不触发 FFI。
 fn clamp_or(x: f64, lo: f64, hi: f64) -> f64 with ffi {
     clamp(x, lo, hi)
