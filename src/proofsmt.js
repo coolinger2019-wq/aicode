@@ -99,7 +99,7 @@ export function smtPredicate(c, ren) {
 // 不可满足时外部必答 unsat 而非 sat(差分编码可漏检 requires 矛盾),注记如实携带豁免口径)。
 function verdictText(v) {
   if (v === 'proven') return 'proven(期望 unsat)';
-  if (v === 'refuted') return 'refuted(内部判定违反方向被假设集强制;期望 sat——若外部 unsat,先核对假设集自身可满足性,见协议 §6.3)';
+  if (v === 'refuted') return 'refuted(内部判定违反方向被假设集强制;期望 sat——若外部 unsat,先核对假设集自身可满足性,见协议 §6.2 规则 4)';
   return 'unknown(内部未判定;外部结论不设期望)';
 }
 

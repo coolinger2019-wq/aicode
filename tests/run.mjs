@@ -4636,7 +4636,7 @@ secBegin('58');
   // v0.83 再校准(c18cc21f… → d60e3c89…):#58 收口——ming_vec_set 写 flavor 去"(用 .get(i)
   // 返回 Option)"读后缀(interp.js:889 单一事实;读 flavor ming_vec_get 保持后缀)。
   // 运行时助手是静态前导文本,指纹随合法语义统一变化;markers 与 cc==VM 两断言不受影响。
-  const BASE_C_SHA = 'd8623cd92cfb0132d1b5608f324587d54219c9787fef4c2c23b6590a8cce21a3'; /* v0.92 重校准理由化:ming_float_str 负零归一(审查 M1,-0.0 → +0.0 对齐 JS toFixed)——语义统一先例 v0.81/v0.83;原值 d60e3c8987799679e4eb0bcd31a8c771d16bacf2f2f0debab8e14759891fdab5 */
+  const BASE_C_SHA = '701c1cd3fc9d839dbbae21bd9da7f7c0ed623313d51a075ef06d3a2a3c53c648'; /* v1.2.2 #90 重校准理由化:调用实参按源码序物化入临时(emitArgTmp;C 实参求值序 unspecified,gcc x86-64 右→左 vs JS 左→右)——本夹具 add(v[0], m["b"])/replace("b","c") 的实参位新增临时声明,渲染 C 随合法语义修复变化;调用点语句化后求值序跨编译器确定。原值 d8623cd92cfb0132d1b5608f324587d54219c9787fef4c2c23b6590a8cce21a3(v0.92 ming_float_str 负零归一) */
   if (hasCC58) {
     const baseC = ccRun58(baseU, path.join(dir, 'c5-baseline-run'));
     check('v58.11:既有 C 输出不变抽查(非 unsafe 程序不发射 ming_mem_alloc/std.mem;cc 输出与 VM 逐字一致;渲染 C 指纹逐字节不变)',
@@ -27701,7 +27701,8 @@ secBegin('113');
   // solver_status 可区分/--json 加法字段(带旗标才出现,无旗标逐字节不变)/无契约行为/
   // --proof-report 并存/保留字重写/循环 scope/不可线性化/多文件/退出码零变化。
   // 规范见 docs/proof-protocol.md;编码模块 src/proofsmt.js(纯函数,判定与编码分离)。
-  // Z3 消费验证待外部环境(2026-11-23 实测本机无 z3)——本节以严格语法自检器兜底,不谎称已验证。
+  // Z3 消费验证由 CI z3-verify job(tests/z3_check.mjs;2026-11-26 接入)自动执行——本机无 z3 时
+// 该脚本跳过、CI 上真跑;本节仍以严格语法自检器兜底,不谎称已验证。
   const dir113 = path.join(TMP, 'v113');
   fs.mkdirSync(dir113, { recursive: true });
   const mk113 = (name, src) => { const f = path.join(dir113, name); fs.writeFileSync(f, src.endsWith('\n') ? src : src + '\n', 'utf8'); return f; };
@@ -27858,7 +27859,7 @@ secBegin('113');
 
   // v113.8 内部判定注释:proven/refuted/unknown 逐块如实(期望文本与义务状态一一对应;
   // refuted 注记携带假设集可满足性豁免口径——2026-11-23 审查 MAJOR-3,见协议 §3.4/§6.2)
-  const REFUTED_113 = 'refuted(内部判定违反方向被假设集强制;期望 sat——若外部 unsat,先核对假设集自身可满足性,见协议 §6.3)';
+  const REFUTED_113 = 'refuted(内部判定违反方向被假设集强制;期望 sat——若外部 unsat,先核对假设集自身可满足性,见协议 §6.2 规则 4)';
   const okProv = (scripts113.ok.match(/proven\(期望 unsat\)/g) ?? []).length;
   const badRef = scripts113.bad.includes(REFUTED_113) && scripts113.bad.includes('unknown(内部未判定;外部结论不设期望)');
   check('v113.8:判定注释如实——ok 恰 2 处 proven(期望 unsat)零 refuted/unknown;bad 同义务含 refuted(豁免口径全文)+ unknown',
@@ -28670,6 +28671,98 @@ secBegin('115');
     check('v115.16:审查 MAJOR-2 unwrap_or 急切求值——Some(1).unwrap_or(boom()/ -i64::MIN) 三腿 exit 101 + M4002 首行逐字(修复前 cc 三元惰性跳过静默出 1)',
       pint115(ra) && pint115(rb),
       `${fmtLegs115(ra)} | ${fmtLegs115(rb)}`);
+  }
+
+  // ---- 2026-11-26 v1.2.2 #90:调用实参求值序(plan §5.1)----
+  // 缺陷(登记形态):C 标准不规定函数实参求值顺序——本机 gcc x86-64 实测右→左;两个实参
+  // 都 panic 时 cc 的首条 panic 行与 tree/VM(源码序左→右)相反(退出码同为 101,违反
+  // AGENTS §9 "panic 逐字对齐"口径)。二元操作数实测左→右与 JS 一致(非问题面,本批不动)。
+  // 修法 = cbackend 全部实参发射点按源码序物化入临时(emitArgTmp),调用文本只引用临时。
+
+  // v115.17 用户函数调用双 panic 实参:首行 = 第 1 行 fa(修复前 cc = 第 2 行 fb)
+  const argOrder115 = w115('arg_order.ming', [
+    'fn fa() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn fb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn take(a: i64, b: i64) -> i64 { return a; }',
+    'fn main() with io { print(str(take(fa(), fb()))); }',
+  ].join('\n'));
+  {
+    const r = legs115(argOrder115, 'arg-order');
+    check('v115.17:#90 用户调用双 panic 实参——take(fa(), fb()) 三腿 101,stderr 首行 = fa(第 1 行)逐字(修复前 cc 首行 fb 第 2 行)',
+      pint115(r) && first115(r.tree.stderr).includes(':1:') && (!r.cc || first115(r.cc.stderr).includes(':1:')),
+      fmtLegs115(r));
+  }
+
+  // v115.18 方法调用(slice_chars)双 panic 实参:首行 = 第 1 行 va
+  const sliceOrder115 = w115('slice_order.ming', [
+    'fn va() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn vb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn main() with io { let s = "abcd"; print(s.slice_chars(va(), vb())); }',
+  ].join('\n'));
+  {
+    const r = legs115(sliceOrder115, 'slice-order');
+    check('v115.18:#90 方法调用双 panic 实参——"abcd".slice_chars(va(), vb()) 三腿 101,首行 = va(第 1 行)逐字(修复前 cc 首行 vb 第 2 行)',
+      pint115(r) && first115(r.tree.stderr).includes(':1:') && (!r.cc || first115(r.cc.stderr).includes(':1:')),
+      fmtLegs115(r));
+  }
+
+  // v115.19 方法调用(Map.set)混合类型双 panic 实参:key(str 载体,M4003 第 1 行)先于 value(i64,M4002 第 2 行)
+  const mapSetOrder115 = w115('map_set_order.ming', [
+    'fn sa() -> str { let s = "ab"; return s.slice_chars(9, 10); }',
+    'fn vb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn main() with io { let mut m: Map[str, i64] = { "a": 1 }; m.set(sa(), vb()); print("ok"); }',
+  ].join('\n'));
+  {
+    const r = legs115(mapSetOrder115, 'map-set-order');
+    check('v115.19:#90 Map.set 混合类型双 panic 实参——首行 = sa(M4003 第 1 行)先于 vb(M4002 第 2 行),三腿 101 逐字(修复前 cc 求值 vb 先)',
+      r.tree.code === 101 && r.vm.code === 101 && (!r.cc || r.cc.code === 101)
+      && r.tree.stdout === '' && first115(r.tree.stderr).includes('M4003')
+      && first115(r.tree.stderr).includes(':1:') && sameLegs115(r, true)
+      && (!r.cc || first115(r.cc.stderr).includes(':1:')),
+      fmtLegs115(r));
+  }
+
+  // v115.20 str 比较 helper(ming_str_eq)双 panic 实参:首行 = 第 1 行 sa
+  const strEqOrder115 = w115('str_eq_order.ming', [
+    'fn sa() -> str { let s = "ab"; return s.slice_chars(9, 10); }',
+    'fn sb() -> str { let s = "cd"; return s.slice_chars(9, 10); }',
+    'fn main() with io { let b = sa() == sb(); print(str(b)); }',
+  ].join('\n'));
+  {
+    const r = legs115(strEqOrder115, 'str-eq-order');
+    check('v115.20:#90 str 比较 helper 双 panic 实参——sa() == sb() 三腿 101,首行 = sa(第 1 行)逐字(修复前 cc 首行 sb 第 2 行)',
+      r.tree.code === 101 && r.vm.code === 101 && (!r.cc || r.cc.code === 101)
+      && r.tree.stdout === '' && first115(r.tree.stderr).includes('M4003')
+      && first115(r.tree.stderr).includes(':1:') && sameLegs115(r, true)
+      && (!r.cc || first115(r.cc.stderr).includes(':1:')),
+      fmtLegs115(r));
+  }
+
+  // v115.21 对照形态:单实参与正常双实参调用输出不变(物化不改变正常路径语义)
+  const normalOrder115 = w115('arg_normal.ming', [
+    'fn id(x: i64) -> i64 { return x; }',
+    'fn add(a: i64, b: i64) -> i64 { return a + b; }',
+    'fn main() with io { print(str(id(7))); print(str(add(id(2), id(3)))); }',
+  ].join('\n'));
+  {
+    const r = legs115(normalOrder115, 'arg-normal');
+    check('v115.21:#90 对照——单实参 id(7) 与正常双实参 add(id(2), id(3)) 三腿 0 + "7/5"(零语义变化)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '7\n5\n' && (!r.cc || r.cc.stdout === '7\n5\n'),
+      fmtLegs115(r));
+  }
+
+  // v115.22 二元操作数回归(seed 39039 形态):wa()+wb() 首行 = 左调用(第 1 行),三腿一致。
+  // 审查 m1:同函数同行(wf()+wf())无判别力(首行恒 :1:,修复前也通过)——必须两个不同函数不同行。
+  const binWfOrder115 = w115('bin_wf_order.ming', [
+    'fn wa() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn wb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn main() with io { let x = wa() + wb(); print(str(x)); }',
+  ].join('\n'));
+  {
+    const r = legs115(binWfOrder115, 'bin-wf-order');
+    check('v115.22:#90 二元操作数回归(seed 39039 形态)——wa() + wb() 三腿 101,首行 = 左调用 wa 第 1 行逐字(本机 + 左→右稳定)',
+      pint115(r) && first115(r.tree.stderr).includes(':1:') && (!r.cc || first115(r.cc.stderr).includes(':1:')),
+      fmtLegs115(r));
   }
 }
 

@@ -151,6 +151,16 @@ class CEmit {
     return name;
   }
 
+  // v1.2.2(#90,plan §5.1):实参求值序。C 标准不规定函数实参求值顺序——本机 gcc x86-64
+  // 实测右→左,两个实参都 panic 时 cc 的首条 panic 行与 tree/VM(源码序左→右)相反
+  // (退出码同为 101,违反 AGENTS §9 "panic 逐字对齐"口径)。修法 = 每个实参先按源码顺序
+  // 物化为临时(类型取发射点既有 ty,不猜类型),调用文本只引用临时:物化是独立语句,
+  // 语句间的先后由 C 块序确定 → 求值序跨编译器稳定。
+  // 单实参调用同样走此路径(机制统一;无顺序歧义时仅多一条声明,语义不变)。
+  emitArgTmp(arg, ty, ctx) {
+    return this.newTmp(ctx, ty, this.emitExpr(arg, ty, ctx));
+  }
+
   // 名字解析(按调用方所在模块,与 wasm resolveMingFn 同源)
   resolveEntry(callerCtx, name) {
     const mod = this.modulesByFile.get(callerCtx.modFile) ?? this.check.entry;
@@ -387,13 +397,13 @@ class CEmit {
         if (bt === 'vi64') {
           if (ty !== 'i64') throw new Unsupported('下标结果位置 ' + ty);
           const base = ctx.nameOf(e.base.name);
-          const idx = this.emitExpr(e.index, 'i64', ctx);
+          const idx = this.emitArgTmp(e.index, 'i64', ctx); // #90:helper 实参按源码序物化
           return `ming_vec_get(${base}, ${idx}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`;
         }
         if (bt === 'mi64') {
           if (ty !== 'i64') throw new Unsupported('下标结果位置 ' + ty);
           const base = ctx.nameOf(e.base.name);
-          const k = this.emitExpr(e.index, 'str', ctx);
+          const k = this.emitArgTmp(e.index, 'str', ctx); // #90
           return `ming_map_index(${base}, ${k}, "${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0})`;
         }
         throw new Unsupported('下标类型 ' + bt);
@@ -528,8 +538,16 @@ class CEmit {
       let text;
       if (lt === 'str') {
         // str 比较:字节序(UTF-8 保序;与 JS 的 UTF-16 序仅在非 BMP 与 U+E000..U+FFFF 交叉处可能不同)
-        if (op === '==' || op === '!=') text = `(ming_str_eq(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)}))`;
-        else text = `(ming_str_cmp(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)}) ${op} 0)`;
+        // #90:helper 实参按源码序物化
+        if (op === '==' || op === '!=') {
+          const l = this.emitArgTmp(e.l, 'str', ctx);
+          const r = this.emitArgTmp(e.r, 'str', ctx);
+          text = `(ming_str_eq(${l}, ${r}))`;
+        } else {
+          const l = this.emitArgTmp(e.l, 'str', ctx);
+          const r = this.emitArgTmp(e.r, 'str', ctx);
+          text = `(ming_str_cmp(${l}, ${r}) ${op} 0)`;
+        }
         if (op === '!=') text = `(!${text})`;
       } else {
         text = `(${this.emitExpr(e.l, lt, ctx)} ${op} ${this.emitExpr(e.r, rt, ctx)})`;
@@ -540,7 +558,10 @@ class CEmit {
     const lt = this.inferTy(e.l, ctx);
     if (lt === 'str') {
       if (op !== '+' || ty !== 'str') throw new Unsupported('str 运算 ' + op);
-      return `ming_str_cat(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)})`;
+      // #90:ming_str_cat 实参按源码序物化
+      const l = this.emitArgTmp(e.l, 'str', ctx);
+      const r = this.emitArgTmp(e.r, 'str', ctx);
+      return `ming_str_cat(${l}, ${r})`;
     }
     if (lt === 'vi64') throw new Unsupported('Vec 运算 ' + op);
     if (lt === 'f64') {
@@ -749,7 +770,7 @@ class CEmit {
       if (!MATH_SAFE.has(mn)) throw new Unsupported('std.math ' + mn + '(JS/库位级一致性未证,C2)');
       const wantArity = (mn === 'min' || mn === 'max') ? 2 : 1;
       if (e.args.length !== wantArity) throw new Unsupported('math ' + mn + ' 参数数');
-      const args = e.args.map(ar => this.emitExpr(ar, 'f64', ctx));
+      const args = e.args.map(ar => this.emitArgTmp(ar, 'f64', ctx)); // #90:按源码序物化
       return { call: `${MATH_CNAME[mn]}(${args.join(', ')})`, retTy: 'f64' };
     }
     // v0.54/C5:std.mem.alloc/free(必须在 Field 方法分支之前:std.mem 不是局部值)
@@ -758,12 +779,14 @@ class CEmit {
       const SPm = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
       if (memFn === 'alloc' && e.args.length === 1) {
         this.usesMemAlloc = true;
-        return { call: `ming_mem_alloc(${this.emitExpr(e.args[0], 'i64', ctx)}, ${SPm})`, retTy: 'pu8' };
+        const n = this.emitArgTmp(e.args[0], 'i64', ctx); // #90
+        return { call: `ming_mem_alloc(${n}, ${SPm})`, retTy: 'pu8' };
       }
       if (memFn === 'free' && e.args.length === 1) {
         const at = this.inferTy(e.args[0], ctx);
         if (at !== 'pu8' && at !== 'pcu8') throw new Unsupported('std.mem.free 参数类型 ' + at);
-        return { call: `free(${this.emitExpr(e.args[0], at, ctx)})`, retTy: null };
+        const p = this.emitArgTmp(e.args[0], at, ctx); // #90
+        return { call: `free(${p})`, retTy: null };
       }
       throw new Unsupported('std.mem.' + memFn + '(C5 面:alloc/free)');
     }
@@ -792,10 +815,13 @@ class CEmit {
         if (m === 'store' && e.args.length === 1) {
           if (bt === 'pcu8') throw new Unsupported('只读 Ptr 不能 store');
           const at = this.inferTy(e.args[0], ctx);
-          const val = this.emitExpr(e.args[0], at === 'u64' ? 'u64' : 'i64', ctx);
+          const val = this.emitArgTmp(e.args[0], at === 'u64' ? 'u64' : 'i64', ctx); // #90
           return { call: `(${baseText}[0] = (unsigned char)(${val}))`, retTy: null };
         }
-        if (m === 'offset' && e.args.length === 1) return { call: `(${baseText} + ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: bt };
+        if (m === 'offset' && e.args.length === 1) {
+          const off = this.emitArgTmp(e.args[0], 'i64', ctx); // #90
+          return { call: `(${baseText} + ${off})`, retTy: bt };
+        }
         if (m === 'is_null' && e.args.length === 0) return { call: `(${baseText} == NULL)`, retTy: 'bool' };
         throw new Unsupported('Ptr.' + m + '(C5 面:load/store/offset/is_null)');
       }
@@ -803,27 +829,59 @@ class CEmit {
         if (m === 'char_len' && e.args.length === 0) return { call: `ming_str_chars(${baseText})`, retTy: 'i64' };
         if (m === 'byte_len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
         if (m === 'is_empty' && e.args.length === 0) return { call: `(${baseText}.n == 0)`, retTy: 'bool' };
-        if (m === 'contains' && e.args.length === 1) return { call: `ming_str_contains(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
-        if (m === 'replace' && e.args.length === 2) return { call: `ming_str_replace(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)}, ${this.emitExpr(e.args[1], 'str', ctx)})`, retTy: 'str' };
-        if (m === 'pad_left' && e.args.length === 1) return { call: `ming_str_pad_left(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'str' };
-        if (m === 'pad_right' && e.args.length === 1) return { call: `ming_str_pad_right(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'str' };
-        if (m === 'slice_chars' && e.args.length === 2) return { call: `ming_str_slice(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)}, ${this.emitExpr(e.args[1], 'i64', ctx)}, ${SP})`, retTy: 'str' };
+        if (m === 'contains' && e.args.length === 1) {
+          const x = this.emitArgTmp(e.args[0], 'str', ctx);
+          return { call: `ming_str_contains(${baseText}, ${x})`, retTy: 'bool' };
+        }
+        if (m === 'replace' && e.args.length === 2) {
+          const from = this.emitArgTmp(e.args[0], 'str', ctx);
+          const to = this.emitArgTmp(e.args[1], 'str', ctx);
+          return { call: `ming_str_replace(${baseText}, ${from}, ${to})`, retTy: 'str' };
+        }
+        if (m === 'pad_left' && e.args.length === 1) {
+          const n = this.emitArgTmp(e.args[0], 'i64', ctx);
+          return { call: `ming_str_pad_left(${baseText}, ${n})`, retTy: 'str' };
+        }
+        if (m === 'pad_right' && e.args.length === 1) {
+          const n = this.emitArgTmp(e.args[0], 'i64', ctx);
+          return { call: `ming_str_pad_right(${baseText}, ${n})`, retTy: 'str' };
+        }
+        if (m === 'slice_chars' && e.args.length === 2) {
+          const from = this.emitArgTmp(e.args[0], 'i64', ctx);
+          const to = this.emitArgTmp(e.args[1], 'i64', ctx);
+          return { call: `ming_str_slice(${baseText}, ${from}, ${to}, ${SP})`, retTy: 'str' };
+        }
         if ((m === 'trim' || m === 'trim_start' || m === 'trim_end') && e.args.length === 0) {
           const mode = m === 'trim' ? '1, 1' : (m === 'trim_start' ? '1, 0' : '0, 1');
           return { call: `ming_str_trim_impl(${baseText}, ${mode})`, retTy: 'str' };
         }
-        if (m === 'starts_with' && e.args.length === 1) return { call: `ming_str_starts(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
-        if (m === 'ends_with' && e.args.length === 1) return { call: `ming_str_ends(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
+        if (m === 'starts_with' && e.args.length === 1) {
+          const x = this.emitArgTmp(e.args[0], 'str', ctx);
+          return { call: `ming_str_starts(${baseText}, ${x})`, retTy: 'bool' };
+        }
+        if (m === 'ends_with' && e.args.length === 1) {
+          const x = this.emitArgTmp(e.args[0], 'str', ctx);
+          return { call: `ming_str_ends(${baseText}, ${x})`, retTy: 'bool' };
+        }
         throw new Unsupported('str.' + m + '(C4:to_upper/to_lower/chars/split/parse_* 等)');
       }
       if (bt === 'vi64') {
         const gvSP = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
         if (m === 'len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
-        if (m === 'contains' && e.args.length === 1) return { call: `ming_vec_contains(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'bool' };
+        if (m === 'contains' && e.args.length === 1) {
+          const x = this.emitArgTmp(e.args[0], 'i64', ctx);
+          return { call: `ming_vec_contains(${baseText}, ${x})`, retTy: 'bool' };
+        }
         if (m === 'pop' && e.args.length === 0) return { call: `ming_vec_pop(&${baseText})`, retTy: 'oi64' };
-        if (m === 'get' && e.args.length === 1) return { call: `ming_vec_get_opt(${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
+        if (m === 'get' && e.args.length === 1) {
+          const i = this.emitArgTmp(e.args[0], 'i64', ctx);
+          return { call: `ming_vec_get_opt(${baseText}, ${i})`, retTy: 'oi64' };
+        }
         if (!baseIsIdent) throw new Unsupported('Vec.' + m + '(变异方法要求局部变量接收者)');
-        if (m === 'push' && e.args.length === 1) return { call: `ming_vec_push(&${baseText}, ${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: null };
+        if (m === 'push' && e.args.length === 1) {
+          const x = this.emitArgTmp(e.args[0], 'i64', ctx);
+          return { call: `ming_vec_push(&${baseText}, ${x})`, retTy: null };
+        }
         if (m === 'reverse' && e.args.length === 0) return { call: `ming_vec_reverse(&${baseText})`, retTy: null };
         throw new Unsupported('Vec.' + m + '(C3 面:pop/get 已入)');
       }
@@ -831,10 +889,23 @@ class CEmit {
         const SPm = `"${cstr(e.span?.file ?? '?')}", ${e.span?.line ?? 0}, ${e.span?.col ?? 0}`;
         if (m === 'len' && e.args.length === 0) return { call: `(${baseText}.n)`, retTy: 'i64' };
         if (m === 'is_empty' && e.args.length === 0) return { call: `(${baseText}.n == 0)`, retTy: 'bool' };
-        if (m === 'has' && e.args.length === 1) return { call: `(ming_map_find(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)}) >= 0)`, retTy: 'bool' };
-        if (m === 'get' && e.args.length === 1) return { call: `ming_map_get(${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'oi64' };
-        if (m === 'set' && e.args.length === 2 && baseIsIdent) return { call: `ming_map_set(&${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)}, ${this.emitExpr(e.args[1], 'i64', ctx)})`, retTy: null };
-        if (m === 'delete' && e.args.length === 1 && baseIsIdent) return { call: `ming_map_delete(&${baseText}, ${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'bool' };
+        if (m === 'has' && e.args.length === 1) {
+          const k = this.emitArgTmp(e.args[0], 'str', ctx);
+          return { call: `(ming_map_find(${baseText}, ${k}) >= 0)`, retTy: 'bool' };
+        }
+        if (m === 'get' && e.args.length === 1) {
+          const k = this.emitArgTmp(e.args[0], 'str', ctx);
+          return { call: `ming_map_get(${baseText}, ${k})`, retTy: 'oi64' };
+        }
+        if (m === 'set' && e.args.length === 2 && baseIsIdent) {
+          const k = this.emitArgTmp(e.args[0], 'str', ctx);
+          const v = this.emitArgTmp(e.args[1], 'i64', ctx);
+          return { call: `ming_map_set(&${baseText}, ${k}, ${v})`, retTy: null };
+        }
+        if (m === 'delete' && e.args.length === 1 && baseIsIdent) {
+          const k = this.emitArgTmp(e.args[0], 'str', ctx);
+          return { call: `ming_map_delete(&${baseText}, ${k})`, retTy: 'bool' };
+        }
         if (m === 'clear' && e.args.length === 0 && baseIsIdent) return { call: `(${baseText}.n = 0)`, retTy: null };
         throw new Unsupported('Map.' + m + '(keys/values/items 属 C4)');
       }
@@ -896,14 +967,14 @@ class CEmit {
       }
       if (e.callee.name === 'Some') {
         if (e.args?.length !== 1) throw new Unsupported('Some 参数数');
-        return { call: `ming_opt_some(${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
+        return { call: `ming_opt_some(${this.emitArgTmp(e.args[0], 'i64', ctx)})`, retTy: 'oi64' };
       }
       if (e.callee.name === 'Ok') {
         if (e.args?.length !== 1) throw new Unsupported('Ok 参数数');
-        return { call: `ming_res_ok(${this.emitExpr(e.args[0], 'i64', ctx)})`, retTy: 'ri64' };
+        return { call: `ming_res_ok(${this.emitArgTmp(e.args[0], 'i64', ctx)})`, retTy: 'ri64' };
       }
       if (e.args?.length !== 1) throw new Unsupported('Err 参数数');
-      return { call: `ming_res_err(${this.emitExpr(e.args[0], 'str', ctx)})`, retTy: 'ri64' };
+      return { call: `ming_res_err(${this.emitArgTmp(e.args[0], 'str', ctx)})`, retTy: 'ri64' };
     }
     if (e.callee.nt !== 'Ident') throw new Unsupported('调用目标 ' + e.callee.nt);
     const entry = this.resolveEntry(ctx, e.callee.name);
@@ -915,7 +986,9 @@ class CEmit {
       const args = e.args.map((ar, i) => {
         const pt = mingTyNum(sig.params[i]?.type);
         if (!pt || pt === 'vi64' || pt === 'mi64' || pt === 'oi64' || pt === 'ri64') throw new Unsupported('extern 参数类型 ' + i + '(v1 面仅数值/str)');
-        const txt = this.emitExpr(ar, pt, ctx);
+        // #90:实参按源码序物化;str 载体临时为 ming_str,ming_cstr 转换留在调用文本
+        // (纯分配,无用户可见求值序)
+        const txt = this.emitArgTmp(ar, pt, ctx);
         return pt === 'str' ? `ming_cstr(${txt})` : txt;
       });
       const rt = sig.ret?.k === 'unit' ? null : mingTyNum(sig.ret);
@@ -929,11 +1002,13 @@ class CEmit {
     const args = e.args.map((ar, i) => {
       const pt = mingTyNum(sig.params[i]?.type);
       if (!pt) throw new Unsupported('参数类型 ' + i);
-      const txt = this.emitExpr(ar, pt, ctx);
+      // #90:按源码序物化(含 mut Vec/Map 的深拷贝——tree/VM 在实参求值处即 deepCopy,
+      // 拷贝落在该实参的物化语句里与之一致;非 mut 容器不可变,浅拷不引入别名可观察面)
+      let txt = this.emitExpr(ar, pt, ctx);
       // 值语义:mut Vec/Map 实参在调用边界深拷贝(同 wasm ming_copy_vec 边界)
-      if (pt === 'vi64' && sig.params[i]?.mut) return `ming_vec_copy(${txt})`;
-      if (pt === 'mi64' && sig.params[i]?.mut) return `ming_map_copy(${txt})`;
-      return txt;
+      if (pt === 'vi64' && sig.params[i]?.mut) txt = `ming_vec_copy(${txt})`;
+      if (pt === 'mi64' && sig.params[i]?.mut) txt = `ming_map_copy(${txt})`;
+      return this.newTmp(ctx, pt, txt);
     });
     const retTy = sig.ret?.k === 'unit' ? null : mingTyNum(sig.ret);
     if (sig.ret?.k !== 'unit' && !retTy) throw new Unsupported('返回类型 ' + e.callee.name);
@@ -991,10 +1066,15 @@ class CEmit {
         if (lt === 'bool') return `(${this.emitExpr(e.l, 'bool', ctx)} ${e.op} ${this.emitExpr(e.r, 'bool', ctx)})`;
         if (lt === 'str') {
           if (e.op === '==' || e.op === '!=') {
-            const t2 = `ming_str_eq(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)})`;
+            // #90:helper 实参按源码序物化(ming_str_eq 的 C 实参求值序 unspecified)
+            const l = this.emitArgTmp(e.l, 'str', ctx);
+            const r = this.emitArgTmp(e.r, 'str', ctx);
+            const t2 = `ming_str_eq(${l}, ${r})`;
             return e.op === '==' ? `(${t2})` : `(!(${t2}))`;
           }
-          return `(ming_str_cmp(${this.emitExpr(e.l, 'str', ctx)}, ${this.emitExpr(e.r, 'str', ctx)}) ${e.op} 0)`;
+          const l = this.emitArgTmp(e.l, 'str', ctx);
+          const r = this.emitArgTmp(e.r, 'str', ctx);
+          return `(ming_str_cmp(${l}, ${r}) ${e.op} 0)`;
         }
         return `(${this.emitExpr(e.l, lt, ctx)} ${e.op} ${this.emitExpr(e.r, rt, ctx)})`;
       }
@@ -1043,8 +1123,9 @@ class CEmit {
           const bt = ctx.typeOf(s.target.base.name);
           if (bt === 'vi64') {
             const base = ctx.nameOf(s.target.base.name);
-            const idx = this.emitExpr(s.target.index, 'i64', ctx);
-            const val = this.emitExpr(s.value, 'i64', ctx);
+            // #90:下标/值按源码序物化(ming_vec_set 的 C 实参求值序 unspecified)
+            const idx = this.emitArgTmp(s.target.index, 'i64', ctx);
+            const val = this.emitArgTmp(s.value, 'i64', ctx);
             // v0.83 #58(plan §5.1):span 对齐 tree/VM 的写界检查口径(SETINDEX → target.span,
             // interp.js:889)——原取语句级 span,列差 1(cc 报语句首列,tree/VM 报 `[i]` 起列)
             const tsp = s.target.span;
@@ -1053,8 +1134,8 @@ class CEmit {
           }
           if (bt === 'mi64') {
             const base = ctx.nameOf(s.target.base.name);
-            const k = this.emitExpr(s.target.index, 'str', ctx);
-            const val = this.emitExpr(s.value, 'i64', ctx);
+            const k = this.emitArgTmp(s.target.index, 'str', ctx); // #90
+            const val = this.emitArgTmp(s.value, 'i64', ctx);
             ctx.line(`ming_map_set(&${base}, ${k}, ${val});`);
             return;
           }
@@ -1075,7 +1156,7 @@ class CEmit {
         const op = s.op[0];
         if (dty === 'str') {
           if (op !== '+') throw new Unsupported('str 复合 ' + s.op);
-          const b2 = this.emitExpr(s.value, 'str', ctx);
+          const b2 = this.emitArgTmp(s.value, 'str', ctx); // #90:helper 实参物化
           ctx.line(`${dst} = ming_str_cat(${dst}, ${b2});`);
           return;
         }

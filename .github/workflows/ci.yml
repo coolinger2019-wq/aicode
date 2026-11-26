@@ -114,6 +114,31 @@ jobs:
       - name: 支持矩阵逐格实测(21 形态 × 5 列;cc 缺席自动跳列)
         run: node tests/support_matrix/run.mjs
 
+  # Z3 外部消费验证(plan §4.20 R-15 剩余子项;roadmap §5.1 交付物):
+  # ming check --proof-format smt-lib 的 VC 脚本由外部 SMT 求解器独立消费并逐块对照
+  # 内部判定(docs/proof-protocol.md §6)。apt 安装失败即 job 失败,不吞——本 job 是
+  # "Z3 能消费 Ming 输出"的唯一自动验证位(tests/z3_check.mjs 在无 z3 时跳过 exit 0)。
+  z3-verify:
+    name: z3-verify (ubuntu, node 22)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装 z3(失败即 job 失败,不静默跳过验证)
+        run: sudo apt-get update && sudo apt-get install -y z3
+      # 审查 MINOR-2:装包成功但命令不可用(改名/PATH 漂移)时,z3_check 会走跳过路径 exit 0
+      # → job 假绿。此步强制探测:命令不可用即 job 失败,验证窗口不静默消失。
+      - name: 探测 z3 可执行(防"装成功但探测失败→静默跳过")
+        run: z3 --version
+      - name: Z3 外部消费验证(6 语料逐块对照内部判定)
+        run: node tests/z3_check.mjs
+
   nightly:
     name: nightly (seed ${{ matrix.seed }})
     if: github.event_name == 'schedule'
