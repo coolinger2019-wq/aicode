@@ -7,7 +7,7 @@
 
 ## 1. 项目是什么
 
-Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.64.0），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
+Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v1.2.1，1.0 已正式发布），目标是让生成式 AI 更难写出错的代码、更容易被验证。核心立场：
 
 - **显式**：无隐式转换、无 null、无真值化、无操作符重载、`mut` 显式声明
 - **效果系统**：副作用必须声明并逐层传播（`with io, fs, ffi`），门禁即安全边界
@@ -28,7 +28,8 @@ Ming 是一门为 **AI 与人类协作** 设计的编程语言（当前 v0.64.0�
 bin/ming.js          CLI 入口（run/check/test/fmt/doc/build/cc/lsp/repl/version）
 src/                 lexer → parser → checker → compiler → interp/vm/wasm/cbackend
                      diag（诊断码与格式化）· artifact（AOT 字节码产物）· fmt · lsp · repl · manifest
-tests/run.mjs        回归套件（1066 项，含各版本分节 §1..§71；每次运行全量，无分节过滤）
+                     proofsmt（S-1 SMT-LIB 导出）· bridge（S-4 契约桥：extract/loadStubs/M3052）
+tests/run.mjs        回归套件（1742 项，含各版本分节 §1..§115；每次运行全量，无分节过滤）
 tests/fuzz.mjs       多后端差分模糊器（树 / VM+wasm / VM-only / C 腿）
 tests/proof_fuzz.mjs 静态证明模糊器（边界证明 1/2 + summaries + v0.57 loops 模式；反例独立求值器）
 tests/bench.mjs      性能基准（tree vs vm(wasm) vs cc；v0.57 基线对比 --write-baseline）
@@ -102,7 +103,7 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 5. **值语义**：Vec/Map 赋值/传参深拷贝；C 后端用 `ming_vec_copy`/`ming_map_copy`，wasm 用 `ming_copy_vec`。
 6. **wasm/C 资格**：资格分析单一事实来源在 `src/wasm.js`（`analyze(opts)`）；wasm 路径不传扩展旗标（严格），C 后端按 C1/C2/C3 旗标放行；extern fn 预标记并跳过桩体。
 7. **确定性**：不得引入依赖时间/随机/哈希序的行为；测试与基准的输出必须可复现。
-8. **稳定性契约**：1.0 起承诺面（docs/stability-contract.md §2 P1–P8）的破坏性变更必须走该契约 §4 弃用流程（弃用警告 ≥1 个 minor → 移除；安全修复例外须 plan 登记 + 最小复现 + 零校准审计）；T2.2 冻结令已确认（2026-11-22）——冻结面（语法/关键字/类型面/效果名/诊断码族/内置函数）冻结期不新增（冻结令管开发期，契约管 1.0 后用户兼容）。
+8. **稳定性契约**：1.0 起承诺面（docs/stability-contract.md §2 P1–P8）的破坏性变更必须走该契约 §4 弃用流程（弃用警告 ≥1 个 minor → 移除；安全修复例外须 plan 登记 + 最小复现 + 零校准审计）；T2.2 冻结令已确认（2026-11-22）——冻结面（语法/关键字/类型面/效果名/诊断码族/内置函数）冻结期不新增；**冻结令已随 v1.0.0 GA（2026-11-23）解除**（冻结令管开发期，契约管 1.0 后用户兼容）。
 
 ## 7. 提交规范
 
@@ -142,6 +143,7 @@ node tests/bench.mjs                 # 基准（信息性；无编译器时 C �
 - **`use std.str` 下调用/方法双形式解析口径（v0.58）**：裸调用形式 `str(42)` 永远是内建（编译器 compileNamedValue 内建分支先于 use 导入），方法形式 `str.join(v)` 按导入解析为 std 模块;模块级 `fn str` 遮蔽时模块 fn 赢;**局部变量遮蔽基名**（`let str: Vec[str]` 后 `str.join(",")`）按局部值的方法调用解析（checker/compiler/interp 三处同口径的遮蔽守卫）——改这三处任何一处都要跑 §62 v58.26/v58.27 三引擎断言。wasm 侧 `str.join` 所在函数非直接调用 REJECT（strict 可见回落,exit 2）,cc C1 发射期拒绝,均不影响语义正确性。
 
 ## 10. 当前状态与下一步
+- **v1.0.0 GA → v1.2.1**（2026-11-23~26，1.0 正式发布后 S 切片连发：**v1.1.0** 证明协议首批（`ming check --proof-format smt-lib` QF_LIA 义务→SMT-LIB 2.0 + `--json` 义务追溯字段 + docs/proof-protocol.md）；**v1.2.0** 契约桥 MVP（`ming bridge extract --from ts` JSDoc→.mingi + `check --stub` 签名核对 M3052 + 顺带修复 fmt 两处数据丢失 #86/#87）；**v1.2.1** cc 短路求值序修复（#85 + 同族 #88/#89：emitLogical 守卫块/emitMatch done 链/While 语句化/通配臂源序/unwrap_or 急切求值）+ 两处预存缺陷修复；**1742 项全绿**、四种子差分 0 分歧、CI 13/13。**当前计划权威 = docs/plan.md §4.20（P2 证据驱动清单）/§4.21（roadmap 基础设施化裁决：S-1..S-4 切片表）**；进行中 = Z3-in-CI 验证闭环（R-15 子项）、#90 实参求值序；登记 = §5.1 #91、R-17/R-18/R-19（外部反馈）。详见 GUIDE §24 修订记录。
 - **v0.79.0**（2026-11-17，健壮性补刀第三刀——缺陷 #71 修复：lambda 体内 continue/break checker 漏洞，缺陷修复版，零新增 M 码，无新语言面）：**1260 项测试全绿**（§82 共 **8 条目 9 check**）。**根因（实测定案）**：checkLambda 的 ctx2 = { ...ctx } 保留外层 inLoop → lambda 内无循环的 continue/break 不发射 M3010/M3011 而过 check；块尾 never 使 g 可传 HOF——调用时 tree ContSig 穿透 lambda 调用帧被外层 for 捕获（吞迭代），VM compileLambda 子状态无 breakCtx 走防御分支（compiler.js:615）发射裸 POP 无 JUMP 落点 → 弹穿全帧共享操作数栈 → 内部错误崩溃。三态：check exit 0 / tree exit 0 吞迭代 / VM exit 2。**修复（架构师预裁方案，实现逐条落地）**：① checker.js:6016 ctx2 重置 inLoop: false（lambda 体 = 新函数边界，v0.59 本地函数先例同口径）——循环外 continue/break → M3010/M3011（消息逐字零变化）；lambda 内自带循环 inLoop 正常置位 ② compiler.js:622 防御分支裸 POP → 具名 CompileError（纵深防御，白盒实测具名输出）+ compileLambda 子状态不携带 breakCtx/matchTemps 显式化注释。**语义定案**：lambda 体 continue/break 不穿透 lambda 边界（v0.59 先例）。**§82 8 条目**：语料拒绝逐字/裸 break/自带循环合法三引擎/HOF 通道正例/嵌套 lambda 归属/顶层裸 continue 零校准/纵深防御白盒/v60.48 形态零校准（git archive 对照 25 语料(23 一致 + 2 家族内新增 M3011)——#71 家族外逐字）。**独立审查**：并行进行中。fuzz seed 44044×25 0 分歧（集成门槛双种子 ×40 待复核）。
 - **v0.78.0**（2026-11-17，健壮性补刀第二刀——缺陷 #70 修复：VM for 内 match 臂 continue 双引擎分歧崩溃，缺陷修复版，零新增 M 码，无新语言面）：**1251 项测试全绿**（§81 共 **18 条目 20 check**——含审查 MINOR-2 补测 2 条）。**根因（实测定案）**：match 宗量在整个臂体执行期间留在操作数栈上（compileExpr Match 压栈后贯穿臂体——parsePostfix 重入于 parsePrimary 计数递减后），Break/Continue 的 JUMP 不清理栈上活临时——三形态：for 崩溃（ITERNEXT peek 到宗量，vm.js:853 TypeError）/while 每轮泄漏/break 静默泄漏；tree 引擎递归求值天然正确 = 双引擎分歧。**修复 = 纯编译器层**（src/compiler.js +16/−4；vm.js/interp.js 零改动）：compileStmt Break/Continue 前置 POP × popN（st.matchTemps − breakCtx 快照，只弹循环登记后新开的宗量层）+ compileExpr Match st.matchTemps 词法计数 + For/While/WhileLet/Loop 四循环点 breakCtx 快照；**无 match 形态字节码与 v0.77 逐字节相同**（既有测试零校准关键）。**§81 16 条目**：全循环形态（For/While/WhileLet/Loop）×（continue/break）×（臂内/嵌套 match/guard 臂/unsafe 块）+ 1000 轮栈不增长 + engdiff 三后端差分 + 无 match 黄金输出 + 外层 match 包循环快照不变量。**同族发现 #71（登记，未修）**：lambda 体内 continue/break = checker 漏洞（checkLambda 保留 inLoop → 过 check，VM 编译子状态无 breakCtx 走防御分支弹穿共享栈 → 内部错误；语料 .zcode/v78/t_l6.ming）——登记 v0.79 候选（修复归属 checker.js lambda 体 inLoop 重置）。**独立审查 APPROVE-with-minor（0 BLOCKER/0 MAJOR；3 MINOR 全落实/登记——纯净副本逐指令字节码对照：无 match break/continue 逐字节相同、match+continue 恰增 1 条 POP）**。fuzz 双种子（44044/777）×40 0 分歧。**三 agent 并发（A 实现+§81 / B 文档 / C 独立验证排程）**。
 - **v0.77.0**（2026-11-17，v1.2 内容源扩面——ADR-007 清单 14 项全落地，安全能力版，零新增 M 码）：**1225 项测试全绿**（§80 共 **21 条 37 check**）。**实现**（src/checker.js+203/src/interp.js+12/src/diag.js 1 行）：① 源翻转——fs.read_file→Untrusted[str]/read_bytes→Untrusted[Vec[u8]]（**第三载体**，白名单 {str,Json,Vec[u8]}）/list_dir→Vec[Untrusted[str]]/proc.exec stdout+stderr→污/net.http body→污；② **污值代数 28 方法逐函数裁决表**（UNTRUSTED_STR_ALGEBRA：clean 13/keep 10/keepVec 2/keepOpt 1/keepBytes 2——纯函数保污规则，标量终结；新增 std.str.index_of 字符下标含增补平面）③ json.parse 载体泛化（污 str→Untrusted[Json]，净路径 80 位逐字）④ 出向透传三类（write 家族 outstr/outbytes/print 家族 outdisplay）⑤ exec 双向（cmd/args sink M3049 + stdout/stderr 污）⑥ 微调三项（+ 拼接传播/+= 禁面/print 透传——§8.1）。**审查 REQUEST_CHANGES（1 BLOCKER + 2 MAJOR）修复后通过**：**B1 = parse_i64/parse_f64 Err 载荷回显污内容且为净 str（实测可击穿 eval 承诺）→ keepResErr（Result[i64, Untrusted[str]]）**；M1 = read_to_end 补裁翻转（与 read_line 同源同污；重复注册两行清理）；M2 = http 响应头/metadata 登记不预支；m1–m7 全落实（版本三处/29→28 计数/index_of 回归/v80.21 四锁定/outdisplay 嵌套污 M3049/json_query C0 登记/never 豁免对齐）。**迁移**：12 工具 23 位（mingkit mark 承接/edit 污向量/json_query 投影+json_text 序列化器/diaghot exec 污投影/log_analyzer split/wc count_words 等价改写/tree·find·rename·organizer sanitize_cli_path）+ examples 3 位——**良性路径 52 命令 155/156 逐字节**（唯一差异 = ENOENT 消息内嵌 CWD 结构性）。**引擎面零新机制**（wasm 资格污点中性 v80.17 净/污孪生锁定；eval 污内容 M3049 泄漏窗口机械关闭）。**迁移期发现 #70**：VM for 内 match 臂 continue → TypeError 崩溃（tree 正常，双引擎分歧，两版本一致）——登记 v0.78 候选首位（迁移已避开该形态）。**登记不预支**：http 响应头/metadata 净源（#—信息）、argv（v1.3）、json_query C0 序列化分歧。fuzz 双种子（44044/777）0 分歧；proof_fuzz 0 误报。**三 agent 并发（A src / B tests+迁移 / C tools+examples+docs）**。
