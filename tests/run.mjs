@@ -27992,6 +27992,257 @@ secBegin('113');
     && r113ml.code === 0 && smtStruct113(r113ml.stdout) === 2 && mlLinesOk && r113ml.stdout.includes('索引 n + 1(scope: body)')
     && r113ls.code === 1 && r113ls.stdout.includes(REFUTED_113) && smtStruct113(r113ls.stdout) === 2 && lsM3045,
     `us=${r113us.code}/${r113us.stdout.includes('(declare-const __v Int)')} ml=${r113ml.code}/${mlLinesOk}/${r113ml.stdout.includes('索引 n + 1(scope: body)')} ls=${r113ls.code}/${r113ls.stdout.includes(REFUTED_113)}/${lsM3045}`);
+
+  // ==================== v1.2.6 R-20:provenance manifest(ADR-013)====================
+  // sidecar 确定性出处清单:旗标组合(缺 --proof-format / 缺值 / `-` 拒绝并给替代指引)/
+  // 字段形状与固定序/solver 恒 null/义务 id 与内部判定原值(与 --proof-report 聚合一致)/
+  // 确定性双跑逐字节/pass_hash 独立复算(含作用域敏感度)/sources sha256 独立复算
+  // (含 use 依赖与相对展示路径)/--json additive 与落盘同构造/无旗标输出逐字节不变。
+  // 规范:docs/proof-protocol.md §4.5;实现:src/manifest.js(纯构造段)。
+  const { computePassHash: passHash113 } = await import('../src/manifest.js');
+  // pass_hash 范围 = 协议 §4.5 的硬编码三文件表(审查 MINOR-4:独立复算不许引用实现导出,
+  // 否则实现改范围时测试会跟着改而失去独立性)。
+  const PASS_FILES_LITERAL_113 = ['src/checker.js', 'src/prover.js', 'src/proofsmt.js'];
+  const manifestPath113 = path.join(dir113, 'mixed.manifest.json');
+  const prevManifest113 = path.join(dir113, 'mixed.manifest.prev.json');
+
+  // v113.20 旗标组合:缺 --proof-format(空格/= 两形式)→ exit 1 具名;缺值 → 解析层"需要一个值";
+  // `-`(空格/= 两形式)→ exit 1 具名 + 替代指引(写文件),零脚本输出、零 manifest 落盘。
+  const rMnoFmt = runMing(['check', okF, '--proof-manifest', manifestPath113]);
+  const rMnoFmtEq = runMing(['check', okF, '--proof-manifest=' + manifestPath113]);
+  const rMval = runMing(['check', okF, '--proof-format', 'smt-lib', '--proof-manifest']);
+  const rMstdout = runMing(['check', okF, '--proof-format', 'smt-lib', '--proof-manifest', '-']);
+  const rMstdoutEq = runMing(['check', okF, '--proof-format=smt-lib', '--proof-manifest=-']);
+  check('v113.20:--proof-manifest 旗标组合——缺 --proof-format(空格/= 两形式)exit 1 具名;缺值"需要一个值";`-`(两形式)exit 1 具名 + 替代指引 + 零脚本/零落盘',
+    rMnoFmt.code === 1 && rMnoFmt.stdout === '' && rMnoFmt.stderr.includes('--proof-manifest 需要与 --proof-format smt-lib 同用')
+    && rMnoFmtEq.code === 1 && rMnoFmtEq.stderr.includes('需要与 --proof-format smt-lib 同用')
+    && rMval.code === 1 && rMval.stderr.includes('--proof-manifest 需要一个值')
+    && rMstdout.code === 1 && rMstdout.stdout === '' && rMstdout.stderr.includes('不支持 "-"') && rMstdout.stderr.includes('文件路径')
+    && rMstdoutEq.code === 1 && rMstdoutEq.stdout === '' && rMstdoutEq.stderr.includes('文件路径')
+    && !fs.existsSync(manifestPath113),
+    `noFmt=${rMnoFmt.code}/${JSON.stringify(rMnoFmt.stderr.slice(0, 90))} val=${rMval.code}/${JSON.stringify(rMval.stderr.slice(0, 60))} dash=${rMstdout.code}/${JSON.stringify(rMstdout.stderr.slice(0, 90))} dashEq=${rMstdoutEq.code} exists=${fs.existsSync(manifestPath113)}`);
+
+  // v113.21 字段形状 + 版本同源 + 义务一致性(与 §4.2 --proof-report 聚合口径互推)+
+  // unknown 不折叠(low 原值)+ 零义务空数组。
+  const rMjson = runMing(['check', mixedF, '--json', '--proof-report', '--proof-format', 'smt-lib', '--proof-manifest', manifestPath113]);
+  let jM = null, mRaw = '', m = null;
+  try { jM = JSON.parse(rMjson.stdout); mRaw = fs.readFileSync(manifestPath113, 'utf8'); m = JSON.parse(mRaw); } catch { /* 下方 check 具名失败 */ }
+  const emptyMan113 = path.join(dir113, 'empty.manifest.json');
+  const rMempty = runMing(['check', emptyF, '--json', '--proof-format', 'smt-lib', '--proof-manifest', emptyMan113]);
+  let mEmpty = null;
+  try { mEmpty = JSON.parse(fs.readFileSync(emptyMan113, 'utf8')); } catch { /* 下方 check 具名失败 */ }
+  const verRaw = runMing(['version']).stdout.trim();
+  const ver113 = (verRaw.match(/v(\d+\.\d+\.\d+)/) ?? [])[1];
+  const verPkg113 = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  const kindFromVerdict113 = (iv) => iv.low === 'proven' && iv.high === 'proven' ? 'proven'
+    : (iv.low === 'refuted' || iv.high === 'refuted') ? 'violated' : 'unproven';
+  const reportObl113 = jM?.proofs?.functions?.flatMap((f) => f.obligations.map((o) => ({ id: o.proof_obligation_id, kind: o.kind }))) ?? [];
+  const manObl113 = (m?.obligations ?? []).map((o) => ({ id: o.id, kind: kindFromVerdict113(o.internal_verdict) }));
+  const wantTop113 = ['manifest_format', 'spec', 'tool', 'collection', 'integer_model', 'engine_contract', 'obligations', 'solver'];
+  check('v113.21:manifest 字段形状——顶层 8 键固定序/format=1/spec/tool.version 与 ming version 及 package.json 同源/pass_hash 前缀/integer_model 与 engine_contract 逐字/solver===null/义务 id+方向与 --proof-report 聚合互推/unknown 不折叠/零义务空数组',
+    rMjson.code === 1 && m !== null
+    && JSON.stringify(Object.keys(m)) === JSON.stringify(wantTop113)
+    && m.manifest_format === 1 && m.spec === 'ming-proof-protocol/1'
+    && m.tool?.name === 'ming' && m.tool?.version === ver113 && ver113 === verPkg113
+    && m.collection?.pass === 'checkIndexBoundsStatically'
+    && /^sha256:[0-9a-f]{64}$/.test(m.collection?.pass_hash ?? '')
+    && JSON.stringify(m.integer_model) === JSON.stringify({ domain: 'Int', semantics: 'i64 checked', overflow: 'panic M4002' })
+    && JSON.stringify(m.engine_contract) === JSON.stringify({ eval_order: 'source-order (v1.2.5: #90/#92/#93 materialized)', differential: '4 legs × 40 programs (PR: seed 44044 × 25; nightly: 3 seeds × 120)' })
+    && m.solver === null
+    && JSON.stringify(m.obligations.map((o) => o.id)) === JSON.stringify(['vc:get:1', 'vc:f:1'])
+    && m.obligations.every((o) => o.scope === 'body'
+      && ['proven', 'refuted', 'unknown'].includes(o.internal_verdict.low)
+      && ['proven', 'refuted', 'unknown'].includes(o.internal_verdict.high))
+    && m.obligations.some((o) => o.id === 'vc:get:1' && o.internal_verdict.low === 'proven' && o.internal_verdict.high === 'proven')
+    && m.obligations.some((o) => o.id === 'vc:f:1' && o.internal_verdict.low === 'unknown' && o.internal_verdict.high === 'refuted')
+    && JSON.stringify(reportObl113) === JSON.stringify(manObl113)
+    && scripts113.mixed.includes('vc:get:1') && scripts113.mixed.includes('vc:f:1')
+    && rMempty.code === 0 && Array.isArray(mEmpty?.obligations) && mEmpty.obligations.length === 0
+    && mEmpty.collection.sources.length === 1,
+    `code=${rMjson.code} keys=${JSON.stringify(Object.keys(m ?? {}))} ver=${ver113}/${verPkg113}/${m?.tool?.version} obl=${JSON.stringify(manObl113)} report=${JSON.stringify(reportObl113)} solver=${JSON.stringify(m?.solver)} empty=${rMempty.code}/${JSON.stringify(mEmpty?.obligations)}`);
+
+  // v113.22 逐字节确定性:独立进程双跑;末尾恰一个 LF、无 CR(UTF-8 LF 口径);
+  // 文本模式 stdout 与不带 manifest 的脚本输出逐字节相同(旁车不改变脚本字节)。
+  const rMd1 = runMing(['check', mixedF, '--proof-format', 'smt-lib', '--proof-manifest', manifestPath113]);
+  fs.copyFileSync(manifestPath113, prevManifest113);
+  const rMd2 = runMing(['check', mixedF, '--proof-format', 'smt-lib', '--proof-manifest', manifestPath113]);
+  const rMscriptOnly = runMing(['check', mixedF, '--proof-format', 'smt-lib']);
+  const mBytes1 = fs.readFileSync(prevManifest113);
+  const mBytes2 = fs.readFileSync(manifestPath113);
+  check('v113.22:manifest 逐字节确定性——独立进程两遍字节完全一致;UTF-8 LF、末尾恰一个换行、无 CR;文本模式 stderr 回执一行且 stdout 与不带 manifest 的脚本逐字节相同',
+    rMd1.code === 1 && rMd2.code === 1 && mBytes1.length > 0 && mBytes1.equals(mBytes2)
+    && mBytes1[mBytes1.length - 1] === 0x0A && mBytes1[mBytes1.length - 2] !== 0x0A && !mBytes1.includes(0x0D)
+    && rMd1.stderr.includes('provenance manifest 已写入') && rMd1.stdout.startsWith('(set-logic QF_LIA)\n')
+    && rMd1.stdout === rMscriptOnly.stdout && rMd1.code === rMscriptOnly.code
+    && mRaw === JSON.stringify(m, null, 2) + '\n',
+    `code=${rMd1.code}/${rMd2.code} bytes=${mBytes1.length}/${mBytes2.length} tail=${[...mBytes1.slice(-2)]} cr=${mBytes1.includes(0x0D)} scriptSame=${rMd1.stdout === rMscriptOnly.stdout} stderr=${JSON.stringify(rMd1.stderr.slice(0, 100))}`);
+
+  // v113.23 pass_hash 独立复算:测试侧按协议拼接方案(硬编码三文件表)重算,实例化副本
+  // 同内容同值、改一字节必变(作用域敏感度;不触碰仓库源文件)。
+  const recomputePass113 = (root) => {
+    const h = createHash('sha256');
+    h.update('ming-proof-protocol/1\n', 'utf8');
+    for (const rel of PASS_FILES_LITERAL_113) {
+      const bytes = fs.readFileSync(path.join(root, ...rel.split('/')));
+      h.update(rel + '\n' + createHash('sha256').update(bytes).digest('hex') + '\n', 'utf8');
+    }
+    return 'sha256:' + h.digest('hex');
+  };
+  const copyRoot113 = path.join(dir113, 'passcopy');
+  fs.mkdirSync(path.join(copyRoot113, 'src'), { recursive: true });
+  for (const rel of PASS_FILES_LITERAL_113) fs.copyFileSync(path.join(ROOT, rel), path.join(copyRoot113, rel));
+  const hashRepo113 = recomputePass113(ROOT);
+  const hashCopied113 = recomputePass113(copyRoot113);
+  const hashImplCopy113 = passHash113(copyRoot113);
+  fs.appendFileSync(path.join(copyRoot113, 'src', 'proofsmt.js'), '\n; provenance sensitivity probe\n', 'utf8');
+  const hashMut113 = recomputePass113(copyRoot113);
+  check('v113.23:pass_hash 独立复算——测试侧按协议方案对 checker/prover/proofsmt 三文件重算 == manifest 值;副本同内容同值(实现同方案)、改 proofsmt 一字节必变',
+    m !== null && m.collection.pass_hash === hashRepo113 && hashCopied113 === hashRepo113
+    && hashImplCopy113 === hashCopied113 && hashMut113 !== hashRepo113,
+    `man=${m?.collection?.pass_hash} repo=${hashRepo113} copy=${hashCopied113} impl=${hashImplCopy113} mut=${hashMut113}`);
+
+  // v113.24 sources sha256 独立复算:相对展示路径原样(§3.3,不绝对化)/原始字节哈希/
+  // use 依赖入 sources(其义务入 obligations)。
+  fs.writeFileSync(path.join(dir113, 'ok.manifest.json'), '', 'utf8');
+  const rMrel = runMing(['check', 'ok.ming', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'ok.manifest.json'], { cwd: dir113 });
+  let mRel = null;
+  try { mRel = JSON.parse(fs.readFileSync(path.join(dir113, 'ok.manifest.json'), 'utf8')); } catch { /* 下方具名失败 */ }
+  const depDir113 = path.join(dir113, 'dep');
+  fs.mkdirSync(depDir113, { recursive: true });
+  fs.writeFileSync(path.join(depDir113, 'dep.ming'), [
+    'pub fn pick(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    '',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(depDir113, 'main.ming'), [
+    'use dep;',
+    'fn main() with io { print(str(dep.pick([1], 0))); }',
+    '',
+  ].join('\n'), 'utf8');
+  const rMdep = runMing(['check', 'main.ming', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'main.manifest.json'], { cwd: depDir113 });
+  let mDep = null;
+  try { mDep = JSON.parse(fs.readFileSync(path.join(depDir113, 'main.manifest.json'), 'utf8')); } catch { /* 下方具名失败 */ }
+  const shaRaw113 = (p) => 'sha256:' + createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+  const depFiles113 = (mDep?.collection?.sources ?? []).map((s) => s.file);
+  check('v113.24:sources 复算——单文件 file="ok.ming" 相对路径原样 + sha256 原始字节独立复算;use 依赖 dep.ming 按加载序入 sources(展示路径相对)且其义务入 obligations',
+    rMrel.code === 0 && mRel?.collection?.sources?.length === 1
+    && mRel.collection.sources[0].file === 'ok.ming'
+    && mRel.collection.sources[0].sha256 === shaRaw113(path.join(dir113, 'ok.ming'))
+    && rMdep.code === 0 && JSON.stringify(depFiles113) === JSON.stringify(['main.ming', 'dep.ming'])
+    && mDep?.collection?.sources?.[0]?.sha256 === shaRaw113(path.join(depDir113, 'main.ming'))
+    && mDep?.collection?.sources?.[1]?.sha256 === shaRaw113(path.join(depDir113, 'dep.ming'))
+    && JSON.stringify(mDep?.obligations?.map((o) => o.id)) === JSON.stringify(['vc:pick:1'])
+    && mDep?.obligations?.[0]?.internal_verdict?.low === 'proven' && mDep?.obligations?.[0]?.internal_verdict?.high === 'proven',
+    `rel=${rMrel.code}/${JSON.stringify(mRel?.collection?.sources)} want=${shaRaw113(path.join(dir113, 'ok.ming'))} dep=${rMdep.code}/${JSON.stringify(depFiles113)} obl=${JSON.stringify(mDep?.obligations?.map((o) => o.id))}`);
+
+  // v113.25 --json additive 同构造 + 无旗标零变化:proof_manifest 与落盘深相等;
+  // **原始字节**比较——带 manifest 输出的前缀(到 proof_manifest 前)与不带 manifest 的
+  // 输出逐字节相同(不 parse 重排);无旗标 --json/文本两遍逐字节一致且无 manifest 回执。
+  const rMbase = runMing(['check', mixedF, '--json', '--proof-report', '--proof-format', 'smt-lib']);
+  const baseHead113 = rMbase.stdout.slice(0, rMbase.stdout.lastIndexOf('\n}'));
+  const additiveRaw113 = baseHead113.length > 0
+    && rMjson.stdout.startsWith(baseHead113 + ',\n  "proof_manifest": ')
+    && rMjson.stdout.endsWith('\n}\n');
+  const baseJson1 = runMing(['check', mixedF, '--json']);
+  const baseJson2 = runMing(['check', mixedF, '--json']);
+  const baseText = runMing(['check', mixedF]);
+  check('v113.25:--json additive——proof_manifest 与落盘文件深相等;带 manifest 输出在 proof_manifest 之前的字节与不带 manifest 输出逐字节相同(原始字节,不 parse 重排);无旗标 --json/文本两遍逐字节一致、无 manifest 字段与回执',
+    JSON.stringify(jM?.proof_manifest) === JSON.stringify(m) && additiveRaw113
+    && baseJson1.stdout === baseJson2.stdout && !baseJson1.stdout.includes('proof_manifest')
+    && baseText.stdout === '' && !baseText.stderr.includes('provenance manifest'),
+    `same=${JSON.stringify(jM?.proof_manifest) === JSON.stringify(m)} additiveRaw=${additiveRaw113} twice=${baseJson1.stdout === baseJson2.stdout} leak=${baseJson1.stdout.includes('proof_manifest')}/${baseText.stderr.includes('provenance manifest')}`);
+
+  // v113.26 项目模式(审查 MAJOR-1):裸 check + ming.toml 时 sources.file 必须是项目相对路径
+  // (相对 ming.toml 所在目录;无盘符/无前导 / 或 \);两个不同临时根(内容相同)生成逐字节相同 manifest。
+  const projA113 = path.join(dir113, 'projA');
+  const projB113 = path.join(dir113, 'projB');
+  const projSrc113 = [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1))); }',
+    '',
+  ].join('\n');
+  for (const d of [projA113, projB113]) {
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'main.ming'), projSrc113, 'utf8');
+    fs.writeFileSync(path.join(d, 'ming.toml'), '[project]\nname = "pm"\nversion = "0.1.0"\nentry = "main.ming"\n', 'utf8');
+  }
+  const rProjA113 = runMing(['check', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'm.json'], { cwd: projA113 });
+  const rProjB113 = runMing(['check', '--json', '--proof-format', 'smt-lib', '--proof-manifest', 'm.json'], { cwd: projB113 });
+  let mProjA113 = null, jProjA113 = null;
+  try { mProjA113 = JSON.parse(fs.readFileSync(path.join(projA113, 'm.json'), 'utf8')); jProjA113 = JSON.parse(rProjA113.stdout); } catch { /* 下方具名失败 */ }
+  const projBytesA113 = fs.existsSync(path.join(projA113, 'm.json')) ? fs.readFileSync(path.join(projA113, 'm.json')) : Buffer.alloc(0);
+  const projBytesB113 = fs.existsSync(path.join(projB113, 'm.json')) ? fs.readFileSync(path.join(projB113, 'm.json')) : Buffer.alloc(0);
+  const projFile113 = mProjA113?.collection?.sources?.[0]?.file ?? '';
+  // 脚本侧项目模式例外(§3.3 登记):文件分节仍为入口解析路径(绝对)——本断言锁定"例外存在",
+  // 与 manifest 侧相对化互不掩盖;未来修脚本侧时本断言随协议 §3.3 同步更新。
+  const projSect113 = (jProjA113?.proof_smt ?? '').match(/; ===== 文件:(.+) =====/)?.[1] ?? '';
+  const projScriptAbs113 = projSect113 !== '' && path.isAbsolute(projSect113) && projSect113.endsWith('main.ming');
+  check('v113.26:项目模式 sources 项目相对(MAJOR-1)——裸 check + ming.toml 的 sources.file="main.ming"(无盘符/无前导 / 或 \\),两不同临时根生成 manifest 逐字节相同;脚本侧例外(§3.3)仍为绝对路径',
+    rProjA113.code === 0 && rProjB113.code === 0 && projFile113 === 'main.ming'
+    && !/[A-Za-z]:/.test(projFile113) && !projFile113.startsWith('/') && !projFile113.includes('\\')
+    && projBytesA113.length > 0 && projBytesA113.equals(projBytesB113)
+    && mProjA113?.collection?.sources?.length === 1 && projScriptAbs113,
+    `code=${rProjA113.code}/${rProjB113.code} file=${JSON.stringify(projFile113)} bytes=${projBytesA113.length}/${projBytesB113.length} same=${projBytesA113.equals(projBytesB113)} scriptAbs=${projScriptAbs113}`);
+
+  // v113.27 输出路径重合拒绝(审查 m1):manifest 路径 = 源文件 → exit 1 具名"拒绝覆盖",
+  // 源文件字节不变、无脚本输出(防静默覆盖数据丢失)。
+  const clobberF113 = mk113('clobber.ming', 'fn main() with io { print("keep"); }\n');
+  const clobberBefore113 = fs.readFileSync(clobberF113);
+  const rClobber113 = runMing(['check', clobberF113, '--proof-format', 'smt-lib', '--proof-manifest', clobberF113]);
+  const clobberAfter113 = fs.readFileSync(clobberF113);
+  check('v113.27:输出路径重合拒绝(m1)——--proof-manifest 指向被检查源文件时 exit 1 具名("重合"/"拒绝覆盖"),源文件字节不变、stdout 零输出',
+    rClobber113.code === 1 && rClobber113.stdout === ''
+    && rClobber113.stderr.includes('重合') && rClobber113.stderr.includes('拒绝覆盖')
+    && clobberBefore113.equals(clobberAfter113) && clobberAfter113.toString('utf8').includes('keep'),
+    `code=${rClobber113.code} stdoutLen=${rClobber113.stdout.length} stderr=${JSON.stringify(rClobber113.stderr.slice(0, 120))} intact=${clobberBefore113.equals(clobberAfter113)}`);
+
+  // v113.28 不可读输入(审查 m2):M3022 诊断照常 + 脚本照常 + manifest 只列可读源;
+  // 不出现"构造失败"伪措辞;回执在诊断之后(审查 n4)。
+  const nopeF113 = path.join(dir113, 'nope.ming');
+  const gmPath113 = path.join(dir113, 'gm.json');
+  const rUnread113 = runMing(['check', okF, nopeF113, '--proof-format', 'smt-lib', '--proof-manifest', gmPath113]);
+  let mUnread113 = null;
+  try { mUnread113 = JSON.parse(fs.readFileSync(gmPath113, 'utf8')); } catch { /* 下方具名失败 */ }
+  check('v113.28:不可读输入(m2/n4)——M3022 诊断照常(stderr)、脚本照常(stdout)、manifest 只列可读源 1 条、无"构造失败"措辞、回执在诊断之后、exit 1',
+    rUnread113.code === 1 && rUnread113.stdout.startsWith('(set-logic QF_LIA)\n') && rUnread113.stderr.includes('M3022')
+    && !rUnread113.stderr.includes('构造失败')
+    && mUnread113?.collection?.sources?.length === 1 && mUnread113.collection.sources[0].file === okF
+    && rUnread113.stderr.includes('provenance manifest 已写入')
+    && rUnread113.stderr.indexOf('M3022') < rUnread113.stderr.indexOf('provenance manifest 已写入'),
+    `code=${rUnread113.code} script=${rUnread113.stdout.startsWith('(set-logic QF_LIA)\n')} src=${JSON.stringify(mUnread113?.collection?.sources)} stderr=${JSON.stringify(rUnread113.stderr.slice(0, 140))}`);
+
+  // v113.29 同名跨目录重复 id 的登记性断言(NOTE-3;记录 v2 候选,不阻断):§2.3 口径下
+  // 不同模块可有同名 vc:f:1——manifest 无 file 字段消歧,消费者按 obligations 序对照脚本
+  // 文件分节;sources 提供文件清单。当前行为锁定,消歧方案 = v2 候选(id 携带文件限定)。
+  const dupSrc113 = [
+    'fn f(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn main() with io { print(str(f([1], 0))); }',
+    '',
+  ].join('\n');
+  const dupDirA113 = path.join(dir113, 'dupdirA');
+  const dupDirB113 = path.join(dir113, 'dupdirB');
+  fs.mkdirSync(dupDirA113, { recursive: true });
+  fs.mkdirSync(dupDirB113, { recursive: true });
+  const dupA113 = path.join(dupDirA113, 'f.ming');
+  const dupB113 = path.join(dupDirB113, 'f.ming');
+  fs.writeFileSync(dupA113, dupSrc113, 'utf8');
+  fs.writeFileSync(dupB113, dupSrc113, 'utf8');
+  const dupMan113 = path.join(dir113, 'dup.manifest.json');
+  const rDup113 = runMing(['check', dupA113, dupB113, '--json', '--proof-format', 'smt-lib', '--proof-manifest', dupMan113]);
+  let mDup113 = null, jDup113 = null;
+  try { mDup113 = JSON.parse(fs.readFileSync(dupMan113, 'utf8')); jDup113 = JSON.parse(rDup113.stdout); } catch { /* 下方具名失败 */ }
+  const dupIds113 = (mDup113?.obligations ?? []).map((o) => o.id);
+  check('v113.29:同名跨目录重复 id 登记(NOTE-3)——两目录各含 f.ming(fn f)时 obligations 为 ["vc:f:1","vc:f:1"](§2.3 跨模块消歧靠 file/脚本分节,manifest v1 无 file 字段;v2 候选:条目携带文件限定),sources 2 条、脚本 2 个文件分节',
+    rDup113.code === 0 && dupIds113.length === 2 && dupIds113[0] === 'vc:f:1' && dupIds113[1] === 'vc:f:1'
+    && mDup113?.collection?.sources?.length === 2
+    && (jDup113?.proof_smt?.match(/; ===== 文件:/g) ?? []).length === 2
+    && mDup113.collection.sources[0].file !== mDup113.collection.sources[1].file,
+    `code=${rDup113.code} ids=${JSON.stringify(dupIds113)} src=${mDup113?.collection?.sources?.length} sections=${(jDup113?.proof_smt?.match(/; ===== 文件:/g) ?? []).length}`);
 }
 
 secBegin('114');

@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.2.5';
+export const VERSION = '1.2.6';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -82,7 +82,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--no-opt] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
-  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib] [--stub <目录|文件>] [--strict-wasm]
+  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib] [--proof-manifest <path>] [--stub <目录|文件>] [--strict-wasm]
   ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--no-opt] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
   ming build [--json] [--clean-cache] [--with-source] [--no-dist] [--no-opt]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
@@ -112,7 +112,7 @@ function parseArgs(argv) {
   const dashRest = []; // v0.52:'--' 之后的程序参数,不再混入文件位置参数
   const errors = [];
   let afterDoubleDash = false;
-  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out', 'proof-format', 'from', 'stub']); // 空格分隔取值的参数
+  const VALUE_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms', 'out', 'proof-format', 'proof-manifest', 'from', 'stub']); // 空格分隔取值的参数
   const NUMERIC_FLAGS = new Set(['max-steps', 'max-alloc', 'max-ms']);
   const takeValue = (name, i) => {
     const nxt = argv[i + 1];
@@ -396,7 +396,10 @@ function panicDiag(p, result) {
 }
 
 // ---------- check ----------
-async function cmdCheck(files, flags, opts = {}) {
+// projectDir(可选,v1.2.6 R-20):项目模式(main 无文件参数、entry 来自 ming.toml)下由
+// projectEntry 传入 ming.toml 所在目录 —— provenance manifest 的 sources 用它做项目相对化
+// (否则 entry 的解析后绝对路径会进入 manifest,违背协议 §4.5 "无绝对路径"承诺)。
+async function cmdCheck(files, flags, opts = {}, projectDir = null) {
   await loadCore();
   const json = flags.has('json');
   // v0.52 阶段 3:--proof-report 证明报告 + --warn-unproven-index W3105 观测旗标。
@@ -410,6 +413,18 @@ async function cmdCheck(files, flags, opts = {}) {
     return fail(`--proof-format 仅支持 "smt-lib"(得到 "${proofFormat}")`, json);
   }
   const proofSmt = proofFormat === 'smt-lib';
+  // v1.2.6 R-20(ADR-013):--proof-manifest <path> —— 证明工件 provenance manifest 旁车。
+  // 只与 --proof-format smt-lib 同用(它描述的就是 SMT 脚本对应的采集/语义面);
+  // `-`(stdout)拒绝:同一 stdout 同时承载脚本与 manifest 会互相污染,具名指向文件路径。
+  const proofManifestPath = opts['proof-manifest'];
+  if (proofManifestPath !== undefined) {
+    if (!proofSmt) {
+      return fail('--proof-manifest 需要与 --proof-format smt-lib 同用(manifest 描述的就是 SMT-LIB 工件)', json);
+    }
+    if (proofManifestPath === '-') {
+      return fail('--proof-manifest 不支持 "-":manifest 与 SMT 脚本同时写 stdout 会互相污染;请给出文件路径(如 --proof-manifest f.manifest.json)', json);
+    }
+  }
   // v0.53:--strict-wasm 仅在 check 通过后做 wasm 分层存活验证(fallback → 退出码 2);
   // 与 --tree/--no-wasm 互斥;非 strict 时 check 不编译,JSON 也不带 wasm_status。
   if (strictWasmConflict(flags)) return fail(STRICT_WASM_CONFLICT_MSG, json);
@@ -462,7 +477,38 @@ async function cmdCheck(files, flags, opts = {}) {
   const proofs = proofReport ? collectProofs(checked, proofSmt) : null;
   // v1.1 S-1:SMT-LIB 导出 —— 义务 VC(线性约束 + 逐方向内部判定)经 src/proofsmt.js 渲染;
   // 文本模式 stdout 承载脚本(诊断/摘要在 stderr 与既有行);JSON 模式 additive `proof_smt` 字段。
-  const smtScript = proofSmt ? renderProofScript(collectVcs(checked)) : null;
+  const vcs = proofSmt ? collectVcs(checked) : null;
+  const smtScript = proofSmt ? renderProofScript(vcs) : null;
+  // v1.2.6 R-20(ADR-013):provenance manifest 旁车 —— 同一份 VC 集合 + 源文件集合构造
+  // (纯函数,src/manifest.js);写盘失败 = 命令行输入错误(exit 1 具名),不改任何判定。
+  // 审查修复(2026-11-27):① 项目模式传 projectDir 做 sources 项目相对化;
+  // ② 输出路径与源/工具链文件重合 → ProvenancePathCollision 具名拒绝(防静默覆盖);
+  // ③ 除碰撞与 fs 输入错误外不 catch —— 内部错误按内部错误口径暴露,不伪装成用户输入错误。
+  let proofManifest = null;
+  if (proofManifestPath !== undefined) {
+    const manifestMod = await lazyManifest();
+    try {
+      proofManifest = manifestMod.buildProofManifest({
+        toolVersion: VERSION,
+        inputs: files,
+        checked,
+        vcs,
+        baseDir: projectDir,
+        manifestPath: proofManifestPath,
+      });
+    } catch (e) {
+      if (e instanceof manifestMod.ProvenancePathCollision) return fail(e.message, json);
+      if (e && typeof e.code === 'string' && e.code.startsWith('E')) {
+        return fail(`--proof-manifest 无法计算 pass_hash(工具链源文件不可读): ${e.message}`, json);
+      }
+      throw e;
+    }
+    try {
+      fs.writeFileSync(proofManifestPath, manifestMod.serializeProofManifest(proofManifest), 'utf8');
+    } catch (e) {
+      return fail(`--proof-manifest 无法写入 "${proofManifestPath}": ${e.message}`, json);
+    }
+  }
   // v0.53:strict wasm —— check 通过后逐文件验证分层存活;任一 fallback → 退出码 2 并点名原因。
   // 聚合语义:有 fallback → 'fallback';否则有 ok → 'ok';否则 'none'。仅 strict 时计算与输出。
   // 审查修复:fallback 不再走独立输出路径——与正常路径共用同一 out 构造(ok/diagnostics/proofs/
@@ -488,6 +534,7 @@ async function cmdCheck(files, flags, opts = {}) {
     const out = { ok: wasmFallback ? false : allOk, diagnostics: diagJson(diags) };
     if (proofs) out.proofs = proofs;
     if (smtScript !== null) out.proof_smt = smtScript;
+    if (proofManifest) out.proof_manifest = proofManifest;
     if (bridgeSummary) out.stub_contract = bridgeSummary;
     if (wasmAgg) out.wasm_status = wasmAgg;
     process.stdout.write(JSON.stringify(out, null, 2) + '\n');
@@ -495,6 +542,8 @@ async function cmdCheck(files, flags, opts = {}) {
     printDiags(diags, false);
     if (proofs) printProofs(proofs);
     if (smtScript !== null) process.stdout.write(smtScript);
+    // v1.2.6 审查 n4:回执在诊断之后(诊断先于回执;stdout 仍为纯脚本)。
+    if (proofManifest) process.stderr.write(`provenance manifest 已写入 ${proofManifestPath}\n`);
   }
   for (const why of strictReasons) process.stderr.write(`strict-wasm: ${why}\n`);
   if (wasmFallback) return 2;
@@ -1705,9 +1754,9 @@ async function main() {
       return cmdRun(file, flags, opts, programArgs);
     }
     case 'check': {
-      const { files, error } = await projectEntry('check', rest, flags.has('json'));
+      const { files, error, proj } = await projectEntry('check', rest, flags.has('json'));
       if (error) return fail(error, flags.has('json'));
-      return cmdCheck(files, flags, opts);
+      return cmdCheck(files, flags, opts, proj?.dir ?? null);
     }
     case 'test': {
       const { files, error } = await projectEntry('test', rest, flags.has('json'));

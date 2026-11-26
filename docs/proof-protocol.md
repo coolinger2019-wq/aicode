@@ -1,7 +1,7 @@
 # Ming 证明协议 v1——义务标识与 SMT-LIB 导出规范
 
-> **状态**:v1.1 首批(S-1 + S-2,plan §4.21 切片表)· **日期**:2026-11-23 · **实现**:`src/proofsmt.js`(编码)/ `src/checker.js`(VC 采集,`checkIndexBoundsStatically`)/ `bin/ming.js`(旗标与协议字段)
-> **范围**:本文档规范三件事——①证明义务标识(`proof_obligation_id`)的文法与语义;②`ming check --proof-format smt-lib` 的 SMT-LIB 2.0 输出格式;③`--json` 协议的加法式字段(`proof_obligation_id` / `solver_status` / `proof_smt`)。
+> **状态**:v1.1 首批(S-1 + S-2,plan §4.21 切片表)+ v1.2.6 R-20(provenance manifest,ADR-013)· **日期**:2026-11-23(manifest 增补 2026-11-27) · **实现**:`src/proofsmt.js`(编码)/ `src/checker.js`(VC 采集,`checkIndexBoundsStatically`)/ `src/manifest.js`(provenance manifest 构造)/ `bin/ming.js`(旗标与协议字段)
+> **范围**:本文档规范四件事——①证明义务标识(`proof_obligation_id`)的文法与语义;②`ming check --proof-format smt-lib` 的 SMT-LIB 2.0 输出格式;③`--json` 协议的加法式字段(`proof_obligation_id` / `solver_status` / `proof_smt`);④`--proof-manifest <path>` 的 provenance manifest schema v1(§4.5)。
 > **立场声明**:Ming 的证明器是 **QF_LIA 限定子集**(线性整数算术的差分约束求解,`src/prover.js`)。本文档只描述**它实际做了什么**,不描述"理想证明器应该做什么";每一处能力边界都以"内部证明器不证明什么"一节如实登记。`solver_status` 是 **Ming 内部证明器的判定口径**,不是外部求解器结论——外部求解器对同一义务可能给出更强或不同的回答,这正是外部审计的价值,解读规则见"外部求解器消费方式"。
 > **关联**:[GUIDE.md §6 契约与静态边界证明](../GUIDE.md) / [docs/diagnostics.md](diagnostics.md)(M3045/W3105)/ [docs/stability-contract.md](stability-contract.md)(承诺面口径)/ [docs/roadmap-infrastructure.md §5.1](roadmap-infrastructure.md)(原始需求)/ plan §4.21(裁决与切片)。
 
@@ -86,6 +86,8 @@ proof_obligation_id ::= "vc:" <函数名> ":" <序号>
 
 同一输入(同一文件内容 + 同一命令行参数集)恒产出逐字节相同的脚本:无时间戳、无随机顺序、无工具链版本号。文件分节注释与义务头注释中的路径按**命令行展示路径原样**(不绝对化、不规范化、不解析)——用户传相对路径则脚本含相对路径;这是用户输入的回显,协议本身不引入绝对路径。
 
+**项目模式例外(登记,2026-11-27 审查 MAJOR-1)**:无文件参数的项目模式(`ming.toml` 入口,裸 `ming check`)没有"命令行展示路径"——脚本文件分节沿用入口的**解析路径(当前为绝对路径)**,这是本节展示路径口径的唯一例外。provenance manifest 侧已按项目根相对化(§4.5,manifest 无绝对路径);脚本侧相对化会改动 check 的输入路径口径(诊断 `file` 字段一并变化),超出本批预算,登记为后续候选(改动须同步本节与 §4.5)。
+
 **逐字节确定性由入库黄金锁定**(R-19):`tests/proof_fixtures/` 保存六语料测试矩阵(proven / refuted-sat / refuted-unsat / unknown / zero / loop)的完整 SMT-LIB 脚本,`node tests/z3_check.mjs` 在 z3 探测**之前**逐字节比对——同一实现在任何机器上重新生成必须与 fixture 完全一致。实验面(§5:注释措辞/分节格式/set-info 文本)的任何变更都会使比对失败,须通过 `node tests/z3_check.mjs --update-fixtures` **显式更新** fixtures——**更新即审查信号**(git diff 逐字节可审,不随生成重跑而静默漂移);`--no-comments` 可剥离注释先看纯命令面差异。
 
 ### 3.4 内部判定注释(诚实标注)
@@ -135,6 +137,61 @@ proof_obligation_id ::= "vc:" <函数名> ":" <序号>
 
 **未知旗标值不静默**:`--proof-format <非 smt-lib 值>` → stderr 具名报错 + exit 1;缺值 → 解析层 `--proof-format 需要一个值` + exit 1。其他命令(run/test/…)不消费本旗标(按既有"命令只读自己认识的旗标"风格忽略)。
 
+### 4.5 provenance manifest(`--proof-manifest <path>`,v1.2.6 / ADR-013)
+
+脚本逐字节确定,但消费者无法仅凭脚本回答"哪个工具版本、哪版采集逻辑、什么整数模型、对应哪份源码"(外部评审 cwahq/Klara,2026-11-26 指向的 provenance 缺口)。`--proof-manifest <path>` 在脚本**旁车**写一份确定性 JSON 出处清单(sidecar)——脚本字节零变化,清单可被 git diff 审查(`pass_hash`/源哈希变化即提示重证)。
+
+**用法与约束**:
+
+```bash
+ming check f.ming --proof-format smt-lib --proof-manifest f.manifest.json
+ming check f.ming --proof-format smt-lib --proof-manifest f.manifest.json --json   # 顶层 additive proof_manifest
+```
+
+- 必须与 `--proof-format smt-lib` **同用**:缺该旗标 → stderr 具名 + exit 1(manifest 描述的就是 SMT-LIB 工件);缺值(**空格形式**)→ 解析层 `--proof-manifest 需要一个值` + exit 1。`--proof-manifest=` 空值 = 空路径(写盘失败,exit 1 具名)。路径含 `=` 时请用空格形式 `--proof-manifest <path>`(等号形式在第二个 `=` 处截断,是 `parseArgs` 的既有行为,不在本协议范围)。
+- **`-`(stdout)拒绝**:脚本与 manifest 同时写 stdout 会互相污染(消费者无法区分两个工件的边界),这是对 ADR-013 §3 的 `<path|->` 的**实现期收窄**;拒绝消息给出替代指引(写文件路径),exit 1。
+- **输出路径安全校验**:manifest 路径解析后与本次检查的任一源文件、或采集 pass 涉及的三个工具链源文件(`src/checker.js` / `src/prover.js` / `src/proofsmt.js`)重合 → **拒绝覆盖**并 exit 1 具名(静默覆盖源文件 = 数据丢失;Windows 下按大小写不敏感比较)。
+- 文本模式:stdout 仍为纯脚本(逐字节不变),stderr 在诊断之后追加一行回执 `provenance manifest 已写入 <path>`;`--json` 模式:顶层 additive `proof_manifest` 对象(与落盘文件**同一构造**),既有字段与不带旗标输出逐字节不变。
+- 写盘失败(目录不存在/不可写)= 命令行输入错误:stderr 具名 + exit 1;**不影响任何证明判定与退出码语义**(清单是纯输出选项)。构造期只把可预期的输入错误(路径重合/工具链源文件不可读)转述为 exit 1;意外内部错误按内部错误口径暴露,不伪装成用户输入错误。
+
+**字段(v1,冻结)**——键序即下表序;数组序见各行:
+
+| 字段 | 类型 | 语义 | 确定性来源 |
+|---|---|---|---|
+| `manifest_format` | int | schema 版本,当前 `1`(加法演进 = 升版) | 常量 |
+| `spec` | string | 协议标识 `"ming-proof-protocol/1"` | 常量 |
+| `tool.name` / `tool.version` | string | `"ming"` / 工具版本(与 `ming version`、`package.json` 同源:CLI 的 `VERSION` 传入,不手抄) | 常量 |
+| `collection.pass` | string | 采集遍名 `"checkIndexBoundsStatically"` | 常量 |
+| `collection.pass_hash` | string | 采集 pass 指纹 `sha256:<hex>`,范围与拼接方案见下 | 三源文件内容 |
+| `collection.sources[]` | array | `{file, sha256}`:本次检查的源文件集合与哈希,见下 | 文件内容 |
+| `integer_model` | object | `{domain:"Int", semantics:"i64 checked", overflow:"panic M4002"}`:诚实声明语义域(i64 检查溢出,panic 先于值进入模型);**不虚构 SMT 侧假设** | 常量 |
+| `engine_contract` | object | `{eval_order, differential}` 语义面摘要——**自由文本,非机检**(见下) | 常量(随版本变更) |
+| `obligations[]` | array | `{id, scope, internal_verdict:{low,high}}`,采集序 | 采集序 |
+| `solver` | null | **消费者回填位**,Ming 永不填充(见下) | — |
+
+**`collection.pass_hash` 范围(ADR-013 §2 裁决口径,v1 冻结)** = 采集相关源文件**全集**的三个文件内容:`src/checker.js`(采集遍 `checkIndexBoundsStatically` 本身)+ `src/prover.js`(逐方向判定)+ `src/proofsmt.js`(编码/符号面)。拼接方案(§113 测试侧按同一方案用 `node:crypto` 独立复算):
+
+```
+pass_hash = "sha256:" + sha256( "ming-proof-protocol/1\n"
+                                + "src/checker.js\n"  + sha256hex(文件原始字节) + "\n"
+                                + "src/prover.js\n"  + sha256hex(文件原始字节) + "\n"
+                                + "src/proofsmt.js\n" + sha256hex(文件原始字节) + "\n" )
+```
+
+只用仓库相对路径常量与文件原始字节——不含绝对路径/时间戳,跨机同内容同值。范围过宽(无关改动使全量 manifest 失效)与过窄(采集逻辑改了 hash 不变)的风险按 ADR-013 §6 以"采集相关源文件全集"首版为准,证据驱动收窄(收窄 = manifest v2)。
+
+**`collection.sources[]`** = 本次检查**加载的源文件全集**:命令行输入(按命令行顺序)⊕ `use` 依赖(按加载序),按解析后绝对路径去重,`file` 取首次出现的**展示路径原样**(§3.3 口径:不绝对化/不规范化/不解析——用户传相对路径则清单含相对路径);**项目模式**(entry 来自 `ming.toml`)下 `file` 一律改为**项目相对路径**(相对 ming.toml 所在目录、正斜杠、不 `..` 逃逸)——项目入口在 CLI 内部是解析后绝对路径,不相对化会让同一项目在两台机器上 manifest 字节不同。`sha256` 为文件**原始字节**的哈希。**不可读源跳过**(检查阶段已发 M3022 等诊断;manifest 只列可读源,不让一个坏输入吞掉诊断与脚本)。依赖同样改变义务集,故与脚本分节同口径纳入(不是只记命令行文件名)。**注意**:同一项目模式下 SMT 脚本的文件分节仍是入口解析路径(§3.3 项目模式例外,脚本侧本批未相对化)——本节的"manifest 无绝对路径"只约束 manifest,脚本侧例外在 §3.3 如实登记,两侧不互相掩盖。
+
+**`obligations[]`**:`id` 与 §2 同一方案(`vc:<fn>:<序号>`,序号 = 采集序);`scope` = `body|loop`(§1);`internal_verdict` 携带**内部逐方向判定原值** `proven|refuted|unknown`——**不**做 §4.1 的 `solver_status` 三态折叠(折叠属诊断协议面;manifest 保留原值,`unknown` 如实保留,消费者可自行计数)。顺序 = 脚本块顺序 = `--proof-report` 义务条目顺序。**已知限制(v2 候选,§113.29 登记)**:§2.3 口径下不同模块可有同名 `vc:f:1`,而本数组条目**无 `file` 字段**消歧——消费者须按条目顺序对照脚本文件分节与 `sources[]` 定位归属;v2 候选 = 条目携带文件限定(加法演进,`manifest_format` 升版)。
+
+**`engine_contract` 非机检**:该字段是自由文本的语义面摘要(`eval_order` = 源码序物化 #90/#92/#93 的对齐结论;`differential` = tree/VM/wasm/cc 四腿差分模糊证据指针——PR 门禁单种子 44044×25、nightly 3 seeds×120),**不随单次检查计算、不可由 manifest 自身验证**——它是诚实声明,不是机器可检断言。漂移风险由本文档与 §113 的逐字断言承担(改文本 = 测试与文档同步变更)。
+
+**`solver` 恒 `null`(消费者回填位)**:Ming 不跑外部求解器;该位留给消费者记录"哪个求解器/版本对哪些义务给出 sat/unsat"。回填工具与格式不在本协议(ADR-013 §6 登记 S-5+/Agent 协议候选)。`solver: null` **不是**"尚无结论"断言——内部判定在 `obligations[].internal_verdict` 如实携带;Klara 的"unknown 不得折叠为 pass"在 manifest 层 = `internal_verdict` 原值保留、消费者可计数。
+
+**确定性**:键序固定(表序)、数组序固定(命令行序/加载序/采集序);无时间戳、无主机名、无随机序;不引入绝对路径(展示路径是用户输入回显;项目模式按项目根相对化);同输入 + 同工具版本 → **逐字节相同 JSON**(2 空格缩进、UTF-8、LF、末尾恰一个换行)。
+
+**与 fixture(R-19)的关系**:manifest 是旁车,不改变脚本字节 → `tests/proof_fixtures/` 黄金不受影响;manifest 自身**不入 fixture 黄金**(它含工具版本与 `pass_hash`,版本升级即变;确定性由 §113 双跑 + 独立复算锁定)。
+
 ## 5. 稳定性承诺(与 docs/stability-contract.md 口径对齐,不越权)
 
 本协议是 **1.0 后新增面**(v1.1 首批),按 stability-contract §1.2 的 additive 先例入库(新增语言面/新增 `--json` 字段 = additive,非破坏)。分层承诺:
@@ -145,6 +202,7 @@ proof_obligation_id ::= "vc:" <函数名> ":" <序号>
 | `solver_status` 值域与映射规则(§4.1) | **冻结**(自 v1.1) | 三值集与 proven→unsat/refuted→sat/unknown→unknown 映射不变;新增值域 = additive(须本文档修订登记) |
 | SMT 脚本**结构不变式**(§3.1 五条) | **冻结**(自 v1.1) | 任何演进不得破坏五条不变式 |
 | SMT 脚本细节(注释措辞、分节格式、set-info 文本) | **实验性** | minor 版本可调整;外部消费者不应解析注释内容,只应消费命令结构。实验面变更必须通过 `node tests/z3_check.mjs --update-fixtures` 显式更新 `tests/proof_fixtures/`(**更新即审查信号**;默认严格逐字节,`--no-comments` 仅用于查看纯命令面差异) |
+| provenance manifest schema v1(§4.5,`--proof-manifest`) | **冻结**(自 v1.2.6) | 字段集/键序/确定性口径/`sources` 路径口径(§3.3 展示路径 + 项目模式相对化)不变;加法演进 = `manifest_format` 升版(ADR-013 §4)。`solver` 位是**消费者回填**语义(非 Ming 断言),回填工具/格式不在本协议(ADR-013 §6) |
 | 保留字黑名单(§3.2) | 实验性(单射保证不变) | 黑名单扩圈只影响罕见冲突名的符号拼写,双射性质不变 |
 | 本协议是否纳入 P1–P8 承诺面 | **未纳入** | 新面按契约 §1.2 走 additive;纳入承诺面须契约修订,本文档不预支 |
 
@@ -199,12 +257,14 @@ z3 f.smt2
 | Z3 消费验证 | ✅ **CI 验证通过(2026-11-26,[run 45834397042 · z3-verify job](https://github.com/coolinger2019-wq/aicode/actions/runs/45834397042/job/139969754333),success)**——`tests/z3_check.mjs`(6 语料 × 逐块对照:全 proven / 违反(假设集可满足)/ 违反(假设集不可满足 → §6.2 规则 4 豁免)/ unknown / 零义务 / loop 作用域)+ `.github/workflows/ci.yml` 的 `z3-verify` job(ubuntu-latest,apt 装 z3 + `z3 --version` 探测;安装失败即 job 失败,不静默跳过)。**历史**:2026-11-23 实测本机无 z3 → 2026-11-26 接入 CI;接入前 pip z3 5.4.1 本机预检(6 语料 7 块断言全过,版本与 apt 包不同)。诚实边界:同 run 的 macos-latest/node20 测试腿被 runner 平台回收(15 分钟整点 cancelled、零 step 记录,基础设施抖动)导致 run 级红,已触发仅失败 job 重跑;与 z3-verify 无关,job 级证据独立成立 |
 | 跨求解器(CVC5 等) | ⏳ 未验证(无环境) |
 | fixture 黄金(R-19) | ✅ `tests/proof_fixtures/` 六语料 SMT-LIB 脚本逐字节入库(`proven` / `refuted-sat` / `refuted-unsat` / `unknown` / `zero` / `loop`,文件名与 `tests/z3_check.mjs` 的 `CORPORA` slug 对齐);比对在 z3 探测**之前**执行——**本机无 z3 也校验确定性黄金**,缺失 fixture 或不一致 = exit 1 并打印首处差异行(两侧截断 200 字符)。脚本以相对路径生成(`; ===== 文件:<slug>.ming =====`),无时间戳/绝对路径,入库即黄金;更新唯一通道 = `--update-fixtures`(逐文件打印 新增/变更/未变,幂等——无漂移时重跑零 diff);**fixture 通过只证明输出未变(确定性),不证明内部判定正确——语义有效性由 §6 z3 逐块消费与 §7 限制口径承担;`--update-fixtures` 拒绝为生成阶段失败的语料写盘(审查 MAJOR-1),孤儿 fixture(目录多出文件)判失败(审查 MINOR-3)。** |
+| provenance manifest(§4.5) | ✅ §113 v113.20–v113.29:旗标组合(缺 `--proof-format`/缺值/`-` 拒绝)/字段形状与固定序/义务与 `--proof-report` 互推(含 `unknown` 不折叠与零义务空数组)/`pass_hash` 与 `sources` 独立复算(含作用域敏感度与 use 依赖)/双跑逐字节/`--json` additive 原始字节同构造/无旗标输出零变化/**项目模式 sources 项目相对化 + 两临时根逐字节相同(审查 MAJOR-1)**/**输出路径重合拒绝(m1)**/**不可读输入诊断与脚本照常(m2)**/**同名跨文件重复 id 登记(v2 候选,NOTE-3)**。**诚实边界**:`pass_hash` 的"随源变化"以实例化副本(临时目录)验证,不修改仓库源文件;manifest 不证明脚本已由外部求解器复核——那是消费者动作(§6) |
 
 ## 9. 测试锚点
 
 | 面 | 锚点 |
 |---|---|
 | SMT-LIB 导出结构/内部判定面 | `tests/run.mjs` §113(S-1 专项:义务 id、逐方向判定注释、括号配平、保留字重写双射) |
+| provenance manifest 确定性/出处面 | `tests/run.mjs` §113(v113.20–v113.29:旗标约束、字段固定序、`solver===null`、义务互推与 `unknown` 原值、`pass_hash`/`sources` 独立复算、双跑逐字节、`--json` additive 原始字节同构造、无旗标零变化、项目模式相对化、路径重合拒绝、不可读输入、重复 id 登记) |
 | 静态证明模糊 | `tests/proof_fuzz.mjs`(边界证明 1/2 + summaries + loops 模式,反例独立求值) |
 | fixture 黄金 + Z3 外部消费 | `tests/z3_check.mjs`(R-19):阶段 A 生成 + 结构断言 → 阶段 B fixture 比对(`tests/proof_fixtures/<slug>.smt2`,缺失/不一致 = 失败,不依赖 z3)→ 阶段 C z3 逐块对照(z3 不可用打印跳过行 exit 0);`--update-fixtures` 为 fixtures 唯一更新通道,`--no-comments` 只看纯命令面 |
 | 文档数字 | `tests/docs_check.mjs`(版本三处 / README / 工具数 / 能力矩阵) |
