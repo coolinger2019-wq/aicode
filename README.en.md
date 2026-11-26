@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.2.6** (2026-11-27) |
-| Regression suite | **1786 checks, all green** (§1–§116; full run every time) |
+| Current version | **v1.3.0** (2026-11-27) |
+| Regression suite | **1809 checks, all green** (§1–§117; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.3.0 | 2026-11-27 | Self-produced linear certificates (S-3a/ADR-014): `ming check --proof-format cert` -- negative cycles from the decision procedure ARE Farkas certificates with coefficients 1; self-contained integer-arithmetic criterion (a third party re-checks in a few dozen lines); `uses_goal`/`vacuous` fields; coverage not promised, certificate-less proven obligations named; `tests/cert_check.mjs` reference checker (independent recomputation + three negative cases) + 7-corpus goldens | 1809 |
 | v1.2.6 | 2026-11-27 | Provenance manifest (R-20/ADR-013): `--proof-manifest <path>` sidecar (collection pass hash / source sha256 / integer model / engine contract / obligation table / solver:null back-fill; project-relative paths, source-overwrite refusal, 8-key determinism; additive `proof_manifest` in --json) | 1786 |
 | v1.2.5 | 2026-11-27 | Operand evaluation-order closure (#93: comparisons/f64/bitwise materialized in source order, condition face included) + dead-branch disposal (#94: `<<=`/`>>=` removed/asserted at three sites) + ADR-013/014 rulings (provenance manifest go; S-3 redefined as independently checkable proof artifact — self-produced negative-cycle/linear certificate, Alethe demoted to documented bypass) | 1776 |
 | v1.2.4 | 2026-11-27 | Guard evaluation-order fix (#92: `/ % << >>` and `+ - *` operands materialized in source order; panic first line aligned, messages byte-identical; #91 arithmetic/shift face closed) + SMT-LIB golden fixtures (R-19: six-corpus byte-exact goldens, fixture check runs without z3, §116 local gate) | 1767 |

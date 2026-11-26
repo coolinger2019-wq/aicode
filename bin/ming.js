@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.2.6';
+export const VERSION = '1.3.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -39,6 +39,7 @@ let Diagnostic, MingError, formatDiag, cacheSourceLines, SEVERITY, diagJson;
 let compile, CompileError, serializeArtifact, deserializeArtifact, makeCheckLike;
 let Unsupported, wasmLayerStatus;
 let renderProofScript; // v1.1 S-1:src/proofsmt.js — 证明义务 → SMT-LIB 文本(纯函数,check --proof-format smt-lib)
+let buildCerts, renderCertScript; // v1.3.0 S-3a:src/proofcert.js — 证书数据构造 + 文本渲染(check --proof-format cert)
 let _core = null;
 async function loadCore() {
   if (_core) return _core;
@@ -69,20 +70,28 @@ async function loadCore() {
 
 // 命令特有模块按命令加载(fmt/cbackend/lsp/repl/manifest 对 tools/version/run/check/test
 // 是纯开销;emitC/lsp/repl 另需自身模块)。
-let _fmtMod = null, _manifestMod = null, _lspMod = null, _replMod = null, _cbackendMod = null, _bridgeMod = null;
+let _fmtMod = null, _manifestMod = null, _lspMod = null, _replMod = null, _cbackendMod = null, _bridgeMod = null, _proofcertMod = null;
 async function lazyFmt() { if (!_fmtMod) _fmtMod = await import('../src/fmt.js'); return _fmtMod; }
 async function lazyManifest() { if (!_manifestMod) _manifestMod = await import('../src/manifest.js'); return _manifestMod; }
 async function lazyLsp() { if (!_lspMod) _lspMod = await import('../src/lsp.js'); return _lspMod; }
 async function lazyRepl() { if (!_replMod) _replMod = await import('../src/repl.js'); return _replMod; }
 async function lazyCbackend() { if (!_cbackendMod) _cbackendMod = await import('../src/cbackend.js'); return _cbackendMod; }
 async function lazyBridge() { if (!_bridgeMod) _bridgeMod = await import('../src/bridge.js'); return _bridgeMod; }
+// v1.3.0 S-3a:证书渲染模块按命令惰性加载(仅 check --proof-format cert 消费)。
+async function lazyProofcert() {
+  if (!_proofcertMod) {
+    _proofcertMod = await import('../src/proofcert.js');
+    ({ buildCerts, renderCertScript } = _proofcertMod);
+  }
+  return _proofcertMod;
+}
 
 const usage = `
 Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
 
 用法:
   ming run   [file.ming] [--json] [--tree] [--no-wasm] [--no-opt] [--strict-wasm] [--max-steps N] [--max-alloc N] [--max-ms N] [-- args...]
-  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib] [--proof-manifest <path>] [--stub <目录|文件>] [--strict-wasm]
+  ming check [file.ming...] [--json] [--proof-report] [--warn-unproven-index] [--proof-format smt-lib|cert] [--proof-manifest <path>] [--stub <目录|文件>] [--strict-wasm]
   ming test  [file.ming...] [--json] [--filter 名称] [--tree] [--no-wasm] [--no-opt] [--max-steps N] [--max-alloc N] [--max-ms N]  (--strict-wasm 仅做互斥仲裁)
   ming build [--json] [--clean-cache] [--with-source] [--no-dist] [--no-opt]
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
@@ -408,13 +417,17 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
   const warnUnprovenIndex = flags.has('warn-unproven-index');
   // v1.1 S-1(plan §4.21):--proof-format smt-lib —— 把 checker 采集的证明义务 VC 导出为
   // SMT-LIB 2.0 文本(纯输出选项;退出码口径零变化)。未知取值不静默:显式报错 exit 1。
+  // v1.3.0 S-3a(ADR-014 §6.2):新增取值 cert —— 自产线性(负环/Farkas 型)证书文本
+  // (规范 docs/proof-protocol.md §10;判据与 SMT 导出同源,均为纯输出选项)。
   const proofFormat = opts['proof-format'];
-  if (proofFormat !== undefined && proofFormat !== 'smt-lib') {
-    return fail(`--proof-format 仅支持 "smt-lib"(得到 "${proofFormat}")`, json);
+  if (proofFormat !== undefined && proofFormat !== 'smt-lib' && proofFormat !== 'cert') {
+    return fail(`--proof-format 仅支持 "smt-lib" 或 "cert"(得到 "${proofFormat}")`, json);
   }
   const proofSmt = proofFormat === 'smt-lib';
+  const proofCert = proofFormat === 'cert';
   // v1.2.6 R-20(ADR-013):--proof-manifest <path> —— 证明工件 provenance manifest 旁车。
   // 只与 --proof-format smt-lib 同用(它描述的就是 SMT 脚本对应的采集/语义面);
+  // cert 模式不产 manifest(具名错误:manifest 描述的是 SMT-LIB 工件,不是证书);
   // `-`(stdout)拒绝:同一 stdout 同时承载脚本与 manifest 会互相污染,具名指向文件路径。
   const proofManifestPath = opts['proof-manifest'];
   if (proofManifestPath !== undefined) {
@@ -433,9 +446,11 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
   const allDiags = [];
   const checked = [];
   for (const f of files) {
-    // proofAnnotate:仅 --proof-format 生效时让 M3045/W3105 挂 proof_obligation_id/solver_status
+    // proofAnnotate:仅 --proof-format smt-lib 生效时让 M3045/W3105 挂 proof_obligation_id/solver_status
     // (additive;不带新旗标时诊断对象零额外字段,既有 --json 逐字节不变)。
-    const checker = new Checker(f, null, { warnUnprovenIndex, proofAnnotate: proofSmt });
+    // v1.3.0 S-3a:proofCert 只在 --proof-format cert 时为 true(VC 附证书数据 + vacuous 第二次求解;
+    // 诊断注解面不扩展 —— 协议 §4.1 的字段口径仍只属 smt-lib)。
+    const checker = new Checker(f, null, { warnUnprovenIndex, proofAnnotate: proofSmt, proofCert });
     try {
       const result = checker.run();
       for (const m of result.modules) cacheSourceLines(m.file, m.src);
@@ -477,8 +492,16 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
   const proofs = proofReport ? collectProofs(checked, proofSmt) : null;
   // v1.1 S-1:SMT-LIB 导出 —— 义务 VC(线性约束 + 逐方向内部判定)经 src/proofsmt.js 渲染;
   // 文本模式 stdout 承载脚本(诊断/摘要在 stderr 与既有行);JSON 模式 additive `proof_smt` 字段。
-  const vcs = proofSmt ? collectVcs(checked) : null;
+  const vcs = (proofSmt || proofCert) ? collectVcs(checked) : null;
   const smtScript = proofSmt ? renderProofScript(vcs) : null;
+  // v1.3.0 S-3a:证书导出 —— 证书数据由 checker 在同一次求解中附上;这里与 SMT 导出吃
+  // **同一份** collectVcs 结果(单源去重,避免两处键口径分叉),经 src/proofcert.js 渲染;
+  // JSON 模式 additive `proof_cert`。与 proof_smt 互斥(一个 --proof-format 值)。
+  let certText = null;
+  if (proofCert) {
+    await lazyProofcert();
+    certText = renderCertScript(buildCerts(vcs));
+  }
   // v1.2.6 R-20(ADR-013):provenance manifest 旁车 —— 同一份 VC 集合 + 源文件集合构造
   // (纯函数,src/manifest.js);写盘失败 = 命令行输入错误(exit 1 具名),不改任何判定。
   // 审查修复(2026-11-27):① 项目模式传 projectDir 做 sources 项目相对化;
@@ -534,6 +557,7 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
     const out = { ok: wasmFallback ? false : allOk, diagnostics: diagJson(diags) };
     if (proofs) out.proofs = proofs;
     if (smtScript !== null) out.proof_smt = smtScript;
+    if (certText !== null) out.proof_cert = certText;
     if (proofManifest) out.proof_manifest = proofManifest;
     if (bridgeSummary) out.stub_contract = bridgeSummary;
     if (wasmAgg) out.wasm_status = wasmAgg;
@@ -542,6 +566,7 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
     printDiags(diags, false);
     if (proofs) printProofs(proofs);
     if (smtScript !== null) process.stdout.write(smtScript);
+    if (certText !== null) process.stdout.write(certText);
     // v1.2.6 审查 n4:回执在诊断之后(诊断先于回执;stdout 仍为纯脚本)。
     if (proofManifest) process.stderr.write(`provenance manifest 已写入 ${proofManifestPath}\n`);
   }

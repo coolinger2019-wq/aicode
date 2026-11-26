@@ -2012,7 +2012,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 |----|------|------|------|
 | **S-1** | `ming check --proof-format smt-lib`：prover.js 既有 VC（QF_LIA 子集）输出为 SMT-LIB 2.0 文本；`--json` 增 additive `proof_obligation_id` 字段 | 零语义改动（纯输出选项）；Z3 可消费（外部工具实测，CI 不依赖） | **v1.1 首批** |
 | **S-2** | docs/proof-protocol.md 规范文档（VC 编码规则/字段语义/Alethe 日志候选） | 与 S-1 同批 | v1.1 |
-| **S-3** | 可独立复核证明工件 v1：自产负环/线性证书（`--proof-format cert`）+ 第三方可实现的验证判据规范（**重定义：Alethe 仅文档旁路，不设旗标**；ADR-014 已裁决 go，2026-11-27） | 前置 = S-1 稳定 + Z3 独立复核往返（**已满足**）+ ADR-014 裁决（**已裁决**） | v1.3 候选 |
+| **S-3** | 可独立复核证明工件 v1：自产负环/线性证书（`--proof-format cert`）+ 第三方可实现的验证判据规范（**重定义：Alethe 仅文档旁路，不设旗标**；ADR-014 已裁决 go） **✅ 落地（v1.3.0，2026-11-27：S-3a 交付——`pred` 边下标单源出处 + `src/proofcert.js` 渲染 + 协议 §10 判据（归一/恒等式/冻结与实验性分层/覆盖率不承诺/six-row 承诺表）+ `tests/cert_check.mjs` 参考检查器（SMT 子集独立解析重算 + 三负例 3/3 + 多文件按文件节配对）+ 7 语料黄金；`uses_goal`(证书属性)/`vacuous`(eff 二次求解,仅 loop)双字段;无证书 proven 具名（constFalse/eqsplit/防御/!=/unrenderable）;判定面零校准（15 语料逐字节 + 4000 随机系统 {kind,cycle} 0 差异）;S-3b 旁路文档随 §6.4 落地;独立审查 APPROVE-with-minor 全修（λ 论证修正/多文件/限制登记）** | 前置 = S-1 稳定 + Z3 独立复核往返（**已满足**）+ ADR-014 裁决（**已裁决**） | **v1.3.0 交付** |
 | **S-4** | 契约桥 MVP（TS JSDoc → .mingi 契约桩 + 跨语言调用一致性检查） | S-1/S-2 落地 + 端到端示例 | v1.2–v1.3 |
 | **S-5+** | Agent 协议/参数化效果/WIT/证明缓存 | S-4 + 外部消费者门槛 | v1.3+/v2.0 |
 

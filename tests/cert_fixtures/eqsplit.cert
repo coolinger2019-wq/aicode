@@ -1,0 +1,22 @@
+; ===== Ming 线性不可满足证书(cert v1)=====
+; spec: ming-proof-protocol/1 · cert v1——判据与归一规则见 docs/proof-protocol.md §10;渲染面为实验性(消费者应解析结构,不应比较排版)。
+; 判据:每条引用约束规范为 Σ c_i x_i <= K_i;存在非负整数 λ 使 Σ λ_i c_i = 0(逐变量恒等)且 Σ λ_i K_i < 0 ⇒ 编码后的约束集在整数域不可满足。
+; 归一:(< a b) ⇒ a-b <= -1(整数语义);(<= a b) ⇒ a-b <= 0;(>= a b)/(> a b) ⇒ 取反对称;(= a b) ⇒ 拆双向(ref 行的 d0/d1);(not P) ⇒ 取 P 的对偶比较符再归一。
+; 覆盖边界:只覆盖已采集义务中判定来源为单一负环的 proven 方向;无证书的 proven 具名标注(常量矛盾/无单一负环),覆盖率不承诺(证明面扩面后可能出现无证书的 proven)。
+; 有效性:只证"该义务按本协议编码后的约束集不可满足";不证编码忠实于源码、不证运行时安全(proven 不消除 M4003 边界 panic)。
+; 引用序号 = 该方向块内 (assert ...) 的 1 起序(取反目标为末条),与 --proof-format smt-lib 同块同序;变量符号与 smt-lib 输出同一重写面。
+
+; ===== 文件:eqsplit.ming =====
+; ---- vc:eq:1 — 索引 n(scope: body)----
+; dir: low
+; verdict: proven
+; uses_goal: true
+; vacuous: false
+; refs: 3
+; ref 1: #1 d0 | norm: {i: -1} <= 0 | λ=1
+; ref 2: #2 d1 | norm: {i: 1, n: -1} <= 0 | λ=1
+; ref 3: #3 d0 | norm: {n: 1} <= -1 | λ=1
+; identity: Σc = 0(逐变量恒等) | ΣK = -1 (< 0)
+; dir: high
+; verdict: unknown
+; 无证书:内部未判定(unknown;目标未编码或超出差分片段)

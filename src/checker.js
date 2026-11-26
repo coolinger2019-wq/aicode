@@ -4430,6 +4430,10 @@ export class Checker {
     //    v0.57:循环内义务的假设集 = 函数 requires + 所在循环的区间约束(ob.extra);
     //    直线体义务的假设集不变(与 v0.56 逐字同一引用,零行为漂移)
     const cmpHold = (x, op, y) => op === '==' ? x === y : op === '<=' ? x <= y : op === '<' ? x < y : op === '>=' ? x >= y : x > y;
+    // v1.3.0 S-3a(ADR-014 §6.2,--proof-format cert):证书数据与真空判定都只在
+    // --proof-format cert 生效时计算(additive;不带旗标时本遍的行为与耗时零变化)。
+    const wantCert = this.options?.proofCert === true;
+    const certOpts = wantCert ? { cert: true } : null;
     const obResults = [];
     for (let oi = 0; oi < obligations.length; oi++) {
       const ob = obligations[oi];
@@ -4445,10 +4449,37 @@ export class Checker {
         this.proofVcs.push({ file: vcFile, abs: mod.absPath, fn: d.name, index: obIdx, scope: ob.scope ?? 'body', line: ob.span.line ?? null, col: ob.span.col ?? null, idxText: ob.idxText, form: null, lenVar: ob.lenVar, assumptions: eff, low: 'unknown', high: 'unknown' });
         continue;
       }
-      const lowOk = proveImplication(eff, { lhs: ob.form, op: '>=', rhs: linFromInt(0n) }).kind === 'proven';
-      const highOk = proveImplication(eff, { lhs: ob.form, op: '<', rhs: lf }).kind === 'proven';
+      // v1.3.0 S-3a:同一次判定顺带取证书(proven ⟺ 编码子集不可满足 ⟺ 负环/常量矛盾);
+      // 判定结论与不带旗标时逐字相同(proveImplication 纯函数,opts 只增不改)。
+      const lowRes = proveImplication(eff, { lhs: ob.form, op: '>=', rhs: linFromInt(0n) }, certOpts);
+      const highRes = proveImplication(eff, { lhs: ob.form, op: '<', rhs: lf }, certOpts);
+      const lowOk = lowRes.kind === 'proven';
+      const highOk = highRes.kind === 'proven';
+      // 真空判定(仅 scope:loop):对 eff(requires ⊕ 循环区间,**不含取反目标**)再做一次
+      // 差分求解;不可满足 ⇒ 该路径上不变式不承担义务(vacuous:true,诚实标注而非新语义)。
+      // body 作用域由第 2 步的可满足性门保证 eff 可满足 → 显式 false(无需第二次求解)。
+      // 与 uses_goal 互相独立:uses_goal 是纯证书属性,不能当真空检测器(ADR-014 §3.4)。
+      const vacuous = wantCert ? (ob.scope === 'loop' ? solveDiffConstraints(eff).kind === 'unsat' : false) : false;
+      // 断言序号对齐守卫:证书的 `#<n>` = 该方向块内 (assert ...) 的 1 起序,与
+      // --proof-format smt-lib 同序。该等式依赖"eff 每条假设都可渲染为 SMT 断言"
+      // (proofsmt 的 smtPredicate 只接受五比较符;当前 eff 由 requires 五比较符叶子 ⊕
+      // 区间约束构成,恒成立)。若未来 eff 引入不可渲染形态(如 !=),序号会错位 →
+      // 此处具名放弃证书(只会少证,绝不产出错序假证书)。
+      const certSeqOk = eff.every((a) => a && ['==', '<', '<=', '>', '>='].includes(a.op));
+      const attachCert = (v) => {
+        if (!wantCert) return v;
+        const certOf = (r) => {
+          if (!r || r.kind !== 'proven') return null;
+          if (!certSeqOk) return { refs: [], usesGoal: false, unavailable: 'unrenderable-assumption' };
+          return r.cert ?? null;
+        };
+        v.vacuous = vacuous;
+        v.lowCert = certOf(lowRes);
+        v.highCert = certOf(highRes);
+        return v;
+      };
       // v1.1 S-1:逐方向内部判定(proven = 该方向可证;refuted = 取反可证 = 有反例;unknown = 其余)
-      const vc = { file: vcFile, abs: mod.absPath, fn: d.name, index: obIdx, scope: ob.scope ?? 'body', line: ob.span.line ?? null, col: ob.span.col ?? null, idxText: ob.idxText, form: ob.form, lenVar: ob.lenVar, assumptions: eff, low: lowOk ? 'proven' : 'unknown', high: highOk ? 'proven' : 'unknown' };
+      const vc = attachCert({ file: vcFile, abs: mod.absPath, fn: d.name, index: obIdx, scope: ob.scope ?? 'body', line: ob.span.line ?? null, col: ob.span.col ?? null, idxText: ob.idxText, form: ob.form, lenVar: ob.lenVar, assumptions: eff, low: lowOk ? 'proven' : 'unknown', high: highOk ? 'proven' : 'unknown' });
       if (lowOk && highOk) {
         this.proofVcs.push(vc);
         obResults.push({ ob, kind: 'proven', obligation: `0 <= ${ob.idxText} && ${ob.idxText} < len$${ob.baseName}`, counterexample: null });

@@ -29,6 +29,14 @@
 //       ('$' 非合法标识符字符,不撞名)与区间两条线性约束 lo <= i$<n> < hi 只是普通变量与
 //       假设集条目,经 proveImplication 与既有 requires 假设合并求解;变量总数仍受
 //       MAX_PROVER_VARS 上限保护(超限 → too-many-vars → checker 侧静默,只会漏证)。
+//
+// v1.3.0(S-3a,ADR-014):可独立复核的线性(负环/Farkas)证书的**出处侧**。
+//   负环本身就是一份系数为 1 的 Farkas 证书(证书与判定是同一次计算的两个视图):
+//   环上边求和得 Σ c_i x_i = 0 且 Σ K_i < 0。本模块因此只做两件加法式改动:
+//   ① `pred` 存**边下标**(节点下标无法区分平行边);② opts.cert 时同次求解记录每条边的
+//   `{断言序号, 归一方向, 归一后的行}`,由 proveImplication 按取反目标下标标注 usesGoal。
+//   渲染在 src/proofcert.js(纯格式转换);判据与渲染分离,与 proofsmt.js 同族纪律。
+//   不开 opts.cert 时既有返回对象字段逐字不变(§56/§57 判定面零校准)。
 
 // ===================== 线性形式代数(v0.48 原样迁出) =====================
 // 线性形式:{ coeffs: Map<变量名, BigInt 系数>, c: BigInt 常数项 };系数 0 必须删除(规范形)。
@@ -127,8 +135,20 @@ function encodeLe(d, c, edges) {
 //                                          常量事实矛盾时 cycle 为 [])
 //   {kind:'too-many-vars'}              —— 变量总数超 MAX_PROVER_VARS(按全部约束的并集计,
 //                                          含不可编码约束中的变量 —— 超限一律放弃,保守)
+//   opts.cert === true 时,unsat 结果额外携带 `cert: {refs, constFalse}`(见下);其余字段不变。
 // 跳过不可编码约束(如系数 2a、a+b、!=)会削弱系统 → 可能漏证,绝不会误证(保守方向)。
-export function solveDiffConstraints(assumptions) {
+//
+// v1.3.0 S-3a(ADR-014 §6.2,--proof-format cert):可选的证书出处记录。
+//   opts.cert === true 时,同一次求解顺带记录**每条边的出处** `{ai, dir, row}`:
+//     ai  = 该边来自 assumptions[ai](断言序号,0 起);
+//     dir = toLePairs 产出的第几条归一约束(0 = 首条;'==' 拆双向时 1 = 反向);
+//     row = 归一后的约束 `Σ c_i x_i <= K`(coeffs = 变量系数,K = 右端常数;
+//           常数项已折叠进 K,锚点 SRC 不是变量、不出现于 coeffs)。
+//   出处必须与边一起记录(而不是事后按节点对反查):同一对节点之间可能有平行边
+//   ('==' 拆出的两条边、同一断言参与不同归一),按节点对反查会取错边 —— 那是"假证书"的来源。
+//   返回对象的既有字段在两种模式下逐字不变(不开 opts 时行为/形状零变化)。
+export function solveDiffConstraints(assumptions, opts = null) {
+  const wantCert = opts?.cert === true;
   // 变量收集(确定性:按首次出现序)
   const varNames = [];
   const seenVars = new Set();
@@ -144,28 +164,50 @@ export function solveDiffConstraints(assumptions) {
   const nodes = [...varNames, SRC];
   const nodeIdx = new Map(nodes.map((nm, i) => [nm, i]));
   const edges = [];
+  const edgeSrc = wantCert ? [] : null; // 边下标 → {ai, dir, row}(与 edges 一一对应)
   let constFalse = false;
-  for (const a of assumptions) {
+  let constFalseSrc = null; // 首条常量矛盾断言的出处(cert 模式;v1 不渲染,但如实具名)
+  for (let ai = 0; ai < assumptions.length; ai++) {
+    const a = assumptions[ai];
     const pairs = toLePairs(a.lhs, a.op, a.rhs);
     if (!pairs) continue; // '!=' 等不可编码 → 保守跳过
-    for (const { d, c } of pairs) {
-      if (encodeLe(d, c, edges) === 'constFalse') constFalse = true;
+    for (let di = 0; di < pairs.length; di++) {
+      const { d, c } = pairs[di];
+      const nEdgesBefore = edges.length;
+      const verdict = encodeLe(d, c, edges);
+      if (wantCert) {
+        // 归一后的行:变量系数原样 + 常数项折叠进 K(K = c - d.c;与 encodeLe 的边权同值)
+        const row = { coeffs: new Map(d.coeffs), K: c - d.c };
+        for (let ei = nEdgesBefore; ei < edges.length; ei++) edgeSrc.push({ ai, dir: di, row });
+        if (verdict === 'constFalse' && constFalseSrc === null) constFalseSrc = { ai, dir: di, row };
+      }
+      if (verdict === 'constFalse') constFalse = true;
     }
   }
-  if (constFalse) return { kind: 'unsat', cycle: [] }; // 常量事实矛盾(无变量负环)
+  if (constFalse) {
+    // 常量事实矛盾(无变量负环):既有形状 {kind, cycle:[]} 逐字不变;cert 模式附带出处
+    return wantCert
+      ? { kind: 'unsat', cycle: [], cert: { refs: [], constFalse: constFalseSrc } }
+      : { kind: 'unsat', cycle: [] };
+  }
 
   const n = nodes.length;
   // 全 0 初始化 Bellman-Ford:n 轮内收敛 ⟺ 无负环;第 n 轮仍可松弛 ⟺ 负环 → 不可满足。
   const dist = new Array(n).fill(0n);
-  const pred = new Array(n).fill(-1); // 前驱节点下标(负环提取用)
+  // 前驱**边**下标(负环提取用;v1.3.0 S-3a 由节点下标改为边下标——
+  // 节点下标无法区分平行边,证书引用必须能反查到具体断言)。
+  // 等价性:节点下标 predNode = edges[predEdge].u,既有 cycle 输出逐字不变。
+  const pred = new Array(n).fill(-1);
+  const prevNode = (ni) => (pred[ni] >= 0 ? nodeIdx.get(edges[pred[ni]].u) : -1);
   const relaxAll = () => {
     const updated = [];
-    for (const e of edges) {
+    for (let ei = 0; ei < edges.length; ei++) {
+      const e = edges[ei];
       const nd = dist[nodeIdx.get(e.u)] + e.w;
       const vi = nodeIdx.get(e.v);
       if (nd < dist[vi]) {
         dist[vi] = nd;
-        pred[vi] = nodeIdx.get(e.u);
+        pred[vi] = ei;
         updated.push(vi);
       }
     }
@@ -182,29 +224,40 @@ export function solveDiffConstraints(assumptions) {
   // 首个重现节点即环入口;锚点 SRC 可能在环上但不入输出。
   // 防御:链条异常中断(理论不可达)→ 返回 [](unsat 判定不受影响)。
   const cycle = [];
+  const certRefs = wantCert ? [] : null;
   for (let t = updated.length - 1; t >= 0 && cycle.length === 0; t--) {
     const order = new Map();
     let x = updated[t];
     while (x >= 0 && pred[x] >= 0 && !order.has(x)) {
       order.set(x, order.size);
-      x = pred[x];
+      x = prevNode(x);
     }
     if (x < 0 || !order.has(x)) continue; // 链条中断或未成环 → 换下一个起点
     const start = x;
     const ring = [start];
-    let y = pred[start];
+    let y = prevNode(start);
     while (y !== start && y >= 0 && ring.length <= n) {
       ring.push(y);
-      y = pred[y];
+      y = prevNode(y);
     }
     if (y === start && ring.length <= n) {
       for (const ni of ring) {
         if (nodes[ni] !== SRC) cycle.push(nodes[ni]);
       }
       cycle.reverse(); // 沿前驱回退得到逆序,翻转为环的正向
+      if (wantCert) {
+        // 证书引用 = 环上每条边的出处(断言序号 + 归一方向 + 归一后的行)。
+        // 环节点 ni 的前驱边即"从环上下一个节点指向 ni"的那条边;按**(断言序号, 归一方向)**
+        // 排序输出(假设采集序)——环的遍历序只是内部中间量,不得决定文本顺序,
+        // 否则同一判定换一个起点就会产出不同字节(确定性口径,ADR-014 §5.2)。
+        for (const ni of ring) certRefs.push(edgeSrc[pred[ni]]);
+        certRefs.sort((a, b) => a.ai - b.ai || a.dir - b.dir);
+      }
     }
   }
-  return { kind: 'unsat', cycle };
+  return wantCert
+    ? { kind: 'unsat', cycle, cert: { refs: certRefs } }
+    : { kind: 'unsat', cycle };
 }
 
 // ===================== 蕴含判定 =====================
@@ -220,38 +273,62 @@ export function solveDiffConstraints(assumptions) {
 //   {kind:'proven', cycle}  —— goal 在 assumptions 下成立(cycle 为不可满足性证据,信息性)
 //   {kind:'not-proven'}     —— 不成立或无法判定(保守:不证明就不放行)
 //   {kind:'too-many-vars'}  —— 变量超上限,放弃
-export function proveImplication(assumptions, goal) {
-  const verdict = (r) => {
-    if (r.kind === 'unsat') return { kind: 'proven', cycle: r.cycle };
+//
+// v1.3.0 S-3a(ADR-014 §6.2,--proof-format cert):opts.cert === true 时 proven 结果额外携带
+//   `cert` 字段(既有字段不变;opts 缺省时返回形状逐字不变):
+//     {refs:[{ai,dir,row}...], usesGoal: bool}      —— 单一负环证书;refs 按 (ai, dir) 排序,
+//                                                       usesGoal = 某条引用指向取反目标行
+//     {refs:[], usesGoal:false, unavailable:<原因>}  —— proven 但无单一负环(具名,不伪装)：
+//       'const-false'      常量矛盾(单条断言 LHS 为空;v1 不渲染该形态)
+//       'no-cycle'         防御性中断(理论不可达;cycle 为空)
+//       'goal-split'       目标为 == 双向拆分证明(两向各自成立,无单一环)
+//       'goal-conjunction' 目标取反为合取(!=;无单一环)
+export function proveImplication(assumptions, goal, opts = null) {
+  const wantCert = opts?.cert === true;
+  // 取反目标在叶子求解 assumptions 数组中的下标:'<=' / '<' 各追加恰好一条约束。
+  const goalAi = assumptions.length;
+  const verdict = (r, unavailable = null) => {
+    if (r.kind === 'unsat') {
+      if (!wantCert) return { kind: 'proven', cycle: r.cycle };
+      if (unavailable !== null) return { kind: 'proven', cycle: r.cycle, cert: { refs: [], usesGoal: false, unavailable } };
+      const c = r.cert ?? null;
+      if (c && c.constFalse) return { kind: 'proven', cycle: r.cycle, cert: { refs: [], usesGoal: false, unavailable: 'const-false' } };
+      if (!c || c.refs.length === 0) return { kind: 'proven', cycle: r.cycle, cert: { refs: [], usesGoal: false, unavailable: 'no-cycle' } };
+      const refs = [...c.refs].sort((x, y) => x.ai - y.ai || x.dir - y.dir);
+      return { kind: 'proven', cycle: r.cycle, cert: { refs, usesGoal: refs.some((x) => x.ai === goalAi) } };
+    }
     if (r.kind === 'too-many-vars') return r;
     return { kind: 'not-proven' };
   };
   switch (goal.op) {
     case '==': {
-      const r1 = proveImplication(assumptions, { lhs: goal.lhs, op: '<=', rhs: goal.rhs });
+      const r1 = proveImplication(assumptions, { lhs: goal.lhs, op: '<=', rhs: goal.rhs }, opts);
       if (r1.kind !== 'proven') return r1;
-      const r2 = proveImplication(assumptions, { lhs: goal.lhs, op: '>=', rhs: goal.rhs });
+      const r2 = proveImplication(assumptions, { lhs: goal.lhs, op: '>=', rhs: goal.rhs }, opts);
       if (r2.kind !== 'proven') return r2;
-      return { kind: 'proven', cycle: [] }; // 双向各自成立,无单一负环证据
+      // 双向各自成立,无单一负环证据
+      return wantCert
+        ? { kind: 'proven', cycle: [], cert: { refs: [], usesGoal: false, unavailable: 'goal-split' } }
+        : { kind: 'proven', cycle: [] };
     }
     case '!=': {
       return verdict(solveDiffConstraints([...assumptions,
         { lhs: goal.lhs, op: '<=', rhs: goal.rhs },
         { lhs: goal.lhs, op: '>=', rhs: goal.rhs },
-      ]));
+      ]), wantCert ? 'goal-conjunction' : null);
     }
     case '<=': {
       return verdict(solveDiffConstraints([...assumptions,
         { lhs: goal.lhs, op: '>=', rhs: linAdd(goal.rhs, linFromInt(1n), 1n) },
-      ]));
+      ], wantCert ? { cert: true } : null));
     }
     case '<': {
       return verdict(solveDiffConstraints([...assumptions,
         { lhs: goal.lhs, op: '>=', rhs: goal.rhs },
-      ]));
+      ], wantCert ? { cert: true } : null));
     }
-    case '>=': return proveImplication(assumptions, { lhs: goal.rhs, op: '<=', rhs: goal.lhs });
-    case '>': return proveImplication(assumptions, { lhs: goal.rhs, op: '<', rhs: goal.lhs });
+    case '>=': return proveImplication(assumptions, { lhs: goal.rhs, op: '<=', rhs: goal.lhs }, opts);
+    case '>': return proveImplication(assumptions, { lhs: goal.rhs, op: '<', rhs: goal.lhs }, opts);
     default: return { kind: 'not-proven' }; // 未知 op:保守不证明
   }
 }

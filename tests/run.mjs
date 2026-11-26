@@ -24,7 +24,7 @@
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
 //   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
-//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115 116
+//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115 116 117
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
 //   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116', '117'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -27826,9 +27826,9 @@ secBegin('113');
   // v113.3 未知取值拒绝(空格形式 + 等号形式):不静默,exit 1,不输出脚本
   const r113u1 = runMing(['check', okF, '--proof-format', 'json']);
   const r113u2 = runMing(['check', okF, '--proof-format=json']);
-  check('v113.3:未知取值拒绝(--proof-format json / =json 两形式)——exit 1 + stderr 具名 + 无脚本输出',
-    r113u1.code === 1 && r113u1.stderr.includes('--proof-format 仅支持 "smt-lib"') && r113u1.stderr.includes('"json"') && !r113u1.stdout.includes('set-logic')
-    && r113u2.code === 1 && r113u2.stderr.includes('仅支持 "smt-lib"') && r113u2.stderr.includes('"json"'),
+  check('v113.3:未知取值拒绝(--proof-format json / =json 两形式)——exit 1 + stderr 具名(消息同时列出 smt-lib 与 cert;v1.3.0 取值扩展)+ 无脚本输出',
+    r113u1.code === 1 && r113u1.stderr.includes('--proof-format 仅支持 "smt-lib" 或 "cert"') && r113u1.stderr.includes('"json"') && !r113u1.stdout.includes('set-logic')
+    && r113u2.code === 1 && r113u2.stderr.includes('仅支持 "smt-lib" 或 "cert"') && r113u2.stderr.includes('"json"'),
     `space=${r113u1.code}/${JSON.stringify(r113u1.stderr.slice(0, 80))} eq=${r113u2.code}/${JSON.stringify(r113u2.stderr.slice(0, 80))}`);
 
   // v113.4 缺值拒绝(解析层)
@@ -29612,6 +29612,301 @@ secBegin('116');
     r116.status === 0 && /fixture 黄金:6\/6 逐字节一致/.test(r116.stdout ?? ''),
     'code=' + r116.status + ' out=' + JSON.stringify((r116.stdout ?? '').slice(0, 240)) + ' err=' + JSON.stringify((r116.stderr ?? '').slice(0, 160)));
 }
+
+
+// ===================== §117 S-3a:自产线性(负环/Farkas 型)证书(v1.3.0,ADR-014 §6.2)====================
+secBegin('117');
+{
+  // 证书 = 判定阶段负环的直接视图:`Σ λ_i c_i = 0`(逐变量)且 `Σ λ_i K_i < 0`。
+  // 面覆盖:旗标值矩阵(新增 cert 取值 / 未知值具名)、文本形状、proven/loop/vacuous/常量矛盾/
+  // 不可线性化/保留字符号面、uses_goal 与 vacuous 两字段独立、`--json` additive `proof_cert`、
+  // 无旗标零变化、`--proof-manifest` 具名拒绝、`--proof-report` 并存、多文件分节(含**同名
+  // vc:<fn>:<n> 按文件节分家**)、零义务、参考检查器(tests/cert_check.mjs)全绿 + 三负例经
+  // import 直测、SMT 输出零变化、run 不消费、纵深防御原因渲染契约。
+  // 规范:docs/proof-protocol.md §10(证书);渲染:src/proofcert.js(纯函数,证书数据由 prover 同次求解产出)。
+  const dir117 = path.join(TMP, 'v117');
+  fs.mkdirSync(dir117, { recursive: true });
+  const mk117 = (name, src) => { const f = path.join(dir117, name); fs.writeFileSync(f, src.endsWith('\n') ? src : src + '\n', 'utf8'); return f; };
+  const CERT_HEAD_117 = '; ===== Ming 线性不可满足证书(cert v1)=====';
+
+  const ok117 = mk117('ok.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1))); }',
+  ].join('\n'));
+  const bad117 = mk117('bad.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+  ].join('\n'));
+  const loop117 = mk117('loop.ming', [
+    'fn sum(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    let mut s = 0;',
+    '    for i in 0..n { s += buf[i]; }',
+    '    return s;',
+    '}',
+    'fn main() with io { print(str(sum([1, 2, 3], 3))); }',
+  ].join('\n'));
+  const vac117 = mk117('vac.ming', [
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    let mut s = 0;',
+    '    for k in 0..0 { s += buf[k]; }',
+    '    return s;',
+    '}',
+    'fn main() with io { print(str(f([1, 2], 2))); }',
+  ].join('\n'));
+  const const117 = mk117('const.ming', [
+    'fn c(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    return buf[0];',
+    '}',
+    'fn main() with io { print(str(c([1, 2], 2))); }',
+  ].join('\n'));
+  const nl117 = mk117('nl.ming', [
+    'fn nl(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+    '    return buf[n * n];',
+    '}',
+    'fn main() with io { print(str(nl([1], 1))); }',
+  ].join('\n'));
+  const resv117 = mk117('resv.ming', [
+    'fn r(div: i64, buf: Vec[i64]) -> i64 requires div >= 0 && div < buf.len() {',
+    '    return buf[div];',
+    '}',
+    'fn main() with io { print(str(r(0, [1]))); }',
+  ].join('\n'));
+  const empty117 = mk117('empty.ming', 'fn main() with io { print("hi"); }');
+
+  // v117.1 文本模式:cert 取值被接受;stdout 为纯证书(头行/末行/全行注释面);stderr 空;exit 0
+  const r117ok = runMing(['check', ok117, '--proof-format', 'cert']);
+  const lines117ok = r117ok.stdout.split('\n');
+  check('v117.1:cert 取值接受——exit 0/stderr 空/stdout 首行为证书头、末尾恰一个换行、非空行全部以 ; 起行(纯注释面)',
+    r117ok.code === 0 && r117ok.stderr === '' && r117ok.stdout.startsWith(CERT_HEAD_117 + '\n')
+    && r117ok.stdout.endsWith('\n') && !r117ok.stdout.endsWith('\n\n')
+    && lines117ok.filter((l) => l !== '').every((l) => l.startsWith(';')),
+    `code=${r117ok.code} stderr=${JSON.stringify(r117ok.stderr.slice(0, 120))} head=${JSON.stringify(r117ok.stdout.slice(0, 60))} tail=${JSON.stringify(r117ok.stdout.slice(-40))}`);
+
+  // v117.2 违反语料:退出码口径零变化(exit 1 + M3045 走 stderr),证书文本仍在 stdout(不坍缩)
+  const r117bad = runMing(['check', bad117, '--proof-format', 'cert']);
+  check('v117.2:违反语料退出码零变化——exit 1 + M3045 走 stderr + stdout 仍为完整证书(无诊断文本混入)',
+    r117bad.code === 1 && r117bad.stderr.includes('M3045[index-bounds-violated]')
+    && r117bad.stdout.startsWith(CERT_HEAD_117) && r117bad.stdout.includes('; verdict: refuted') && !r117bad.stdout.includes('M3045'),
+    `code=${r117bad.code} stderr=${JSON.stringify(r117bad.stderr.slice(0, 120))}`);
+
+  // v117.3 取值矩阵:cert 合法;json / alethe / =json 一律具名拒绝(消息同时列两取值);无 stdout 泄漏
+  const r117j = runMing(['check', ok117, '--proof-format', 'json']);
+  const r117a = runMing(['check', ok117, '--proof-format', 'alethe']);
+  const r117je = runMing(['check', ok117, '--proof-format=json']);
+  check('v117.3:取值矩阵——json / alethe(=json 等号形式)三形态 exit 1 + stderr 含 \'仅支持 "smt-lib" 或 "cert"\' + 回显取值 + 零证书输出(ADR-014:不提供 alethe 旗标)',
+    r117j.code === 1 && r117j.stderr.includes('仅支持 "smt-lib" 或 "cert"') && r117j.stderr.includes('"json"') && r117j.stdout === ''
+    && r117a.code === 1 && r117a.stderr.includes('"alethe"') && r117a.stdout === ''
+    && r117je.code === 1 && r117je.stderr.includes('"json"') && r117je.stdout === '',
+    `json=${r117j.code}/${JSON.stringify(r117j.stderr.slice(0, 90))} alethe=${r117a.code} eq=${r117je.code}`);
+
+  // v117.4 逐字节确定性:独立进程双跑 stdout/stderr 一致(无时间戳/无随机序;引用按假设采集序)
+  const r117d1 = runMing(['check', bad117, '--proof-format', 'cert']);
+  const r117d2 = runMing(['check', bad117, '--proof-format', 'cert']);
+  check('v117.4:逐字节确定性——两遍 stdout/stderr/退出码完全一致',
+    r117d1.stdout === r117d2.stdout && r117d1.stderr === r117d2.stderr && r117d1.code === r117d2.code,
+    `len=${r117d1.stdout.length}/${r117d2.stdout.length}`);
+
+  // v117.5 proven 证书形状:两方向 proven,uses_goal=true,vacuous=false,refs=2,identity ΣK=-1
+  const dirs117 = (txt) => txt.split(/(?=^; dir: )/m).filter((s) => s.startsWith('; dir: '));
+  const okDirs117 = dirs117(r117ok.stdout);
+  const okLow117 = okDirs117[0] ?? '';
+  const okHigh117 = okDirs117[1] ?? '';
+  check('v117.5:proven 证书形状——low/high 各 proven + uses_goal:true + vacuous:false + refs:2 + identity ΣK = -1 (< 0)',
+    okDirs117.length === 2
+    && okLow117.includes('; verdict: proven') && okLow117.includes('; uses_goal: true') && okLow117.includes('; vacuous: false')
+    && okLow117.includes('; refs: 2') && okLow117.includes('; identity: Σc = 0(逐变量恒等) | ΣK = -1 (< 0)')
+    && okHigh117.includes('; verdict: proven') && okHigh117.includes('; refs: 2') && okHigh117.includes('| ΣK = -1 (< 0)'),
+    `dirs=${okDirs117.length} low=${JSON.stringify(okLow117.slice(0, 200))}`);
+
+  // v117.6 引用归一值逐字(判据的归一规则在输出面可见):low = {i:-1}<=0 / {i:1}<=-1;high 含 len$buf
+  check('v117.6:引用归一逐字——low 引用 #1/#3 = `{i: -1} <= 0` 与 `{i: 1} <= -1`;high = `{i: 1, len$buf: -1} <= -1` 与 `{i: -1, len$buf: 1} <= 0`(取反目标为末条断言 #3)',
+    okLow117.includes('; ref 1: #1 d0 | norm: {i: -1} <= 0 | λ=1')
+    && okLow117.includes('; ref 2: #3 d0 | norm: {i: 1} <= -1 | λ=1')
+    && okHigh117.includes('; ref 1: #2 d0 | norm: {i: 1, len$buf: -1} <= -1 | λ=1')
+    && okHigh117.includes('; ref 2: #3 d0 | norm: {i: -1, len$buf: 1} <= 0 | λ=1'),
+    `low=${JSON.stringify(okLow117.slice(0, 400))}`);
+
+  // v117.7 loop 作用域:scope 注记 + i$0 符号参与 + high 3 引用;非真空(vacuous:false)
+  const r117loop = runMing(['check', loop117, '--proof-format', 'cert']);
+  check('v117.7:loop 作用域——`(scope: loop)` 注记 + 引用含 i$0 符号 + high 恰 3 引用 + vacuous:false(requires 与区间相容)',
+    r117loop.code === 0 && r117loop.stdout.includes('(scope: loop)') && r117loop.stdout.includes('i$0')
+    && r117loop.stdout.includes('; refs: 3') && r117loop.stdout.includes('; vacuous: false')
+    && !r117loop.stdout.includes('; vacuous: true'),
+    `code=${r117loop.code} refs3=${r117loop.stdout.includes('; refs: 3')} vac=${r117loop.stdout.includes('; vacuous: true')}`);
+
+  // v117.8 vacuous 实锤:空区间 0..0 ⇒ eff 自身矛盾;uses_goal:false(不引用取反目标)且 vacuous:true
+  // —— 两字段互相独立(ADR-014 §3.4:uses_goal 不是真空检测器)
+  const r117vac = runMing(['check', vac117, '--proof-format', 'cert']);
+  const vacDirs117 = dirs117(r117vac.stdout);
+  check('v117.8:vacuous 两字段独立——空区间语料两方向 uses_goal:false + vacuous:true(证书不含取反目标引用,而 eff 自身不可满足)',
+    r117vac.code === 0 && vacDirs117.length === 2
+    && vacDirs117.every((d) => d.includes('; uses_goal: false') && d.includes('; vacuous: true'))
+    && !r117vac.stdout.includes('; uses_goal: true'),
+    `dirs=${vacDirs117.length} ${JSON.stringify(vacDirs117[0]?.slice(0, 160))}`);
+
+  // v117.9 常量矛盾:proven 但无单一负环 → 具名"无证书"(不伪装成已证)、uses_goal:n/a;high unknown
+  const r117const = runMing(['check', const117, '--proof-format', 'cert']);
+  check('v117.9:proven 无证书具名——常量索引 low 为 proven 但输出 `; 无证书:常量矛盾(...)` + uses_goal:n/a + 零 ref 行;high unknown 无证书',
+    r117const.code === 0
+    && r117const.stdout.includes('; dir: low\n; verdict: proven\n; uses_goal: n/a\n; vacuous: false\n; 无证书:常量矛盾')
+    && r117const.stdout.includes('; dir: high\n; verdict: unknown\n; 无证书:内部未判定')
+    && !r117const.stdout.includes('; refs:'),
+    `code=${r117const.code} out=${JSON.stringify(r117const.stdout.slice(-320))}`);
+
+  // v117.10 不可线性化(n*n):目标未编码 ⇒ 两方向 unknown + 具名无证书;零引用
+  const r117nl = runMing(['check', nl117, '--proof-format', 'cert']);
+  check('v117.10:不可线性化义务——两方向 verdict:unknown + `; 无证书:内部未判定` 具名 + 零引用行',
+    r117nl.code === 0 && (r117nl.stdout.match(/; verdict: unknown/g) ?? []).length === 2
+    && (r117nl.stdout.match(/; 无证书:内部未判定/g) ?? []).length === 2 && !r117nl.stdout.includes('; ref '),
+    `code=${r117nl.code} unk=${(r117nl.stdout.match(/; verdict: unknown/g) ?? []).length}`);
+
+  // v117.11 保留字符号面:参数 div 在证书里按 smt-lib 同一重写面呈现为 div_v(两件工件可互相对照)
+  const r117resv = runMing(['check', resv117, '--proof-format', 'cert']);
+  check('v117.11:保留字重写同面——证书 norm 行使用 div_v(与 --proof-format smt-lib 的符号重写同一口径)',
+    r117resv.code === 0 && r117resv.stdout.includes('div_v') && !/norm: \{div:/.test(r117resv.stdout),
+    `code=${r117resv.code} has=${r117resv.stdout.includes('div_v')} out=${JSON.stringify(r117resv.stdout.slice(-260))}`);
+
+  // v117.12 --json additive:proof_cert 为字符串且与文本模式 stdout 逐字相同(同一构造);
+  // 违反语料(ok:false)同样携带(纯输出选项,不随判定存亡)
+  const r117jc = runMing(['check', bad117, '--json', '--proof-format', 'cert']);
+  let j117c = null;
+  try { j117c = JSON.parse(r117jc.stdout); } catch { /* 下方具名失败 */ }
+  check('v117.12:--json additive——顶层 proof_cert 字符串 == 文本模式 stdout 逐字相同;ok:false 语料同样携带',
+    r117jc.code === 1 && typeof j117c?.proof_cert === 'string' && j117c.proof_cert === r117bad.stdout
+    && j117c.ok === false && !('proof_smt' in (j117c ?? {})),
+    `code=${r117jc.code} keys=${JSON.stringify(Object.keys(j117c ?? {}))} same=${j117c?.proof_cert === r117bad.stdout}`);
+
+  // v117.13 无旗标零变化:--json 键集恰 [ok, diagnostics];--proof-report 义务条目键集仍为既有 9 键;
+  // 文本模式零输出;双跑逐字节一致(与 §113.18 同一口径,本位锁 cert 侧无泄漏)
+  const r117base1 = runMing(['check', bad117, '--json']);
+  const r117base2 = runMing(['check', bad117, '--json']);
+  const r117baseText = runMing(['check', bad117]);
+  const j117base = JSON.parse(r117base1.stdout);
+  const r117rep = runMing(['check', bad117, '--json', '--proof-report']);
+  const j117rep = JSON.parse(r117rep.stdout);
+  const obKeys117 = Object.keys(j117rep.proofs.functions[0].obligations[0]);
+  const wantObKeys117 = ['file', 'fn', 'index', 'kind', 'obligation', 'line', 'col', 'counterexample', 'scope'];
+  check('v117.13:无旗标零变化——--json 顶层键集恰 [ok,diagnostics](无 proof_cert/proof_smt);--proof-report 义务条目仍 9 键;文本模式 stdout 空;双跑逐字节一致',
+    JSON.stringify(Object.keys(j117base)) === JSON.stringify(['ok', 'diagnostics'])
+    && JSON.stringify(obKeys117) === JSON.stringify(wantObKeys117)
+    && r117baseText.stdout === '' && r117base1.stdout === r117base2.stdout,
+    `keys=${JSON.stringify(Object.keys(j117base))} obKeys=${JSON.stringify(obKeys117)} text=${JSON.stringify(r117baseText.stdout.slice(0, 40))}`);
+
+  // v117.14 --proof-manifest 只与 smt-lib 同用:cert 模式 → exit 1 具名 + 不写盘 + 零证书输出
+  const manifest117 = path.join(dir117, 'c.manifest.json');
+  const r117mf = runMing(['check', ok117, '--proof-format', 'cert', '--proof-manifest', manifest117]);
+  check('v117.14:--proof-manifest 与 cert 同用 → exit 1 具名(`需要与 --proof-format smt-lib 同用`)+ 零 stdout + 零落盘',
+    r117mf.code === 1 && r117mf.stderr.includes('--proof-manifest 需要与 --proof-format smt-lib 同用')
+    && r117mf.stdout === '' && !fs.existsSync(manifest117),
+    `code=${r117mf.code} stderr=${JSON.stringify(r117mf.stderr.slice(0, 100))} exists=${fs.existsSync(manifest117)}`);
+
+  // v117.15 --proof-report 并存:文本 stdout = 摘要行 + 证书(顺序固定);JSON proofs 与 proof_cert 共存
+  const r117pr = runMing(['check', bad117, '--proof-report', '--proof-format', 'cert']);
+  const certAt117 = r117pr.stdout.indexOf(CERT_HEAD_117);
+  const r117prj = runMing(['check', bad117, '--json', '--proof-report', '--proof-format', 'cert']);
+  const j117pr = JSON.parse(r117prj.stdout);
+  check('v117.15:--proof-report 并存——stdout 先摘要行(`义务 1`)后证书;JSON proofs 与 proof_cert 同对象共存',
+    r117pr.code === 1 && certAt117 > 0 && r117pr.stdout.slice(0, certAt117).includes('义务 1')
+    && typeof j117pr?.proof_cert === 'string' && Array.isArray(j117pr?.proofs?.functions),
+    `code=${r117pr.code} certAt=${certAt117} head=${JSON.stringify(r117pr.stdout.slice(0, 60))}`);
+
+  // v117.16 多文件:文件分节按命令行顺序;每文件义务独立
+  const r117m = runMing(['check', loop117, ok117, '--proof-format', 'cert']);
+  const files117 = [...r117m.stdout.matchAll(/^; ===== 文件:(.+) =====$/gm)].map((m) => m[1]);
+  check('v117.16:多文件——两处文件分节按命令行顺序(loop 前 ok 后);每文件证书各自 refs 计数',
+    r117m.code === 0 && files117.length === 2 && files117[0].endsWith('loop.ming') && files117[1].endsWith('ok.ming')
+    && r117m.stdout.includes('; refs: 3') && r117m.stdout.includes('; refs: 2'),
+    `code=${r117m.code} files=${JSON.stringify(files117)}`);
+
+  // v117.17 零义务:头注 + `; 无证明义务`(空证书不伪装成有结论)
+  const r117e = runMing(['check', empty117, '--proof-format', 'cert']);
+  check('v117.17:零义务——头注 + `; 无证明义务`,零 dir/ref 行,exit 0',
+    r117e.code === 0 && r117e.stdout.startsWith(CERT_HEAD_117 + '\n') && r117e.stdout.trimEnd().endsWith('; 无证明义务')
+    && !r117e.stdout.includes('; dir:') && !r117e.stdout.includes('; ref '),
+    `code=${r117e.code} tail=${JSON.stringify(r117e.stdout.slice(-40))}`);
+
+  // v117.18 参考检查器(tests/cert_check.mjs)本地门槛:全绿(含 fixture 逐字节 + 三负例)
+  const r117cc = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'cert_check.mjs')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  check('v117.18:参考检查器全绿——cert_check.mjs exit 0 + "三负例 3/3 判失败" + fixture 7/7 逐字节一致(含多文件语料)',
+    r117cc.status === 0 && /三负例 3\/3 判失败/.test(r117cc.stdout ?? '') && /fixture 黄金:7\/7 逐字节一致/.test(r117cc.stdout ?? ''),
+    'code=' + r117cc.status + ' out=' + JSON.stringify((r117cc.stdout ?? '').slice(-240)) + ' err=' + JSON.stringify((r117cc.stderr ?? '').slice(0, 160)));
+
+  // v117.19 三负例经 import 直测(篡改系数 / 引用块外约束 / 漏引用):好证书必须通过,
+  // 三个篡改必须**因对应判据**被拒(负例名义与实测一致才有效)
+  const { verifyCertificate: verify117, mutateCoefficient: mutCoef117, mutateOutOfBlock: mutBlock117, mutateMissingRef: mutMiss117 } =
+    await import('../tests/cert_check.mjs');
+  const smt117 = runMing(['check', ok117, '--proof-format', 'smt-lib']);
+  const good117 = verify117(r117ok.stdout, smt117.stdout);
+  const neg117 = [
+    ['篡改系数', mutCoef117(r117ok.stdout), '篡改系数'],
+    ['引用块外', mutBlock117(r117ok.stdout), '块外引用'],
+    ['漏引用', mutMiss117(r117ok.stdout), 'Σλc'],
+  ].map(([name, text, want]) => {
+    if (text === null) return `${name}:未命中`;
+    const v = verify117(text, smt117.stdout);
+    return `${name}:${!v.ok && v.errors.some((e) => e.includes(want)) ? 'ok' : 'FAIL'}`;
+  });
+  check('v117.19:三负例直测——好证书 verify 通过;篡改系数/引用块外/漏引用三形态各自因对应判据被拒',
+    good117.ok === true && good117.checks.identities === 2 && neg117.join(',') === '篡改系数:ok,引用块外:ok,漏引用:ok',
+    `good=${good117.ok}/${good117.checks.identities} neg=${neg117.join(',')} errs=${JSON.stringify(good117.errors.slice(0, 2))}`);
+
+  // v117.20 SMT 输出零变化:同类语料的 smt-lib 输出不含证书头/证书字段;--json 无 proof_cert
+  const r117smt = runMing(['check', ok117, '--json', '--proof-format', 'smt-lib']);
+  const j117smt = JSON.parse(r117smt.stdout);
+  check('v117.20:SMT 输出零变化——smt-lib 模式 stdout 首行仍 (set-logic QF_LIA)、无证书头/无 `; dir:` 行;JSON 有 proof_smt 无 proof_cert',
+    r117smt.code === 0 && typeof j117smt?.proof_smt === 'string' && j117smt.proof_smt.startsWith('(set-logic QF_LIA)\n')
+    && !('proof_cert' in (j117smt ?? {})) && !j117smt.proof_smt.includes(CERT_HEAD_117) && !j117smt.proof_smt.includes('; dir: '),
+    `code=${r117smt.code} keys=${JSON.stringify(Object.keys(j117smt ?? {}))}`);
+
+  // v117.21 其他命令不消费:run 忽略 cert 取值(程序照常运行,非证书输出)
+  const r117run = runMing(['run', empty117, '--proof-format', 'cert']);
+  check('v117.21:ming run 不消费旗标——输出 hi(非证书文本),exit 0',
+    r117run.code === 0 && r117run.stdout === 'hi\n' && !r117run.stdout.includes(CERT_HEAD_117),
+    `code=${r117run.code} out=${JSON.stringify(r117run.stdout.slice(0, 40))}`);
+
+  // v117.22 纵深防御具名原因:渲染层对 checker 的"断言序号对齐守卫"原因
+  // (`unrenderable-assumption`)有逐字文本——用合成 VC 直测(该守卫在当前语言面无触发形态,
+  // 登记为防御:未来 eff 引入不可渲染形态时只少证、不产错序证书)
+  const { buildCerts: build117, renderCertScript: render117 } = await import('../src/proofcert.js');
+  const synth117 = [{
+    vcs: [{
+      file: 'synth.ming', abs: 'synth.ming', fn: 'f', index: 1, scope: 'body', idxText: 'i',
+      form: { coeffs: new Map([['i', 1n]]), c: 0n }, lenVar: 'len$buf',
+      assumptions: [{ lhs: { coeffs: new Map([['i', 1n]]), c: 0n }, op: '>=', rhs: { coeffs: new Map(), c: 0n } }],
+      low: 'proven', high: 'unknown', vacuous: false,
+      lowCert: { refs: [], usesGoal: false, unavailable: 'unrenderable-assumption' },
+      highCert: null,
+    }],
+  }];
+  const synthText117 = render117(build117(synth117));
+  // 注:certSeqOk 守卫(filter: eff 每条假设可渲染为 SMT 断言)在当前语言面**不可达** ——
+  // eff 恒由 requires 五比较符叶子 ⊕ 区间约束构成;本位测的是"渲染契约"(具名原因不会被静默吞掉),
+  // 不是可达路径。
+  check('v117.22:渲染层具名原因(守卫当前语言面不可达,测渲染契约)——合成 VC 的 `unrenderable-assumption` 渲染为 `; 无证书:该方向的假设集含不可渲染为 SMT 断言的形态(...)` + uses_goal:n/a',
+    synthText117.includes('; verdict: proven') && synthText117.includes('; uses_goal: n/a')
+    && synthText117.includes('; 无证书:该方向的假设集含不可渲染为 SMT 断言的形态') && !synthText117.includes('; ref '),
+    `out=${JSON.stringify(synthText117.slice(-260))}`);
+
+  // v117.23 多文件同名 vc(审查 m5):两个文件都有 `fn get` → 证书与 SMT 脚本里都出现
+  // `vc:get:1`;证书必须**按文件节分家**(不合并、不误判"块重复"),参考检查器按
+  // (文件节, vc, dir) 配对复核通过 —— 这是"跨工件对照"在多文件工件的正确口径。
+  const dupA = mk117('dupa.ming', fs.readFileSync(ok117, 'utf8'));
+  const dupB = mk117('dupb.ming', fs.readFileSync(ok117, 'utf8'));
+  const r117dup = runMing(['check', dupA, dupB, '--proof-format', 'cert']);
+  const smt117dup = runMing(['check', dupA, dupB, '--proof-format', 'smt-lib']);
+  const dupFiles117 = [...r117dup.stdout.matchAll(/^; ===== 文件:(.+) =====$/gm)].map((m) => m[1]);
+  const dupVc117 = [...r117dup.stdout.matchAll(/^; ---- vc:get:1 /gm)].length;
+  const vDup117 = verify117(r117dup.stdout, smt117dup.stdout);
+  check('v117.23:多文件同名 vc——两文件各一节 vc:get:1(文件节分家、不合并);参考检查器按 (文件节,vc,dir) 配对复核通过(4 恒等式)',
+    r117dup.code === 0 && dupFiles117.length === 2 && dupFiles117[0].endsWith('dupa.ming') && dupFiles117[1].endsWith('dupb.ming')
+    && dupVc117 === 2 && vDup117.ok === true && vDup117.checks.identities === 4,
+    `code=${r117dup.code} files=${JSON.stringify(dupFiles117)} vcs=${dupVc117} ok=${vDup117.ok}/${vDup117.checks.identities} errs=${JSON.stringify(vDup117.errors.slice(0, 2))}`);
+}
+// ---- §117-END
 
 
 secEndAll();

@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v1.3.0 | 2026-11-27 | 自产线性证书(S-3a/ADR-014):`ming check --proof-format cert`——判定阶段负环即系数为 1 的 Farkas 证书,判据自包含(整数算术,第三方数十行可复核);`uses_goal`/`vacuous` 双字段;覆盖率不承诺、无证书 proven 具名;`tests/cert_check.mjs` 参考检查器(独立重算+三负例)+ 7 语料黄金 | 1809 |
 | v1.2.6 | 2026-11-27 | provenance manifest(R-20/ADR-013):`--proof-manifest <path>` 出处清单(采集 pass 指纹/源 sha256/integer_model/engine_contract/义务判定表/solver:null 回填位;项目相对路径、覆盖源拒绝、8 键确定性；`--json` additive `proof_manifest`) | 1786 |
 | v1.2.5 | 2026-11-27 | 操作数求值序收口(#93:比较/f64/位运算按源码序物化,条件位双面)+ 死分支处置(#94:`<<=`/`>>=` 三站点删除/防御断言)+ ADR-013/014 裁决(provenance manifest go;S-3 重定义为可独立复核证明工件——自产负环/线性证书,Alethe 降为文档旁路) | 1776 |
 | v1.2.4 | 2026-11-27 | 守卫求值序(#92:`/ % << >>` 与 `+ - *` 操作数按源码序物化,panic 首行对齐、消息零漂移,顺带关闭 #91 算术/移位面)+ SMT-LIB golden fixtures(R-19:六语料逐字节黄金,fixture 比对无 z3 也执行,§116 本地门槛) | 1767 |
@@ -279,8 +280,8 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v1.2.6**(2026-11-27) |
-| 回归测试 | **1786 项全绿**(§1–§116;每次全量运行) |
+| 当前版本 | **v1.3.0**(2026-11-27) |
+| 回归测试 | **1809 项全绿**(§1–§117;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.1% 行 / 90.9% 函数**(v0.96 复测 2026-11-20;16 文件含 opt.js 99.3%/100%;vm.js 函数 76.6%) |
 | 自举工具 | **14 个**(Ming 自写;`ming tools` 统一入口) |
@@ -288,4 +289,4 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 | 运行要求 | Node.js ≥ 18,零第三方依赖;C 后端需 gcc/clang |
 | 构建产物 | `ming build` AOT 字节码(内容寻址缓存);`ming cc` C 原生可执行 |
 
-下一步:S-3a 自产线性证书切片(ADR-014 已裁决,v1.3 候选——负环即 Farkas 证书)/ R-19 覆盖扩面(保留字/多文件/不可线性化 fixtures)/ manifest v2(证书指纹位,随 S-3a);按 [docs/plan.md](docs/plan.md) §4.20 P2 与 §5.1 推进。
+下一步:R-19 覆盖扩面(保留字/不可线性化 fixtures)/ manifest v2(证书指纹位)/ R-21 Alethe 观察项(门槛三条)/ 外部消费者接触;按 [docs/plan.md](docs/plan.md) §4.20 P2 与 §5.1 推进。
