@@ -574,8 +574,21 @@ class CEmit {
     if (op === '&' || op === '|' || op === '^') {
       return `(${this.emitExpr(e.l, lt, ctx)} ${op} ${this.emitExpr(e.r, lt, ctx)})`;
     }
-    const a = this.emitExpr(e.l, lt, ctx);
-    const b = this.emitExpr(e.r, lt, ctx);
+    // v1.2.4(#92,plan §5.1):checked 算术的操作数求值序/求值次数(根因表述经审查 MINOR-1 修正)。
+    // `/ % << >>` 不走 __builtin_*_overflow 实参位,发射文本是「守卫语句 + 正式运算」多次
+    // 引用操作数:守卫语句 `if (m1() == 0LL)` 只引用 RHS 且先于任何 LHS 引用——语句序
+    // 确定地先求值 RHS(即使编译器同语句左→右也一样,这不是同语句 unspecified 序问题);
+    // 两侧都 panic 时 cc 首行 = RHS,而 tree/VM(源码序左→右)= LHS,违反 AGENTS §9
+    // panic 首行逐字口径;成功路径还把两侧表达式重求值(守卫 + 消息 + 正式运算,#91)。
+    // 修法 = 与 v1.2.2 #90 同一哲学:按源码序把两侧物化为临时(独立声明语句,先后由 C
+    // 块序确定),守卫/消息/正式运算只引用临时 → 每侧恰求值一次、跨编译器顺序稳定;
+    // extern/ffi 操作数的副作用因此按源码序单次发生(此前守卫/消息位会被多次求值——
+    // 该行为变化属本修复面,已入门槛断言)。消息模板打印的是值(FMT.i64/u64 = fprintf
+    // 的 %lld/%llu 实参),换成临时名不改变任何消息文本(既有消息断言零校准)。
+    // `+ - *` 走 __builtin_*_overflow 的实参位:C 标准未规定实参求值序(本机 gcc 实测
+    // 左→右);一并物化,消除对该实现细节的依赖(#91 算术面)。
+    const a = this.emitArgTmp(e.l, lt, ctx);
+    const b = this.emitArgTmp(e.r, lt, ctx);
     const t = this.newTmp(ctx, lt);
     if (lt === 'u64') this.emitCheckedU(op, a, b, t, e.span, ctx);
     else this.emitCheckedS(op, a, b, t, e.span, ctx);

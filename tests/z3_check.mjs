@@ -1,20 +1,23 @@
-// tests/z3_check.mjs — Z3 外部消费验证(plan §4.20 R-15 剩余子项 / roadmap §5.1 交付物)。
+// tests/z3_check.mjs — Z3 外部消费验证(plan §4.20 R-15 剩余子项 / roadmap §5.1 交付物)
+//   + R-19 SMT-LIB 逐义务 golden fixtures(plan §4.20 P2;来源 moltbook 外部评审 Klara 2026-11-26:
+//     "commit one SMT-LIB script per obligation as a fixture, so validation becomes a file diff
+//      instead of a re-run")。
 //
-// 职责:把 docs/proof-protocol.md §6.1/§6.2 的外部消费流程自动化为一条命令——
-//   1. 探测 z3(PATH;`z3 --version`)。不可用 → 打印跳过原因 + exit 0(本机开发环境常态;
-//      外部环境由 CI 的 z3-verify job 提供:ubuntu runner apt 装 z3 后本脚本必须真跑)。
-//   2. 内联生成语料到临时目录(确定性,不依赖仓库文件)→ `ming check <f> --proof-format smt-lib`
-//      取 stdout 脚本 → 写 .smt2 → `z3 <file>` → 逐行解析回答(每行 sat/unsat/unknown,
-//      顺序 = 脚本块序)→ 与脚本注释中的内部判定逐块对照。
-//   3. 断言口径(协议 §3.4 判定注释表 + §6.2 结果解读):
-//      - proven  → z3 必须 unsat(严格断言);
-//      - refuted → z3 必须 sat。若 z3 答 unsat,按 §6.2 规则 4 先核对"假设集自身可满足性"
-//        (去掉取反目标后的假设块单独求解):假设集自身 unsat → 豁免通过("反例声明在
-//        不可满足假设集上无意义");假设集 sat → 真实分歧候选,失败;
-//      - unknown → 不做断言,仅记录回答。
-//      每个语料同时断言内部判定注释与语料设计一致(proven/refuted/unknown 逐块、块数、
-//      check-sat 数)——守住"语料确实走到了预期路径",而不是只看 z3 是否接受脚本。
-//   4. 零义务脚本:z3 接受(exit 0)且零 check-sat 回答(协议 §3.1 不变式 5:空脚本诚实声明)。
+// 三层职责(顺序固定——fixture 比对先于 z3 执行,本机无 z3 也校验确定性黄金):
+//   A. 生成 + 结构断言(不依赖 z3):内联语料写临时目录 → `ming check <f> --proof-format smt-lib`
+//      → 逐块结构/内部判定注释/check-sat 数断言(原逻辑)。脚本以**相对路径**调用(cwd = 临时目录),
+//      文件分节注释因此稳定为 `; ===== 文件:<slug>.ming =====`——这是 fixtures 可逐字节入库的
+//      前提(绝对临时路径带随机后缀,不可入库)。
+//   B. fixture 黄金比对(不依赖 z3):生成脚本 vs `tests/proof_fixtures/<slug>.smt2`。
+//      - 缺失 fixture = **失败**(不静默);
+//      - 不一致 = 失败并打印**首处差异行**(两侧各截断至 200 字符);
+//      - 默认**严格逐字节**;
+//      - `--no-comments`:比较前剥离 `;` 注释行、空行与行尾空白,只看"纯命令面"
+//        (协议 §5 把注释措辞/分节格式定为实验面;该模式用于查看命令面差异,不改变入库内容);
+//      - `--update-fixtures`:显式更新通道,重新生成并写入 fixtures 目录(逐文件打印
+//        新增/变更/未变;更新即审查信号——git diff 可逐字节审阅)。
+//   C. z3 消费验证(需要 z3):探测 z3;不可用 → 打印跳过原因 + exit 0(本机开发环境常态,
+//      此时 A/B 已执行);可用 → 逐语料消费脚本并逐块对照内部判定(原逻辑)。
 //
 // 语料矩阵(与 tests/run.mjs §113 的 §113.1/§113.2/§113.19 语义同源,但源码内联独立):
 //   proven          全 proven(body 作用域)                       z3: unsat/unsat
@@ -24,10 +27,11 @@
 //   zero            零义务脚本                                    z3 接受 + 零回答
 //   loop            loop 作用域 proven(i$<n> 符号/区间约束)         z3: unsat/unsat
 //
-// 用法:node tests/z3_check.mjs [--help]
-// 退出码:0 = 全部断言通过,或 z3 不可用(跳过);1 = 断言失败 / 求解器异常 / 管线错误。
-// 纪律:零第三方依赖;错误走 stderr;失败 exit 1;失败时临时目录留档(路径打印到 stderr),
-//       成功即清理。本脚本不修改任何仓库状态。
+// 用法:node tests/z3_check.mjs [--update-fixtures] [--no-comments] [--help]
+// 退出码:0 = 全部断言与 fixture 比对通过(z3 不可用时跳过 z3 层);1 = 断言失败 /
+//        fixture 缺失或不一致 / 求解器异常 / 管线错误。
+// 纪律:零第三方依赖;确定性;fixture 用 LF(仓库 .gitattributes `eol=lf` 先例);错误走 stderr;
+//       失败 exit 1;失败时临时目录留档(路径打印到 stderr),成功即清理。
 
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -37,15 +41,23 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MING = path.join(ROOT, 'bin', 'ming.js');
+const FIXTURE_DIR = path.join(ROOT, 'tests', 'proof_fixtures');
 const SPAWN_TIMEOUT_MS = 120000;
 const SKIP_LINE = 'z3 不可用,跳过(本机开发环境常态)';
+const DIFF_CLIP = 200; // 差异行截断长度(字符)
 
 const USAGE = [
-  '用法:node tests/z3_check.mjs [--help]',
+  '用法:node tests/z3_check.mjs [--update-fixtures] [--no-comments] [--help]',
   '',
-  'Z3 外部消费验证(协议 docs/proof-protocol.md §6):',
-  '  ming check <语料> --proof-format smt-lib → z3 <脚本> → 逐块对照内部判定。',
-  '  z3 不在 PATH 时打印跳过原因并 exit 0;断言失败/求解器异常 exit 1。',
+  'Z3 外部消费验证(协议 docs/proof-protocol.md §6)+ SMT-LIB golden fixtures(R-19):',
+  '  A. ming check <语料> --proof-format smt-lib 生成脚本 + 逐块结构断言(不依赖 z3);',
+  '  B. 生成脚本 vs tests/proof_fixtures/<slug>.smt2(缺失/不一致 = 失败;默认严格逐字节);',
+  '  C. z3 <脚本> 逐块对照内部判定(z3 不在 PATH 时打印跳过原因并 exit 0)。',
+  '',
+  '  --update-fixtures  重新生成并写入 fixtures 目录(显式更新通道;逐文件打印)',
+  '  --no-comments      比较前剥离 ; 注释行 / 空行 / 行尾空白(只看纯命令面;',
+  '                     默认严格逐字节——协议 §5 注释措辞属实验面)',
+  '                     注意 (set-info ...) 是命令、不随注释剥离)',
 ].join('\n');
 
 // ---- 语料矩阵 -------------------------------------------------------------------------------
@@ -206,18 +218,142 @@ function brief(r) {
   return `stdout=${JSON.stringify(out.slice(0, 400))} stderr=${JSON.stringify(err.slice(0, 400))}`;
 }
 
+// ---- fixture 层(R-19)------------------------------------------------------------------------
+function fixturePath(slug) {
+  return path.join(FIXTURE_DIR, `${slug}.smt2`);
+}
+
+// 仓库相对展示路径(统一正斜杠:失败消息跨平台逐字可比)。
+function relPath(abs) {
+  return path.relative(ROOT, abs).split(path.sep).join('/');
+}
+
+function fixtureRel(slug) {
+  return relPath(fixturePath(slug));
+}
+
+// `--no-comments` 比较口径:剥离 `;` 注释行、空行与行尾空白 → 只剩纯命令面。
+// 默认(strict)不做任何归一化——逐字节比较。
+function normalizeForCompare(text, noComments) {
+  if (!noComments) return text;
+  const lines = text
+    .split(/\r?\n/) // 审查 MINOR-1:CRLF checkout 下命令面模式不因 \r 误红
+    .filter((l) => !/^\s*;/.test(l))
+    .map((l) => l.replace(/[ \t\r]+$/, ''))
+    .filter((l) => l.trim() !== '');
+  return lines.length > 0 ? `${lines.join('\n')}\n` : '';
+}
+
+// 首处差异(expected = fixture 基准,actual = 本次生成)。行号 1 起;一侧在 EOF 前结束 →
+// 对应字段 undefined(由 clip 如实标注),绝不静默判等。
+function firstDiff(expected, actual) {
+  const e = expected.split('\n');
+  const a = actual.split('\n');
+  const n = Math.max(e.length, a.length);
+  for (let i = 0; i < n; i += 1) {
+    if (e[i] === a[i]) continue;
+    return { line: i + 1, expected: e[i], actual: a[i] };
+  }
+  return null;
+}
+
+// 差异行截断(截断后文本 ≤ 200 字符,含末尾省略号;EOF 侧具名)。
+function clip(line) {
+  if (line === undefined) return '(EOF:该行不存在)';
+  return line.length > DIFF_CLIP ? `${line.slice(0, DIFF_CLIP - 1)}…` : line;
+}
+
+// fixture 阶段:update → 重写并逐文件打印;否则 compare(缺失/不一致 = failLine)。
+// 只处理生成成功(scriptOk)的语料:生成失败已具名上报,跳过以免噪声双报。
+function verifyFixtures(generated, opts) {
+  const { update, noComments, failLine } = opts;
+  const eligible = generated.filter((g) => g.scriptOk);
+  // 审查 MAJOR-1:更新通道只写"生成阶段全部通过"的语料——结构断言已失败的输出
+  // 不得覆盖黄金(否则能把好 fixture 洗成已知异常输出,fixture 门槛自我失效)。
+  const writable = generated.filter((g) => g.scriptOk && !g.genFailed);
+  let matched = 0;
+  let written = 0;
+  if (update) fs.mkdirSync(FIXTURE_DIR, { recursive: true });
+  // 审查 MINOR-3:孤儿 fixture(目录里有、语料里没有)= 失败;slug 改名/删语料会遗留
+  // 永不校验的黄金,更新通道也不清理它。
+  if (fs.existsSync(FIXTURE_DIR)) {
+    const slugs = new Set(CORPORA.map((c) => c.slug));
+    for (const f of fs.readdirSync(FIXTURE_DIR).sort()) {
+      if (!f.endsWith('.smt2')) continue;
+      if (!slugs.has(f.slice(0, -'.smt2'.length))) {
+        failLine(`[fixture] 孤儿 fixture ${relPath(path.join(FIXTURE_DIR, f))}(没有同名语料;删除该文件或恢复语料)`);
+      }
+    }
+  }
+  // 审查 MAJOR-1:生成阶段失败的语料拒绝写盘,逐条打印跳过原因。
+  if (update) {
+    for (const g of generated) {
+      if (!writable.includes(g)) process.stdout.write(`[fixture] 跳过 ${g.c.slug}(生成阶段失败,拒绝写盘)
+`);
+    }
+  }
+  for (const g of (update ? writable : eligible)) {
+    const slug = g.c.slug;
+    const file = fixturePath(slug);
+    const rel = fixtureRel(slug);
+    if (update) {
+      let prev = null;
+      try { prev = fs.readFileSync(file, 'utf8'); } catch { prev = null; }
+      fs.writeFileSync(file, g.script, 'utf8'); // 恒写严格全文(LF,无归一化)
+      const tag = prev === null ? '新增' : prev === g.script ? '未变' : '变更';
+      process.stdout.write(`[fixture] ${tag} ${rel}\n`);
+      written += 1;
+      continue;
+    }
+    let fixture = null;
+    try {
+      fixture = fs.readFileSync(file, 'utf8');
+    } catch {
+      failLine(`[${slug}] 缺失 fixture ${rel}(运行 node tests/z3_check.mjs --update-fixtures 生成并入库)`);
+      continue;
+    }
+    const want = normalizeForCompare(fixture, noComments);
+    const got = normalizeForCompare(g.script, noComments);
+    if (want === got) { matched += 1; continue; }
+    const d = firstDiff(want, got);
+    const mode = noComments ? '--no-comments 命令面已剥离 ; 注释/空行/行尾空白' : '严格逐字节';
+    failLine(
+      `[${slug}] fixture 不一致 ${rel}(${mode});首处差异第 ${d.line} 行:fixture=${JSON.stringify(clip(d.expected))} 生成=${JSON.stringify(clip(d.actual))}`,
+    );
+  }
+  const all = CORPORA.length;
+  if (update) {
+    const skippedUpdate = all - writable.length;
+    process.stdout.write(`fixture 更新:${written}/${writable.length} 个文件写入 ${relPath(FIXTURE_DIR)}/${skippedUpdate > 0 ? ';' + skippedUpdate + ' 语料因生成阶段失败拒绝写盘' : ''}(更新即审查信号——git diff 逐字节可审)
+`);
+  } else {
+    const scope = eligible.length < all ? `;仅统计生成成功的 ${eligible.length}/${all} 语料` : '';
+    if (noComments) {
+      process.stdout.write(`fixture 黄金(命令面):${matched}/${eligible.length} 一致(--no-comments;默认模式为严格逐字节)${scope}\n`);
+    } else {
+      process.stdout.write(`fixture 黄金:${matched}/${eligible.length} 逐字节一致(${relPath(FIXTURE_DIR)}/,严格模式)${scope}\n`);
+    }
+  }
+  return { matched, written, eligible: eligible.length };
+}
+
 // ---- 主流程 ---------------------------------------------------------------------------------
 function main() {
-  const probe = probeZ3();
-  if (!probe.ok) {
-    process.stdout.write(`${SKIP_LINE}\n`);
-    process.stdout.write(`原因:${probe.reason}\n`);
-    process.stdout.write('提示:CI 的 z3-verify job(ubuntu-latest,apt install z3)会真跑本脚本。\n');
-    return; // exitCode 默认 0
+  // 审查 MINOR-2:拼写错误不得静默降级(如 --no-comment 按严格模式静默跑)。
+  const KNOWN_FLAGS = new Set(['--update-fixtures', '--no-comments', '--help', '-h']);
+  const unknown = process.argv.slice(2).filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+  if (unknown.length > 0) {
+    process.stderr.write(`未知旗标:${unknown.join(' ')}(用法见 --help)\n`);
+    process.exitCode = 1;
+    return;
   }
-
-  process.stdout.write('z3-check — Z3 外部消费验证(协议 docs/proof-protocol.md §6)\n');
-  process.stdout.write(`z3 版本:${probe.version}\n`);
+  const updateFixtures = process.argv.includes('--update-fixtures');
+  const noComments = process.argv.includes('--no-comments');
+  if (updateFixtures && noComments) {
+    process.stderr.write('--update-fixtures 与 --no-comments 不能同时使用(更新恒写入严格全文;--no-comments 只影响比较)\n');
+    process.exitCode = 1;
+    return;
+  }
 
   const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ming-z3-check-'));
   const failures = [];
@@ -226,23 +362,22 @@ function main() {
     process.stderr.write(`✗ ${msg}\n`);
   };
 
-  let corpusCount = 0;
-  let assertedBlocks = 0;
-  let unknownBlocks = 0;
-  let exemptedBlocks = 0;
+  process.stdout.write('z3-check — Z3 外部消费验证(协议 docs/proof-protocol.md §6)+ SMT-LIB golden fixtures\n');
 
+  // ---- 阶段 A:生成脚本 + 结构断言(不依赖 z3)-----------------------------------------------
+  // 相对路径 + cwd=TMP 调用:脚本内 `; ===== 文件:<slug>.ming =====` 稳定,可与 fixtures 逐字节比对。
+  const generated = [];
   for (const c of CORPORA) {
-    corpusCount += 1;
-    const before = failures.length;
-    const exemptedBefore = exemptedBlocks;
     const mingFile = path.join(TMP, `${c.slug}.ming`);
-    const smtFile = path.join(TMP, `${c.slug}.smt2`);
     fs.writeFileSync(mingFile, c.source.endsWith('\n') ? c.source : `${c.source}\n`, 'utf8');
+    const entry = { c, script: null, parsed: null, scriptOk: false, genFailed: false };
+    generated.push(entry);
+    const before = failures.length;
 
     // 1) ming check → SMT-LIB 脚本(stdout 纯脚本;违反语料 exit 1 是协议 §4.4 的既有口径)
-    const r = spawnSync(process.execPath, [MING, 'check', mingFile, '--proof-format', 'smt-lib'], {
+    const r = spawnSync(process.execPath, [MING, 'check', `${c.slug}.ming`, '--proof-format', 'smt-lib'], {
       encoding: 'utf8',
-      cwd: ROOT,
+      cwd: TMP,
       timeout: SPAWN_TIMEOUT_MS,
       windowsHide: true,
     });
@@ -270,24 +405,71 @@ function main() {
       }
     });
 
+    entry.script = script;
+    entry.parsed = parsed;
+    entry.scriptOk = true;
+    entry.genFailed = failures.length > before; // 结构断言也计入本语料的生成阶段结论
+  }
+
+  // ---- 阶段 B:fixture 黄金(不依赖 z3——本机无 z3 也把确定性门槛带进开发环境)-----------------
+  verifyFixtures(generated, { update: updateFixtures, noComments, failLine });
+
+  // ---- 阶段 C:z3 消费验证 ------------------------------------------------------------------
+  const probe = probeZ3();
+  if (!probe.ok) {
+    process.stdout.write(`${SKIP_LINE}\n`);
+    process.stdout.write(`原因:${probe.reason}\n`);
+    process.stdout.write('提示:CI 的 z3-verify job(ubuntu-latest,apt install z3)会真跑本脚本。\n');
+    if (failures.length > 0) {
+      process.stderr.write(`\n共 ${failures.length} 项失败(z3 层跳过,fixture/结构层已执行);临时目录留档:${TMP}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    fs.rmSync(TMP, { recursive: true, force: true });
+    return; // exitCode 默认 0
+  }
+
+  process.stdout.write(`z3 版本:${probe.version}\n`);
+
+  let corpusCount = 0;
+  let assertedBlocks = 0;
+  let unknownBlocks = 0;
+  let exemptedBlocks = 0;
+
+  for (const g of generated) {
+    const c = g.c;
+    corpusCount += 1;
+    if (!g.scriptOk) {
+      process.stdout.write(`[fail] ${c.name} — 生成阶段失败(见上;跳过 z3)\n`);
+      continue;
+    }
+    const before = failures.length; // 本语料 z3 阶段基线(生成阶段失败另由 g.genFailed 记录)
+    const exemptedBefore = exemptedBlocks;
+    const parsed = g.parsed;
+    const smtFile = path.join(TMP, `${c.slug}.smt2`);
+
     // 3) z3 消费脚本
-    fs.writeFileSync(smtFile, script, 'utf8');
+    fs.writeFileSync(smtFile, g.script, 'utf8');
     const z = runZ3(smtFile);
     if (z.error || z.status !== 0) {
       failLine(`[${c.slug}] z3 执行失败(status=${z.status ?? 'null'})${z.error ? `:${z.error.message}` : ''};${brief(z)}`);
+      process.stdout.write(`[fail] ${c.name} — z3 执行失败\n`);
       continue;
     }
     if (/(^|\n)\s*\(error/.test(z.stdout)) {
       failLine(`[${c.slug}] z3 输出含 (error ...) 行(审查 MINOR-3);${brief(z)}`);
+      process.stdout.write(`[fail] ${c.name} — z3 输出含 (error ...)\n`);
       continue;
     }
     if (parsed.checkSats === 0 && z.stdout.trim() !== '') {
       failLine(`[${c.slug}] 零 check-sat 脚本 z3 应输出为空,实际:${brief(z)}`);
+      process.stdout.write(`[fail] ${c.name} — 零 check-sat 脚本有输出\n`);
       continue;
     }
     const answers = answersOf(z.stdout);
     if (answers.length !== parsed.checkSats) {
       failLine(`[${c.slug}] z3 回答行数 ${answers.length} ≠ check-sat 数 ${parsed.checkSats};${brief(z)}`);
+      process.stdout.write(`[fail] ${c.name} — z3 回答行数不符\n`);
       continue;
     }
 
@@ -331,7 +513,7 @@ function main() {
     if (exemptDelta !== expectExempt) {
       failLine(`[${c.slug}] §6.2 规则 4 豁免块数 ${exemptDelta} ≠ 预期 ${expectExempt}(豁免路径未被真实走到或意外触发)`);
     }
-    const ok = failures.length === before;
+    const ok = failures.length === before && !g.genFailed;
     const detail = cols.length > 0 ? cols.join(',') : '零 check-sat';
     process.stdout.write(`${ok ? '[ok]' : '[fail]'} ${c.name} — ${parsed.blocks.length} 块(${detail})\n`);
   }

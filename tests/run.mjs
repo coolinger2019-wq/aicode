@@ -24,7 +24,7 @@
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
 //   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
-//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115
+//   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115 116
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
 //   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -4643,7 +4643,7 @@ secBegin('58');
   // v0.83 再校准(c18cc21f… → d60e3c89…):#58 收口——ming_vec_set 写 flavor 去"(用 .get(i)
   // 返回 Option)"读后缀(interp.js:889 单一事实;读 flavor ming_vec_get 保持后缀)。
   // 运行时助手是静态前导文本,指纹随合法语义统一变化;markers 与 cc==VM 两断言不受影响。
-  const BASE_C_SHA = '701c1cd3fc9d839dbbae21bd9da7f7c0ed623313d51a075ef06d3a2a3c53c648'; /* v1.2.2 #90 重校准理由化:调用实参按源码序物化入临时(emitArgTmp;C 实参求值序 unspecified,gcc x86-64 右→左 vs JS 左→右)——本夹具 add(v[0], m["b"])/replace("b","c") 的实参位新增临时声明,渲染 C 随合法语义修复变化;调用点语句化后求值序跨编译器确定。原值 d8623cd92cfb0132d1b5608f324587d54219c9787fef4c2c23b6590a8cce21a3(v0.92 ming_float_str 负零归一) */
+  const BASE_C_SHA = 'd1d1821a31d488fa26628ec1832a87b787ce9ea444bc44b7bcb2efe9b325fcd3'; /* v1.2.4 #92 重校准理由化:checked 二元算术按源码序物化两侧操作数(emitBin→emitArgTmp;C 不规定同语句子表达式求值序,`/ % << >>` 守卫会先求值右操作数)——本夹具 add 函数体 `a + b` 新增两条操作数临时声明(逐字 diff 仅此:__t1=v_a/__t2=v_b/__t3 结果,后续临时编号顺移),消息文本仍打印值,markers 与 cc==VM 两断言不减。原值 701c1cd3fc9d839dbbae21bd9da7f7c0ed623313d51a075ef06d3a2a3c53c648(v1.2.2 #90 实参物化;更早 d8623cd9… v0.92 负零归一) */
   if (hasCC58) {
     const baseC = ccRun58(baseU, path.join(dir, 'c5-baseline-run'));
     check('v58.11:既有 C 输出不变抽查(非 unsafe 程序不发射 ming_mem_alloc/std.mem;cc 输出与 VM 逐字一致;渲染 C 指纹逐字节不变)',
@@ -28996,10 +28996,150 @@ secBegin('115');
   {
     const r = legs115(binWfOrder115, 'bin-wf-order');
     check('v115.22:#90 二元操作数回归(seed 39039 形态)——wa() + wb() 三腿 101,首行 = 左调用 wa 第 1 行逐字(本机 + 左→右稳定)',
-      pint115(r) && first115(r.tree.stderr).includes(':1:') && (!r.cc || first115(r.cc.stderr).includes(':1:')),
+      pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null && (!r.cc || first115(r.cc.stderr).match(/:1:\d+: error/) !== null),
+      fmtLegs115(r));
+  }
+
+  // ---- v115.23+ #92(v1.2.4):`/ % << >>` 守卫先求值右操作数(四引擎 gap,pre-existing)----
+  // 缺陷形态:四算子不走 __builtin_*_overflow 实参位,发射文本是"守卫 + 正式运算"多次
+  // 引用操作数文本(C 不规定求值序;gcc x86-64 实测守卫 `(b == 0LL)`/`(b < 0 || b >= 64)`
+  // 先求值 RHS)→ wa()/wb() 双 panic 时 cc 首行 = wb(第 2 行),tree/VM = wa(第 1 行);
+  // 成功路径两侧表达式还被重求值(plan §5.1 #91)。修复 = emitBin 按源码序把两侧物化为
+  // 临时(emitArgTmp;#90 同哲学),守卫/消息/正式运算只引用临时;消息模板打印的是值
+  // (fprintf 的 %lld/%llu 实参),换临时名不改文本。
+  const binGuardSrc115 = (op) => [
+    'fn wa() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn wb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    `fn main() with io { let x = wa() ${op} wb(); print(str(x)); }`,
+  ].join('\n');
+  for (const [tag, op] of [['div', '/'], ['mod', '%'], ['shl', '<<'], ['shr', '>>']]) {
+    const f = w115('bin_guard_' + tag + '.ming', binGuardSrc115(op));
+    const r = legs115(f, 'bin-guard-' + tag);
+    check(`v115.${23 + ['div', 'mod', 'shl', 'shr'].indexOf(tag)}:#92 \`a ${op} b\` 双 panic 求值序——wa/wb 异行,三腿 101 且首行 = 左调用 wa(第 1 行)逐字(修复前 cc 首行 = wb 第 2 行)`,
+      pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null && (!r.cc || first115(r.cc.stderr).match(/:1:\d+: error/) !== null),
+      fmtLegs115(r));
+  }
+
+  // v115.27/v115.28 移位守卫非法量:消息逐字不变(tree 模板)且三腿首行一致
+  const shlBad115 = w115('bin_guard_shl_bad.ming', 'fn main() with io { let a = 1; let s = 64; let x = a << s; print(str(x)); }');
+  {
+    const r = legs115(shlBad115, 'bin-guard-shl64');
+    check('v115.27:#92 移位守卫非法量 64——三腿 101,首行逐字 = "移位位数 64 越界(必须在 0..63)"(M4002;物化不改消息)',
+      pint115(r) && first115(r.tree.stderr).endsWith('M4002[integer-overflow]: 移位位数 64 越界(必须在 0..63)'),
+      fmtLegs115(r));
+  }
+  const shlNeg115 = w115('bin_guard_shl_neg.ming', 'fn main() with io { let a = 1; let s = -1; let x = a >> s; print(str(x)); }');
+  {
+    const r = legs115(shlNeg115, 'bin-guard-shlneg');
+    check('v115.28:#92 移位守卫非法量 -1(>> 同码)——三腿 101,首行逐字 = "移位位数 -1 越界(必须在 0..63)"(M4002)',
+      pint115(r) && first115(r.tree.stderr).endsWith('M4002[integer-overflow]: 移位位数 -1 越界(必须在 0..63)'),
+      fmtLegs115(r));
+  }
+
+  // v115.29 消息保真:调用形态的除零/取模零仍打印**值**(不是临时名),文本逐字 = tree 模板
+  const zeroCallSrc115 = (op) => [
+    'fn wa() -> i64 { let v = 5; return v; }',
+    'fn wb() -> i64 { let v = 0; return v; }',
+    `fn main() with io { let x = wa() ${op} wb(); print(str(x)); }`,
+  ].join('\n');
+  {
+    const rd = legs115(w115('bin_guard_zero_div.ming', zeroCallSrc115('/')), 'bin-guard-zd');
+    const rm = legs115(w115('bin_guard_zero_mod.ming', zeroCallSrc115('%')), 'bin-guard-zm');
+    const ok115 = (r, msg) => r.tree.code === 101 && r.vm.code === 101 && (!r.cc || r.cc.code === 101)
+      && r.tree.stdout === '' && first115(r.tree.stderr).endsWith(msg) && sameLegs115(r, true);
+    check('v115.29:#92 消息保真——wa()/wb()(wa=5,wb=0)除零/取模零三腿首行逐字"整数除零:5 / 0"/"整数取模零:5 % 0"(打印值非临时名)',
+      ok115(rd, 'M4004[division-by-zero]: 整数除零:5 / 0') && ok115(rm, 'M4004[division-by-zero]: 整数取模零:5 % 0'),
+      fmtLegs115(rd) + ' | ' + fmtLegs115(rm));
+  }
+
+  // v115.30 u64 同族:无符号除法/移位的双 panic 首行对齐(emitCheckedU 同门)
+  const uBinSrc115 = (op) => [
+    'fn wa() -> u64 { let z = u64.max_value(); return z + 1u64; }',
+    'fn wb() -> u64 { let z = u64.max_value(); return z + 1u64; }',
+    `fn main() with io { let x = wa() ${op} wb(); print(str(x)); }`,
+  ].join('\n');
+  {
+    const ru = legs115(w115('bin_guard_u_div.ming', uBinSrc115('/')), 'bin-guard-ud');
+    const rs = legs115(w115('bin_guard_u_shl.ming', uBinSrc115('<<')), 'bin-guard-us');
+    check('v115.30:#92 u64 同族——wa()/wb() 双 panic 的 / 与 << 三腿 101,首行 = wa(第 1 行)逐字(修复前 cc = 第 2 行)',
+      pint115(ru) && pint115(rs) && first115(ru.tree.stderr).match(/:1:\d+: error/) !== null && first115(rs.tree.stderr).match(/:1:\d+: error/) !== null
+      && (!ru.cc || first115(ru.cc.stderr).match(/:1:\d+: error/) !== null) && (!rs.cc || first115(rs.cc.stderr).match(/:1:\d+: error/) !== null),
+      fmtLegs115(ru) + ' | ' + fmtLegs115(rs));
+  }
+
+  // v115.31 对照:正常四算子 + 复合赋值输出不变(物化零语义漂移)
+  const normalBin115 = w115('bin_guard_normal.ming', [
+    'fn main() with io {',
+    '    let a = 100; let b = 7;',
+    '    print(str(a / b)); print(str(a % b)); print(str(a << 2)); print(str(a >> 3));',
+    '    print(str(a + b)); print(str(a - b)); print(str(a * b));',
+    '    let mut c = 100; c /= b; c *= 2; print(str(c));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(normalBin115, 'bin-guard-normal');
+    check('v115.31:#92 对照——正常 / % << >> + - * 与复合赋值(/= *=)三腿 0,"14/2/400/12/107/93/700/28"(物化不改语义)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === '14\n2\n400\n12\n107\n93\n700\n28\n'
+      && (!r.cc || r.cc.stdout === '14\n2\n400\n12\n107\n93\n700\n28\n'),
+      fmtLegs115(r));
+  }
+
+  // v115.32 单次求值结构断言(--emit-c 不依赖编译器,审查 MINOR-2 扩展为七算子循环):
+  // main 体内调用恰 2 次(一侧一次),正式运算两侧都引用临时。修复前(重求值,§5.1 #91)
+  // main 体内 m0()/m1() 共 8 次(守卫 1 + 消息 1 + 第二守卫 2 + 正式运算 2,含消息重调用)。
+  {
+    const opTags115 = [['add', '+'], ['sub', '-'], ['mul', '*'], ['div', '/'], ['mod', '%'], ['shl', '<<'], ['shr', '>>']];
+    const results = [];
+    let okAll115 = true;
+    for (const [tag, op] of opTags115) {
+      const f = w115('bin_guard_emit_' + tag + '.ming', binGuardSrc115(op));
+      const emDir = path.join(dir115, 'emit-single-' + tag);
+      const em = spawnSync(process.execPath, [MING, 'cc', f, '--emit-c', '--out', emDir], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+      const emFile = path.join(emDir, 'bin_guard_emit_' + tag + '.c');
+      const emSrc = fs.existsSync(emFile) ? fs.readFileSync(emFile, 'utf8') : '';
+      const mi = emSrc.indexOf('void ming_main(void) {');
+      const mj = mi >= 0 ? emSrc.indexOf('\n    }\n', mi) : -1;
+      const body = mi >= 0 && mj > mi ? emSrc.slice(mi, mj) : '';
+      const calls = (body.match(/\bm\d+\(\)/g) ?? []).length;
+      const formal = op === '/' ? /\b__t\d+ \/ __t\d+\b/
+        : op === '%' ? /\b__t\d+ % __t\d+\b/
+        : op === '<<' ? /\b__t\d+ << __t\d+\b/
+        : op === '>>' ? /\b__t\d+ >> __t\d+\b/
+        : /\b__builtin_\w+_overflow\(__t\d+, __t\d+,/.test(body);
+      const ok = em.status === 0 && calls === 2 && formal;
+      if (!ok) okAll115 = false;
+      results.push(`${tag}:${em.status}/${calls}/${formal}`);
+    }
+    check('v115.32:#92 单次求值(§5.1 #91 算术面,七算子)——emit-c 的 main 体内调用恰 2 次(一侧一次)且正式运算引用临时(+ - * 走 __builtin_overflow(__t,__t,…),其余为 "__t op __t")',
+      okAll115, 'results=' + JSON.stringify(results));
+  }
+
+  // v115.33 最强形态(审查 MINOR-2):LHS panic + RHS 移位守卫非法——修复前 cc 报 RHS 守卫
+  // (移位位数 64 越界),tree/VM 报 LHS 溢出(整数+溢出);修复后三腿消息选择与首行逐字对齐。
+  const lhsRhs115 = w115('bin_guard_lhs_rhs.ming', [
+    'fn wa() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn wb() -> i64 { let v = 64; return v; }',
+    'fn main() with io { let x = wa() << wb(); print(str(x)); }',
+  ].join(String.fromCharCode(10)));
+  {
+    const r = legs115(lhsRhs115, 'bin-guard-lhs-rhs');
+    check('v115.33:审查 MINOR-2——LHS panic + RHS 移位守卫非法(wa() << wb(),wb=64)三腿 101 且首行 = wa 溢出"整数+溢出"(修复前 cc 报"移位位数 64 越界")',
+      pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null && first115(r.tree.stderr).includes('整数+溢出')
+      && (!r.cc || (first115(r.cc.stderr).match(/:1:\d+: error/) !== null && first115(r.cc.stderr).includes('整数+溢出'))),
       fmtLegs115(r));
   }
 }
+// ===================== §116 SMT-LIB fixture 黄金本地门槛(R-19;审查 NOTE-4)====================
+secBegin('116');
+{
+  // tests/z3_check.mjs 的 fixture 比对不依赖 z3(本机无 z3 时跳过 z3 段仍校验黄金)。
+  // 全量套件接入该脚本,使 proofsmt/协议输出漂移在本地即红(此前只有 CI z3-verify job 覆盖)。
+  const r116 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'z3_check.mjs')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
+  check('v116.1:SMT-LIB fixture 黄金(本地门槛)——z3_check.mjs exit 0 且输出含 "fixture 黄金:6/6 逐字节一致"(无 z3 环境 z3 段按协议跳过)',
+    r116.status === 0 && /fixture 黄金:6\/6 逐字节一致/.test(r116.stdout ?? ''),
+    'code=' + r116.status + ' out=' + JSON.stringify((r116.stdout ?? '').slice(0, 240)) + ' err=' + JSON.stringify((r116.stderr ?? '').slice(0, 160)));
+}
+
 
 secEndAll();
 // T2.4 并行:子进程末尾补发末节 @@SEC 与总计行(编排器聚合依据;串行模式 PAR_CHILD=false 零输出)。

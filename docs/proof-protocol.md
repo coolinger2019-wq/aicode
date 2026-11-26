@@ -86,6 +86,8 @@ proof_obligation_id ::= "vc:" <函数名> ":" <序号>
 
 同一输入(同一文件内容 + 同一命令行参数集)恒产出逐字节相同的脚本:无时间戳、无随机顺序、无工具链版本号。文件分节注释与义务头注释中的路径按**命令行展示路径原样**(不绝对化、不规范化、不解析)——用户传相对路径则脚本含相对路径;这是用户输入的回显,协议本身不引入绝对路径。
 
+**逐字节确定性由入库黄金锁定**(R-19):`tests/proof_fixtures/` 保存六语料测试矩阵(proven / refuted-sat / refuted-unsat / unknown / zero / loop)的完整 SMT-LIB 脚本,`node tests/z3_check.mjs` 在 z3 探测**之前**逐字节比对——同一实现在任何机器上重新生成必须与 fixture 完全一致。实验面(§5:注释措辞/分节格式/set-info 文本)的任何变更都会使比对失败,须通过 `node tests/z3_check.mjs --update-fixtures` **显式更新** fixtures——**更新即审查信号**(git diff 逐字节可审,不随生成重跑而静默漂移);`--no-comments` 可剥离注释先看纯命令面差异。
+
 ### 3.4 内部判定注释(诚实标注)
 
 每个方向块头注释携带内部判定,逐字面固定:
@@ -142,7 +144,7 @@ proof_obligation_id ::= "vc:" <函数名> ":" <序号>
 | `proof_obligation_id` 文法与序号语义(§2) | **冻结**(自 v1.1) | 文法、序号规则、"模块内唯一"承诺不变;跨模块消歧方式(file 字段)不变 |
 | `solver_status` 值域与映射规则(§4.1) | **冻结**(自 v1.1) | 三值集与 proven→unsat/refuted→sat/unknown→unknown 映射不变;新增值域 = additive(须本文档修订登记) |
 | SMT 脚本**结构不变式**(§3.1 五条) | **冻结**(自 v1.1) | 任何演进不得破坏五条不变式 |
-| SMT 脚本细节(注释措辞、分节格式、set-info 文本) | **实验性** | minor 版本可调整;外部消费者不应解析注释内容,只应消费命令结构 |
+| SMT 脚本细节(注释措辞、分节格式、set-info 文本) | **实验性** | minor 版本可调整;外部消费者不应解析注释内容,只应消费命令结构。实验面变更必须通过 `node tests/z3_check.mjs --update-fixtures` 显式更新 `tests/proof_fixtures/`(**更新即审查信号**;默认严格逐字节,`--no-comments` 仅用于查看纯命令面差异) |
 | 保留字黑名单(§3.2) | 实验性(单射保证不变) | 黑名单扩圈只影响罕见冲突名的符号拼写,双射性质不变 |
 | 本协议是否纳入 P1–P8 承诺面 | **未纳入** | 新面按契约 §1.2 走 additive;纳入承诺面须契约修订,本文档不预支 |
 
@@ -196,6 +198,16 @@ z3 f.smt2
 | SMT 语法自检 | ✅ 括号配平 / `(set-logic QF_LIA)` 首行 / `(exit)` 末行 / declare 前置于 assert / push-pop 配对 / 保留字重写双射——§113 结构断言锁定(保留字表单源 = `src/proofsmt.js`) |
 | Z3 消费验证 | ✅ **CI 验证通过(2026-11-26,[run 45834397042 · z3-verify job](https://github.com/coolinger2019-wq/aicode/actions/runs/45834397042/job/139969754333),success)**——`tests/z3_check.mjs`(6 语料 × 逐块对照:全 proven / 违反(假设集可满足)/ 违反(假设集不可满足 → §6.2 规则 4 豁免)/ unknown / 零义务 / loop 作用域)+ `.github/workflows/ci.yml` 的 `z3-verify` job(ubuntu-latest,apt 装 z3 + `z3 --version` 探测;安装失败即 job 失败,不静默跳过)。**历史**:2026-11-23 实测本机无 z3 → 2026-11-26 接入 CI;接入前 pip z3 5.4.1 本机预检(6 语料 7 块断言全过,版本与 apt 包不同)。诚实边界:同 run 的 macos-latest/node20 测试腿被 runner 平台回收(15 分钟整点 cancelled、零 step 记录,基础设施抖动)导致 run 级红,已触发仅失败 job 重跑;与 z3-verify 无关,job 级证据独立成立 |
 | 跨求解器(CVC5 等) | ⏳ 未验证(无环境) |
+| fixture 黄金(R-19) | ✅ `tests/proof_fixtures/` 六语料 SMT-LIB 脚本逐字节入库(`proven` / `refuted-sat` / `refuted-unsat` / `unknown` / `zero` / `loop`,文件名与 `tests/z3_check.mjs` 的 `CORPORA` slug 对齐);比对在 z3 探测**之前**执行——**本机无 z3 也校验确定性黄金**,缺失 fixture 或不一致 = exit 1 并打印首处差异行(两侧截断 200 字符)。脚本以相对路径生成(`; ===== 文件:<slug>.ming =====`),无时间戳/绝对路径,入库即黄金;更新唯一通道 = `--update-fixtures`(逐文件打印 新增/变更/未变,幂等——无漂移时重跑零 diff);**fixture 通过只证明输出未变(确定性),不证明内部判定正确——语义有效性由 §6 z3 逐块消费与 §7 限制口径承担;`--update-fixtures` 拒绝为生成阶段失败的语料写盘(审查 MAJOR-1),孤儿 fixture(目录多出文件)判失败(审查 MINOR-3)。** |
+
+## 9. 测试锚点
+
+| 面 | 锚点 |
+|---|---|
+| SMT-LIB 导出结构/内部判定面 | `tests/run.mjs` §113(S-1 专项:义务 id、逐方向判定注释、括号配平、保留字重写双射) |
+| 静态证明模糊 | `tests/proof_fuzz.mjs`(边界证明 1/2 + summaries + loops 模式,反例独立求值) |
+| fixture 黄金 + Z3 外部消费 | `tests/z3_check.mjs`(R-19):阶段 A 生成 + 结构断言 → 阶段 B fixture 比对(`tests/proof_fixtures/<slug>.smt2`,缺失/不一致 = 失败,不依赖 z3)→ 阶段 C z3 逐块对照(z3 不可用打印跳过行 exit 0);`--update-fixtures` 为 fixtures 唯一更新通道,`--no-comments` 只看纯命令面 |
+| 文档数字 | `tests/docs_check.mjs`(版本三处 / README / 工具数 / 能力矩阵) |
 
 ---
 
