@@ -136,7 +136,7 @@ jobs:
       # → job 假绿。此步强制探测:命令不可用即 job 失败,验证窗口不静默消失。
       - name: 探测 z3 可执行(防"装成功但探测失败→静默跳过")
         run: z3 --version
-      - name: Z3 外部消费验证(6 语料逐块对照内部判定)
+      - name: Z3 外部消费验证(9 语料逐块对照内部判定)
         run: node tests/z3_check.mjs
 
   nightly:

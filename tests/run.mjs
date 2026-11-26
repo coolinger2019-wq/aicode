@@ -29826,9 +29826,11 @@ secBegin('116');
 {
   // tests/z3_check.mjs 的 fixture 比对不依赖 z3(本机无 z3 时跳过 z3 段仍校验黄金)。
   // 全量套件接入该脚本,使 proofsmt/协议输出漂移在本地即红(此前只有 CI z3-verify job 覆盖)。
+  // v1.3.x R-19 扩面:六判定形态 + 三输出形态(保留字重写 reserved / 不可线性化零命令 nonlinear /
+  // 多文件分节 multifile)= 九语料。
   const r116 = spawnSync(process.execPath, [path.join(ROOT, 'tests', 'z3_check.mjs')], { encoding: 'utf8', cwd: ROOT, timeout: 120000 });
-  check('v116.1:SMT-LIB fixture 黄金(本地门槛)——z3_check.mjs exit 0 且输出含 "fixture 黄金:6/6 逐字节一致"(无 z3 环境 z3 段按协议跳过)',
-    r116.status === 0 && /fixture 黄金:6\/6 逐字节一致/.test(r116.stdout ?? ''),
+  check('v116.1:SMT-LIB fixture 黄金(本地门槛)——z3_check.mjs exit 0 且输出含 "fixture 黄金:9/9 逐字节一致"(九语料:六判定形态 + 保留字重写/不可线性化/多文件分节;无 z3 环境 z3 段按协议跳过)',
+    r116.status === 0 && /fixture 黄金:9\/9 逐字节一致/.test(r116.stdout ?? ''),
     'code=' + r116.status + ' out=' + JSON.stringify((r116.stdout ?? '').slice(0, 240)) + ' err=' + JSON.stringify((r116.stderr ?? '').slice(0, 160)));
 }
 

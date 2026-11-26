@@ -26,6 +26,9 @@
 //   unknown         内部未判定                                    z3 回答任意(仅记录)
 //   zero            零义务脚本                                    z3 接受 + 零回答
 //   loop            loop 作用域 proven(i$<n> 符号/区间约束)         z3: unsat/unsat
+//   reserved        保留字重写(参数 div → 脚本符号 div_v;§3.2)     z3: unsat/unsat
+//   nonlinear       不可线性化索引(buf[n * n];目标不编码、零命令)   z3: 接受 + 零回答
+//   multifile       两文件一次 check(分节按命令行顺序)              z3: unsat×4
 //
 // 用法:node tests/z3_check.mjs [--update-fixtures] [--no-comments] [--help]
 // 退出码:0 = 全部断言与 fixture 比对通过(z3 不可用时跳过 z3 层);1 = 断言失败 /
@@ -61,8 +64,14 @@ const USAGE = [
 ].join('\n');
 
 // ---- 语料矩阵 -------------------------------------------------------------------------------
-// 每项:slug/name/source/expectVerdicts(逐块内部判定,顺序 = 逐义务 low→high)/expectViolated
-// (ming check 退出码:有 M3045 错误诊断 → 1,否则 0——协议 §4.4 退出码语义零变化)。
+// 每项:slug / name / 源(单文件 `source` 字符串;多文件用 `files:[{name,content}]`——文件按
+// 数组序传给 `ming check`,分节注释因此按命令行顺序出现)/ expectVerdicts(逐块内部判定,
+// 顺序 = 逐义务 low→high)/ expectCheckSats(脚本 check-sat 数,逐语料显式登记;不可线性化
+// 语料为 0)/ expectSections(文件分节注释里的展示文件名,顺序与数量敏感;零义务脚本无分节 →
+// [])/ expectMentions / expectAbsent(脚本必含 / 必不含的子串——覆盖保留字重写与诚实注释
+// 形态;**注**:expectAbsent 扫全文含注释,若未来注释回显源码原名且与某 absent 子串相撞会
+// 误红——届时把该断言收窄到命令面,审查 n6 登记)/ expectViolated(ming check 退出码:有 M3045
+// 错误诊断 → 1,否则 0——协议 §4.4 退出码语义零变化)/ expectExempt(§6.2 规则 4 豁免块数;缺省 0)。
 const CORPORA = [
   {
     slug: 'proven',
@@ -74,6 +83,8 @@ const CORPORA = [
       'fn main() with io { print(str(get([1, 2], 1))); }',
     ].join('\n'),
     expectVerdicts: ['proven', 'proven'],
+    expectCheckSats: 2,
+    expectSections: ['proven.ming'],
     expectViolated: false,
   },
   {
@@ -86,6 +97,8 @@ const CORPORA = [
       'fn main() with io { print(str(f([1, 2], 2))); }',
     ].join('\n'),
     expectVerdicts: ['unknown', 'refuted'],
+    expectCheckSats: 2,
+    expectSections: ['refuted-sat.ming'],
     expectViolated: true,
   },
   {
@@ -98,6 +111,8 @@ const CORPORA = [
       'fn main() with io { print(str(ls([1], 1, 1))); }',
     ].join('\n'),
     expectVerdicts: ['proven', 'refuted'],
+    expectCheckSats: 2,
+    expectSections: ['refuted-unsat.ming'],
     expectViolated: true,
     expectExempt: 1, // §6.2 规则 4 豁免必须真实发生(审查 MINOR-1:守预期路径,防语料静默退化)
   },
@@ -111,6 +126,8 @@ const CORPORA = [
       'fn main() with io { print(str(g([1, 2], 0))); }',
     ].join('\n'),
     expectVerdicts: ['unknown', 'unknown'],
+    expectCheckSats: 2,
+    expectSections: ['unknown.ming'],
     expectViolated: false,
   },
   {
@@ -121,6 +138,8 @@ const CORPORA = [
       'fn main() with io { print(str(h([1], 0))); }',
     ].join('\n'),
     expectVerdicts: [],
+    expectCheckSats: 0,
+    expectSections: [], // 零义务脚本"头两行 + ; 无证明义务 + (exit)"——无文件分节(§3.1 不变式 5)
     expectViolated: false,
   },
   {
@@ -135,6 +154,72 @@ const CORPORA = [
       'fn main() with io { print(str(sum([1, 2, 3], 3))); }',
     ].join('\n'),
     expectVerdicts: ['proven', 'proven'],
+    expectCheckSats: 2,
+    expectSections: ['loop.ming'],
+    expectViolated: false,
+  },
+  {
+    slug: 'reserved',
+    name: '保留字重写语料(参数 div → 脚本符号 div_v;§3.2 双射;期望 z3 unsat)',
+    source: [
+      'fn r(div: i64, buf: Vec[i64]) -> i64 requires div >= 0 && div < buf.len() {',
+      '    return buf[div];',
+      '}',
+      'fn main() with io { print(str(r(0, [1]))); }',
+    ].join('\n'),
+    expectVerdicts: ['proven', 'proven'],
+    expectCheckSats: 2,
+    expectSections: ['reserved.ming'],
+    // 符号面重写(div_v),注释里的索引原文与义务 id 保持用户源码口径(div)——只改脚本符号名。
+    expectMentions: ['(declare-const div_v Int)', '(>= div_v 0)', '(not (>= div_v 0))', '索引 div(scope: body)'],
+    expectAbsent: ['(declare-const div Int)', '(>= div 0)', '(< div len$buf)'],
+    expectViolated: false,
+  },
+  {
+    slug: 'nonlinear',
+    name: '不可线性化索引语料(buf[n * n];义务目标不编码——零命令/零 check-sat,§3.4 诚实形态)',
+    source: [
+      'fn nl(buf: Vec[i64], n: i64) -> i64 requires n >= 0 {',
+      '    return buf[n * n];',
+      '}',
+      'fn main() with io { print(str(nl([1], 1))); }',
+    ].join('\n'),
+    expectVerdicts: [],
+    expectCheckSats: 0,
+    expectSections: ['nonlinear.ming'], // 有义务头(未编码),故仍有文件分节
+    expectMentions: ['索引 n * n(scope: body)', '索引表达式不可线性化:义务目标未编码(内部未证明;无 (check-sat) 可发射)'],
+    expectViolated: false,
+  },
+  {
+    slug: 'multifile',
+    name: '多文件分节语料(两 .ming 一次 check;分节顺序 = 命令行顺序,故意非字典序)',
+    // 两文件各一条 proven 义务(不同 fn 名),一次 check 产出两节——fixture 锁定分节顺序与内容。
+    // 命令行序故意 = 字典逆序(b 在前、a 在后):若实现退化为按文件名排序,分节断言立即红——
+    // §3.1 冻结的"按命令行顺序"由此获得判别性守卫(审查 M1:字典升序素材无法区分两者)。
+    files: [
+      {
+        name: 'multifile-b.ming',
+        content: [
+          'fn pick(buf: Vec[i64], j: i64) -> i64 requires j >= 0 && j < buf.len() {',
+          '    return buf[j];',
+          '}',
+          'fn main() with io { print(str(pick([1, 2], 0))); }',
+        ].join('\n'),
+      },
+      {
+        name: 'multifile-a.ming',
+        content: [
+          'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+          '    return buf[i];',
+          '}',
+          'fn main() with io { print(str(get([1, 2], 1))); }',
+        ].join('\n'),
+      },
+    ],
+    expectVerdicts: ['proven', 'proven', 'proven', 'proven'],
+    expectCheckSats: 4,
+    expectSections: ['multifile-b.ming', 'multifile-a.ming'], // CLI 序(非字典序);按名排序即红
+    expectMentions: ['; ---- vc:pick:1 — 索引 j(scope: body)----', '; ---- vc:get:1 — 索引 i(scope: body)----'],
     expectViolated: false,
   },
 ];
@@ -179,6 +264,18 @@ function parseScript(script) {
     }
   }
   return { blocks, checkSats };
+}
+
+// 单文件语料简写 → 文件列表(文件名 = <slug>.ming,与既有 fixture 的分节注释逐字兼容);
+// 多文件语料按 `files` 数组序写盘并传给 `ming check`(分节顺序 = 命令行顺序,§3.3)。
+function corpusFiles(c) {
+  return c.files ?? [{ name: `${c.slug}.ming`, content: c.source }];
+}
+
+// 文件分节注释(`; ===== 文件:<展示路径> =====`)按出现顺序提取(§3.1 脚本结构 / §3.3 路径口径)。
+// 零义务脚本无分节(§3.1 不变式 5)——由语料矩阵的 expectSections:[] 显式登记。
+function sectionNamesOf(script) {
+  return [...script.matchAll(/^; ===== 文件:(.+) =====$/gm)].map((m) => m[1]);
 }
 
 // z3 stdout → 回答序列(每行一个 sat/unsat/unknown;其他行——如 (error ...)——不计数,
@@ -362,20 +459,28 @@ function main() {
     process.stderr.write(`✗ ${msg}\n`);
   };
 
+  // 审查 n5:所有语料共写同一临时目录——跨语料文件重名会互相覆盖,生成前先自检(一行防御)。
+  const allNames = CORPORA.flatMap((c) => corpusFiles(c).map((f) => f.name));
+  const dupNames = [...new Set(allNames.filter((n, i) => allNames.indexOf(n) !== i))];
+  if (dupNames.length > 0) failLine(`语料矩阵文件名跨语料重复:${JSON.stringify(dupNames)}(共享临时目录会互相覆盖)`);
+
   process.stdout.write('z3-check — Z3 外部消费验证(协议 docs/proof-protocol.md §6)+ SMT-LIB golden fixtures\n');
 
   // ---- 阶段 A:生成脚本 + 结构断言(不依赖 z3)-----------------------------------------------
-  // 相对路径 + cwd=TMP 调用:脚本内 `; ===== 文件:<slug>.ming =====` 稳定,可与 fixtures 逐字节比对。
+  // 相对路径 + cwd=TMP 调用:脚本内 `; ===== 文件:<文件名> =====` 稳定(单文件 = <slug>.ming;
+  // 多文件 = files[].name),可与 fixtures 逐字节比对。
   const generated = [];
   for (const c of CORPORA) {
-    const mingFile = path.join(TMP, `${c.slug}.ming`);
-    fs.writeFileSync(mingFile, c.source.endsWith('\n') ? c.source : `${c.source}\n`, 'utf8');
+    const files = corpusFiles(c); // 单文件 = <slug>.ming;多文件按 files 数组序(命令行顺序)
+    for (const f of files) {
+      fs.writeFileSync(path.join(TMP, f.name), f.content.endsWith('\n') ? f.content : `${f.content}\n`, 'utf8');
+    }
     const entry = { c, script: null, parsed: null, scriptOk: false, genFailed: false };
     generated.push(entry);
     const before = failures.length;
 
     // 1) ming check → SMT-LIB 脚本(stdout 纯脚本;违反语料 exit 1 是协议 §4.4 的既有口径)
-    const r = spawnSync(process.execPath, [MING, 'check', `${c.slug}.ming`, '--proof-format', 'smt-lib'], {
+    const r = spawnSync(process.execPath, [MING, 'check', ...files.map((f) => f.name), '--proof-format', 'smt-lib'], {
       encoding: 'utf8',
       cwd: TMP,
       timeout: SPAWN_TIMEOUT_MS,
@@ -390,10 +495,29 @@ function main() {
       continue;
     }
 
-    // 2) 脚本结构与语料设计对照(块数/逐块判定/check-sat 数)
+    // 2) 脚本结构与语料设计对照(文件分节/块数/逐块判定/check-sat 数/形态子串)
     const parsed = parseScript(script);
+    const sections = sectionNamesOf(script);
+    if (JSON.stringify(sections) !== JSON.stringify(c.expectSections)) {
+      failLine(`[${c.slug}] 文件分节 ${JSON.stringify(sections)} ≠ 预期 ${JSON.stringify(c.expectSections)}(§3.3 分节按命令行顺序)`);
+    }
+    if (c.expectVerdicts.length === 0) {
+      // §3.1 不变式 5 / §3.4:无可检目标时不发射任何义务命令(零义务与不可线性化两种诚实形态)。
+      // 审查 M2:用**允许列表**(非命令黑名单)——非注释非空行只允许脚本框架的
+      // (set-logic QF_LIA) / (set-info :source …) / (exit);(echo)/(set-option)/(declare-fun)/
+      // (get-model) 等未列举命令一律红,杜绝"零 check-sat 即静默"路径被 --update-fixtures 洗成黄金。
+      const frameworkLine = /^(\(set-logic QF_LIA\)|\(set-info :source .*\)|\(exit\))$/;
+      const illegal = script.split('\n').map((l) => l.trim())
+        .filter((l) => l !== '' && !l.startsWith(';') && !frameworkLine.test(l));
+      if (illegal.length > 0) {
+        failLine(`[${c.slug}] 零义务/未编码脚本只允许框架命令(set-logic/set-info/exit),实际 ${illegal.length} 行:${JSON.stringify(illegal.slice(0, 3))}`);
+      }
+    }
     if (parsed.blocks.length !== c.expectVerdicts.length) {
       failLine(`[${c.slug}] 方向块数 ${parsed.blocks.length} ≠ 预期 ${c.expectVerdicts.length}(语料形态或脚本结构漂移)`);
+    }
+    if (parsed.checkSats !== c.expectCheckSats) {
+      failLine(`[${c.slug}] check-sat 数 ${parsed.checkSats} ≠ 预期 ${c.expectCheckSats}(语料矩阵显式登记)`);
     }
     if (parsed.checkSats !== parsed.blocks.length) {
       failLine(`[${c.slug}] check-sat 数 ${parsed.checkSats} ≠ 方向块数 ${parsed.blocks.length}(协议 §3.1 不变式 2:每块恰一个)`);
@@ -404,6 +528,12 @@ function main() {
         failLine(`[${c.slug}] 块 ${i + 1} 内部判定 ${JSON.stringify(parsed.blocks[i].verdict)} ≠ 预期 ${JSON.stringify(want)}(内部证明器口径漂移)`);
       }
     });
+    for (const m of c.expectMentions ?? []) {
+      if (!script.includes(m)) failLine(`[${c.slug}] 脚本缺少预期形态子串 ${JSON.stringify(m)}(语料名实不符)`);
+    }
+    for (const a of c.expectAbsent ?? []) {
+      if (script.includes(a)) failLine(`[${c.slug}] 脚本出现禁止形态子串 ${JSON.stringify(a)}(重写/编码面漂移)`);
+    }
 
     entry.script = script;
     entry.parsed = parsed;

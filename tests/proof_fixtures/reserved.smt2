@@ -1,0 +1,25 @@
+(set-logic QF_LIA)
+(set-info :source "Ming 证明义务导出(QF_LIA 子集;规范见 docs/proof-protocol.md)")
+
+; ===== 文件:reserved.ming =====
+; ---- vc:r:1 — 索引 div(scope: body)----
+; 方向 low — ming 内部判定: proven(期望 unsat)
+(push)
+(declare-const div_v Int)
+(declare-const len$buf Int)
+(assert (>= div_v 0))
+(assert (< div_v len$buf))
+(assert (not (>= div_v 0)))
+(check-sat)
+(pop)
+; 方向 high — ming 内部判定: proven(期望 unsat)
+(push)
+(declare-const div_v Int)
+(declare-const len$buf Int)
+(assert (>= div_v 0))
+(assert (< div_v len$buf))
+(assert (not (< div_v len$buf)))
+(check-sat)
+(pop)
+
+(exit)

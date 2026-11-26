@@ -26,7 +26,7 @@
 
 ### 1.2 前置条件核销(已满足)
 
-- **S-1 稳定**:`ming check --proof-format smt-lib` 自 v1.1.0 落地,结构不变式五条列入 proof-protocol §5 **冻结**面(§3.1),逐字节确定性由 R-19 六语料 fixture 锁定(`tests/proof_fixtures/`,135 行)。
+- **S-1 稳定**:`ming check --proof-format smt-lib` 自 v1.1.0 落地,结构不变式五条列入 proof-protocol §5 **冻结**面(§3.1),逐字节确定性由 R-19 fixtures 锁定(`tests/proof_fixtures/`;本 ADR 定稿时六语料 135 行,扩面批增至九语料(六判定形态+保留字重写/不可线性化/多文件分节),扩面随发布批同步登记)。
 - **Z3 独立复核往返**:CI `z3-verify` job 全绿并留有 job 证据(`run 45834397042 · job 139969754333`,proof-protocol §8 已回填)。**证据口径 = job 级 success,不是 run 级**:同 run 的 `macos-latest`/node20 测试腿被 runner 平台回收(15 分钟整点 cancelled、零 step 记录,基础设施抖动)导致 run 级红——该豁免已在 proof-protocol §8 如实记录,与 z3 验证无关。本机无 z3 是常态(`node tests/z3_check.mjs` 打印跳过并 exit 0,fixture 层照跑)。
 - 结论:**S-3 的登记前置已清空**,因此"能否兑现"成为纯设计问题——这正是本 ADR 的对象。
 
