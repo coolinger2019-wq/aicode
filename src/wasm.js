@@ -1230,9 +1230,12 @@ export class WasmCompiler {
         }
         if (dstTy !== 'i64') throw new Unsupported('f64 复合赋值 ' + s.op);
         // v0.65 §4.5.2 顺带对齐:&=/|=/^= 与下标复合赋值同批解锁(interp binopValues 支持
-        // & | ^;词法无 <<= >>=,既有两分支为死代码保留不动)。
+        // & | ^)。v1.2.5(#94,plan §5.1):删除原白名单里的 `<<=`/`>>=` 死分支——parser.js
+        // ASSIGN_OPS 不含移位复合(词法把 `<<=` 拆成 `<<` + `=`),永远到不了这里;若未来
+        // 语法放开(需 ADR),必须显式补 emitCheckedOp 的移位语义,不得借 s.op[0]='<'/'>'
+        // 复用比较字符(现落到下方 Unsupported('复合 ...') 具名回落,VM 侧编译器另有防御)。
         if (s.op === '+=' || s.op === '-=' || s.op === '*=' || s.op === '/=' || s.op === '%='
-          || s.op === '&=' || s.op === '|=' || s.op === '^=' || s.op === '<<=' || s.op === '>>=') {
+          || s.op === '&=' || s.op === '|=' || s.op === '^=') {
           // b 先求值存 scratch1(表达式可能含调用,只求值一次);a=旧 dst 存 scratch0
           this.compileI64(s.value, ctx);
           this.localSet(ctx, ctx.scratch1);

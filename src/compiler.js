@@ -592,6 +592,14 @@ class BytecodeCompiler {
         return;
       }
       case 'Assign': {
+        // v1.2.5(#94,plan §5.1):防御断言——parser.js ASSIGN_OPS 只产生
+        // = += -= *= /= %= &= |= ^=(`<<=`/`>>=` 被词法拆成 `<<`/`>>` + `=`,到不了
+        // Assign)。若未来语法放开而此处未同步,BIN[s.op[0]] 会把 '<'/'>' 静默解析为
+        // 比较指令(BIN['<']=13 / BIN['>']=15):VM 将发射"复合赋值变比较"的错误语义,
+        // 比 C 面误导更危险。在此具名失败,禁止未接线算子落进通用路径。
+        if (s.op !== '=' && !['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^='].includes(s.op)) {
+          throw new CompileError('不支持的复合赋值:' + s.op + '(语法面 ASSIGN_OPS 不含该算子;若放开需先补 BIN/VM 语义,见 plan §5.1 #94)', s.span);
+        }
         // ---- 窥孔融合(v0.9):局部槽上的高频赋值模式(仅纯运算;&&/|| 有短路不融合)----
         const pureOp = (op) => op !== '&&' && op !== '||';
         const localSlotOf = (name) => {

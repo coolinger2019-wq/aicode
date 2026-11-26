@@ -550,7 +550,13 @@ class CEmit {
         }
         if (op === '!=') text = `(!${text})`;
       } else {
-        text = `(${this.emitExpr(e.l, lt, ctx)} ${op} ${this.emitExpr(e.r, rt, ctx)})`;
+        // v1.2.5(#93,plan §5.1):数值/bool 比较的两侧按源码序物化为临时——C 标准不规定
+        // 同语句子表达式的求值序(本机 gcc x86-64 实测左→右,与 tree/VM 一致;跨编译器
+        // 未闭合,与 #90/#92 同族 gap)。物化是独立声明语句,先后由 C 块序确定。
+        // 比较本身无 panic 消息面(两侧求值各自负责);f64/bool 同门(i64/u64/f64/bool)。
+        const l = this.emitArgTmp(e.l, lt, ctx);
+        const r = this.emitArgTmp(e.r, rt, ctx);
+        text = `(${l} ${op} ${r})`;
       }
       return ty === 'bool' ? text : `((long long)(${text}))`;
     }
@@ -567,12 +573,19 @@ class CEmit {
     if (lt === 'f64') {
       if (ty !== 'f64') throw new Unsupported('f64 运算位置');
       if (!['+', '-', '*', '/'].includes(op)) throw new Unsupported('f64 运算 ' + op);
-      return `(${this.emitExpr(e.l, 'f64', ctx)} ${op} ${this.emitExpr(e.r, 'f64', ctx)})`;
+      // v1.2.5(#93):两侧按源码序物化(f64 IEEE 四则无 panic 消息面;本修复只定求值序,
+      // 除零照旧产生 ±Inf/NaN,不涉诊断)。
+      const l = this.emitArgTmp(e.l, 'f64', ctx);
+      const r = this.emitArgTmp(e.r, 'f64', ctx);
+      return `(${l} ${op} ${r})`;
     }
     if (lt !== 'i64' && lt !== 'u64') throw new Unsupported('运算类型 ' + lt);
     if (ty !== lt) throw new Unsupported('运算结果位置 ' + ty);
     if (op === '&' || op === '|' || op === '^') {
-      return `(${this.emitExpr(e.l, lt, ctx)} ${op} ${this.emitExpr(e.r, lt, ctx)})`;
+      // v1.2.5(#93):位运算两侧按源码序物化(i64/u64 载体;无 panic 消息面,纯定序)
+      const l = this.emitArgTmp(e.l, lt, ctx);
+      const r = this.emitArgTmp(e.r, lt, ctx);
+      return `(${l} ${op} ${r})`;
     }
     // v1.2.4(#92,plan §5.1):checked 算术的操作数求值序/求值次数(根因表述经审查 MINOR-1 修正)。
     // `/ % << >>` 不走 __builtin_*_overflow 实参位,发射文本是「守卫语句 + 正式运算」多次
@@ -1076,7 +1089,12 @@ class CEmit {
         const lt = this.inferTy(e.l, ctx);
         const rt = this.inferTy(e.r, ctx);
         if (!lt || !rt || lt !== rt) throw new Unsupported('条件两侧类型');
-        if (lt === 'bool') return `(${this.emitExpr(e.l, 'bool', ctx)} ${e.op} ${this.emitExpr(e.r, 'bool', ctx)})`;
+        if (lt === 'bool') {
+          // v1.2.5(#93):bool 比较两侧按源码序物化(与 emitBin 数值面同门)
+          const l = this.emitArgTmp(e.l, 'bool', ctx);
+          const r = this.emitArgTmp(e.r, 'bool', ctx);
+          return `(${l} ${e.op} ${r})`;
+        }
         if (lt === 'str') {
           if (e.op === '==' || e.op === '!=') {
             // #90:helper 实参按源码序物化(ming_str_eq 的 C 实参求值序 unspecified)
@@ -1089,7 +1107,10 @@ class CEmit {
           const r = this.emitArgTmp(e.r, 'str', ctx);
           return `(ming_str_cmp(${l}, ${r}) ${e.op} 0)`;
         }
-        return `(${this.emitExpr(e.l, lt, ctx)} ${e.op} ${this.emitExpr(e.r, rt, ctx)})`;
+        // v1.2.5(#93):i64/u64/f64 比较两侧按源码序物化(同 emitBin 数值面)
+        const l = this.emitArgTmp(e.l, lt, ctx);
+        const r = this.emitArgTmp(e.r, rt, ctx);
+        return `(${l} ${e.op} ${r})`;
       }
       default: {
         // bool 型调用作条件(is_empty / contains 等)
@@ -1164,7 +1185,14 @@ class CEmit {
           ctx.line(`${dst} = ${cpy};`);
           return;
         }
-        if (!['+=', '-=', '*=', '/=', '%=', '<<=', '>>='].includes(s.op)) throw new Unsupported('复合 ' + s.op);
+        // v1.2.5(#94,plan §5.1):白名单只含语法面可达的复合算子(parser.js ASSIGN_OPS:
+        // = += -= *= /= %= &= |= ^=)。`<<=`/`>>=` 在词法层被拆成 `<<`/`>>` + `=`
+        // (OPS2 无三字符算子),永远到不了 Assign 节点——原白名单两分支是死分支且
+        // s.op[0]='<'/'>' 会落进 emitCheckedS/emitCheckedU 的 default(误导性
+        // "i64 运算 <")或 f64 分支发射非法 C;删除,若未来语法放开(需 ADR)必须先
+        // 在此显式接线并补 emitCheckedS/U 的移位分支语义,不得静默复用比较字符。
+        // &= |= ^= 语法可达但 C 后端未接线(发 Unsupported → C1 具名拒绝),维持既有面。
+        if (!['+=', '-=', '*=', '/=', '%='].includes(s.op)) throw new Unsupported('复合 ' + s.op);
         if (dty === 'bool' || dty === 'pu8' || dty === 'pcu8') throw new Unsupported('复合赋值类型 ' + dty); // v0.54/C5
         const op = s.op[0];
         if (dty === 'str') {

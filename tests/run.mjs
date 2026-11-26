@@ -4643,7 +4643,7 @@ secBegin('58');
   // v0.83 再校准(c18cc21f… → d60e3c89…):#58 收口——ming_vec_set 写 flavor 去"(用 .get(i)
   // 返回 Option)"读后缀(interp.js:889 单一事实;读 flavor ming_vec_get 保持后缀)。
   // 运行时助手是静态前导文本,指纹随合法语义统一变化;markers 与 cc==VM 两断言不受影响。
-  const BASE_C_SHA = 'd1d1821a31d488fa26628ec1832a87b787ce9ea444bc44b7bcb2efe9b325fcd3'; /* v1.2.4 #92 重校准理由化:checked 二元算术按源码序物化两侧操作数(emitBin→emitArgTmp;C 不规定同语句子表达式求值序,`/ % << >>` 守卫会先求值右操作数)——本夹具 add 函数体 `a + b` 新增两条操作数临时声明(逐字 diff 仅此:__t1=v_a/__t2=v_b/__t3 结果,后续临时编号顺移),消息文本仍打印值,markers 与 cc==VM 两断言不减。原值 701c1cd3fc9d839dbbae21bd9da7f7c0ed623313d51a075ef06d3a2a3c53c648(v1.2.2 #90 实参物化;更早 d8623cd9… v0.92 负零归一) */
+  const BASE_C_SHA = '8119f5de9454e774d24a99d25b93a59e08d62b984fe70eeae6a661877686d6e4'; /* v1.2.5 #93 重校准理由化:数值/bool 比较、f64 四则、位运算(& | ^)按源码序物化两侧操作数(emitBin/emitCond→emitArgTmp;C 不规定同语句子表达式求值序)——本夹具 `1.5 + 2.0` 新增两条 f64 操作数临时声明(逐字 diff 仅此:__t13=1.5/__t14=2.0,其后的 str 临时编号顺移 __t15..__t17;纯净副本(git archive HEAD 723552e)归一化 C diff 逐字核对,无其他改动),markers 与 cc==VM 两断言不减。原值 d1d1821a31d488fa26628ec1832a87b787ce9ea444bc44b7bcb2efe9b325fcd3(v1.2.4 #92 checked 算术物化;更早 701c1cd3… v1.2.2 #90 实参物化、d8623cd9… v0.92 负零归一) */
   if (hasCC58) {
     const baseC = ccRun58(baseU, path.join(dir, 'c5-baseline-run'));
     check('v58.11:既有 C 输出不变抽查(非 unsafe 程序不发射 ming_mem_alloc/std.mem;cc 输出与 VM 逐字一致;渲染 C 指纹逐字节不变)',
@@ -29126,6 +29126,228 @@ secBegin('115');
     check('v115.33:审查 MINOR-2——LHS panic + RHS 移位守卫非法(wa() << wb(),wb=64)三腿 101 且首行 = wa 溢出"整数+溢出"(修复前 cc 报"移位位数 64 越界")',
       pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null && first115(r.tree.stderr).includes('整数+溢出')
       && (!r.cc || (first115(r.cc.stderr).match(/:1:\d+: error/) !== null && first115(r.cc.stderr).includes('整数+溢出'))),
+      fmtLegs115(r));
+  }
+
+  // ---- v115.34+ #93(v1.2.5,plan §5.1):数值/bool 比较、f64 `+ - * /`、`& | ^` 的操作数求值序 ----
+  // 缺陷(残余登记,v1.2.4 审查 NOTE-3):三类二元运算仍发射为单条 C 表达式,C 标准不规定
+  // 同语句子表达式求值序。**观测面经审查 MINOR-2 修正**:同码双 panic 形态(v115.34–36)
+  // 本机 gcc 16.2 修复前也通过(恰好左→右);但 RHS 含 checked 算术的比较形态(v115.37)
+  // 在修复前即可观测分歧(HEAD cc 报 RHS 守卫 M4004、tree/VM 报左 M4003);跨编译器确定性
+  // 锁 = v115.39 结构断言。修法 = #90/#92 同一哲学:emitArgTmp 按源码序物化两侧
+  // (比较面含 bool/f64;i64/u64 位运算;f64 四则)。比较/位运算/四则自身无 panic 消息面
+  // (f64 除零 = IEEE ±Inf/NaN 不 panic),判别靠双 panic 操作数:首行必须是左侧调用。
+  // 注意:f64 无自身 panic,且 C1 资格面拒绝 io 函数(不能调打印函数做 stdout 副作用判别),
+  // 故 f64 面用"左 M4003(越界读)+ 右 M4004(除零)"两种不同 M 码的子表达式判别——首行
+  // M4003 即证明左侧先求值(比同码同函数形态更强)。
+  const cmp93Src = (op) => [
+    'fn wa() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn wb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    `fn main() with io { let x = wa() ${op} wb(); print(str(x)); }`,
+  ].join('\n');
+  {
+    const results = [];
+    let okAll93 = true;
+    for (const [tag, op] of [['lt', '<'], ['eq', '=='], ['ge', '>=']]) {
+      const r = legs115(w115('cmp93_' + tag + '.ming', cmp93Src(op)), 'cmp93-' + tag);
+      const ok = pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null
+        && (!r.cc || first115(r.cc.stderr).match(/:1:\d+: error/) !== null);
+      if (!ok) okAll93 = false;
+      results.push(tag + ':' + (ok ? 'ok' : 'FAIL') + '(' + fmtLegs115(r) + ')');
+    }
+    check('v115.34:#93 数值比较求值序——i64 wa() op wb()(<, ==, >=)双 panic 三腿 101,首行 = wa(第 1 行)逐字(修复前 cc 依赖 gcc 左→右实现细节)',
+      okAll93, results.join(' | '));
+  }
+
+  const bit93Src = (op) => [
+    'fn wa() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    'fn wb() -> i64 { let z = 9223372036854775807; return z + 1; }',
+    `fn main() with io { let x = wa() ${op} wb(); print(str(x)); }`,
+  ].join('\n');
+  {
+    const results = [];
+    let okAll93 = true;
+    for (const [tag, op] of [['and', '&'], ['or', '|'], ['xor', '^']]) {
+      const r = legs115(w115('bit93_' + tag + '.ming', bit93Src(op)), 'bit93-' + tag);
+      const ok = pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null
+        && (!r.cc || first115(r.cc.stderr).match(/:1:\d+: error/) !== null);
+      if (!ok) okAll93 = false;
+      results.push(tag + ':' + (ok ? 'ok' : 'FAIL') + '(' + fmtLegs115(r) + ')');
+    }
+    check('v115.35:#93 位运算求值序——i64 wa() op wb()(& | ^)双 panic 三腿 101,首行 = wa(第 1 行)逐字(修复前 cc 依赖 gcc 实现细节)',
+      okAll93, results.join(' | '));
+  }
+
+  const u64Cmp93 = w115('u64_cmp93.ming', [
+    'fn ua() -> u64 { let z = u64.max_value(); return z + 1u64; }',
+    'fn ub() -> u64 { let z = u64.max_value(); return z + 1u64; }',
+    'fn main() with io { let b = ua() < ub(); print(str(b)); }',
+  ].join('\n'));
+  const u64Bit93 = w115('u64_bit93.ming', [
+    'fn ua() -> u64 { let z = u64.max_value(); return z + 1u64; }',
+    'fn ub() -> u64 { let z = u64.max_value(); return z + 1u64; }',
+    'fn main() with io { let b = ua() & ub(); print(str(b)); }',
+  ].join('\n'));
+  {
+    const rc = legs115(u64Cmp93, 'u64-cmp93');
+    const rb = legs115(u64Bit93, 'u64-bit93');
+    const okU = (r) => pint115(r) && first115(r.tree.stderr).match(/:1:\d+: error/) !== null
+      && (!r.cc || first115(r.cc.stderr).match(/:1:\d+: error/) !== null);
+    check('v115.36:#93 u64 同族——无符号比较 < 与位运算 & 的双 panic 首行 = ua(第 1 行)逐字(emitArgTmp u64 载体同门)',
+      okU(rc) && okU(rb), fmtLegs115(rc) + ' | ' + fmtLegs115(rb));
+  }
+
+  // f64 面:左 = Vec 越界读(M4003),右 = 整数除零(M4004)——首行 M4003 即左侧先求值。
+  // (f64 自身无 panic;io 函数不 eligible,无法用打印函数做 stdout 序判别。)
+  const f64Order93 = (tag, op) => w115('f64_93_' + tag + '.ming', [
+    'fn main() with io {',
+    '    let v = [1, 2];',
+    '    let z = 0;',
+    `    let a = (v[9] as f64) ${op} ((10 / z) as f64);`,
+    '    print(str(a));',
+    '}',
+  ].join('\n'));
+  {
+    const rc = legs115(f64Order93('cmp', '<'), 'f64-93-cmp');
+    const ra = legs115(f64Order93('add', '+'), 'f64-93-add');
+    const okF = (r) => r.tree.code === 101 && r.vm.code === 101 && (!r.cc || r.cc.code === 101)
+      && r.tree.stdout === '' && first115(r.tree.stderr).includes('M4003')
+      && first115(r.tree.stderr).includes(':4:') && sameLegs115(r, true)
+      && (!r.cc || (first115(r.cc.stderr).includes('M4003') && first115(r.cc.stderr).includes(':4:')));
+    check('v115.37:#93 f64 面求值序——(v[9] as f64) op ((10 / z) as f64)(比较 < / 四则 +)首行 = 左 M4003(第 4 行),不出现右侧 M4004(修复前 cc 依赖 gcc 左→右)',
+      okF(rc) && okF(ra), fmtLegs115(rc) + ' | ' + fmtLegs115(ra));
+  }
+
+  // 正常路径零语义漂移:f64 IEEE(±Inf/NaN)+ 四则 + 比较 + 负数位运算三腿输出逐字。
+  const normal93 = w115('bin93_normal.ming', [
+    'fn main() with io {',
+    '    let a = 1.0 / 0.0; let b = -1.0 / 0.0; let c = 0.0 / 0.0;',
+    '    let d = 7.5 * 2.0 - 3.0 / 1.5;',
+    '    let e = 3.5 < 2.5; let f = 3.5 >= 3.5;',
+    '    let g = 6 & 3; let h = -8 | 3; let i = 5 ^ 3;',
+    '    print(str(a)); print(str(b)); print(str(c)); print(str(d));',
+    '    print(str(e)); print(str(f)); print(str(g)); print(str(h)); print(str(i));',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(normal93, 'bin93-normal');
+    const want93 = 'Infinity\n-Infinity\nNaN\n13.0\nfalse\ntrue\n2\n-5\n6\n';
+    check('v115.38:#93 对照——f64 ±Inf/NaN + 四则 + 比较 + 负数位运算三腿 0,stdout 逐字 "Infinity/-Infinity/NaN/13.0/false/true/2/-5/6"(物化不改语义)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === want93 && (!r.cc || r.cc.stdout === want93),
+      fmtLegs115(r));
+  }
+
+  // v115.39 单次求值结构断言(--emit-c,不依赖编译器;与 v115.32 #92 同款):
+  // 每个操作数调用恰一次(一侧一条临时声明),正式运算文本只引用临时。
+  {
+    const cases93 = [
+      ['f64add', 'f64', '+'], ['f64sub', 'f64', '-'], ['f64mul', 'f64', '*'], ['f64div', 'f64', '/'],
+      ['f64lt', 'f64', '<'],
+      ['i64lt', 'i64', '<'], ['i64eq', 'i64', '=='], ['i64and', 'i64', '&'], ['i64or', 'i64', '|'], ['i64xor', 'i64', '^'],
+      ['u64lt', 'u64', '<'], ['u64and', 'u64', '&'],
+    ];
+    const results = [];
+    let okAll93 = true;
+    for (const [tag, ty, op] of cases93) {
+      const lit = (n) => ty === 'f64' ? n + '.5' : ty === 'u64' ? n + 'u64' : String(n);
+      const f = w115('emit93_' + tag + '.ming', [
+        `fn ma() -> ${ty} { return ${lit(1)}; }`,
+        `fn mb() -> ${ty} { return ${lit(2)}; }`,
+        `fn main() with io { let x = ma() ${op} mb(); }`,
+      ].join('\n'));
+      const emDir = path.join(dir115, 'emit93-' + tag);
+      const em = spawnSync(process.execPath, [MING, 'cc', f, '--emit-c', '--out', emDir], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+      const emFile = path.join(emDir, 'emit93_' + tag + '.c');
+      const emSrc = fs.existsSync(emFile) ? fs.readFileSync(emFile, 'utf8') : '';
+      const mi = emSrc.indexOf('void ming_main(void) {');
+      const mj = mi >= 0 ? emSrc.indexOf('\n    }\n', mi) : -1;
+      const body = mi >= 0 && mj > mi ? emSrc.slice(mi, mj) : '';
+      const calls = (body.match(/\bm\d+\(\)/g) ?? []).length;
+      const escOp = op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const formal = new RegExp('\\b__t\\d+ ' + escOp + ' __t\\d+\\b').test(body);
+      const ok = em.status === 0 && calls === 2 && formal;
+      if (!ok) okAll93 = false;
+      results.push(`${tag}:${em.status}/${calls}/${formal}`);
+    }
+    check('v115.39:#93 单次求值结构断言——比较/f64 四则/位运算(i64/u64)每操作数调用恰 2 次(一侧一次)且正式运算只引用临时(__t op __t)',
+      okAll93, 'results=' + JSON.stringify(results));
+  }
+
+  // ---- v115.40 #94(v1.2.5,plan §5.1):`<<=`/`>>=` 死分支收口 ----
+  // parser.js ASSIGN_OPS 不含移位复合(词法 OPS2 把 `<<=` 拆成 `<<` + `=` → RHS 起始 `=`
+  // → M2001),Assign 节点不可达;cbackend/wasm 白名单与 compiler 通用路径的移位分支是
+  // 死代码——compiler 侧 BIN['<']=13/BIN['>']=15 若被未来语法误触会静默发射比较指令。
+  // 处置:两处白名单删除 + compiler 显式防御断言(源码结构锁定,行为面锁 M2001 回归)。
+  {
+    const shiftAssign94 = (op, tag) => w115('shift_assign_94_' + tag + '.ming', [
+      'fn main() -> i64 with io {',
+      '    let mut x: i64 = 1;',
+      `    x ${op} 1;`,
+      '    x',
+      '}',
+    ].join('\n'));
+    const rs = runMing(['check', shiftAssign94('<<=', 'shl')]);
+    const rr = runMing(['check', shiftAssign94('>>=', 'shr')]);
+    const cb94 = fs.readFileSync(path.join(ROOT, 'src', 'cbackend.js'), 'utf8');
+    const wm94 = fs.readFileSync(path.join(ROOT, 'src', 'wasm.js'), 'utf8');
+    const cp94 = fs.readFileSync(path.join(ROOT, 'src', 'compiler.js'), 'utf8');
+    const ps94 = fs.readFileSync(path.join(ROOT, 'src', 'parser.js'), 'utf8');
+    check('v115.40:#94 死分支锁定——`x <<= 1`/`x >>= 1` 仍在解析期 M2001(语法面不放开);cbackend/wasm 白名单不含 \'<<=\'/\'>>=\';compiler 含防御断言;parser ASSIGN_OPS 无移位复合',
+      rs.code === 1 && rr.code === 1
+      && (rs.stderr ?? '').includes('M2001') && (rr.stderr ?? '').includes('M2001')
+      && (rs.stderr ?? '').includes('无法解析的表达式') && (rr.stderr ?? '').includes('无法解析的表达式')
+      && !cb94.includes("'<<='") && !cb94.includes("'>>='")
+      && !wm94.includes("'<<='") && !wm94.includes("'>>='")
+      && cb94.includes("['+=', '-=', '*=', '/=', '%=']")
+      && cp94.includes('不支持的复合赋值:')
+      && !/ASSIGN_OPS = new Set\(\[[^\]]*'<<='/.test(ps94) && !/ASSIGN_OPS = new Set\(\[[^\]]*'>>='/.test(ps94),
+      `check=${rs.code}/${rr.code} stderr=${JSON.stringify((rs.stderr ?? '').slice(0, 80))} cbShift=${cb94.includes("'<<='")}/${cb94.includes("'>>='")} wmShift=${wm94.includes("'<<='")}/${wm94.includes("'>>='")} guard=${cp94.includes('不支持的复合赋值:')}`);
+  }
+
+  // v115.41 审查 MINOR-1:条件位双面——`if ma() < mb()` 的 emit-c 也必须物化两侧。
+  // 只回退 emitCond 半边而保留 emitBin 时,本断言必红(评审在临时副本实测过该回退盲区)。
+  {
+    const condResults = [];
+    let condOk = true;
+    for (const [tag, ty, lit] of [['i64', 'i64', (n) => String(n)], ['f64', 'f64', (n) => n + '.5']]) {
+      const f = w115('emit93_cond_' + tag + '.ming', [
+        `fn ma() -> ${ty} { return ${lit(1)}; }`,
+        `fn mb() -> ${ty} { return ${lit(2)}; }`,
+        `fn main() with io { if ma() < mb() { print("t"); } else { print("f"); } print("end"); }`,
+      ].join('\n'));
+      const emDir = path.join(dir115, 'emit93-cond-' + tag);
+      const em = spawnSync(process.execPath, [MING, 'cc', f, '--emit-c', '--out', emDir], { encoding: 'utf8', cwd: ROOT, timeout: 60000 });
+      const emFile = path.join(emDir, 'emit93_cond_' + tag + '.c');
+      const emSrc = fs.existsSync(emFile) ? fs.readFileSync(emFile, 'utf8') : '';
+      const mi = emSrc.indexOf('void ming_main(void) {');
+      const mj = mi >= 0 ? emSrc.indexOf('\n    }\n', mi) : -1;
+      const body = mi >= 0 && mj > mi ? emSrc.slice(mi, mj) : '';
+      const calls = (body.match(/\bm\d+\(\)/g) ?? []).length;
+      const formal = /\bif \(\(__t\d+ < __t\d+\)\)/.test(body);
+      if (!(em.status === 0 && calls === 2 && formal)) condOk = false;
+      condResults.push(`${tag}:${em.status}/${calls}/${formal}`);
+    }
+    check('v115.41:审查 MINOR-1——条件位 `if ma() < mb()` 的 emit-c 同样物化两侧(calls=2 且 "if ((__t < __t))";只回退 emitCond 半边时本断言必红)',
+      condOk, 'results=' + JSON.stringify(condResults));
+  }
+
+  // v115.42 审查 NOTE-3:bool 比较面(值位/条件位 ==/!=)三腿一致。**诚实限制**:bool 返回
+  // 调用的比较形态走 C1 面被拒("比较两侧类型"实测)——故用例用 bool 变量(cc 可达),
+  // 锁 bool 比较语义与条件位;调用形态的 bool 比较物化在 C1 面不可达(如实登记)。
+  const boolCmp93 = w115('bool_cmp93.ming', [
+    'fn main() with io {',
+    '    let a = true; let b = false;',
+    '    let x = a == b;',
+    '    let y = a != b;',
+    '    print(str(x)); print(str(y));',
+    '    if a != b { print("t"); } else { print("f"); }',
+    '    print("end");',
+    '}',
+  ].join('\n'));
+  {
+    const r = legs115(boolCmp93, 'bool-cmp93');
+    check('v115.42:审查 NOTE-3——bool 值位/条件位 ==/!= 三腿 0 且 stdout 逐字 "false/true/t/end"(调用形态 bool 比较在 C1 不可达,如实限制)',
+      sameLegs115(r) && r.tree.code === 0 && r.tree.stdout === 'false\ntrue\nt\nend\n' && (!r.cc || r.cc.stdout === 'false\ntrue\nt\nend\n'),
       fmtLegs115(r));
   }
 }
