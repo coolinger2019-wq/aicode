@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.4.2';
+export const VERSION = '1.5.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -1211,6 +1211,7 @@ const TOOL_CMDS = {
   certverify: { file: 'certverify.ming', prefix: [] },
   treehash: { file: 'treehash.ming', prefix: [] },
   semver: { file: 'semver.ming', prefix: [] },
+  moltbook: { file: 'moltbook.ming', prefix: [] },
 };
 
 const toolsUsage = `
@@ -1240,6 +1241,7 @@ ming tools — 自举工具统一入口(工具均为 tools/*.ming,用 Ming 自�
   certverify <证书>               线性不可满足证书自洽校验(§10 判据;仅自洽模式)
   treehash <目录>                 目录确定性指纹(逐文件行 + 末行 TREEHASH 根哈希)
   semver <A> <B> | bump ...       语义化版本比较(-1/0/1)/bump(major|minor|patch)/check
+  moltbook <子命令> ...           moltbook 社区集成(register/login/me/post/comment/read/feed/notifications;ADR-016)
   任意已有文件也可直接: ming tools <名> [参数...](对应 tools/<名>.ming)
 纪律:所有工具错误走 stderr,失败退出码 1;破坏性操作(rename/organize)目录必须显式给出。
 示例: ming tools patch src/x.js "旧串" "新串"
@@ -1368,12 +1370,15 @@ function toolCacheProbe(file, flags) {
   if (diags.length) return null;
   // 与 cmdBuild 相同的 AOT 资格判定:sync 子任务 worker 需源码编译;unsafe 仅 C 原生;
   // eval 需运行时编译(工具程序不用 eval,conservative 同步排除,v0.69 ADR-005);
-  // asm 仅 C 原生(v0.74 ADR-006,conservative 同步排除)。
+  // asm 仅 C 原生(v0.74 ADR-006,conservative 同步排除);
+  // net 并入同一条效果回退检测(v1.5 ADR-016,tools 首个 net 工具 moltbook 落地——
+  // 与 cmdBuild 的 usesNet 同口径:serve 的 accept/worker 运行面由源码编译,http 纯
+  // 客户端工具也回退,conservative;失去明文源 AOT = 诚实代价)。
   const hasEff = (eff) => checkResult.modules.some(m => [...m.items.values()].some(e => {
     const s = e.sig?.effects ?? e.effects;
     return s instanceof Set && s.has(eff);
   }));
-  if (hasEff('sync') || hasEff('unsafe') || hasEff('eval') || hasEff('asm')) return null;
+  if (hasEff('sync') || hasEff('unsafe') || hasEff('eval') || hasEff('asm') || hasEff('net')) return null;
   // 单模块假设:工具均为单文件(无本地 use)。产物 span 只保留 basename,
   // 多模块会有同名歧义 → 多模块工具一律回退原路径。
   if (checkResult.modules.length !== 1) return null;

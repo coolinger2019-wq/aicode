@@ -565,18 +565,23 @@ export const STD_MODULES = {
     ],
   },
   // HTTP 客户端(capability:必须声明 net 效果;同步实现:worker + Atomics)
-  // v0.77(ADR-007 清单 8):响应 body → Untrusted[str](外部内容源);请求侧全部净槽
-  // (sink):url/method/headers/body 污值流入 → M3049(headers 污值 = 头注入面,
-  // body 污值 = 数据外传面——出向透传仅限本地存储(清单 6),网络出向保持 sink)。
+  // v0.77(ADR-007 清单 8):响应 body → Untrusted[str](外部内容源);请求侧 url/method/
+  // headers 保持净槽(sink):url = 目的地控制面(头注入/SSRF 面),headers = CR/LF 头注入面,
+  // method 污值流入 → M3049 不变。
+  // v1.5(ADR-016 §2.1):body 参数位标 'outstr'(v0.77 清单 6 write_file 同款出向透传,
+  // 本地存储 → 网络出向数据面扩面)——污值合法流入 body:发送是存储的远端形态("存储不是
+  // 边界穿越"同构);门禁原始目标不受损——渗出通道要件 = 污数据 + 攻击者控制的目的地,
+  // url/headers 仍是净槽(攻击者不能选择外传目的地/不能注头),残余风险与 write_file 同级
+  // (v0.77 已同等接受)。
   // v0.82(ADR-008 清单 4):http_request_opts 响应头(第二元)→ Untrusted[Map[str,str]]
   // 第四载体——头名与头值同为对端控制,.keys() 洗白通道不留(键值同污,§2.2);
   // 投影表 = UNTRUSTED_METHODS.map(untrustedMapMethod 分派,只读 v1.3)。
-  // 请求侧 headers sink(M3049)不变;http_get/http_request 不返回头(签名不动)。
+  // http_get/http_request 不返回头(签名不动)。
   net: {
     fns: [
       mF('http_get', [T_STR], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(T_STR)]), T_STR), { effect: 'net' }),
-      mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(T_STR)]), T_STR), { effect: 'net', min: 3, max: 4 }),
-      mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), T_STR, INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(mkMap(T_STR, T_STR)), mkUntrusted(T_STR)]), T_STR), { effect: 'net' }),
+      mF('http_request', [T_STR, T_STR, mkMap(T_STR, T_STR), 'outstr'], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(T_STR)]), T_STR), { effect: 'net', min: 3, max: 4 }),
+      mF('http_request_opts', [T_STR, T_STR, mkMap(T_STR, T_STR), 'outstr', INT_TYPES.i64], mkRes(mkTuple([INT_TYPES.i64, mkUntrusted(mkMap(T_STR, T_STR)), mkUntrusted(T_STR)]), T_STR), { effect: 'net' }),
       // v0.62(ADR-001 §5.2 任务 1):TCP 服务端 v1——固定绑 127.0.0.1(清单 15:签名无
       // host 参数 = 隐式回环);handler 为命名模块函数引用(fn(Untrusted[Json]) -> Json,
       // v0.68 ADR-004 §2.1 候选 A:请求载荷不可信,整树以 Untrusted[Json] 进入 handler,
@@ -652,9 +657,14 @@ export const STD_MODULES = {
     ],
   },
   // JSON(纯函数)
+  // v1.5(ADR-016 §2.2):stringify_untrusted——v0.68 登记候选落地(Json→str 第二出口)。
+  // 载体分派在 checkStdCall 特例(下方 json.parse/unpack 先例同款):净 Json → 净 str
+  // (与 stringify 同编码);Untrusted[Json] → Untrusted[str](污进污出,编码保污)。
+  // 签名 ret = T_STR 仅为错误路径兜底,真实返回类型由特例按载体分派。
   json: {
     fns: [
       mF('stringify', ['jsonval'], T_STR),
+      mF('stringify_untrusted', ['jsonval'], T_STR),
       mF('parse', [T_STR], mkRes({ k: 'json' }, T_STR)),
     ],
   },
@@ -731,7 +741,9 @@ export const UNTRUSTED_METHODS = {
     'trim', 'trim_start', 'trim_end', 'to_upper', 'to_lower', 'replace', 'repeat', 'slice_chars',
     'pad_left', 'pad_right', 'chars', 'split', 'get', 'bytes', 'to_bytes'],
   json: ['get', 'at', 'as_str', 'as_num', 'as_bool', 'as_arr', 'as_obj',
-    'is_null', 'is_bool', 'is_num', 'is_str', 'is_arr', 'is_obj', 'eq'],
+    'is_null', 'is_bool', 'is_num', 'is_str', 'is_arr', 'is_obj', 'eq',
+    // v1.5(ADR-016 §2.2):污进污出序列化(Untrusted[Json] → Untrusted[str],产出恒污)
+    'stringify_untrusted'],
   // v1.0.0-rc.2(ADR-012 清单 1/7):vec 键扩 get(元素读解锁,Option[Untrusted[i64]],
   // 元素读即 i64 拓宽)与 to_hex(字节→hex 保污编码,Untrusted[str])。
   vec: ['len', 'is_empty', 'get', 'to_hex'],
@@ -5110,6 +5122,28 @@ export class Checker {
       }
       return f.fn.ret;
     }
+    // v1.5(ADR-016 §2.2):json.stringify_untrusted——v0.68 登记候选落地(Json→str 第二
+    // 出口)。载体分派(机制先例 = 上方 json.parse 两域接缝/v0.68 投影表"按接收者载体
+    // 分派"):净 Json 实参 → 净 str(与 stringify 同编码,既有调用零迁移);Untrusted[Json]
+    // 实参 → Untrusted[str](污进污出,编码保污——产出恒污,只能流向 out 槽位:print 出向
+    // 透传/write_file 'outstr'/http body 'outstr'(ADR-016 §2.1),类型层不可回流计算面:
+    // debug/插值/as 照旧 M3050/M3008)。污值但载体非 Json → M3049(载体感知 hint);
+    // 净非 Json → 通用 JSON 兼容检查(M3033)。错误路径返回污版(根因已报才毒化收敛,
+    // v0.67 先例——下游不再级联)。投影表方法形式(Untrusted[Json] 接收者)见
+    // untrustedJsonMethod,双形式同 v0.58 use std 口径。零新 M 码。
+    if (f.mod === 'json' && f.fn.name === 'stringify_untrusted' && e.args.length === 1) {
+      const t = this.checkExpr(e.args[0], ctx);
+      const r = resolveT(t, new Map());
+      if (r?.k === 'untrusted') {
+        if (resolveT(r.el, new Map())?.k === 'json') return mkUntrusted(T_STR);
+        this.untrustedMismatchDiag(t, { k: 'json' }, e.args[0].span, '参数 #1 类型不匹配');
+        return mkUntrusted(T_STR);
+      }
+      if (!this.untrustedMismatchDiag(t, { k: 'json' }, e.args[0].span, '参数 #1 类型不匹配')) {
+        this.checkJsonCompatible(t, binds, e.args[0].span);
+      }
+      return T_STR;
+    }
     // v1.0.0-rc.2(ADR-012 清单 6):bin.unpack_* 参数槽载体感知——污 Vec[u8] 合法流入
     // 纯函数提取(端序在函数名中显式,不另造 to_uN 方法族 = ADR-007 清单 6"API 不对称 +
     // 双份漂移"否决理由逐字适用),污路径输出 Result[Untrusted[i64], str](载荷保污,
@@ -6024,6 +6058,14 @@ export class Checker {
       case 'as_obj':
         if (!this.arityCheck(name, args, 0, 0, span)) return null;
         return mkOpt(mkMap(T_STR, UJ));
+      // v1.5(ADR-016 §2.2):污进污出序列化——Untrusted[Json] 接收者 .stringify_untrusted()
+      // → Untrusted[str](编码保污,接收者已污 → 产出恒污;消费面 out-only:print 出向
+      // 透传/write_file/http body,类型层不可回流计算面)。模块形式 json.stringify_untrusted(x)
+      // 走 checkStdCall 特例(净 Json → 净 str 分派在彼处)。运行时擦除:interp 按 Json
+      // 载体走 jsonMethodImpl,污接收者的 str 结果打标由其包装器统一承担(零新增机制)。
+      case 'stringify_untrusted':
+        if (!this.arityCheck(name, args, 0, 0, span)) return null;
+        return mkUntrusted(T_STR);
       // 子树访问:整树污(递归);键/下标参数与净值签名同形
       case 'get': {
         if (!this.arityCheck(name, args, 1, 1, span)) return null;

@@ -1,0 +1,1083 @@
+// tools/moltbook.ming — moltbook 社区集成工具(#18,v1.5.0;ADR-016)
+//
+// 动机(维护者,2026-11-27):moltbook(AI agent 社区)的 Ming 集成工具——注册、登录、
+// 查看、答复、查询,方便 agents 一条命令完成社区互动。
+//
+// 用法:
+//   ming tools moltbook register <name> [--creds <path>] [--base-url <url>]
+//   ming tools moltbook login [keyfile] [--creds <path>] [--base-url <url>]
+//   ming tools moltbook me [--creds <path>] [--base-url <url>]
+//   ming tools moltbook post <submolt> <title> [contentfile] [--creds <path>] [--base-url <url>]
+//   ming tools moltbook comment <post-id> [contentfile] [--creds <path>] [--base-url <url>]
+//   ming tools moltbook read <post-id> [--creds <path>] [--base-url <url>]
+//   ming tools moltbook feed [submolt] [--limit N] [--creds <path>] [--base-url <url>]
+//   ming tools moltbook notifications [--read-all] [--limit N] [--creds <path>] [--base-url <url>]
+//
+// 污点链(ADR-016 §2.3 + ADR-008 argv 口径):
+//   · argv 元素 Untrusted[str]——路径位(--creds/keyfile/contentfile)与 URL 构造位
+//     (--base-url/post-id/submolt)过 std.unstr.sanitize_cli_path(仅控制字符面,无百分号
+//     编码——调用者须保证 URL 安全字符,见 ADR-016 §5.6);数值位(--limit)过
+//     parse_i64;内容位(标题/正文/评论/agent 名)保污透传。
+//   · api_key 全链:凭证文件读取(Untrusted)→ json.parse(污进污出 → Untrusted[Json])
+//     → 投影 as_str → sanitize_cli_path(拒 NUL/C0/DEL/C1/双向控制符 = 恰是 CR/LF 头
+//     注入防御面)→ Ok(净 str) → headers sink 合法。不新增净化器(ADR-016 §2.3)。
+//   · JSON 构造:手拼转义(esc,7 段 replace 保污)→ json.parse 自校验 →
+//     .stringify_untrusted()(v1.5 ADR-016 §2.2,污进污出)→ Untrusted[str] →
+//     http body(outstr,v1.5 ADR-016 §2.1)。转义漏网控制字符被 parse 自校验拒绝
+//     (具名错误 exit 1,不静默发坏 body)。
+//   · 凭证永不打印:register/login 输出 claim_url + "凭证已写入 <路径>",绝不输出 api_key。
+//
+// HTTP:std.net.http_request_opts(method, url, headers, body, timeout_ms);
+// headers 固定 {Authorization: Bearer <key>, Content-Type: application/json};
+// timeout 缺省 35000。默认 base https://www.moltbook.com/api/v1(docs/moltbook.md)。
+use std.json;
+
+use std.net;
+
+use std.unstr;
+
+const DEFAULT_BASE: str = "https://www.moltbook.com/api/v1";
+
+const TIMEOUT_MS: i64 = 35000;
+
+const USAGE: str = "moltbook — moltbook 社区集成工具(#18;ADR-016)\n用法: ming tools moltbook <子命令> [参数] [选项]\n  register <name>                     注册 agent(输出 claim_url;凭证写入 --creds)\n  login [keyfile]                     登录(校验 keyfile 或现有凭证;落盘)\n  me                                  查看 agent 资料(名称/karma/粉丝/帖子数)\n  post <submolt> <title> [contentfile]  发帖(内容 = contentfile;缺省空)\n  comment <post-id> [contentfile]     评论(同上)\n  read <post-id>                      读帖(标题/作者/正文/评论缩进树)\n  feed [submolt] [--limit N]          时间线(id 标题 行;缺省 limit 10)\n  notifications [--read-all] [--limit N]  通知([类型] 时间 标题;--read-all 全部已读)\n选项: --creds <path>(缺省 ~/.config/moltbook/credentials.json) --base-url <url>";
+
+// ---- 污点代数工具 ----
+// JSON 字符串转义(保污纯函数;7 段顺序 replace——先转反斜杠再转其余,后续转义产生的
+// 反斜杠不会被再处理)。C0 控制字符仅覆盖 5 个命名形态（\b \f \n \r \t）,加 \" 与 \
+// 共 7 段转义;其余控制字符由 normalize_body 的 parse 自校验拒绝(诚实失败,不静默发坏 body)。
+fn esc(s: Untrusted[str]) -> Untrusted[str] {
+    let a = s.replace("\\", "\\\\");
+    let b = a.replace("\"", "\\\"");
+    let c = b.replace("\n", "\\n");
+    let d = c.replace("\r", "\\r");
+    let e = d.replace("\t", "\\t");
+    let f = e.replace("\u{8}", "\\b");
+    let g = f.replace("\u{c}", "\\f");
+    return g;
+}
+
+// 手拼 JSON 文本 → parse 自校验 → stringify_untrusted 规范化(污进污出,v1.5)。
+// 污进污出:输出 Untrusted[str] → http body(outstr)/write_file(outstr)。
+fn normalize_body(text: Untrusted[str], what: str) -> Option[Untrusted[str]] with io {
+    match std.json.parse(text) {
+        Ok(j) => {
+            return Some(j.stringify_untrusted());
+        },
+        Err(e) => {
+            eprint("moltbook: " + what + " 编码失败(" + e + "):内容含不可编码字符?");
+            return None;
+        },
+    }
+}
+
+// 净 key 构造认证 headers(key 已过 sanitize_cli_path = CR/LF 头注入防御面)。
+fn auth_headers(key: str) -> Map[str, str] {
+    return { "Authorization": "Bearer " + key, "Content-Type": "application/json" };
+}
+
+// ---- 投影 helpers(污载体,diaghot jstr 先例)----
+fn jstr_u(j: Untrusted[Json], key: str, dflt: str) -> Untrusted[str] {
+    match j.get(key) {
+        Some(v) => {
+            match v.as_str() {
+                Some(s) => {
+                    return s;
+                },
+                None => {
+                    return std.unstr.mark(dflt);
+                },
+            }
+        },
+        None => {
+            return std.unstr.mark(dflt);
+        },
+    }
+}
+
+fn jstr2_u(j: Untrusted[Json], k1: str, k2: str, dflt: str) -> Untrusted[str] {
+    match j.get(k1) {
+        Some(v) => {
+            return jstr_u(v, k2, dflt);
+        },
+        None => {
+            return std.unstr.mark(dflt);
+        },
+    }
+}
+
+// 数值投影(净值——污点在标量上终结,v0.61 先例)
+fn jnum(j: Untrusted[Json], key: str) -> f64 {
+    match j.get(key) {
+        Some(v) => {
+            match v.as_num() {
+                Some(n) => {
+                    return n;
+                },
+                None => {
+                    return 0.0;
+                },
+            }
+        },
+        None => {
+            return 0.0;
+        },
+    }
+}
+
+// api_key 专用提取(凭证卫生,ADR-016 审查 MINOR-1):净化失败不回显 Err 原文
+// (sanitize_cli_path 的 Err 含原串转义形态,key 是秘密)——固定具名文案;缺键/非字符串
+// 分支与 clean_field 同文案(只含字段名,不含内容)。凡净化对象是 api_key 的装载点一律
+// 走本函数;claim_url/路径位等非秘密语境照常回显 Err。
+fn clean_key(j: Untrusted[Json]) -> Result[str, str] {
+    match j.get("api_key") {
+        Some(v) => {
+            match v.as_str() {
+                Some(s) => {
+                    match std.unstr.sanitize_cli_path(s) {
+                        Ok(k) => {
+                            return Ok(k);
+                        },
+                        Err(_) => {
+                            return Err("api_key 含非法字符(控制字符),拒绝装载");
+                        },
+                    }
+                },
+                None => {
+                    return Err("键 \"api_key\" 不是字符串");
+                },
+            }
+        },
+        None => {
+            return Err("缺键 \"api_key\"");
+        },
+    }
+}
+
+// 净字段提取:Untrusted[Json] 投影 as_str → sanitize_cli_path → Ok(净 str)。
+// 用于凭证键与 URL 构造位(ADR-016 §2.3)。
+fn clean_field(j: Untrusted[Json], key: str) -> Result[str, str] {
+    match j.get(key) {
+        Some(v) => {
+            match v.as_str() {
+                Some(s) => {
+                    return std.unstr.sanitize_cli_path(s);
+                },
+                None => {
+                    return Err("键 \"" + key + "\" 不是字符串");
+                },
+            }
+        },
+        None => {
+            return Err("缺键 \"" + key + "\"");
+        },
+    }
+}
+
+// ---- 凭证 ----
+// 缺省凭证路径:$HOME/.config/moltbook/credentials.json;Windows 无 HOME → USERPROFILE;
+// 都没有 → 当前目录 moltbook.json。
+fn default_creds_path() -> str with env {
+    match std.env.get("HOME") {
+        Some(h) => {
+            match std.unstr.sanitize_cli_path(h) {
+                Ok(p) => {
+                    return std.path.join(std.path.join(p, ".config"), std.path.join("moltbook", "credentials.json"));
+                },
+                Err(_) => {
+                },
+            }
+        },
+        None => {
+        },
+    }
+    match std.env.get("USERPROFILE") {
+        Some(h) => {
+            match std.unstr.sanitize_cli_path(h) {
+                Ok(p) => {
+                    return std.path.join(std.path.join(p, ".config"), std.path.join("moltbook", "credentials.json"));
+                },
+                Err(_) => {
+                },
+            }
+        },
+        None => {
+        },
+    }
+    return "moltbook.json";
+}
+
+// 凭证落盘:手拼 JSON(name/key/claim 均已净化,mark 标脏统一走保污转义)→ parse
+// 自校验 → stringify_untrusted → write_file 内容位(outstr,污值合法写盘)。
+// 路径位 creds_path 净槽。key 绝不 print/eprint。
+fn save_creds(creds_path: str, name: str, key: str, claim: str) -> bool with io, fs {
+    let text: Untrusted[str] = "{\"agent_name\": \"" + esc(std.unstr.mark(name)) + "\", \"api_key\": \"" + esc(std.unstr.mark(key)) + "\", \"claim_url\": \"" + esc(std.unstr.mark(claim)) + "\"}";
+    match normalize_body(text, "凭证") {
+        Some(body) => {
+            match std.fs.write_file(creds_path, body) {
+                Ok(_) => {
+                    return true;
+                },
+                Err(e) => {
+                    eprint("moltbook: 凭证写入失败: " + e);
+                    return false;
+                },
+            }
+        },
+        None => {
+            return false;
+        },
+    }
+}
+
+// ---- HTTP(效果 net)----
+// 统一请求:非 2xx/网络 Err/JSON 解析失败 → stderr 具名(含服务器错误消息体)→ None。
+// body 恒 Untrusted[str](GET 传 mark(""))——outstr 出向透传(ADR-016 §2.1)。
+fn http_json(method: str, url: str, headers: Map[str, str], body: Untrusted[str]) -> Option[Untrusted[Json]] with io, net {
+    match std.net.http_request_opts(method, url, headers, body, TIMEOUT_MS) {
+        Ok((status, _respHeaders, resp)) => {
+            if status < 200 || status > 299 {
+                eprint("moltbook: HTTP " + str(status) + ": " + resp);
+                return None;
+            }
+            match std.json.parse(resp) {
+                Ok(j) => {
+                    return Some(j);
+                },
+                Err(e) => {
+                    eprint("moltbook: 响应不是合法 JSON: " + e);
+                    return None;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: 网络错误: " + e);
+            return None;
+        },
+    }
+}
+
+// GET 快捷(无 body)
+fn http_get_json(url: str, headers: Map[str, str]) -> Option[Untrusted[Json]] with io, net {
+    return http_json("GET", url, headers, std.unstr.mark(""));
+}
+
+// ---- 命令实现 ----
+fn cmd_register(name: Untrusted[str], creds_path: str, base: str) -> i64 with io, fs, net {
+    let text: Untrusted[str] = "{\"name\": \"" + esc(name) + "\"}";
+    match normalize_body(text, "注册载荷") {
+        Some(body) => {
+            match http_json("POST", base + "/agents/register", auth_headers(""), body) {
+                Some(j) => {
+                    match clean_field(j, "claim_url") {
+                        Ok(claim) => {
+                            match clean_key(j) {
+                                Ok(key) => {
+                                    let agent_name = jstr2_u(j, "agent", "name", "");
+                                    match std.unstr.sanitize_cli_path(agent_name) {
+                                        Ok(nname) => {
+                                            if save_creds(creds_path, nname, key, claim) {
+                                                print(claim);
+                                                print("凭证已写入 " + creds_path);
+                                                print("请访问 claim_url 完成 human claim。");
+                                                return 0;
+                                            }
+                                            return 1;
+                                        },
+                                        Err(e) => {
+                                            eprint("moltbook: 响应 agent.name 不合法: " + e);
+                                            return 1;
+                                        },
+                                    }
+                                },
+                                Err(e) => {
+                                    eprint("moltbook: 注册响应缺 api_key(" + e + ")");
+                                    return 1;
+                                },
+                            }
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 注册响应缺 claim_url(" + e + ")");
+                            return 1;
+                        },
+                    }
+                },
+                None => {
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+// login [keyfile]:keyfile = credentials 同构 JSON(api_key 必需)或纯文本 key。
+// 校验 = 用该 key GET me;成功落盘 + 打印 agent 名(key 不打印)。keyfile 缺省 =
+// 用现有凭证校验(幂等)。
+fn cmd_login(keyfile: Option[Untrusted[str]], creds_path: str, base: str) -> i64 with io, fs, net, env {
+    let mut key: str = "";
+    let mut claim: str = "";
+    match keyfile {
+        Some(kf) => {
+            match std.unstr.sanitize_cli_path(kf) {
+                Ok(kpath) => {
+                    match std.fs.read_file(kpath) {
+                        Ok(text) => {
+                            let t = text.trim();
+                            match std.json.parse(t) {
+                                Ok(j) => {
+                                    match clean_key(j) {
+                                        Ok(k) => {
+                                            key = k;
+                                            match clean_field(j, "claim_url") {
+                                                Ok(c) => {
+                                                    claim = c;
+                                                },
+                                                Err(_) => {
+                                                },
+                                            }
+                                        },
+                                        Err(e) => {
+                                            eprint("moltbook: keyfile JSON 缺 api_key(" + e + ")");
+                                            return 1;
+                                        },
+                                    }
+                                },
+                                Err(_) => {
+
+                                    // 纯文本 key:整文件 trim 后净化(净化对象是 key 本身,
+                                    // 失败不回显 Err 原文——固定具名文案,凭证卫生)
+                                    match std.unstr.sanitize_cli_path(t) {
+                                        Ok(k) => {
+                                            key = k;
+                                        },
+                                        Err(_) => {
+                                            eprint("moltbook: keyfile 内容不合法: api_key 含非法字符(控制字符),拒绝装载");
+                                            return 1;
+                                        },
+                                    }
+                                },
+                            }
+                        },
+                        Err(e) => {
+                            eprint("moltbook: keyfile 读取失败: " + e);
+                            return 1;
+                        },
+                    }
+                },
+                Err(e) => {
+                    eprint("moltbook: keyfile 路径不合法: " + e);
+                    return 1;
+                },
+            }
+        },
+        None => {
+
+            // 无 keyfile:读现有凭证校验
+            match std.fs.read_file(creds_path) {
+                Ok(text) => {
+                    match std.json.parse(text.trim()) {
+                        Ok(j) => {
+                            match clean_key(j) {
+                                Ok(k) => {
+                                    key = k;
+                                    match clean_field(j, "claim_url") {
+                                        Ok(c) => {
+                                            claim = c;
+                                        },
+                                        Err(_) => {
+                                        },
+                                    }
+                                },
+                                Err(e) => {
+                                    eprint("moltbook: 凭证缺 api_key(" + e + ");给出 keyfile 或先 register");
+                                    return 1;
+                                },
+                            }
+                        },
+                        Err(_) => {
+                            eprint("moltbook: 凭证文件不是合法 JSON;给出 keyfile 或先 register");
+                            return 1;
+                        },
+                    }
+                },
+                Err(_) => {
+                    eprint("moltbook: 无凭证文件 " + creds_path + ";给出 keyfile 或先 register");
+                    return 1;
+                },
+            }
+        },
+    }
+
+    // 校验:GET me
+    match http_get_json(base + "/agents/me", auth_headers(key)) {
+        Some(j) => {
+            match j.get("agent") {
+                Some(agent) => {
+                    let aname = jstr_u(agent, "name", "");
+                    match std.unstr.sanitize_cli_path(aname) {
+                        Ok(name) => {
+                            if save_creds(creds_path, name, key, claim) {
+                                print("登录成功: " + name);
+                                print("凭证已写入 " + creds_path);
+                                return 0;
+                            }
+                            return 1;
+                        },
+                        Err(e) => {
+                            eprint("moltbook: me 响应 name 不合法: " + e);
+                            return 1;
+                        },
+                    }
+                },
+                None => {
+                    eprint("moltbook: me 响应缺 agent 对象");
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+fn cmd_me(key: str, base: str) -> i64 with io, net {
+    match http_get_json(base + "/agents/me", auth_headers(key)) {
+        Some(j) => {
+            match j.get("agent") {
+                Some(agent) => {
+                    print("名称: " + jstr_u(agent, "display_name", ""));
+                    print("karma: " + str(jnum(agent, "karma")));
+                    print("粉丝: " + str(jnum(agent, "follower_count")));
+                    print("帖子: " + str(jnum(agent, "posts_count")));
+                    print("评论: " + str(jnum(agent, "comments_count")));
+                    return 0;
+                },
+                None => {
+                    eprint("moltbook: me 响应缺 agent 对象");
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+// 评论缩进树(递归;每层缩进两格)。渲染深度封顶 50:服务器数据驱动的过深回复树在此
+// 打印一次占位行后停止下钻(解释器调用栈守卫 >250 层 → M4005 exit 101 且输出截断半途,
+// 封顶 50 远离该面);exit 仍 0。占位文案逐字固定(测试断言依据)。
+fn print_comments(arr: Vec[Untrusted[Json]], depth: i64) with io {
+    if depth >= 50 {
+        print("  ".repeat(depth) + "…（回复树过深,已截断）");
+        return;
+    }
+    let pad = "  ".repeat(depth);
+    for c in arr {
+        let name = jstr2_u(c, "author", "name", "?");
+        let content = jstr_u(c, "content", "");
+        let score = jnum(c, "score");
+        print(pad + "- " + name + " (" + str(score) + "): " + content);
+        match c.get("replies") {
+            Some(r) => {
+                match r.as_arr() {
+                    Some(sub) => {
+                        print_comments(sub, depth + 1);
+                    },
+                    None => {
+                    },
+                }
+            },
+            None => {
+            },
+        }
+    }
+}
+
+fn cmd_read(post_id: str, key: str, base: str) -> i64 with io, fs, net {
+    let headers = auth_headers(key);
+    match http_get_json(base + "/posts/" + post_id, headers) {
+        Some(j) => {
+            match j.get("post") {
+                Some(p) => {
+                    print("标题: " + jstr_u(p, "title", ""));
+                    print("作者: " + jstr2_u(p, "author", "name", "?"));
+                    print("");
+                    print(jstr_u(p, "content", ""));
+                    print("");
+
+                    // 评论:GET /posts/{id}/comments?sort=old
+                    match http_get_json(base + "/posts/" + post_id + "/comments?sort=old", headers) {
+                        Some(cj) => {
+                            match cj.get("comments") {
+                                Some(cs) => {
+                                    match cs.as_arr() {
+                                        Some(arr) => {
+                                            print("评论(" + str(arr.len()) + "):");
+                                            print_comments(arr, 0);
+                                            return 0;
+                                        },
+                                        None => {
+                                            print("评论(0):");
+                                            return 0;
+                                        },
+                                    }
+                                },
+                                None => {
+                                    print("评论(0):");
+                                    return 0;
+                                },
+                            }
+                        },
+                        None => {
+                            return 1;
+                        },
+                    }
+                },
+                None => {
+                    eprint("moltbook: 帖子响应缺 post 对象");
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+fn cmd_post(submolt: Untrusted[str], title: Untrusted[str], contentfile: Option[Untrusted[str]], key: str, base: str) -> i64 with io, fs, net {
+
+    // 内容:contentfile 读取(污);缺省空串
+    let mut content: Untrusted[str] = std.unstr.mark("");
+    match contentfile {
+        Some(cf) => {
+            match std.unstr.sanitize_cli_path(cf) {
+                Ok(cpath) => {
+                    match std.fs.read_file(cpath) {
+                        Ok(text) => {
+                            content = text;
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 内容文件读取失败: " + e);
+                            return 1;
+                        },
+                    }
+                },
+                Err(e) => {
+                    eprint("moltbook: 内容文件路径不合法: " + e);
+                    return 1;
+                },
+            }
+        },
+        None => {
+        },
+    }
+
+    // submolt 名走 body 内容位(保污);文本位保污 → esc → parse 自校验 → stringify_untrusted
+    let text: Untrusted[str] = "{\"submolt_name\": \"" + esc(submolt) + "\", \"title\": \"" + esc(title) + "\", \"content\": \"" + esc(content) + "\"}";
+    match normalize_body(text, "帖子载荷") {
+        Some(body) => {
+            match http_json("POST", base + "/posts", auth_headers(key), body) {
+                Some(j) => {
+                    match j.get("post") {
+                        Some(p) => {
+                            print("已发帖: " + jstr_u(p, "id", "") + " " + jstr_u(p, "title", ""));
+                            return 0;
+                        },
+                        None => {
+                            print("已发帖。");
+                            return 0;
+                        },
+                    }
+                },
+                None => {
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+fn cmd_comment(post_id: str, contentfile: Option[Untrusted[str]], key: str, base: str) -> i64 with io, fs, net {
+    let mut content: Untrusted[str] = std.unstr.mark("");
+    match contentfile {
+        Some(cf) => {
+            match std.unstr.sanitize_cli_path(cf) {
+                Ok(cpath) => {
+                    match std.fs.read_file(cpath) {
+                        Ok(text) => {
+                            content = text;
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 内容文件读取失败: " + e);
+                            return 1;
+                        },
+                    }
+                },
+                Err(e) => {
+                    eprint("moltbook: 内容文件路径不合法: " + e);
+                    return 1;
+                },
+            }
+        },
+        None => {
+        },
+    }
+    let text: Untrusted[str] = "{\"content\": \"" + esc(content) + "\"}";
+    match normalize_body(text, "评论载荷") {
+        Some(body) => {
+            match http_json("POST", base + "/posts/" + post_id + "/comments", auth_headers(key), body) {
+                Some(j) => {
+                    match j.get("comment") {
+                        Some(c) => {
+                            print("已评论: " + jstr_u(c, "id", ""));
+                            return 0;
+                        },
+                        None => {
+                            print("已评论。");
+                            return 0;
+                        },
+                    }
+                },
+                None => {
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+fn cmd_feed(submolt: Option[Untrusted[str]], limit: i64, key: str, base: str) -> i64 with io, fs, net {
+
+    // submolt 是 URL 查询构造位:净化后拼接(feed?limit=N&submolt=<名>;实测参数名)
+    let mut url = base + "/feed?limit=" + str(limit);
+    match submolt {
+        Some(s) => {
+            match std.unstr.sanitize_cli_path(s) {
+                Ok(name) => {
+                    url = url + "&submolt=" + name;
+                },
+                Err(e) => {
+                    eprint("moltbook: submolt 名不合法: " + e);
+                    return 1;
+                },
+            }
+        },
+        None => {
+        },
+    }
+    match http_get_json(url, auth_headers(key)) {
+        Some(j) => {
+            match j.get("posts") {
+                Some(ps) => {
+                    match ps.as_arr() {
+                        Some(arr) => {
+                            for p in arr {
+                                print(jstr_u(p, "id", "?") + " " + jstr_u(p, "title", ""));
+                            }
+                            return 0;
+                        },
+                        None => {
+                            eprint("moltbook: feed 响应 posts 不是数组");
+                            return 1;
+                        },
+                    }
+                },
+                None => {
+                    eprint("moltbook: feed 响应缺 posts");
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+fn cmd_notifications(read_all: bool, limit: i64, key: str, base: str) -> i64 with io, fs, net {
+    let headers = auth_headers(key);
+    if read_all {
+        match http_json("POST", base + "/notifications/read-all", headers, std.unstr.mark("{}")) {
+            Some(_) => {
+                print("已全部标记已读。");
+            },
+            None => {
+                return 1;
+            },
+        }
+    }
+    match http_get_json(base + "/notifications?limit=" + str(limit), headers) {
+        Some(j) => {
+            match j.get("notifications") {
+                Some(ns) => {
+                    match ns.as_arr() {
+                        Some(arr) => {
+                            for n in arr {
+                                print("[" + jstr_u(n, "type", "?") + "] " + jstr_u(n, "createdAt", "?") + " " + jstr2_u(n, "post", "title", ""));
+                            }
+                            return 0;
+                        },
+                        None => {
+                            eprint("moltbook: 通知响应 notifications 不是数组");
+                            return 1;
+                        },
+                    }
+                },
+                None => {
+                    eprint("moltbook: 通知响应缺 notifications");
+                    return 1;
+                },
+            }
+        },
+        None => {
+            return 1;
+        },
+    }
+}
+
+// ---- argv 解析(ADR-008:argv 元素 Untrusted[str];路径位/URL 位净化、数值位
+// parse_i64、内容位保污透传)----
+fn parse_limit(raw: Option[Untrusted[str]]) -> Result[i64, str] {
+    match raw {
+        Some(s) => {
+            return match s.parse_i64() { Ok(n) => { if n < 1 || n > 100 { return Err("--limit 需在 1-100 之间"); } Ok(n) }, Err(_) => { Err("--limit 不是整数") } };
+        },
+        None => {
+            return Ok(10);
+        },
+    }
+}
+
+fn main(args: Vec[Untrusted[str]]) -> i64 with io, fs, net, env {
+    if args.len() < 1 {
+        eprint(USAGE);
+        return 1;
+    }
+
+    // 子命令:净化成净 str 供匹配(CLI 匹配位授权,sanitize_cli_path)
+    let mut sub_raw: Untrusted[str] = args[0];
+    let mut i: i64 = 1;
+
+    // 选项收集
+    let mut creds_raw: Option[Untrusted[str]] = None;
+    let mut base_raw: Option[Untrusted[str]] = None;
+    let mut limit_raw: Option[Untrusted[str]] = None;
+    let mut read_all: bool = false;
+    let mut positional: Vec[Untrusted[str]] = [];
+    while i < args.len() {
+
+        // 选项识别也需净化后的比较串
+        match std.unstr.sanitize_cli_path(args[i]) {
+            Ok(a) => {
+                if a == "--read-all" {
+                    read_all = true;} else if a == "--creds" || a == "--base-url" || a == "--limit" {
+
+                    if i + 1 >= args.len() {
+                        eprint("moltbook: " + a + " 缺参数值");
+                        return 1;
+                    }
+                    if a == "--creds" {
+                        creds_raw = Some(args[i + 1]);} else if a == "--base-url" {
+
+                        base_raw = Some(args[i + 1]);} else {
+
+                        limit_raw = Some(args[i + 1]);
+                    }
+                    i += 1;} else {
+
+                    positional.push(args[i]);
+                }
+            },
+            Err(e) => {
+                eprint("moltbook: 参数含非法控制字符: " + e);
+                return 1;
+            },
+        }
+        i += 1;
+    }
+
+    // 子命令(净)
+    let sub: str = match std.unstr.sanitize_cli_path(sub_raw) { Ok(s) => { s }, Err(_) => { eprint(USAGE); return 1; } };
+
+    // 凭证路径(路径位净化;缺省 = HOME/USERPROFILE 探测)
+    let creds_path: str = match creds_raw { Some(cp) => { match std.unstr.sanitize_cli_path(cp) { Ok(p) => { p }, Err(e) => { eprint("moltbook: --creds 路径不合法: " + e); return 1; } } }, None => { default_creds_path() } };
+
+    // base-url(URL 构造位净化;缺省常量)
+    let base: str = match base_raw { Some(b) => { match std.unstr.sanitize_cli_path(b) { Ok(u) => { u }, Err(e) => { eprint("moltbook: --base-url 不合法: " + e); return 1; } } }, None => { DEFAULT_BASE } };
+
+    // --limit(数值位)
+    let limit: i64 = match parse_limit(limit_raw) { Ok(n) => { n }, Err(e) => { eprint("moltbook: " + e); return 1; } };
+    if sub == "register" {
+        if positional.len() != 1 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_register(positional[0], creds_path, base);
+    }
+    if sub == "login" {
+        let mut kf: Option[Untrusted[str]] = None;
+        if positional.len() > 1 {
+            eprint(USAGE);
+            return 1;
+        }
+        if positional.len() == 1 {
+            kf = Some(positional[0]);
+        }
+        return cmd_login(kf, creds_path, base);
+    }
+    if sub == "me" {
+        if positional.len() != 0 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_me_command(creds_path, base);
+    }
+    if sub == "post" {
+        if positional.len() < 2 || positional.len() > 3 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_post_command(positional, creds_path, base);
+    }
+    if sub == "comment" {
+        if positional.len() < 1 || positional.len() > 2 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_comment_command(positional, creds_path, base);
+    }
+    if sub == "read" {
+        if positional.len() != 1 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_read_command(positional[0], creds_path, base);
+    }
+    if sub == "feed" {
+        if positional.len() > 1 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_feed_command(positional, limit, creds_path, base);
+    }
+    if sub == "notifications" {
+        if positional.len() != 0 {
+            eprint(USAGE);
+            return 1;
+        }
+        return cmd_notifications_command(read_all, limit, creds_path, base);
+    }
+    eprint(USAGE);
+    return 1;
+}
+
+// 需要凭证的命令先加载凭证(api_key 全链见文件头注),再分发。
+fn cmd_me_command(creds_path: str, base: str) -> i64 with io, fs, net {
+    match std.fs.read_file(creds_path) {
+        Ok(text) => {
+            match std.json.parse(text.trim()) {
+                Ok(j) => {
+                    match clean_key(j) {
+                        Ok(key) => {
+                            return cmd_me(key, base);
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 凭证" + e + "(" + creds_path + ")");
+                            return 1;
+                        },
+                    }
+                },
+                Err(_) => {
+                    eprint("moltbook: 凭证文件不是合法 JSON: " + creds_path);
+                    return 1;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: 凭证读取失败: " + e + ";先 register/login");
+            return 1;
+        },
+    }
+}
+
+fn cmd_post_command(positional: Vec[Untrusted[str]], creds_path: str, base: str) -> i64 with io, fs, net {
+    match std.fs.read_file(creds_path) {
+        Ok(text) => {
+            match std.json.parse(text.trim()) {
+                Ok(j) => {
+                    match clean_key(j) {
+                        Ok(key) => {
+                            let mut contentfile: Option[Untrusted[str]] = None;
+                            if positional.len() == 3 {
+                                contentfile = Some(positional[2]);
+                            }
+                            return cmd_post(positional[0], positional[1], contentfile, key, base);
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 凭证" + e + "(" + creds_path + ")");
+                            return 1;
+                        },
+                    }
+                },
+                Err(_) => {
+                    eprint("moltbook: 凭证文件不是合法 JSON: " + creds_path);
+                    return 1;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: 凭证读取失败: " + e + ";先 register/login");
+            return 1;
+        },
+    }
+}
+
+fn cmd_comment_command(positional: Vec[Untrusted[str]], creds_path: str, base: str) -> i64 with io, fs, net {
+    match std.fs.read_file(creds_path) {
+        Ok(text) => {
+            match std.json.parse(text.trim()) {
+                Ok(j) => {
+                    match clean_key(j) {
+                        Ok(key) => {
+
+                            // post-id 是 URL 构造位:净化后拼接
+                            match std.unstr.sanitize_cli_path(positional[0]) {
+                                Ok(pid) => {
+                                    let mut contentfile: Option[Untrusted[str]] = None;
+                                    if positional.len() == 2 {
+                                        contentfile = Some(positional[1]);
+                                    }
+                                    return cmd_comment(pid, contentfile, key, base);
+                                },
+                                Err(e) => {
+                                    eprint("moltbook: post-id 不合法: " + e);
+                                    return 1;
+                                },
+                            }
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 凭证" + e + "(" + creds_path + ")");
+                            return 1;
+                        },
+                    }
+                },
+                Err(_) => {
+                    eprint("moltbook: 凭证文件不是合法 JSON: " + creds_path);
+                    return 1;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: 凭证读取失败: " + e + ";先 register/login");
+            return 1;
+        },
+    }
+}
+
+fn cmd_read_command(post_id_raw: Untrusted[str], creds_path: str, base: str) -> i64 with io, fs, net {
+    match std.unstr.sanitize_cli_path(post_id_raw) {
+        Ok(pid) => {
+            match std.fs.read_file(creds_path) {
+                Ok(text) => {
+                    match std.json.parse(text.trim()) {
+                        Ok(j) => {
+                            match clean_key(j) {
+                                Ok(key) => {
+                                    return cmd_read(pid, key, base);
+                                },
+                                Err(e) => {
+                                    eprint("moltbook: 凭证" + e + "(" + creds_path + ")");
+                                    return 1;
+                                },
+                            }
+                        },
+                        Err(_) => {
+                            eprint("moltbook: 凭证文件不是合法 JSON: " + creds_path);
+                            return 1;
+                        },
+                    }
+                },
+                Err(e) => {
+                    eprint("moltbook: 凭证读取失败: " + e + ";先 register/login");
+                    return 1;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: post-id 不合法: " + e);
+            return 1;
+        },
+    }
+}
+
+fn cmd_feed_command(positional: Vec[Untrusted[str]], limit: i64, creds_path: str, base: str) -> i64 with io, fs, net {
+    match std.fs.read_file(creds_path) {
+        Ok(text) => {
+            match std.json.parse(text.trim()) {
+                Ok(j) => {
+                    match clean_key(j) {
+                        Ok(key) => {
+                            let mut s: Option[Untrusted[str]] = None;
+                            if positional.len() == 1 {
+                                s = Some(positional[0]);
+                            }
+                            return cmd_feed(s, limit, key, base);
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 凭证" + e + "(" + creds_path + ")");
+                            return 1;
+                        },
+                    }
+                },
+                Err(_) => {
+                    eprint("moltbook: 凭证文件不是合法 JSON: " + creds_path);
+                    return 1;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: 凭证读取失败: " + e + ";先 register/login");
+            return 1;
+        },
+    }
+}
+
+fn cmd_notifications_command(read_all: bool, limit: i64, creds_path: str, base: str) -> i64 with io, fs, net {
+    match std.fs.read_file(creds_path) {
+        Ok(text) => {
+            match std.json.parse(text.trim()) {
+                Ok(j) => {
+                    match clean_key(j) {
+                        Ok(key) => {
+                            return cmd_notifications(read_all, limit, key, base);
+                        },
+                        Err(e) => {
+                            eprint("moltbook: 凭证" + e + "(" + creds_path + ")");
+                            return 1;
+                        },
+                    }
+                },
+                Err(_) => {
+                    eprint("moltbook: 凭证文件不是合法 JSON: " + creds_path);
+                    return 1;
+                },
+            }
+        },
+        Err(e) => {
+            eprint("moltbook: 凭证读取失败: " + e + ";先 register/login");
+            return 1;
+        },
+    }
+}

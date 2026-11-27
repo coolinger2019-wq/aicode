@@ -21,14 +21,15 @@
 // (`${passed} 通过,${failed} 失败`,失败 > 0 → exit 1;编排配置错误 → exit 2)。
 // 分节计时行两种模式统一为 `§N x.xs pass=P fail=F`,P/F 为**本节自身**通过/失败数(串行为增量输出,断言零改动)。
 // 组布局(4 组,覆盖全部分节;组内顺序 = 文件顺序;定稿依据 = 串行基线逐节耗时 LPT 均衡 269.4–269.5s/组 + 依赖审计):
-//   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108
+//   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108 119
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
 //   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
 //   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115 116 117
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
 //   2) 真实监听端口的分节:§26(回显探针)/§66(serve,26000 段漂移)/§68(serve,18190)/§79(http 探针)
-//      /§88(xn 探针)/§89(net_e2e 子服务)——全部同组(组0)组内串行,沿用既有端口漂移,不新增机制。
+//      /§88(xn 探针)/§89(net_e2e 子服务)/§119(moltbook mock server,listen(0) 动态端口)——
+//      全部同组(组0)组内串行,沿用既有端口漂移,不新增机制。
 //      §70/§71/§72/§77 的 serve 形态为 ming check 静态检查,不起服务(无端口占用),不必入端口组。
 //   3) TMP:每子进程独立 mkdtemp;跨节静态名重叠(v81/v82/v89 目录)均为 mkdirSync recursive 幂等,
 //      无跨节读-后-写文件依赖。
@@ -192,8 +193,8 @@ if (PAR_DRY || PARALLEL) {
   }
   // ---- 组布局(文件头注释有完整说明;必须恰好覆盖全部分节,组内执行顺序 = 文件顺序) ----
   const PAR_GROUPS = [
-    // 组0 = 端口组(26/66/68/79/88/89 全部在此,组内串行)+ LPT 均衡填充;基线 269.4s
-    ['10', '17', '18', '23', '26', '33', '35', '37', '42', '43', '44', '45', '51', '52', '54', '56', '60', '65', '66', '68', '72', '73', '74', '77', '79', '88', '89', '93', '95', '96', '99', '106', '107', '108'],
+    // 组0 = 端口组(26/66/68/79/88/89/119 全部在此,组内串行)+ LPT 均衡填充;基线 269.4s
+    ['10', '17', '18', '23', '26', '33', '35', '37', '42', '43', '44', '45', '51', '52', '54', '56', '60', '65', '66', '68', '72', '73', '74', '77', '79', '88', '89', '93', '95', '96', '99', '106', '107', '108', '119'],
     // 组1 = §5(fmt,250.7s 串行最大节)独占载体 + 小节填充;基线 269.5s
     ['3', '5', '9', '12', '13', '15', '19', '20', '24', '36', '47', '53', '70', '84', '85', '92'],
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
@@ -16529,10 +16530,10 @@ secBegin('78');
       `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
   }
 
-  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(37 文件冒烟;v0.79 工具 12→14;v1.4.2 工具 14→17)----
+  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(38 文件冒烟;v0.79 工具 12→14;v1.4.2 工具 14→17;v1.5.0 工具 17→18)----
   {
     // 合法程序各域嵌套深度个位数~低两位,守卫阈值 450/950/1450/2000 远离;改前基线同。
-    // 本条同时锁"examples(20)+ 自举工具(17)= 37 文件"两个面(v1.4.2:certverify/treehash/semver)。
+    // 本条同时锁"examples(20)+ 自举工具(18)= 38 文件"两个面(v1.4.2:certverify/treehash/semver;v1.5.0:moltbook)。
     const dirs = ['examples', 'tools'];
     const files = [];
     for (const d of dirs) {
@@ -16545,8 +16546,8 @@ secBegin('78');
       const r = runMing(['check', f]);
       if (r.code !== 0 || crash78({ out: r.stdout + r.stderr })) bad.push(`${path.basename(path.dirname(f))}/${path.basename(f)}(exit=${r.code})`);
     }
-    check('v78.6:合法面不误伤——examples+tools 共 37 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
-      files.length === 37 && bad.length === 0,
+    check('v78.6:合法面不误伤——examples+tools 共 38 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
+      files.length === 38 && bad.length === 0,
       `n=${files.length} bad=${bad.join(',') || '无'}`);
   }
 
@@ -31015,6 +31016,602 @@ secBegin('118');
 }
 // ---- §118-END
 
+secBegin('119');
+// v1.5.0 合并批:moltbook 集成工具(tools/moltbook.ming,自举工具 #18)+ ADR-016 两项语言出口。
+// 语义权威:docs/adr-016-moltbook-integration.md(已裁决 go,2026-11-27)——
+//   ① http 请求 **body 槽位出向透传**(v0.77 清单 6 扩面:本地存储 → 网络出向数据面;
+//     url/method/headers sink 不变,M3049 负例双向锁定);
+//   ② `json.stringify_untrusted` 污进污出(v0.68 登记候选落地):Untrusted[Json] → Untrusted[str]
+//     (净 Json 同时接受 → 净 str,既有 stringify 零迁移);产出恒污 → 只能流出 out 槽
+//     (print/http body/write),回流计算面(插值/debug)照旧 M3050(实测定案:`+` 拼接
+//     保污合法——v0.77 微调"+ 拼接传播"延续;净标注直收/复合赋值 M3049)。
+// 结构:
+//   1a = checker 正/负例(v119.1–119.9, v119.27;check 静态面,不依赖网络);
+//   1b = 工具行为测试(v119.10–119.26, v119.28–119.31;mock moltbook server)。
+// 端口纪律(AGENTS §5):mock server 真实监听端口 → 本节入 PAR_GROUPS 组 0(组内串行)。
+// mock 进程形态 = §88.7 先例(§66"测试服务器必须放独立进程"纪律的落地形态):异步 spawn
+// 独立 node 进程 + listen(0) 动态端口 + stdout "PORT:<n>" 行解析 + finally kill;
+// spawnT 是同步出口(阻塞至子进程退出),不适用长驻 server 进程,故用 v88.7 异步 spawn 同款。
+// mock 响应形状按批次合同"真实实测钉死"节实现(register 200/400/409、401、post/comment/
+// read/notifications/read-all/feed;feed 形状未验证,联调以 agent A 实测为准对齐)。
+// 联调对齐定案(2026-11-27,tools/moltbook.ming 落地后逐条核对):①工具自有旗标
+// (--creds/--base-url/--limit)必须经 `ming tools moltbook -- <子命令> ...` 的 `--` 透传
+// (顶层 CLI 解析器会把 `--xxx` 当自己的旗标吃掉;§118 先例同款);②`--base-url` 语义 =
+// 替换整个 API base(含 /api/v1 段);③post/comment 内容 = contentfile 位置参数
+// (非 stdin;post 形态 `post <submolt> <title> [contentfile]`);④read 另行 GET
+// /posts/{id}/comments?sort=old 取评论树。
+{
+  const dir119 = path.join(TMP, 'v119');
+  fs.mkdirSync(dir119, { recursive: true });
+  const m119 = (name, src) => { const f = path.join(dir119, name); fs.writeFileSync(f, src, 'utf8'); return f; };
+  // check --json 断言口径(§71/§79 同款):j.ok / diagnostics 按码计数具名。
+  const chk119 = (p) => {
+    const r = runMing(['check', p, '--json']);
+    let j = null;
+    try { j = JSON.parse(r.stdout); } catch { /* 崩溃形态 → j=null,由断言点名 */ }
+    return { code: r.code, j };
+  };
+  const codes119 = (res) => (res.j ? res.j.diagnostics.map((d) => d.code).join(',') : '(no-json:exit ' + res.code + ')');
+  const count119 = (res, code) => (res.j ? res.j.diagnostics.filter((d) => d.code === code).length : 0);
+
+  // ==================== 1a. checker 正/负例(ADR-016 §2.1/§2.2)====================
+
+  // v119.1 body 出向透传正例:http_request_opts(5 参)与 http_request(4 参)的 body 位
+  // 接受污值(env.get 污源)——check exit 0 零诊断(url/method/headers 均传净值)。
+  {
+    const f = m119('v119_1_body_ok.ming', [
+      'use std.env;',
+      'use std.net;',
+      'fn main() with env, net {',
+      '    let taintedBody = std.env.get("MING_T119").unwrap();',
+      '    match std.net.http_request_opts("POST", "https://x/", [:], taintedBody, 1000) {',
+      '        Ok(_) => {},',
+      '        Err(_) => {},',
+      '    }',
+      '    match std.net.http_request("POST", "https://x/", [:], taintedBody) {',
+      '        Ok(_) => {},',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.1:body 出向透传(ADR-016 §2.1)——http_request_opts/http_request 的 body 位接污值(env 污源)check exit 0 零 M3049',
+      res.code === 0 && !!res.j && res.j.ok === true && res.j.diagnostics.length === 0,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.2 url 仍拦:污值 URL → M3049 恰 1(目的地控制面 = SSRF/头注入面,sink 不变)
+  {
+    const f = m119('v119_2_url_sink.ming', [
+      'use std.env;',
+      'use std.net;',
+      'fn main() with env, net {',
+      '    let taintedUrl = std.env.get("MING_T119").unwrap();',
+      '    match std.net.http_request_opts("POST", taintedUrl, [:], "hi", 1000) {',
+      '        Ok(_) => {},',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.2:url 仍拦(ADR-016 §2.1 不变行)——污值 URL → M3049 恰 1,exit 1',
+      res.code === 1 && count119(res, 'M3049') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.3 method 仍拦:污值 method → M3049 恰 1
+  {
+    const f = m119('v119_3_method_sink.ming', [
+      'use std.env;',
+      'use std.net;',
+      'fn main() with env, net {',
+      '    let taintedMethod = std.env.get("MING_T119").unwrap();',
+      '    match std.net.http_request_opts(taintedMethod, "https://x/", [:], "hi", 1000) {',
+      '        Ok(_) => {},',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.3:method 仍拦(ADR-016 §2.1 不变行)——污值 method → M3049 恰 1,exit 1',
+      res.code === 1 && count119(res, 'M3049') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.4 headers 仍拦(形态一,Map 值槽):污值 api_key 进 headers Map 值位 → M3049 恰 1
+  // (污 Authorization 头 = CR/LF 头注入面,ADR-016 §2.3 凭证链的对照负例)。
+  {
+    const f = m119('v119_4_hdr_value_sink.ming', [
+      'use std.env;',
+      'use std.net;',
+      'fn main() with env, net {',
+      '    let taintedKey = std.env.get("MING_T119").unwrap();',
+      '    let mut h: Map[str, str] = [:];',
+      '    h.set("Authorization", taintedKey);',
+      '    match std.net.http_request_opts("POST", "https://x/", h, "hi", 1000) {',
+      '        Ok(_) => {},',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.4:headers 仍拦形态一(Map 值槽)——污 api_key 进 h.set 值位 → M3049 恰 1,exit 1',
+      res.code === 1 && count119(res, 'M3049') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.5 headers 仍拦(形态二,参数位):响应头第四载体 Untrusted[Map[str,str]] 回流作
+  // 请求 headers → M3049 恰 1(v0.82 载体的污值代数回传路径,headers 参数位 sink 不变)。
+  {
+    const f = m119('v119_5_hdr_param_sink.ming', [
+      'use std.net;',
+      'fn main() with net {',
+      '    match std.net.http_request_opts("GET", "https://x/", [:], "", 1000) {',
+      '        Ok((st, hdrs, body)) => {',
+      '            match std.net.http_request_opts("GET", "https://y/", hdrs, "", 1000) {',
+      '                Ok(_) => {},',
+      '                Err(_) => {},',
+      '            }',
+      '        },',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.5:headers 仍拦形态二(参数位)——响应头 Untrusted[Map] 回流作请求 headers → M3049 恰 1,exit 1',
+      res.code === 1 && count119(res, 'M3049') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.6 stringify_untrusted 污进污出正例(ADR-016 §2.2):污 Json(json.parse 污源)
+  // → Untrusted[str](模块调用形式 + 投影形式双形态),产出合法流出 out 槽
+  // (print 出向透传 + http body 出向透传)——check exit 0 零诊断。
+  {
+    const f = m119('v119_6_sfu_ok.ming', [
+      'use std.env;',
+      'use std.json;',
+      'use std.net;',
+      'use std.io;',
+      'fn main() with env, io, net {',
+      '    let raw = std.env.get("MING_T119").unwrap();',
+      '    match std.json.parse(raw) {',
+      '        Ok(uj) => {',
+      '            let s1: Untrusted[str] = std.json.stringify_untrusted(uj);',
+      '            let s2: Untrusted[str] = uj.stringify_untrusted();',
+      '            print(s1);',
+      '            match std.net.http_request_opts("POST", "https://x/", [:], s2, 1000) {',
+      '                Ok(_) => {},',
+      '                Err(_) => {},',
+      '            }',
+      '        },',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.6:stringify_untrusted 污进污出(ADR-016 §2.2)——污 Json → Untrusted[str](模块 + 投影双形式),产出经 print/http body 出向槽合法流出,check exit 0 零诊断',
+      res.code === 0 && !!res.j && res.j.ok === true && res.j.diagnostics.length === 0,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.7 净 Json 实参 → 净 str(零迁移):净 parse 产物过 stringify_untrusted,结果可声明
+  // 净 str(let s: str 锁定载体——若返回污则 M3002 具名);既有 stringify 不动,两函数并存。
+  {
+    const f = m119('v119_7_sfu_clean.ming', [
+      'use std.json;',
+      'use std.io;',
+      'fn main() with io {',
+      '    let doc = std.json.parse("{\\"a\\":1}").unwrap();',
+      '    let s: str = std.json.stringify_untrusted(doc);',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.7:stringify_untrusted 净进净出(ADR-016 §2.2)——净 Json 实参 → 净 str(let s: str 声明锁定载体),check exit 0 零诊断(零迁移)',
+      res.code === 0 && !!res.j && res.j.ok === true && res.j.diagnostics.length === 0,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.8 回流计算面仍拦(插值):stringify_untrusted 产出恒污 → 插值禁面 M3050 恰 1
+  // (产出不是洗白器,ADR-016 §4 风险表第二行的类型层锁定)。
+  {
+    const f = m119('v119_8_sfu_interp.ming', [
+      'use std.env;',
+      'use std.json;',
+      'use std.io;',
+      'fn main() with env, io {',
+      '    let raw = std.env.get("MING_T119").unwrap();',
+      '    match std.json.parse(raw) {',
+      '        Ok(uj) => {',
+      '            let s: Untrusted[str] = std.json.stringify_untrusted(uj);',
+      '            print("v=\\{s}");',
+      '        },',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.8:回流计算面仍拦(插值)——stringify_untrusted 产出进插值 → M3050 恰 1,exit 1(产出恒污,不可洗白)',
+      res.code === 1 && count119(res, 'M3050') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.9 回流计算面仍拦(debug):产出是洗白通道禁面 → M3050 恰 1(v0.61 禁面口径不变;
+  // 实测定案:`+` 拼接保污合法——v0.77 微调"+ 拼接传播"延续,净标注直收/复合赋值则 M3049,
+  // 回流计算面的具名拒绝形态 = 插值/debug 的 M3050,本条锁 debug 位)。
+  {
+    const f = m119('v119_9_sfu_debug.ming', [
+      'use std.env;',
+      'use std.json;',
+      'use std.io;',
+      'fn main() with env, io {',
+      '    let raw = std.env.get("MING_T119").unwrap();',
+      '    match std.json.parse(raw) {',
+      '        Ok(uj) => {',
+      '            let s: Untrusted[str] = std.json.stringify_untrusted(uj);',
+      '            debug(s);',
+      '        },',
+      '        Err(_) => {},',
+      '    }',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.9:回流计算面仍拦(debug)——stringify_untrusted 产出进 debug → M3050 恰 1,exit 1(产出恒污,不可洗白)',
+      res.code === 1 && count119(res, 'M3050') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // v119.27(审查 NOTE-8)M3033 负例:净 struct 实参进 stringify_untrusted →
+  // checkJsonCompatible 拒绝(结构体不自动序列化)→ M3033 恰 1,int/str 等 Json 兼容
+  // 类型不发(负例勿用 i64——int 属 Json 兼容,checkJsonCompatible 直接放行)。
+  {
+    const f = m119('v119_27_sfu_struct.ming', [
+      'use std.json;',
+      'use std.io;',
+      'struct P { x: i64, }',
+      'fn main() with io {',
+      '    let p = P { x: 1 };',
+      '    let s: str = std.json.stringify_untrusted(p);',
+      '    print(s);',
+      '}',
+    ].join('\n'));
+    const res = chk119(f);
+    check('v119.27:M3033 负例(审查 NOTE-8)——净 struct 实参进 stringify_untrusted → M3033 恰 1(checkJsonCompatible 拒绝,结构体不自动序列化),exit 1',
+      res.code === 1 && count119(res, 'M3033') === 1,
+      `exit=${res.code} diags=${codes119(res)}`);
+  }
+
+  // ==================== 1b. 工具行为测试(mock moltbook server,独立进程)====================
+  // mock 实现批次合同"响应形状(真实实测钉死)"节:register 200/400/409、Bearer 认证 401、
+  // me/posts/{id}/comments/notifications/read-all/feed;重名 409、坏名 400、未知路径 404、
+  // GET /api/v1/posts/crash 恒 500(500 具名用例)。内存态;两实例(mock#1 主流程 + mock#2
+  // 空凭证态 = 401 用例的"坏凭证"形态,避免手写凭证文件对工具内部格式的猜测)。
+  // 审查 MINOR-3 mock 保真(2026-11-27):feed 条目 author = {name} 对象(真实形状,非裸串);
+  // 评论统一带 depth/replies/has_more(真实 API 形状),并预置两帖——nest(一层真实嵌套
+  // 样例,v119.28 渲染断言)与 deep(60 层嵌套链,v119.30 深度封顶断言);通知预置
+  // new_follower 形态(无 post 对象,v119.29 占位断言);**删除死路由 POST /agents/login**
+  // (工具从不调用——login = GET me 校验,moltbook.ming cmd_login 实测路径)。
+  const MOCK_KEY119 = 'mk_HYG3NE_9f4d2b7c_KK'; // 凭证卫生锚:任何 stdout/stderr 都不得出现该子串
+  const mockSrc119 = [
+    'const http = require("http");',
+    'const KEY = "mk_HYG3NE_9f4d2b7c_KK";',
+    'const users = new Map();',
+    'const keys = new Map();',
+    'const posts = new Map();',
+    'let postSeq = 0, commentSeq = 0, agentSeq = 0;',
+    'let notifs = [{ type: "new_follower", follower: { name: "someone" }, isRead: false, createdAt: "2026-11-27T00:00:00Z" }];',
+    '// 审查 MINOR-3 保真:评论统一 depth/replies/has_more 形状;预置 nest(一层真实嵌套)',
+    '// 与 deep(60 层链,F2 渲染封顶用)两帖;通知含无 post 对象形态(new_follower)。',
+    'function mkChain119(n) {',
+    '    let cur = { author: { name: "mockagent" }, content: "c" + n, score: 1, created_at: "2026-11-27T00:00:00Z", depth: n, has_more: false, replies: [] };',
+    '    for (let i = n - 1; i >= 0; i -= 1) {',
+    '        cur = { author: { name: "mockagent" }, content: "c" + i, score: 1, created_at: "2026-11-27T00:00:00Z", depth: i, has_more: false, replies: [cur] };',
+    '    }',
+    '    return [cur];',
+    '}',
+    'posts.set("nest", { id: "nest", title: "nested-sample", author: { name: "mockagent" }, content: "nest body", comments: [{ author: { name: "mockagent" }, content: "top comment", score: 2, created_at: "2026-11-27T00:00:00Z", depth: 0, has_more: false, replies: [{ author: { name: "mockagent" }, content: "child reply", score: 1, created_at: "2026-11-27T00:00:00Z", depth: 1, has_more: false, replies: [] }] }] });',
+    'posts.set("deep", { id: "deep", title: "deep-tree", author: { name: "mockagent" }, content: "deep body", comments: mkChain119(60) });',
+    'function send(res, code, obj) {',
+    '    res.writeHead(code, { "content-type": "application/json" });',
+    '    res.end(JSON.stringify(obj));',
+    '}',
+    'function auth(req) {',
+    '    const h = req.headers["authorization"] || "";',
+    '    const m = /^Bearer (.+)$/.exec(h);',
+    '    return (m && keys.has(m[1])) ? m[1] : null;',
+    '}',
+    'function readBody(req, cb) {',
+    '    let d = "";',
+    '    req.on("data", (c) => { d += c; });',
+    '    req.on("end", () => cb(d));',
+    '}',
+    'const server = http.createServer((req, res) => {',
+    '    const u = new URL(req.url, "http://x");',
+    '    const p = u.pathname;',
+    '    const seg = p.split("/").filter(Boolean);',
+    '    if (p === "/api/v1/agents/register" && req.method === "POST") {',
+    '        return readBody(req, (d) => {',
+    '            let name = "";',
+    '            try { name = JSON.parse(d).name || ""; } catch { name = ""; }',
+    '            if (!/^[A-Za-z0-9_-]{3,30}$/.test(name)) return send(res, 400, { statusCode: 400, message: ["Name must be 3-30 characters, alphanumeric with underscores/hyphens"] });',
+    '            if (users.has(name)) return send(res, 409, { statusCode: 409, message: "name taken" });',
+    '            agentSeq += 1;',
+    '            users.set(name, { id: "agent-" + agentSeq, name: name });',
+    '            keys.set(KEY, name);',
+    '            return send(res, 200, { success: true, agent: { id: "agent-" + agentSeq, name: name }, api_key: KEY, claim_url: "https://www.moltbook.com/claim/tok_" + agentSeq });',
+    '        });',
+    '    }',
+    '    // 死路由已删(审查 MINOR-3):POST /agents/login 工具从不调用——login = GET me 校验。',
+    '    const key = auth(req);',
+    '    if (!key) return send(res, 401, { statusCode: 401, message: "invalid api key" });',
+    '    if (p === "/api/v1/agents/me" && req.method === "GET") {',
+    '        return send(res, 200, { success: true, agent: { name: "mockagent", display_name: "Mock Agent", description: "mock", karma: 42, follower_count: 3, posts_count: 2, comments_count: 1, is_verified: false } });',
+    '    }',
+    '    if (p === "/api/v1/posts" && req.method === "POST") {',
+    '        return readBody(req, (d) => {',
+    '            let title = "", content = "";',
+    '            try { const b = JSON.parse(d); title = b.title || ""; content = b.content || ""; } catch {}',
+    '            postSeq += 1;',
+    '            const id = "post-" + postSeq;',
+    '            posts.set(id, { id: id, title: title, author: { name: "mockagent" }, content: content, comments: [] });',
+    '            return send(res, 200, { success: true, post: { id: id, title: title } });',
+    '        });',
+    '    }',
+    '    if (seg[0] === "api" && seg[1] === "v1" && seg[2] === "posts" && seg[3] && seg[4] === undefined && seg[5] === undefined && req.method === "GET") {',
+    '        const id = seg[3];',
+    '        if (id === "crash") return send(res, 500, { statusCode: 500, message: "internal error" });',
+    '        const post = posts.get(id);',
+    '        if (!post) return send(res, 404, { statusCode: 404, message: "post not found" });',
+    '        return send(res, 200, { success: true, post: post });',
+    '    }',
+    '    if (seg[0] === "api" && seg[1] === "v1" && seg[2] === "posts" && seg[3] && seg[4] === "comments" && req.method === "GET") {',
+    '        const post = posts.get(seg[3]);',
+    '        if (!post) return send(res, 404, { statusCode: 404, message: "post not found" });',
+    '        return send(res, 200, { comments: post.comments });',
+    '    }',
+    '    if (seg[0] === "api" && seg[1] === "v1" && seg[2] === "posts" && seg[3] && seg[4] === "comments" && req.method === "POST") {',
+    '        const post = posts.get(seg[3]);',
+    '        if (!post) return send(res, 404, { statusCode: 404, message: "post not found" });',
+    '        return readBody(req, (d) => {',
+    '            let content = "";',
+    '            try { content = JSON.parse(d).content || ""; } catch {}',
+    '            commentSeq += 1;',
+    '            const cid = "comment-" + commentSeq;',
+    '            post.comments.push({ author: { name: "mockagent" }, content: content, score: 1, created_at: "2026-11-27T00:00:0" + commentSeq + "Z", depth: 0, has_more: false, replies: [] });',
+    '            notifs.push({ type: "comment", relatedPostId: post.id, relatedCommentId: cid, isRead: false, createdAt: "2026-11-27T00:00:0" + commentSeq + "Z", post: { title: post.title } });',
+    '            return send(res, 200, { success: true, comment: { id: cid } });',
+    '        });',
+    '    }',
+    '    if (p === "/api/v1/notifications" && req.method === "GET") {',
+    '        return send(res, 200, { notifications: notifs });',
+    '    }',
+    '    if (p === "/api/v1/notifications/read-all" && req.method === "POST") {',
+    '        notifs = notifs.map((n) => { return { type: n.type, relatedPostId: n.relatedPostId, relatedCommentId: n.relatedCommentId, isRead: true, createdAt: n.createdAt, post: n.post }; });',
+    '        return send(res, 200, { success: true, message: "All notifications marked as read" });',
+    '    }',
+    '    if (p === "/api/v1/feed" && req.method === "GET") {',
+    '        return send(res, 200, { posts: [{ id: "post-1", title: "hello", author: { name: "mockagent" } }, { id: "post-2", title: "second", author: { name: "other" } }] });',
+    '    }',
+    '    return send(res, 404, { statusCode: 404, message: "Not found" });',
+    '});',
+    'server.listen(0, "127.0.0.1", () => {',
+    '    process.stdout.write("PORT:" + server.address().port + "\\n");',
+    '});',
+    'process.stdin.resume();',
+    'process.stdin.on("end", () => process.exit(0));',
+    'setTimeout(() => process.exit(0), 180000);',
+  ].join('\n');
+  const mockFile119 = path.join(dir119, 'mock_server.cjs');
+  fs.writeFileSync(mockFile119, mockSrc119, 'utf8');
+  const startMock119 = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [mockFile119], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let buf = '';
+    const onData = (c) => {
+      buf += c;
+      const mm = buf.match(/PORT:(\d+)/);
+      if (mm) { child.stdout.off('data', onData); resolve({ child, port: Number(mm[1]) }); }
+    };
+    child.stdout.on('data', onData);
+    child.on('exit', (c) => reject(new Error('mock moltbook server 提前退出 code=' + c + ' stderr=' + buf)));
+    setTimeout(() => { try { child.kill(); } catch { /* 尽力而为 */ } reject(new Error('mock moltbook server PORT 行超时(15s)')); }, 15000);
+  });
+  const allRuns119 = [];
+  // 工具自有旗标(--creds/--base-url)必须经 `--` 透传(§118 先例):顶层 CLI 解析器会把
+  // `--xxx` 当自己的旗标吃掉;`--` 之后全部参数原样到达工具本体。
+  const tool119 = (args, opts = {}) => {
+    const r = runMing(['tools', 'moltbook', '--', ...args], opts);
+    allRuns119.push(r);
+    return r;
+  };
+  const runTree119 = (args, opts = {}) => {
+    const r = runMing(['run', '--tree', 'tools/moltbook.ming', '--', ...args], opts);
+    allRuns119.push(r);
+    return r;
+  };
+  const creds119 = path.join(dir119, 'creds.json');
+
+  let mockErr119 = null;
+  let m1_119 = null, m2_119 = null;
+  try {
+    const s1 = await startMock119();
+    m1_119 = s1.child;
+    // --base-url 语义 = 替换整个 API base(工具缺省 https://www.moltbook.com/api/v1,
+    // 后续拼接 /agents/... /posts ... 直达端点)——mock 指向须含 /api/v1 段。
+    const base119 = 'http://127.0.0.1:' + s1.port + '/api/v1';
+    const s2 = await startMock119();
+    m2_119 = s2.child;
+    const base2_119 = 'http://127.0.0.1:' + s2.port + '/api/v1'; // 空凭证态 mock:任何已知 key 都 401
+
+    // v119.10 register happy:exit 0;stdout 含 claim_url 且**无 api_key 子串**;凭证文件落盘且含 key(写盘不打印)
+    const rReg = tool119(['register', 'mockagent', '--base-url', base119, '--creds', creds119]);
+    const credsOk119 = fs.existsSync(creds119) && fs.readFileSync(creds119, 'utf8').includes(MOCK_KEY119);
+    check('v119.10:register happy——exit 0,stdout 含 claim_url(https://www.moltbook.com/claim/)且 stdout/stderr 均无 api_key 子串;凭证文件写入且含 key',
+      rReg.code === 0 && rReg.stdout.includes('https://www.moltbook.com/claim/')
+      && !rReg.stdout.includes(MOCK_KEY119) && !rReg.stderr.includes(MOCK_KEY119)
+      && credsOk119,
+      `code=${rReg.code} out=${JSON.stringify(rReg.stdout.slice(0, 160))} err=${JSON.stringify(rReg.stderr.slice(0, 120))} credsOk=${credsOk119}`);
+
+    // v119.11 register 重名 409:exit 1,stderr 具名透传消息体("name taken";批次合同"工具按消息体具名透传")
+    const rReg409 = tool119(['register', 'mockagent', '--base-url', base119, '--creds', creds119]);
+    check('v119.11:register 重名 409——exit 1,stderr 具名(透传 "name taken"/409),stdout 无 key 子串',
+      rReg409.code === 1 && (rReg409.stderr.includes('name taken') || rReg409.stderr.includes('409'))
+      && !rReg409.stdout.includes(MOCK_KEY119) && !rReg409.stderr.includes(MOCK_KEY119),
+      `code=${rReg409.code} err=${JSON.stringify(rReg409.stderr.slice(0, 160))}`);
+
+    // v119.12 register 坏名 400:exit 1,stderr 具名透传消息体("Name must be 3-30 characters ...")
+    const rReg400 = tool119(['register', 'ab', '--base-url', base119, '--creds', creds119]);
+    check('v119.12:register 坏名 400——exit 1,stderr 具名(透传 "Name must be 3-30 characters")',
+      rReg400.code === 1 && (rReg400.stderr.includes('Name must be 3-30') || rReg400.stderr.includes('400')),
+      `code=${rReg400.code} err=${JSON.stringify(rReg400.stderr.slice(0, 160))}`);
+
+    // v119.13 login happy:register 写出的凭证文件(已有 key)验证通过 → exit 0,凭证文件仍在(key 不打印)
+    const rLogin = tool119(['login', '--base-url', base119, '--creds', creds119]);
+    check('v119.13:login happy——已有 key 凭证文件验证 exit 0,归一化凭证文件仍在且含 key;stdout/stderr 无 key 子串',
+      rLogin.code === 0 && fs.readFileSync(creds119, 'utf8').includes(MOCK_KEY119)
+      && !rLogin.stdout.includes(MOCK_KEY119) && !rLogin.stderr.includes(MOCK_KEY119),
+      `code=${rLogin.code} out=${JSON.stringify(rLogin.stdout.slice(0, 160))} err=${JSON.stringify(rLogin.stderr.slice(0, 120))}`);
+
+    // v119.14 login 坏文件:凭证文件不存在 → exit 1 stderr 具名(不静默)
+    const rLoginBad = tool119(['login', '--base-url', base119, '--creds', path.join(dir119, 'no_such_creds.json')]);
+    check('v119.14:login 坏文件——凭证文件不存在 exit 1,stderr 具名',
+      rLoginBad.code === 1 && rLoginBad.stderr !== '',
+      `code=${rLoginBad.code} err=${JSON.stringify(rLoginBad.stderr.slice(0, 160))}`);
+
+    // v119.15 me happy:exit 0,stdout 终稿五行严格全等(F3 追加"评论: N.0"行;数值渲染 =
+    // jnum f64 的 N.0 格式;mock: display_name=Mock Agent/karma=42/粉丝=3/帖子=2/评论=1)
+    const rMe = tool119(['me', '--base-url', base119, '--creds', creds119]);
+    const meFinal119 = '名称: Mock Agent\nkarma: 42.0\n粉丝: 3.0\n帖子: 2.0\n评论: 1.0';
+    check('v119.15:me happy——exit 0,stdout 终稿五行严格全等(名称: display_name / karma: N.0 / 粉丝: N.0 / 帖子: N.0 / 评论: N.0)',
+      rMe.code === 0 && rMe.stdout.replace(/\r?\n$/, '') === meFinal119,
+      `code=${rMe.code} out=${JSON.stringify(rMe.stdout.slice(0, 240))} err=${JSON.stringify(rMe.stderr.slice(0, 120))}`);
+
+    // v119.16 me 401(坏凭证):同一凭证文件对空凭证态 mock#2 → 服务端 401 → 工具具名 exit 1
+    const rMe401 = tool119(['me', '--base-url', base2_119, '--creds', creds119]);
+    check('v119.16:me 401(坏凭证)——exit 1,stderr 具名(透传 "invalid api key"/401),无 panic/无栈泄漏',
+      rMe401.code === 1 && (rMe401.stderr.includes('invalid api key') || rMe401.stderr.includes('401'))
+      && !rMe401.stderr.includes('panic'),
+      `code=${rMe401.code} err=${JSON.stringify(rMe401.stderr.slice(0, 160))}`);
+
+    // v119.17 post happy:内容文件 → exit 0,stdout 含 post id(post-N;"已发帖: <id> <标题>")
+    const content119 = path.join(dir119, 'content.txt');
+    fs.writeFileSync(content119, 'first body content\n', 'utf8');
+    const rPost = tool119(['post', 'ming', 'hello-title', content119, '--base-url', base119, '--creds', creds119]);
+    check('v119.17:post happy(内容文件)——exit 0,stdout 含 post id(post-1)与标题',
+      rPost.code === 0 && /post-\d+/.test(rPost.stdout) && rPost.stdout.includes('hello-title'),
+      `code=${rPost.code} out=${JSON.stringify(rPost.stdout.slice(0, 200))} err=${JSON.stringify(rPost.stderr.slice(0, 120))}`);
+
+    // v119.18 comment happy:内容文件 → exit 0,stdout 含 comment id("已评论: <id>")
+    const rCmt = tool119(['comment', 'post-1', content119, '--base-url', base119, '--creds', creds119]);
+    check('v119.18:comment happy(内容文件)——exit 0,stdout 含 comment id(comment-1)',
+      rCmt.code === 0 && /comment-\d+/.test(rCmt.stdout),
+      `code=${rCmt.code} out=${JSON.stringify(rCmt.stdout.slice(0, 200))} err=${JSON.stringify(rCmt.stderr.slice(0, 120))}`);
+
+    // v119.19 read happy(标题 + 评论树):exit 0,stdout 含标题、作者、正文与评论树
+    // (实测渲染:标题:/作者:/正文/评论(N): "- <作者名> (<score>): <内容>")
+    const rRead = tool119(['read', 'post-1', '--base-url', base119, '--creds', creds119]);
+    check('v119.19:read happy——exit 0,stdout 含标题 hello-title、作者 mockagent、正文与评论树(first body content)',
+      rRead.code === 0 && rRead.stdout.includes('hello-title') && rRead.stdout.includes('mockagent')
+      && rRead.stdout.includes('first body content') && rRead.stdout.includes('评论(1):'),
+      `code=${rRead.code} out=${JSON.stringify(rRead.stdout.slice(0, 240))} err=${JSON.stringify(rRead.stderr.slice(0, 120))}`);
+
+    // v119.20 feed happy:exit 0,stdout 含 feed 条目(post-2/second)
+    const rFeed = tool119(['feed', '--base-url', base119, '--creds', creds119]);
+    check('v119.20:feed happy——exit 0,stdout 含 second(mock feed 条目标题)',
+      rFeed.code === 0 && rFeed.stdout.includes('second'),
+      `code=${rFeed.code} out=${JSON.stringify(rFeed.stdout.slice(0, 240))} err=${JSON.stringify(rFeed.stderr.slice(0, 120))}`);
+
+    // v119.21 notifications happy + --read-all:exit 0,stdout 含通知锚(相关帖标题 hello);--read-all exit 0
+    const rNotif = tool119(['notifications', '--base-url', base119, '--creds', creds119]);
+    const rReadAll = tool119(['notifications', '--read-all', '--base-url', base119, '--creds', creds119]);
+    check('v119.21:notifications + --read-all——notifications exit 0 stdout 含 hello(通知挂帖标题);--read-all exit 0',
+      rNotif.code === 0 && rNotif.stdout.includes('hello')
+      && rReadAll.code === 0,
+      `n=${rNotif.code}/${JSON.stringify(rNotif.stdout.slice(0, 200))} ra=${rReadAll.code} err=${JSON.stringify(rReadAll.stderr.slice(0, 120))}`);
+
+    // v119.22 错误三形态:read 404(未知帖)/ read 500(crash 桩)各 exit 1 stderr 具名
+    const r404 = tool119(['read', 'post-nope', '--base-url', base119, '--creds', creds119]);
+    const r500 = tool119(['read', 'crash', '--base-url', base119, '--creds', creds119]);
+    check('v119.22:read 错误三态——404 未知帖 exit 1 stderr 具名(404/post not found);500 crash 桩 exit 1 stderr 具名(500/internal error);无 panic',
+      r404.code === 1 && (r404.stderr.includes('404') || r404.stderr.includes('not found'))
+      && r500.code === 1 && (r500.stderr.includes('500') || r500.stderr.includes('internal error'))
+      && !r404.stderr.includes('panic') && !r500.stderr.includes('panic'),
+      `r404=${r404.code}/${JSON.stringify(r404.stderr.slice(0, 140))} r500=${r500.code}/${JSON.stringify(r500.stderr.slice(0, 140))}`);
+
+    // v119.23 双引擎逐字:me(幂等,严格全等)与 post(mock 单调计数,post/comment id 掩码后全等)
+    // ——run --tree 与 ming tools 派发(VM)stdout/stderr/退出码一致(§118.7/§118.10 同款口径)。
+    const rTreeMe = runTree119(['me', '--base-url', base119, '--creds', creds119]);
+    const rVmMe = tool119(['me', '--base-url', base119, '--creds', creds119]);
+    const maskIds119 = (s) => s.replace(/post-\d+/g, 'post-N').replace(/comment-\d+/g, 'comment-N');
+    const rTreePost = runTree119(['post', 'ming', 'dual-title', content119, '--base-url', base119, '--creds', creds119]);
+    const rVmPost = tool119(['post', 'ming', 'dual-title', content119, '--base-url', base119, '--creds', creds119]);
+    check('v119.23:双引擎逐字——me 与 post 各跑 run --tree 与 tools 派发:me stdout/stderr/退出码全等;post id 掩码后全等(mock 单调计数)',
+      rTreeMe.code === rVmMe.code && rTreeMe.stdout === rVmMe.stdout && rTreeMe.stderr === rVmMe.stderr
+      && rTreePost.code === rVmPost.code && maskIds119(rTreePost.stdout) === maskIds119(rVmPost.stdout) && maskIds119(rTreePost.stderr) === maskIds119(rVmPost.stderr),
+      `me t/v=${rTreeMe.code}/${rVmMe.code} same=${rTreeMe.stdout === rVmMe.stdout} post t/v=${rTreePost.code}/${rVmPost.code} same=${maskIds119(rTreePost.stdout) === maskIds119(rVmPost.stdout)}`);
+
+    // v119.28(审查 MINOR-3)评论树真实形状渲染:nest 帖评论带 depth/replies/has_more 且
+    // 含一层真实嵌套 → read 子回复行带两格缩进(每层两格,渲染器自计数深)。
+    const rNest = tool119(['read', 'nest', '--base-url', base119, '--creds', creds119]);
+    check('v119.28:read 渲染嵌套回复——mock 评论含 depth/replies/has_more + 一层真实嵌套,exit 0,子回复行 = 行首两格缩进的 "child reply"',
+      rNest.code === 0 && rNest.stdout.includes('\n  - mockagent (1.0): child reply'),
+      `code=${rNest.code} out=${JSON.stringify(rNest.stdout.slice(0, 320))} err=${JSON.stringify(rNest.stderr.slice(0, 120))}`);
+
+    // v119.29(审查 MINOR-3)通知"post 可缺"分支:new_follower 形态无 post 对象 →
+    // 输出不崩、类型锚在、标题空占位,exit 0(渲染器 jstr2_u(n,"post","title","") 兜底)。
+    const rNotifNp = tool119(['notifications', '--base-url', base119, '--creds', creds119]);
+    check('v119.29:new_follower 通知(无 post 对象)——exit 0 不崩,stdout 含类型锚 new_follower(标题空占位),无 panic',
+      rNotifNp.code === 0 && rNotifNp.stdout.includes('new_follower') && !rNotifNp.stderr.includes('panic'),
+      `code=${rNotifNp.code} out=${JSON.stringify(rNotifNp.stdout.slice(0, 300))} err=${JSON.stringify(rNotifNp.stderr.slice(0, 120))}`);
+
+    // v119.30(F2 联调)60 层嵌套回复 → 评论树渲染深度封顶 50:exit 0 + 截断占位行;
+    // 封顶是渲染层护栏,不得 M4005/panic/exit 101(深层递归不可裸崩)。
+    const rDeep = tool119(['read', 'deep', '--base-url', base119, '--creds', creds119]);
+    check('v119.30:60 层嵌套评论树——渲染深度封顶 50:exit 0,stdout 含"…（回复树过深,已截断）"占位,深层(c59)不渲染,无 panic/无 M4005/非 101',
+      rDeep.code === 0 && rDeep.stdout.includes('…（回复树过深,已截断）')
+      && rDeep.stdout.includes('c49') && !rDeep.stdout.includes('c59')
+      && rDeep.code !== 101 && !rDeep.stderr.includes('panic') && !rDeep.stderr.includes('M4005'),
+      `code=${rDeep.code} outTail=${JSON.stringify(rDeep.stdout.slice(-240))} err=${JSON.stringify(rDeep.stderr.slice(0, 120))}`);
+
+    // v119.31(F1 联调)控制字符 key 净化失败不泄漏:手写凭证文件含 JSON 转义的 C0 控制
+    // 字符(\\u0002)→ 装载路径 clean_field → sanitize_cli_path 拒 C0 → me/login 均
+    // exit 1 + stderr 具名固定文案,**stdout/stderr 无 key 内容子串**(净化错误不得回显
+    // 键值;固定文案以工具实测为准,本断言核心 = 无 mk_K 子串/无原始控制字符)。
+    const badCreds119 = path.join(dir119, 'creds_badkey.json');
+    fs.writeFileSync(badCreds119, '{"agent_name": "mockagent", "api_key": "mk_K\\u0002X", "claim_url": "https://x/claim/x"}', 'utf8');
+    const rMeBad = tool119(['me', '--base-url', base119, '--creds', badCreds119]);
+    const rLoginBadKey = tool119(['login', '--base-url', base119, '--creds', badCreds119]);
+    check('v119.31:控制字符 key 净化失败不泄漏——me/login 装载路径 exit 1,stderr 具名(moltbook: 前缀),stdout+stderr 均无 key 内容子串(mk_K\\u0002X 的任何渲染形态)',
+      rMeBad.code === 1 && rLoginBadKey.code === 1
+      && rMeBad.stderr.includes('moltbook:') && rLoginBadKey.stderr.includes('moltbook:')
+      && !rMeBad.stdout.includes('mk_K') && !rMeBad.stderr.includes('mk_K')
+      && !rLoginBadKey.stdout.includes('mk_K') && !rLoginBadKey.stderr.includes('mk_K')
+      && !rMeBad.stderr.includes('\u0002') && !rLoginBadKey.stderr.includes('\u0002'),
+      `me=${rMeBad.code}/${JSON.stringify(rMeBad.stderr.slice(0, 160))} login=${rLoginBadKey.code}/${JSON.stringify(rLoginBadKey.stderr.slice(0, 160))}`);
+
+    // v119.24 凭证卫生(全量):本节全部工具调用(1b 每条)stdout+stderr 均无 mock api_key 子串
+    check('v119.24:凭证卫生(全量锁定)——1b 全部 ' + allRuns119.length + ' 次工具调用的 stdout+stderr 均无 api_key 子串(key 只落盘,永不打印)',
+      allRuns119.length >= 12 && allRuns119.every((r) => !r.stdout.includes(MOCK_KEY119) && !r.stderr.includes(MOCK_KEY119)),
+      `n=${allRuns119.length} leak=${allRuns119.findIndex((r) => r.stdout.includes(MOCK_KEY119) || r.stderr.includes(MOCK_KEY119))}`);
+  } catch (e) {
+    mockErr119 = e;
+  } finally {
+    if (m1_119) m1_119.kill();
+    if (m2_119) m2_119.kill();
+  }
+  check('v119.25:mock moltbook server 运行面——独立进程起服务/PORT 解析/两实例并存全程无异常(moltbook 工具联调承载面)',
+    mockErr119 === null, mockErr119 ? String(mockErr119) : 'ok');
+
+  // v119.26 注册面与 fmt:moltbook.ming 存在且 ming fmt --check 全绿(工具纪律);tools --list 含 moltbook 行
+  {
+    const moltbookExists = fs.existsSync(path.join(ROOT, 'tools', 'moltbook.ming'));
+    const rFmt = runMing(['fmt', 'tools/moltbook.ming', '--check']);
+    const rList = runMing(['tools', '--list']);
+    check('v119.26:注册面——tools/moltbook.ming 存在;ming fmt --check 绿(已是规范格式);tools --list 含 moltbook',
+      moltbookExists && rFmt.code === 0 && rList.code === 0 && rList.stdout.includes('moltbook'),
+      `exists=${moltbookExists} fmt=${rFmt.code} list=${rList.code} listHas=${rList.stdout.includes('moltbook')}`);
+  }
+}
+// ---- §119-END
 
 secEndAll();
 // T2.4 并行:子进程末尾补发末节 @@SEC 与总计行(编排器聚合依据;串行模式 PAR_CHILD=false 零输出)。

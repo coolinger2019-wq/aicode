@@ -2124,6 +2124,18 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 - **门槛**：全量基线 1855 项/0 失败（1837 基线 + §118 的 18）；fuzz seed 44044×25 0 分歧。
 
 
+## 4.25 moltbook 集成批执行与审查登记（2026-11-27，工具 #18 + ADR-016 两项语言出口，v1.5.0）
+
+> 维护者指令（2026-11-27）："做一个集成工具就是 moltbook 的应用的集成工具，方便 agents 注册，登录，查看，答复，查询等功能"。架构师先裁 ADR-016（docs/adr-016-moltbook-integration.md，go），两 agent 并发实现（语言面+工具本体 / 测试+全文档注册面），独立审查 REQUEST_CHANGES 后双修复 agent 收口。
+
+- **语言出口（ADR-016，零新增 M 码）**：① http_request/http_request_opts **body 槽位出向透传**（v0.77 清单 6 扩面：本地存储 → 网络出向数据面；url/method/headers sink 不变——目的地控制面/CR-LF 头注入面，负例双向锁定）；② `json.stringify_untrusted` 落地（v0.68 登记候选转正：污进污出/净进净出，模块 + 投影双形式，产出恒污消费面 out-only）。运行时零变化。
+- **工具 #18**（tools/moltbook.ming；效果 io, fs, net, env）：八子命令 register/login/me/post/comment/read/feed/notifications + `--creds`/`--base-url`；污点全链（api_key 经 sanitize_cli_path 净化链进 headers；内容经手拼转义 + json.parse 自校验 + stringify_untrusted 规范化进 body）；凭证永不打印（净化失败也走固定文案）；AOT probe 排除 net 效果工具（v0.62/0.69 先例）；真实 API 响应形状经只读探测逐字段钉死。
+- **独立审查**：REQUEST_CHANGES（1 MAJOR 文档级 + 4 MINOR + 8 NOTE）——代码/安全/语义面全部验证通过（esc 转义 8 组对抗语料逐字节、含裸 C0 内容 parse 具名拒绝且坏 body 不出网、凭证卫生、wasm/C 资格镜像、ADR 合规）；MAJOR = GUIDE post 内容来源写错（stdin→contentfile 实际）+ 效果集漏 env；MINOR 处置：key 净化失败固定文案不回显（三类路径实测 0 泄漏）、评论树渲染深度封顶 50（300 层链 exit 0 + 占位行）、me 补 comments_count 行、mock 保真四处补齐（feed author 对象/comments depth·replies·has_more/无 post 通知形态/死路由删除）+ M3033 负例补测；NOTE 落实：转义计数笔误、ENOENT 文案去重、URL 编码注记（语言候选登记）、plan §5.1 两条登记（fs mode 候选/凭证装载样板收编候选）。
+- **架构师烟测**：真实 API 端到端——me/notifications/read 只读 + **自帖评论真实写入成功**（ADR-016 放开链路全链验证；本机经代理，须 `NODE_USE_ENV_PROXY=1`——node fetch 平台事实，非工具缺陷）。
+- **版本定稿**：v1.5.0 由架构师合并批统一执行（package.json/bin VERSION/GUIDE 头部 + §24 终稿 + README 三语版本行/测试数 + AGENTS §10 + 本节）。
+- **门槛**：全量 **1894 项/0 失败**（§119 = 31 check；1a checker 正负例 10 + 1b mock 行为 21，分节入 PAR_GROUPS 组 0）；fuzz seed 44044×40 分歧 0；fmt tools 18/18；docs_check 14/14。
+
+
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
 
 > 来源:两个 code-reviewer 子智能体 + 主会话复现 + 2026-11-13 三方评估/安全审计。**状态:v0.50.1–v0.59.0 的已修复项逐行标注;#47/#51–#54 已于 v0.60.0 收口(资源门禁一致性:参数搬运计费/外部输入计费/--max-ms 钳制/test 旗标传播/tree 契约重入);#55–#57(P2)Backlog/随 v0.61。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。
@@ -2357,6 +2369,15 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | NOTE-4 | **certverify 语法宽松两处**(义务头不要求"索引 "前缀/空文件名被接受) | P3 | **已修**(义务头"索引 "前缀 + 空文件名具名拒绝,§118.22 锁定) |
 | NOTE-5 | **treehash collect 值语义逐目录深拷贝 + acc O(n²) 拼接**:递归收集对每目录深拷贝、路径串累加拼接为平方复杂度——工具规模内无碍,大目录留意 | P3 | **登记未修**(工具规模内无实际影响;大目录使用留意,优化待真实用例) |
 | NOTE-6 | **batch_rename exists→rename TOCTOU 窗口**(检查目标存在与 rename 执行之间非原子,并发方可穿越)——CLI 单用户场景可接受;彻底闭合需语言面 no-replace 语义 | P3 | **登记未修**(单用户 CLI 可接受;no-replace 语义登记为语言出口候选,须架构师/ADR 裁决) |
+
+### 新登记(2026-11-27,moltbook 批独立审查;登记不修)
+
+> moltbook 批(#18,ADR-016)独立审查 NOTE 级发现两条,均属工具/语言能力缺口而非缺陷行为——如实登记,不预支。
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| — | **凭证文件权限无 mode 面**:`std.fs.write_file` 无权限参数,凭证落盘为平台默认权限(POSIX 0644 级,组/其他可读)——单用户本机场景可接受,多用户主机上凭证暴露面扩大 | P3 | **登记未修**(fs 能力 mode 候选;须 ADR 裁决,涉及跨平台语义) |
+| — | **凭证装载样板 ~190 行重复**:六个 `cmd_*` 函数各自复制"读凭证文件 → parse → clean_field → 分发"同构流程——Ming 本地函数不捕获外层局部的语言限制使然(v0.59 #44 四条限制第一条);工具规模内无正确性影响,仅维护成本 | P3 | **登记未修**(本地函数捕获能力或工具层收编为候选,均须架构师/ADR 裁决) |
 
 ## 6. 过程纪律（所有版本适用）
 

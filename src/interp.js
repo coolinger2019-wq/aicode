@@ -2264,6 +2264,15 @@ export class Interp {
         // 检查器已保证 JSON 兼容类型;这里把 Ming 值转为 Json 值再输出
         return V.str(jsonWrite(this.toMingJson(args[0])));
       }
+      // v1.5(ADR-016 §2.2):stringify_untrusted——污进污出序列化(v0.68 登记候选落地)。
+      // 与 stringify 同编码;载体分派在 checker(checkStdCall 特例:净 Json → 净 str /
+      // Untrusted[Json] → Untrusted[str])。运行时污点承载:污根 __taint 跟随输出
+      // (与 json.parse 打标/str.join 污点只增不减同口径;纯函数不计费,同 stringify)。
+      case 'json.stringify_untrusted': {
+        const out = V.str(jsonWrite(this.toMingJson(args[0])));
+        if (args[0].__taint) out.__taint = true;
+        return out;
+      }
       case 'json.parse': {
         try {
           const root = parseJsonText(args[0].v);
@@ -2571,6 +2580,10 @@ export class Interp {
         return V.enumv('builtin-opt', 'Some', [j.v[i]]);
       }
       case 'eq': return V.bool(jsonEquals(j, args[0]));
+      // v1.5(ADR-016 §2.2):stringify_untrusted 投影表方法形式(模块形式在 callStd)。
+      // 与 stringify 同编码;污接收者的 str 结果打标由 jsonMethodImpl 包装器统一承担
+      // (净接收者 → 净 str,不触碰)。
+      case 'stringify_untrusted': return V.str(jsonWrite(j));
       default:
         throw new Panic('M4001', `内部错误:Json.${name}`, span);
     }
