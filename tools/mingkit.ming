@@ -58,7 +58,7 @@ fn join_lines(lines: Vec[Untrusted[str]]) -> Untrusted[str] {
 fn usage() -> i64 with io {
     eprint("mingkit — Ming 文件工具箱(用 Ming 自写)");
     eprint("用法: node bin/ming.js run tools/mingkit.ming -- <子命令> ...");
-    eprint("  read <file> [start] [end]          输出文件(或行区间,1-based 含端点)");
+    eprint("  read <file> [start end]            输出文件(或行区间,1-based 含端点;区间须同时给两参数)");
     eprint("  write <file>                       stdin 全量覆盖写入");
     eprint("  append <file>                      stdin 全量追加");
     eprint("  replace <file> <old> <new>         精确替换恰好 1 处(0/多处拒绝并报错)");
@@ -105,6 +105,12 @@ fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs {
         if args.len() < 2 {
             return fail("read 需要 <file> [start] [end]");
         }
+        if args.len() == 3 {
+
+            // 行区间是 1-based 含端点,须同时给 start 与 end;缺 end 时 start
+            // 曾被静默忽略(与整文件输出无异)——显式拒绝(2026-11-27 审计复核)
+            return fail("read 行区间需要 <start> 与 <end> 两个参数");
+        }
 
         // v0.77:污内容承接用 mark("") 起点,后续赋值/拼接保污
         let mut content = std.unstr.mark("");
@@ -137,6 +143,12 @@ fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs {
             }
             if start > end {
                 return fail("start 不能大于 end");
+            }
+            if start < 1 {
+
+                // 区间是 1-based 含端点;此前 start<1 静默按 1 处理,与 delete-lines
+                // 的显式拒绝口径不一致(审计修复)
+                return fail("start 必须从 1 开始");
             }
             if content.is_empty() {
 

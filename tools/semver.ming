@@ -1,0 +1,167 @@
+// tools/semver.ming — 语义化版本(semver)校验/比较/bump(用 Ming 自写)
+//
+// 动机(v1.4.2 合并批):版本号三处同步(package.json / bin/ming.js VERSION / GUIDE
+// 修订记录)的逐次手工 bump 全靠 sed——本工具把"校验/比较/bump 算术"收敛成一条
+// 命令,配合 mingkit patch(改动面仍是显式补丁)完成三处同步;工具只负责判定与算术。
+//
+// 语义(strict semver.org 数值段;v1 范围如实登记):
+//   版本 = X.Y.Z,X/Y/Z 均为 ASCII 十进制非负整数(仅 0-9——Unicode Nd 数字如
+//   ١٢ 被 std is_digit 认真但 parse_i64 只认 ASCII,具名拒绝,不误报超界):
+//   无前导零("0" 合法,"01" 非法)、
+//   i64 有界(超界 = 非法);**不支持** prerelease/build 元数据(1.0.0-rc.1 这类
+//   形态本工具判非法——本仓库三处版本面未用到带后缀形态,需要时先扩判据再实现)。
+// 比较:major → minor → patch 逐段数值比较,输出 -1 | 0 | 1。
+// bump:major → (M+1).0.0;minor → M.(m+1).0;patch → M.m.(p+1);
+//   被增段已是 i64 上界 → 具名失败(不靠溢出 panic,纪律要求失败 exit 1)。
+//
+// 用法:
+//   ming tools semver <A> <B>                        比较(输出 -1/0/1,exit 0)
+//   ming tools semver bump <X.Y.Z> major|minor|patch bump(输出新版本,exit 0)
+//   ming tools semver check <X.Y.Z>                  校验(合法 exit 0 / 非法 exit 1)
+//
+// 纪律:错误走 stderr、失败退出码 1;确定性(无时间/随机/环境读取)。
+// 效果:print/eprint 需要 io;解析与算术为纯计算,不碰 fs/net。
+// 解析 X.Y.Z → (major, minor, patch);非法 = Err(具名原因)
+fn parse_ver(s: str) -> Result[(i64, i64, i64), str] {
+    let parts = s.split(".");
+    if parts.len() != 3 {
+        return Err("版本必须是 X.Y.Z 三段(得到 " + s + ")");
+    }
+    let mut nums: Vec[i64] = [];
+    for p in parts {
+        if !p.is_digit() {
+            return Err("版本段不是纯数字(得到 " + s + ")");
+        }
+
+        // F4(MINOR-4):std is_digit 认 Unicode \p{Nd}(src/interp.js;Arabic-Indic ١٢ 也为真)
+        // 而 parse_i64 只认 ASCII——此前 ١٢.0.0 落入"超出 i64 范围"的失真消息。此处补
+        // ASCII 白名单(仅 0-9 可进数值段,与 Python 独立验证器的 ^[0-9]+$ 口径一致);
+        // 检测法:is_digit 已保证全段是 Nd,非 ASCII 字符在 UTF-8 中必为多字节
+        // → byte_len ≠ char_len 即含非 ASCII 数字。
+        if p.byte_len() != p.char_len() {
+            return Err("版本段不是有效整数(含非 ASCII 数字;只接受 0-9): " + s);
+        }
+        if p.starts_with("0") && p.char_len() > 1 {
+            return Err("版本段有前导零(semver 禁止): " + s);
+        }
+        match p.parse_i64() {
+            Ok(n) => {
+                nums.push(n);
+            },
+            Err(_) => {
+                return Err("版本段超出 i64 范围: " + s);
+            },
+        }
+    }
+    return Ok((nums[0], nums[1], nums[2]));
+}
+
+// 逐段比较:major → minor → patch
+fn cmp_ver(am: i64, an: i64, ap: i64, bm: i64, bn: i64, bp: i64) -> i64 {
+    if am != bm {
+        return if am < bm { -1 } else { 1 };
+    }
+    if an != bn {
+        return if an < bn { -1 } else { 1 };
+    }
+    if ap != bp {
+        return if ap < bp { -1 } else { 1 };
+    }
+    return 0;
+}
+
+fn usage_out() with io {
+    print("用法: ming tools semver <A> <B>                        比较(输出 -1/0/1)");
+    print("      ming tools semver bump <X.Y.Z> major|minor|patch  bump(输出新版本)");
+    print("      ming tools semver check <X.Y.Z>                  校验(合法 exit 0)");
+    print("版本 = X.Y.Z 三段纯数字,无前导零,i64 有界;不支持 prerelease/build 元数据。");
+}
+
+fn usage_err() with io {
+    eprint("用法: ming tools semver <A> <B> | bump <X.Y.Z> major|minor|patch | check <X.Y.Z>");
+}
+
+// v0.82 污点迁移先例(ADR-008):argv 元素级污点——逐元素过 std.unstr.sanitize_cli_path
+// (校验不改写:拒控制字符,Ok 原样)取净值;版本号/段名不含控制字符,良性路径原样通过。
+fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io {
+    let mut args: Vec[str] = [];
+    for a in raw_args {
+        if a.is_empty() {
+            args.push("");} else {
+            match std.unstr.sanitize_cli_path(a) {
+                Ok(p) => {
+                    args.push(p);
+                },
+                Err(e) => {
+                    eprint("semver: " + e);
+                    return 1;
+                },
+            }
+        }
+    }
+    if args.len() == 0 {
+        usage_err();
+        return 1;
+    }
+    if args[0] == "--help" || args[0] == "-h" {
+        usage_out();
+        return 0;
+    }
+    if args[0] == "bump" {
+        if args.len() != 3 {
+            usage_err();
+            return 1;
+        }
+        let v = match parse_ver(args[1]) { Ok(t) => t, Err(e) => { eprint("semver: " + e); return 1; } };
+        let (maj, mid, pat) = v;
+        let part = args[2];
+
+        // 段上界守卫:被增段 = i64 上界时 bump 无处可去——具名失败,不靠溢出 panic
+        let target = if part == "major" { maj } else if part == "minor" { mid } else if part == "patch" { pat } else { eprint("semver: bump 段必须是 major|minor|patch(得到 " + part + ")"); return 1; };
+        if target >= 9223372036854775807 {
+            eprint("semver: bump 溢出:" + part + " 段已是 i64 上界(" + args[1] + ")");
+            return 1;
+        }
+        let mut nm = maj;
+        let mut nn = mid;
+        let mut np = pat;
+        if part == "major" {
+            nm = maj + 1;
+            nn = 0;
+            np = 0;} else if part == "minor" {
+
+            nn = mid + 1;
+            np = 0;} else {
+
+            np = pat + 1;
+        }
+        print(str(nm) + "." + str(nn) + "." + str(np));
+        return 0;
+    }
+    if args[0] == "check" {
+        if args.len() != 2 {
+            usage_err();
+            return 1;
+        }
+        match parse_ver(args[1]) {
+            Ok(_) => {
+                print("OK " + args[1]);
+                return 0;
+            },
+            Err(e) => {
+                eprint("semver: 非法版本: " + e);
+                return 1;
+            },
+        }
+    }
+    if args.len() == 2 {
+        let a = match parse_ver(args[0]) { Ok(t) => t, Err(e) => { eprint("semver: " + e); return 1; } };
+        let b = match parse_ver(args[1]) { Ok(t) => t, Err(e) => { eprint("semver: " + e); return 1; } };
+        let (am, an, ap) = a;
+        let (bm, bn, bp) = b;
+        print(str(cmp_ver(am, an, ap, bm, bn, bp)));
+        return 0;
+    }
+    usage_err();
+    return 1;
+}

@@ -1,0 +1,157 @@
+// tools/treehash.ming — 目录确定性指纹(用 Ming 自写)
+//
+// 动机(v1.4.2 合并批):R-19/v1.4.1 批多次手工做"目录内容哈希"(sha256sum -c 工作流,
+// 用于发布产物/fixture 完整性)——本工具把"递归收集 + 排序 + 指纹"收敛成一条命令,
+// 输出确定性、可复核、与 git 无关(自描述)。
+//
+// 算法(--help 同文;规范写死在实现里,无旗标可调):
+//   1) 递归收集 <目录> 下全部文件(相对路径,"/" 分隔,跨平台一致);
+//   2) 相对路径按引擎字符串序排序(UTF-16 码元序;ASCII 路径 = 字节序;引擎唯一实现
+//      → 双引擎与跨平台确定性一致;含星形补面字符的路径与 UTF-8 字节序的相对序差异
+//      如实登记——确定性不受影响);
+//   3) 逐文件读原始字节(std.fs.read_bytes;单文件 8MB 上限,超出具名失败),
+//      取字节长度 len(计数是净值);
+//   4) 拼接串 = 逐行 "<相对路径> <len>\n"(按排好序的文件序);
+//   5) 根哈希 TREEHASH = sha256(拼接串)(std.crypto.sha256;输入全为净值——
+//      路径经 sanitize_cli_path,长度是计数);空目录 = sha256("") = e3b0c442…7852b855。
+//   输出:逐文件行 "<相对路径> <len>",末行 "TREEHASH <hex>"。
+//   任一文件/目录读取失败 → 不输出 TREEHASH(部分集合的指纹是谎报),exit 1。
+//
+// **诚实边界(工具即语言验证的发现,v1.4.2 登记)**:每文件级 sha256 **做不了**——
+// 文件内容经 read_file/read_bytes 进入时是 Untrusted(污源,v0.77 ADR-007),而
+// std.crypto 消费面是净槽(同批登记"无字节洗白旁路"),污标量也无净化器(ADR-012
+// §4.6 唯一净出口 = 比较输出 bool)——三处契约合起来,纯 Ming 工具**无法对文件内容
+// 求哈希**。本工具的指纹 = (相对路径, 字节长度):能确定地发现增/删/改名/截断,
+// **同长不同内容的改写不可区分**(弱承诺,如实标注,不冒充内容哈希)。内容级目录
+// 指纹需要语言面先给显式出口(例如带 crypto 效果的 sha256_bytes(Untrusted[Vec[u8]])
+// ——哈希不可逆、不泄内容,是否开此门属于语言裁决),登记为候选,本工具不越权实现。
+//
+// 跳过符号链接:按平台行为如实登记——std.fs 无 symlink 判别面(无 lstat),目录
+// 符号链接按 is_dir 跟随(与 tools/tree.ming 同口径),文件符号链接按目标计入;
+// 环状链接实际先触 OS 层限制(ELOOP,实测 ~62 层)即具名失败——深度上限 200 只是
+// 兜底,拦下的是 ≥201 层的合法深树(此时"疑似符号链接环"的措辞并不真,如实登记)。
+//
+// 纪律:错误走 stderr、失败退出码 1;确定性(无时间/随机;不读 metadata 的 mtime)。
+// 效果:io(print/eprint)+ fs(遍历/读文件)+ crypto(sha256)。
+use std.fs;
+
+// 递归收集文件;返回 (相对路径们, 失败数)。depth 从 1 起;>200 兜底具名失败
+// (链接环实际先触 OS ELOOP,~62 层——见头注诚实边界)。
+fn collect(dir: str, rel: str, mut files: Vec[str], mut failed: i64, depth: i64) -> (Vec[str], i64) with io, fs {
+    if depth > 200 {
+        eprint("treehash: 目录嵌套超过 200 层(" + rel + ";疑似符号链接环——std.fs 无 symlink 判别面,深度上限兜底)");
+        return (files, failed + 1);
+    }
+    match std.fs.list_dir(dir) {
+        Ok(entries) => {
+            let mut i = 0;
+            let n = entries.len();
+            while i < n {
+                match std.unstr.sanitize_cli_path(entries[i]) {
+                    Ok(name) => {
+                        let full = std.path.join(dir, name);
+                        let child_rel = if rel == "" { name } else { rel + "/" + name };
+                        if std.fs.is_dir(full) {
+                            let (f2, fl2) = collect(full, child_rel, files, failed, depth + 1);
+                            files = f2;
+                            failed = fl2;} else {
+
+                            files.push(child_rel);
+                        }
+                    },
+                    Err(_) => {
+
+                        // 条目含控制字符等不可作路径(ADR-008 污点面)——按失败计,不中断
+                        eprint("treehash: 条目不可作路径(含控制字符?),跳过并计入失败");
+                        failed += 1;
+                    },
+                }
+                i += 1;
+            }
+        },
+        Err(e) => {
+            eprint("treehash: 无法读取目录 " + rel + ": " + e);
+            failed += 1;
+        },
+    }
+    return (files, failed);
+}
+
+fn usage_out() with io {
+    print("用法: ming tools treehash <目录>");
+    print("目录确定性指纹:递归收集全部文件 → 相对路径排序 → 逐行 \"<相对路径> <字节长度>\\n\"");
+    print("→ TREEHASH = sha256(拼接串)。逐文件行 + 末行 TREEHASH <hex>;空目录 = sha256(\"\")。");
+    print("诚实边界:指纹 = (路径, 字节长度),能发现增/删/改名/截断;同长不同内容的改写不可区分");
+    print("(文件内容在污点契约下不可入 std.crypto 净槽——内容级哈希需语言面出口,已登记候选)。");
+    print("读取失败(含 >8MB 文件)→ 不输出 TREEHASH,exit 1。");
+}
+
+// v0.82 污点迁移先例(ADR-008):argv 元素级污点——逐元素过 std.unstr.sanitize_cli_path
+// (校验不改写:拒控制字符,Ok 原样)取净值作目录路径。
+fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs, crypto {
+    let mut args: Vec[str] = [];
+    for a in raw_args {
+        if a.is_empty() {
+            args.push("");} else {
+            match std.unstr.sanitize_cli_path(a) {
+                Ok(p) => {
+                    args.push(p);
+                },
+                Err(e) => {
+                    eprint("treehash: " + e);
+                    return 1;
+                },
+            }
+        }
+    }
+    if args.len() == 0 {
+        eprint("用法: ming tools treehash <目录>");
+        return 1;
+    }
+    if args[0] == "--help" || args[0] == "-h" {
+        usage_out();
+        return 0;
+    }
+    if args.len() != 1 {
+        eprint("treehash: 只接受一个目录参数(得到 " + str(args.len()) + " 个)");
+        return 1;
+    }
+    let root = args[0];
+    if !std.fs.exists(root) {
+        eprint("treehash: 目录不存在: " + root);
+        return 1;
+    }
+    if !std.fs.is_dir(root) {
+        eprint("treehash: 不是目录: " + root);
+        return 1;
+    }
+    let (f0, f1) = collect(root, "", [], 0, 1);
+    let mut files = f0;
+    let mut failed = f1;
+
+    // 空目录 = 合法(空串哈希);引擎 sort 对空 Vec 会 M4001(元素不支持排序)——空/单元素无需排序
+    if files.len() > 1 {
+        files.sort();
+    }
+    let mut acc = "";
+    for f in files {
+        let full = std.path.join(root, f);
+        match std.fs.read_bytes(full) {
+            Ok(bytes) => {
+                let n = bytes.len();
+                print(f + " " + str(n));
+                acc = acc + f + " " + str(n) + "\n";
+            },
+            Err(e) => {
+                eprint("treehash: 无法读取 " + f + ": " + e);
+                failed += 1;
+            },
+        }
+    }
+    if failed > 0 {
+        eprint("treehash: " + str(failed) + " 项失败,不输出 TREEHASH(部分集合的指纹是谎报)");
+        return 1;
+    }
+    print("TREEHASH " + std.crypto.sha256(acc));
+    return 0;
+}

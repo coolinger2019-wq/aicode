@@ -199,7 +199,7 @@ if (PAR_DRY || PARALLEL) {
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
     ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充;基线 269.4s
-    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116', '117'],
+    ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116', '117', '118'],
   ];
   const parSeen = new Set();
   for (const g of PAR_GROUPS) for (const lb of g) {
@@ -1188,6 +1188,10 @@ secBegin('27');
   check('kit:read 空文件无输出', r.code === 0 && r.stdout === '', JSON.stringify(r.stdout));
   r = kitRun(['read', f('k1.txt'), '3', '2']);
   check('kit:read 区间 start>end', r.code === 1 && r.stderr.includes('start 不能大于 end'), r.stderr.slice(0, 100));
+  r = kitRun(['read', f('k1.txt'), '0', '2']);
+  check('kit:read start<1', r.code === 1 && r.stderr.includes('start 必须从 1 开始'), r.stderr.slice(0, 100));
+  r = kitRun(['read', f('k1.txt'), '2']);
+  check('kit:read 区间须两参数(三参形态曾静默忽略 start)', r.code === 1 && r.stderr.includes('两个参数'), r.stderr.slice(0, 100));
 
   // delete-lines:start<1 / end<start / start>文件行数 拒绝
   r = kitRun(['delete-lines', f('k1.txt'), '0', '2']);
@@ -16525,10 +16529,10 @@ secBegin('78');
       `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
   }
 
-  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(34 文件冒烟;v0.79 工具 12→14)----
+  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(37 文件冒烟;v0.79 工具 12→14;v1.4.2 工具 14→17)----
   {
     // 合法程序各域嵌套深度个位数~低两位,守卫阈值 450/950/1450/2000 远离;改前基线同。
-    // 本条同时锁"examples(20)+ 自举工具(14)= 34 文件"两个面。
+    // 本条同时锁"examples(20)+ 自举工具(17)= 37 文件"两个面(v1.4.2:certverify/treehash/semver)。
     const dirs = ['examples', 'tools'];
     const files = [];
     for (const d of dirs) {
@@ -16541,8 +16545,8 @@ secBegin('78');
       const r = runMing(['check', f]);
       if (r.code !== 0 || crash78({ out: r.stdout + r.stderr })) bad.push(`${path.basename(path.dirname(f))}/${path.basename(f)}(exit=${r.code})`);
     }
-    check('v78.6:合法面不误伤——examples+tools 共 34 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
-      files.length === 34 && bad.length === 0,
+    check('v78.6:合法面不误伤——examples+tools 共 37 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
+      files.length === 37 && bad.length === 0,
       `n=${files.length} bad=${bad.join(',') || '无'}`);
   }
 
@@ -19848,8 +19852,8 @@ secBegin('89');
     const r6 = run89(['run', tool89('mingkit.ming'), '--', 'replace', kf, 'nope', 'X']);
     const ef = path.join(dir89, 'edit89.txt');
     const r7 = run89(['run', tool89('edit.ming'), '--', 'set', ef, '99', 'x']);
-    check('v89.9d:json_query/mingkit/edit 错误文本逐字——键不存在/未找到目标串(0 处)/行号超出范围(嵌参回显)',
-      r5.code === 1 && r5.stderr === 'json_query: 键不存在: nope(路径 nope)\n'
+    check('v89.9d:json_query/mingkit/edit 错误文本逐字——键不存在(含该层实际键提示,v1.4.2 审计)/未找到目标串(0 处)/行号超出范围(嵌参回显)',
+      r5.code === 1 && r5.stderr === 'json_query: 键不存在: nope(路径 nope;该层实际键: name, v, servers)\n'
       && r6.code === 1 && r6.stderr === 'mingkit: 未找到目标串(0 处): nope\n'
       && r7.code === 1 && r7.stderr === 'edit: 行号超出范围(99,实际 3 行)\n',
       `r5=${r5.code}:${JSON.stringify(r5.stderr)} r6=${r6.code}:${JSON.stringify(r6.stderr)} r7=${r7.code}:${JSON.stringify(r7.stderr)}`);
@@ -30663,6 +30667,353 @@ secBegin('117');
     `code=${r117mb1.code}/${r117mb2.code} bytes=${bytesBadA117.length}/${bytesBadB117.length} same=${bytesBadA117.equals(bytesBadB117)} stdoutSame=${r117mb1.stdout === r117bad.stdout} cert=${JSON.stringify(badCert117)}`);
 }
 // ---- §117-END
+
+
+// ===================== §118 自举工具 14→17:certverify/treehash/semver(v1.4.2 合并批统一)=====================
+secBegin('118');
+{
+  // 三个新自举工具(全部 Ming 自写,tools/*.ming;`ming tools` 统一入口派发):
+  //   certverify —— 线性不可满足证书自洽校验器(§10 冻结判据的 Ming 第二实现;MVP = 仅自洽
+  //     模式:Σλc=0 逐变量 + ΣλK<0 + refs 序号/形态 + uses_goal/vacuous 形态 + 无证书原因
+  //     登记集 + 结构文法逐行严格;对照 SMT 重算不做,输出恒标注"仅自洽")。
+  //     正例 = tests/cert_fixtures/ 七语料;负例 = 从 proven.cert/const.cert 机械变异
+  //     (改一行 K / 删一引用 / 未登记原因)——期望失败原因与 examples/consumers/verify_cert.py
+  //     (参考第二实现)逐条同判。
+  //   treehash —— 目录确定性指纹:递归收集 → 相对路径排序 → 逐行 "<相对路径> <字节长度>\n"
+  //     → TREEHASH = sha256(拼接串)。测试侧用 node:crypto 独立重算期望根哈希(路径×statSync
+  //     字节数,Array.sort 默认序 = 引擎比较序)——不信任工具自算。
+  //     **诚实边界(锁定)**:文件内容是污源,std.crypto 消费面是净槽(ADR-007),污标量无
+  //     净化器(ADR-012 §4.6)——每文件级内容 sha256 当前语言面做不了;指纹 = (路径, 字节长度),
+  //     同长不同内容**不可区分**(v118.12 反向锁定该弱承诺,不是漏测)。
+  //   semver —— 比较(-1/0/1)/bump/check;strict 数值段(无前导零/i64 有界/不支持 prerelease);
+  //     bump 段上界守卫具名失败 exit 1(不靠溢出 panic)。
+  // 注册面锁定:TOOL_CMDS 派发 + `tools --list` 帮助文本 + fmt 三工具全绿。
+  const dir118 = path.join(TMP, 'v118');
+  fs.mkdirSync(dir118, { recursive: true });
+  const FIX118 = path.join('tests', 'cert_fixtures');
+  const PFIX118 = path.join('tests', 'proof_fixtures');
+
+  // ---- certverify ----
+  // v118.1 七语料正例:全部 exit 0 + "结论:通过 — 仅自洽,未与脚本对照"
+  const fixtures118 = ['chain', 'const', 'eqsplit', 'loop', 'multifile', 'proven', 'vacuous'];
+  let allPass118 = true, allConcl118 = true;
+  for (const slug of fixtures118) {
+    const r = runMing(['tools', 'certverify', path.join(FIX118, slug + '.cert')]);
+    if (r.code !== 0) allPass118 = false;
+    if (!r.stdout.includes('结论:通过 — 仅自洽,未与脚本对照')) allConcl118 = false;
+  }
+  check('v118.1:certverify 七语料正例——tests/cert_fixtures/*.cert 全部 exit 0 且逐份输出"结论:通过 — 仅自洽,未与脚本对照"(诚实模式标注恒在)',
+    allPass118 && allConcl118,
+    `slugs=${fixtures118.length}`);
+
+  // v118.2 proven.cert 判定行/汇总行锚:low/high 各 2 引用 ΣλK=-1;汇总 义务1·方向2·证书方向2·引用4·恒等式2
+  const r118p = runMing(['tools', 'certverify', path.join(FIX118, 'proven.cert')]);
+  check('v118.2:certverify 判定行锚——proven.cert low/high 均 "OK proven(2 引用,ΣλK=-1)",汇总 "义务 1 · 方向 2 · 证书方向 2 · 具名无证书 0 · 引用 4 · 恒等式 2",边界句固定输出',
+    r118p.code === 0
+    && r118p.stdout.includes('    low: OK proven(2 引用,ΣλK=-1)')
+    && r118p.stdout.includes('    high: OK proven(2 引用,ΣλK=-1)')
+    && r118p.stdout.includes('汇总: 义务 1 · 方向 2 · 证书方向 2 · 具名无证书 0 · 引用 4 · 恒等式 2')
+    && r118p.stdout.includes('不证编码忠实于源码、不证运行时安全(proven 不消除 M4003),不是程序正确性证明'),
+    `code=${r118p.code} out=${JSON.stringify(r118p.stdout.slice(-220))}`);
+
+  // v118.3 负例 1(改一行 K):ref 2 的 K -1 → 0 → ΣλK = 0 → 失败具名(义务|方向 + 原因,与
+  // Python 验证器同判同消息);identity 行不再逐字可信(自洽模式仍抓 K 与 ΣK 的矛盾)。
+  const mutK118 = fs.readFileSync(path.join(ROOT, FIX118, 'proven.cert'), 'utf8')
+    .replace('; ref 2: #3 d0 | norm: {i: 1} <= -1 | λ=1', '; ref 2: #3 d0 | norm: {i: 1} <= 0 | λ=1');
+  if (mutK118 === fs.readFileSync(path.join(ROOT, FIX118, 'proven.cert'), 'utf8')) throw new Error('v118.3 变异未生效(锚文本漂移)');
+  const negK118 = path.join(dir118, 'changeK.cert');
+  fs.writeFileSync(negK118, mutK118);
+  const r118k = runMing(['tools', 'certverify', negK118]);
+  check('v118.3:certverify 负例 1(改一行 K)——exit 1,stderr 具名 "proven.ming|vc:get:1/low: ΣλK = 0 ≥ 0(不构成不可满足证书)"(与 Python verify_cert.py 同判)',
+    r118k.code === 1 && r118k.stderr.includes('proven.ming|vc:get:1/low: ΣλK = 0 ≥ 0(不构成不可满足证书)')
+    && r118k.stdout.includes('结论:失败(1 项)——明细见 stderr'),
+    `code=${r118k.code} err=${JSON.stringify(r118k.stderr.slice(0, 200))}`);
+
+  // v118.4 负例 2(删一引用):ref 1 行删除 → refs 计数 2 ≠ 引用行数 1 → 失败具名(与 Python
+  // 同判;Python 在计数不匹配时跳过序号检查(verify_cert.py:596 continue),仅 Ming 追加发
+  // "引用序号不连续"真阳性(序号连续检查见 verify_cert.py:602)——真阳性超集,不影响判定)。
+  const raw118 = fs.readFileSync(path.join(ROOT, FIX118, 'proven.cert'), 'utf8');
+  const mutRef118 = raw118.replace('; ref 1: #1 d0 | norm: {i: -1} <= 0 | λ=1\n', '');
+  if (mutRef118 === raw118) throw new Error('v118.4 变异未生效(锚文本漂移)');
+  const negRef118 = path.join(dir118, 'delref.cert');
+  fs.writeFileSync(negRef118, mutRef118);
+  const r118d = runMing(['tools', 'certverify', negRef118]);
+  check('v118.4:certverify 负例 2(删一引用)——exit 1,stderr 具名 "refs 计数 2 ≠ 引用行数 1"(与 Python verify_cert.py 同判)',
+    r118d.code === 1 && r118d.stderr.includes('proven.ming|vc:get:1/low: refs 计数 2 ≠ 引用行数 1'),
+    `code=${r118d.code} err=${JSON.stringify(r118d.stderr.slice(0, 220))}`);
+
+  // v118.5 负例 3(未登记的无证书原因):const.cert 的 constFalse 原因改写 → 验证器不替
+  // 生产者发明/容忍新说法 → 具名失败。
+  const rawC118 = fs.readFileSync(path.join(ROOT, FIX118, 'const.cert'), 'utf8');
+  const mutR118 = rawC118.replace('; 无证书:常量矛盾(constFalse;LHS 为空的单条矛盾断言,v1 不渲染该形态)', '; 无证书:原因不明(新说法)');
+  if (mutR118 === rawC118) throw new Error('v118.5 变异未生效(锚文本漂移)');
+  const negR118 = path.join(dir118, 'badreason.cert');
+  fs.writeFileSync(negR118, mutR118);
+  const r118r = runMing(['tools', 'certverify', negR118]);
+  check('v118.5:certverify 负例 3(未登记无证书原因)——exit 1,stderr 具名 "未登记的无证书原因:原因不明(新说法)"',
+    r118r.code === 1 && r118r.stderr.includes('未登记的无证书原因:原因不明(新说法)'),
+    `code=${r118r.code} err=${JSON.stringify(r118r.stderr.slice(0, 200))}`);
+
+  // v118.6 用法/IO 错误:无参 exit 1(stderr 用法);--help exit 0(stdout 用法);证书不存在 exit 1 具名。
+  const r118n = runMing(['tools', 'certverify']);
+  const r118h = runMing(['tools', 'certverify', '--', '--help']); // --help 是 CLI 层旗标,工具自有旗标经 -- 透传(xnopen 先例)
+  const r118m = runMing(['tools', 'certverify', path.join(dir118, 'no_such.cert')]);
+  check('v118.6:certverify 用法/IO——无参 exit 1 stderr 用法;--help exit 0 stdout 用法;缺文件 exit 1 stderr 具名',
+    r118n.code === 1 && r118n.stderr.includes('用法: ming tools certverify <证书文件>')
+    && r118h.code === 0 && r118h.stdout.includes('用法: ming tools certverify <证书文件>')
+    && r118m.code === 1 && r118m.stderr.includes('无法读取证书'),
+    `n=${r118n.code} h=${r118h.code} m=${r118m.code} merr=${JSON.stringify(r118m.stderr.slice(0, 120))}`);
+
+  // v118.7 双引擎逐字:run --tree 与 tools 派发(VM)stdout+stderr 相同(loop.cert)。
+  const r118t = runMing(['run', '--tree', 'tools/certverify.ming', '--', path.join(FIX118, 'loop.cert')]);
+  const r118v = runMing(['tools', 'certverify', path.join(FIX118, 'loop.cert')]);
+  check('v118.7:certverify 双引擎逐字——run --tree 与 ming tools 派发 stdout/stderr/退出码全等(loop.cert)',
+    r118t.code === r118v.code && r118t.stdout === r118v.stdout && r118t.stderr === r118v.stderr,
+    `t=${r118t.code} v=${r118v.code} same=${r118t.stdout === r118v.stdout}`);
+
+  // ---- treehash ----
+  // v118.8 tests/proof_fixtures:9 文件行 + 末行 TREEHASH;期望根哈希由测试独立重算
+  // (排序 × statSync 字节数 × sha256 拼接串)——不信任工具自算。
+  const pfiles118 = fs.readdirSync(path.join(ROOT, PFIX118)).filter((f) => !f.startsWith('.')).sort();
+  let expectRoot118 = createHash('sha256');
+  let expectList118 = '';
+  for (const f of pfiles118) {
+    const sz = fs.statSync(path.join(ROOT, PFIX118, f)).size;
+    expectList118 += f + ' ' + sz + '\n';
+    expectRoot118.update(f + ' ' + sz + '\n', 'utf8');
+  }
+  const r118th = runMing(['tools', 'treehash', PFIX118]);
+  check('v118.8:treehash tests/proof_fixtures——exit 0,9 文件行逐行 "<相对路径> <字节长度>",末行 TREEHASH == 测试独立重算(排序×statSync×sha256)',
+    r118th.code === 0 && pfiles118.length === 9
+    && r118th.stdout.split('\n').slice(0, 9).every((ln, idx) => ln === pfiles118[idx] + ' ' + fs.statSync(path.join(ROOT, PFIX118, pfiles118[idx])).size)
+    && r118th.stdout.trimEnd().endsWith('TREEHASH ' + expectRoot118.digest('hex')),
+    `code=${r118th.code} n=${pfiles118.length} tail=${JSON.stringify(r118th.stdout.split('\n').slice(-3))}`);
+
+  // v118.9 确定性:同输入两次完全逐字(含 tools AOT 缓存命中路径)。
+  const r118a1 = runMing(['tools', 'treehash', PFIX118]);
+  const r118a2 = runMing(['tools', 'treehash', PFIX118]);
+  check('v118.9:treehash 确定性——同输入两次 stdout/stderr/退出码逐字相同(第二次经 AOT 缓存命中路径)',
+    r118a1.code === r118a2.code && r118a1.stdout === r118a2.stdout && r118a1.stderr === r118a2.stderr,
+    `same=${r118a1.stdout === r118a2.stdout}`);
+
+  // v118.10 双引擎逐字:run --tree 与 tools 派发全等。
+  const r118tt = runMing(['run', '--tree', 'tools/treehash.ming', '--', PFIX118]);
+  check('v118.10:treehash 双引擎逐字——run --tree 与 ming tools 派发 stdout/stderr/退出码全等',
+    r118tt.code === r118a1.code && r118tt.stdout === r118a1.stdout && r118tt.stderr === r118a1.stderr,
+    `t=${r118tt.code} same=${r118tt.stdout === r118a1.stdout}`);
+
+  // v118.11 空目录/内容敏感/诚实边界:空目录 = sha256("") 逐字;追加内容 → 根哈希变化;
+  // **同长改写 → 根哈希不变**(指纹 = (路径,字节长度) 的弱承诺,如实锁定,不是漏测)。
+  const ed118 = path.join(dir118, 'empty');
+  const nd118 = path.join(dir118, 'nested');
+  fs.mkdirSync(ed118, { recursive: true });
+  fs.mkdirSync(path.join(nd118, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(nd118, 'a.txt'), 'hello');
+  fs.writeFileSync(path.join(nd118, 'sub', 'b.txt'), 'world!!');
+  const r118e = runMing(['tools', 'treehash', ed118]);
+  const r118n1 = runMing(['tools', 'treehash', nd118]);
+  const rootA118 = r118n1.stdout.split('\n').filter((l) => l.startsWith('TREEHASH'))[0];
+  fs.writeFileSync(path.join(nd118, 'sub', 'b.txt'), 'world!!?!longer');
+  const r118n2 = runMing(['tools', 'treehash', nd118]);
+  const rootB118 = r118n2.stdout.split('\n').filter((l) => l.startsWith('TREEHASH'))[0];
+  fs.writeFileSync(path.join(nd118, 'sub', 'b.txt'), 'world??');
+  const r118n3 = runMing(['tools', 'treehash', nd118]);
+  const rootC118 = r118n3.stdout.split('\n').filter((l) => l.startsWith('TREEHASH'))[0];
+  check('v118.11:treehash 空目录 = sha256("");内容追加(变长)→ 根哈希变化;同长改写 → 根哈希不变(诚实边界锁定)',
+    r118e.code === 0 && r118e.stdout === 'TREEHASH e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n'
+    && rootA118 !== rootB118 && rootA118 === rootC118,
+    `empty=${JSON.stringify(r118e.stdout)} A!=B=${rootA118 !== rootB118} A===C=${rootA118 === rootC118}`);
+
+  // v118.12 错误纪律:目录不存在 exit 1 具名;文件非目录 exit 1 具名;--help exit 0;无参 exit 1。
+  const r118x1 = runMing(['tools', 'treehash', path.join(dir118, 'no_such_dir')]);
+  const r118x2 = runMing(['tools', 'treehash', 'README.md']);
+  const r118x3 = runMing(['tools', 'treehash', '--', '--help']); // 同上:-- 透传
+  const r118x4 = runMing(['tools', 'treehash']);
+  check('v118.12:treehash 错误纪律——目录不存在/文件非目录 exit 1 stderr 具名;--help exit 0;无参 exit 1',
+    r118x1.code === 1 && r118x1.stderr.includes('目录不存在')
+    && r118x2.code === 1 && r118x2.stderr.includes('不是目录')
+    && r118x3.code === 0 && r118x3.stdout.includes('用法: ming tools treehash <目录>')
+    && r118x4.code === 1,
+    `x1=${r118x1.code} x2=${r118x2.code} x3=${r118x3.code} x4=${r118x4.code}`);
+
+  // ---- semver ----
+  // v118.13 比较矩阵:major→minor→patch 逐段;多位数段按数值(1.10.0 > 1.9.0)。
+  const cmp118 = [['1.4.1', '1.4.2', '-1'], ['1.4.2', '1.4.1', '1'], ['1.4.1', '1.4.1', '0'],
+    ['1.10.0', '1.9.0', '1'], ['0.0.1', '0.1.0', '-1'], ['2.0.0', '1.999.999', '1'],
+    ['0.0.0', '0.0.0', '0'], ['9223372036854775807.0.0', '1.0.0', '1']];
+  let cmpOk118 = true, cmpDetail118 = '';
+  for (const [a, b, want] of cmp118) {
+    const r = runMing(['tools', 'semver', a, b]);
+    if (r.code !== 0 || r.stdout.trim() !== want) { cmpOk118 = false; cmpDetail118 += ` ${a}~${b}=>${r.stdout.trim()}(${r.code})`; }
+  }
+  check('v118.13:semver 比较矩阵 8 组——major→minor→patch 逐段数值,输出恰为 -1/0/1(i64 上界段可比较)',
+    cmpOk118, cmpDetail118);
+
+  // v118.14 非法输入:段数错/非数字/前导零/超 i64 → exit 1 stderr 具名。
+  const bads118 = ['1.4', '1.4.1.1', 'a.b.c', '1.4.x', '01.4.1', '1..1', '9223372036854775808.0.0', '1.4.1-rc.1'];
+  let badOk118 = true, badDetail118 = '';
+  for (const v of bads118) {
+    const r = runMing(['tools', 'semver', 'check', v]);
+    if (r.code !== 1 || r.stderr === '') { badOk118 = false; badDetail118 += ` ${v}=>${r.code}`; }
+  }
+  check('v118.14:semver 非法输入 8 形态——段数/非数字/前导零/超 i64/prerelease 一律 exit 1 + stderr 具名(不支持 prerelease 如实登记)',
+    badOk118, badDetail118);
+
+  // v118.15 bump:patch/minor/major 三段位 + 零段进位 + 段上界守卫(patch 可进位,major 上界具名失败 exit 1)。
+  const r118b1 = runMing(['tools', 'semver', 'bump', '1.4.1', 'patch']);
+  const r118b2 = runMing(['tools', 'semver', 'bump', '1.4.1', 'minor']);
+  const r118b3 = runMing(['tools', 'semver', 'bump', '1.4.1', 'major']);
+  const r118b4 = runMing(['tools', 'semver', 'bump', '0.0.0', 'patch']);
+  const r118b5 = runMing(['tools', 'semver', 'bump', '9223372036854775807.0.0', 'patch']);
+  const r118b6 = runMing(['tools', 'semver', 'bump', '9223372036854775807.0.0', 'major']);
+  const r118b7 = runMing(['tools', 'semver', 'bump', '1.4.1', 'mega']);
+  check('v118.15:semver bump——1.4.1 patch/minor/major → 1.4.2/1.5.0/2.0.0;0.0.0→0.0.1;上界段 patch 正常、major 具名失败 exit 1(不靠溢出 panic);段名错误 exit 1',
+    r118b1.code === 0 && r118b1.stdout.trim() === '1.4.2'
+    && r118b2.code === 0 && r118b2.stdout.trim() === '1.5.0'
+    && r118b3.code === 0 && r118b3.stdout.trim() === '2.0.0'
+    && r118b4.code === 0 && r118b4.stdout.trim() === '0.0.1'
+    && r118b5.code === 0 && r118b5.stdout.trim() === '9223372036854775807.0.1'
+    && r118b6.code === 1 && r118b6.stderr.includes('bump 溢出')
+    && r118b7.code === 1 && r118b7.stderr.includes('major|minor|patch'),
+    `b1=${r118b1.stdout.trim()} b6=${r118b6.code}/${JSON.stringify(r118b6.stderr.slice(0, 120))} b7=${r118b7.code}`);
+
+  // v118.16 check/用法:合法 exit 0 stdout "OK <v>";无参 exit 1;双引擎逐字(tree vs tools)。
+  const r118c1 = runMing(['tools', 'semver', 'check', '1.4.1']);
+  const r118c2 = runMing(['tools', 'semver']);
+  const r118c3 = runMing(['run', '--tree', 'tools/semver.ming', '--', '1.10.0', '1.9.0']);
+  const r118c4 = runMing(['tools', 'semver', '1.10.0', '1.9.0']);
+  check('v118.16:semver check/用法/双引擎——check 1.4.1 exit 0 "OK 1.4.1";无参 exit 1;run --tree 与 tools 派发 stdout 逐字相同',
+    r118c1.code === 0 && r118c1.stdout.trim() === 'OK 1.4.1'
+    && r118c2.code === 1 && r118c2.stderr.includes('用法')
+    && r118c3.code === 0 && r118c3.stdout === r118c4.stdout && r118c3.stderr === r118c4.stderr,
+    `c1=${r118c1.code} c2=${r118c2.code} dualSame=${r118c3.stdout === r118c4.stdout}`);
+
+  // ---- 注册面 ----
+  // v118.17 `ming tools --list` 帮助文本含三工具行;TOOL_CMDS 派发与 run 直连逐字等价。
+  const r118l = runMing(['tools', '--list']);
+  const r118disp = runMing(['tools', 'certverify', path.join(FIX118, 'proven.cert')]);
+  const r118direct = runMing(['run', 'tools/certverify.ming', '--', path.join(FIX118, 'proven.cert')]);
+  check('v118.17:注册面——tools --list 含 certverify/treehash/semver 三行;TOOL_CMDS 派发与 run 直连 stdout/stderr/退出码逐字等价',
+    r118l.code === 0 && r118l.stdout.includes('certverify <证书>') && r118l.stdout.includes('treehash <目录>') && r118l.stdout.includes('semver <A> <B>')
+    && r118disp.code === r118direct.code && r118disp.stdout === r118direct.stdout && r118disp.stderr === r118direct.stderr,
+    `list=${r118l.code} disp=${r118disp.code} same=${r118disp.stdout === r118direct.stdout}`);
+
+  // v118.18 fmt 三工具全绿(工具纪律:全部 ming fmt --check 规范)。
+  const fmt118 = ['certverify', 'treehash', 'semver'].map((t) =>
+    runMing(['fmt', 'tools/' + t + '.ming', '--check']));
+  check('v118.18:fmt --check tools/certverify.ming + treehash.ming + semver.ming 全绿(已是规范格式)',
+    fmt118.every((r) => r.code === 0),
+    `codes=${fmt118.map((r) => r.code).join(',')}`);
+
+  // ---- 审查修复批(v1.4.2 工具批独立审查 REQUEST_CHANGES 收口;F1/F2/F3 = certverify,
+  // F4 = semver,F5 = batch_rename;wc/treehash 为纯头注修正不设测)----
+  // v118.19 F1(MAJOR-1):义务节外的游离 dir 节 = 结构错误,两份参考实现同判
+  // (verify_cert.py "第 N 行 dir 不在任何义务节内" / cert_check.mjs 同文)——修复前该
+  // 形态被当作合法计入统计并整体放行 exit 0。语料 = proven.cert 文件节头与义务节头
+  // 之间插入一个完全自洽的伪方向节(2 条引用,Σλc=0、ΣλK=-6、identity 行自洽)。
+  const rawP118 = fs.readFileSync(path.join(ROOT, FIX118, 'proven.cert'), 'utf8');
+  const strayBlock118 = '; dir: low\n; verdict: proven\n; uses_goal: true\n; vacuous: false\n; refs: 2\n'
+    + '; ref 1: #1 d0 | norm: {i: 1} <= -2 | λ=1\n; ref 2: #2 d0 | norm: {i: -1} <= -4 | λ=1\n'
+    + '; identity: Σc = 0(逐变量恒等) | ΣK = -6 (< 0)\n';
+  const mutStray118 = rawP118.replace('; ===== 文件:proven.ming =====\n', '; ===== 文件:proven.ming =====\n' + strayBlock118);
+  if (mutStray118 === rawP118) throw new Error('v118.19 变异未生效(锚文本漂移)');
+  const negStray118 = path.join(dir118, 'straydir.cert');
+  fs.writeFileSync(negStray118, mutStray118);
+  const r118s1 = runMing(['tools', 'certverify', negStray118]);
+  const r118s2 = runMing(['run', '--tree', 'tools/certverify.ming', '--', negStray118]);
+  check('v118.19:F1 游离 dir 节(义务节外自洽伪方向节)——exit 1,stderr 具名"不在任何义务节内",stdout 无"结论:通过";双引擎逐字',
+    r118s1.code === 1 && r118s2.code === 1
+    && r118s1.stderr.includes('不在任何义务节内')
+    && !r118s1.stdout.includes('结论:通过')
+    && r118s1.stdout === r118s2.stdout && r118s1.stderr === r118s2.stderr,
+    `v=${r118s1.code} t=${r118s2.code} err=${JSON.stringify(r118s1.stderr.slice(0, 160))}`);
+
+  // v118.20 F2(MINOR-3):对抗性大数——λ=i64 上界此前在 Σλc/ΣλK 乘加点触发 M4002
+  // panic(exit 101);修复 = 解析期具名上界 2^31(|v| ≤ 2147483648),超界 exit 1 具名
+  // 拒绝(上界是 Ming 实现的如实登记差异:参考实现用大数/浮点)。
+  const mutLam118 = rawP118.replace('; ref 1: #1 d0 | norm: {i: -1} <= 0 | λ=1', '; ref 1: #1 d0 | norm: {i: -1} <= 0 | λ=9223372036854775807');
+  if (mutLam118 === rawP118) throw new Error('v118.20 变异未生效(锚文本漂移)');
+  const negLam118 = path.join(dir118, 'biglam.cert');
+  fs.writeFileSync(negLam118, mutLam118);
+  const r118L1 = runMing(['tools', 'certverify', negLam118]);
+  const r118L2 = runMing(['run', '--tree', 'tools/certverify.ming', '--', negLam118]);
+  check('v118.20:F2 λ=i64 上界语料——exit 1(非 panic/非 M4002),stderr 具名"λ 超界"含上界 2147483648;双引擎逐字',
+    r118L1.code === 1 && r118L2.code === 1
+    && r118L1.stderr.includes('λ 超界') && r118L1.stderr.includes('2147483648')
+    && !r118L1.stderr.includes('M4002')
+    && r118L1.stdout === r118L2.stdout && r118L1.stderr === r118L2.stderr,
+    `v=${r118L1.code} t=${r118L2.code} err=${JSON.stringify(r118L1.stderr.slice(0, 160))}`);
+
+  // v118.21 F2 配套(累加余量守卫):λ/K/系数都在界内(恰 2^31)时,两引用同变量累加
+  // 仍可越过 i64——can_add 先核后加,超余量具名拒绝;合法证书数值远小于该界,行为不变。
+  const accLow118 = '; dir: low\n; verdict: proven\n; uses_goal: true\n; vacuous: false\n; refs: 3\n'
+    + '; ref 1: #1 d0 | norm: {i: 2147483648} <= -1 | λ=2147483648\n'
+    + '; ref 2: #2 d0 | norm: {i: 2147483648} <= -1 | λ=2147483648\n'
+    + '; ref 3: #4 d0 | norm: {i: -2} <= 0 | λ=1\n'
+    + '; identity: Σc = 0(逐变量恒等) | ΣK = -2 (< 0)\n';
+  const mutAcc118 = rawP118.replace(/; dir: low[\s\S]*?; identity[^\n]*\n/, accLow118);
+  if (mutAcc118 === rawP118) throw new Error('v118.21 变异未生效(锚文本漂移)');
+  const negAcc118 = path.join(dir118, 'accovf.cert');
+  fs.writeFileSync(negAcc118, mutAcc118);
+  const r118A1 = runMing(['tools', 'certverify', negAcc118]);
+  const r118A2 = runMing(['run', '--tree', 'tools/certverify.ming', '--', negAcc118]);
+  check('v118.21:F2 累加余量守卫——同变量两引用各 2^31×2^31 → "Σλc 累加超出 i64 余量"具名 exit 1(不 M4002/不 exit 101);双引擎逐字',
+    r118A1.code === 1 && r118A2.code === 1
+    && r118A1.stderr.includes('Σλc 累加超出 i64 余量')
+    && !r118A1.stderr.includes('M4002')
+    && r118A1.stdout === r118A2.stdout && r118A1.stderr === r118A2.stderr,
+    `v=${r118A1.code} t=${r118A2.code} err=${JSON.stringify(r118A1.stderr.slice(0, 160))}`);
+
+  // v118.22 F3(NOTE-4):证书文法比参考宽的两处低成本收紧——(a) 义务头必须带"索引 "
+  // 字面前缀(Python RE_OBLIGATION/JS 正则均要求,此前缺失时整段当索引文本放行);
+  // (b) "文件: =====" 空文件名拒绝(Python/JS `(.+)` 非空)。消息沿用本工具既有
+  // "形状不符"具名家族(参考实现对这两形态是落空后的泛化报错,不具名)。
+  const mutIdx118 = rawP118.replace('; ---- vc:get:1 — 索引 i(scope: body)----', '; ---- vc:get:1 — i(scope: body)----');
+  const mutName118 = rawP118.replace('; ===== 文件:proven.ming =====', '; ===== 文件: =====');
+  if (mutIdx118 === rawP118 || mutName118 === rawP118) throw new Error('v118.22 变异未生效(锚文本漂移)');
+  const negIdx118 = path.join(dir118, 'noidx.cert');
+  const negName118 = path.join(dir118, 'emptyname.cert');
+  fs.writeFileSync(negIdx118, mutIdx118);
+  fs.writeFileSync(negName118, mutName118);
+  const r118I1 = runMing(['tools', 'certverify', negIdx118]);
+  const r118I2 = runMing(['run', '--tree', 'tools/certverify.ming', '--', negIdx118]);
+  const r118N1 = runMing(['tools', 'certverify', negName118]);
+  const r118N2 = runMing(['run', '--tree', 'tools/certverify.ming', '--', negName118]);
+  check('v118.22:F3 文法收紧——义务头缺"索引 "前缀具名 / 空文件名具名,均 exit 1;双引擎逐字',
+    r118I1.code === 1 && r118I2.code === 1 && r118I1.stderr.includes('缺 "索引 "')
+    && r118I1.stdout === r118I2.stdout && r118I1.stderr === r118I2.stderr
+    && r118N1.code === 1 && r118N2.code === 1 && r118N1.stderr.includes('文件名为空')
+    && r118N1.stdout === r118N2.stdout && r118N1.stderr === r118N2.stderr,
+    `i=${r118I1.code}/${r118I2.code} n=${r118N1.code}/${r118N2.code} err=${JSON.stringify(r118I1.stderr.slice(0, 120))}`);
+
+  // v118.23 F4(MINOR-4):std is_digit 认 Unicode \p{Nd} 而 parse_i64 只认 ASCII——
+  // ١٢.0.0 此前落入失真的"超出 i64 范围";修复 = is_digit 后补 ASCII 白名单(仅 0-9
+  // 进数值段,与 Python 独立验证器 ^[0-9]+$ 口径一致),非 ASCII 数字具名拒绝。
+  const r118U1 = runMing(['tools', 'semver', 'check', '١٢.0.0']);
+  const r118U2 = runMing(['run', '--tree', 'tools/semver.ming', '--', 'check', '١٢.0.0']);
+  check('v118.23:F4 非 ASCII 数字段——semver check ١٢.0.0 → exit 1 stderr 具名"版本段不是有效整数"(不再误报超界);双引擎逐字',
+    r118U1.code === 1 && r118U2.code === 1
+    && r118U1.stderr.includes('不是有效整数')
+    && r118U1.stdout === r118U2.stdout && r118U1.stderr === r118U2.stderr,
+    `v=${r118U1.code} t=${r118U2.code} err=${JSON.stringify(r118U1.stderr.slice(0, 140))}`);
+
+  // v118.24 F5(NOTE-3):batch_rename ext "." 归一化为空串 → 扩展名过滤整体失效
+  // (改名全部文件,数据面破坏);修复 = 归一化后为空且输入非空 → 具名拒绝 exit 1,
+  // 目录零改动。
+  const brDir118 = path.join(dir118, 'brdot');
+  fs.mkdirSync(brDir118, { recursive: true });
+  fs.writeFileSync(path.join(brDir118, 'a.txt'), 'x');
+  fs.writeFileSync(path.join(brDir118, 'b.log'), 'y');
+  const r118B1 = runMing(['tools', 'batch_rename', brDir118, 'p_', '.']);
+  const r118B2 = runMing(['run', '--tree', 'tools/batch_rename.ming', '--', brDir118, 'p_', '.']);
+  check('v118.24:F5 ext "."——exit 1 stderr 具名"归一化后为空",目录零改动(修复前会改名全部文件);双引擎逐字',
+    r118B1.code === 1 && r118B2.code === 1
+    && r118B1.stderr.includes('归一化后为空')
+    && fs.readdirSync(brDir118).sort().join(',') === 'a.txt,b.log'
+    && r118B1.stdout === r118B2.stdout && r118B1.stderr === r118B2.stderr,
+    `v=${r118B1.code} t=${r118B2.code} files=${JSON.stringify(fs.readdirSync(brDir118))} err=${JSON.stringify(r118B1.stderr.slice(0, 140))}`);
+}
+// ---- §118-END
 
 
 secEndAll();

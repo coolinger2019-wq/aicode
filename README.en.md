@@ -77,11 +77,11 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.4.1** (2026-11-27) |
-| Regression suite | **1837 checks, all green** (§1–§117; full run every time) |
+| Current version | **v1.4.2** (2026-11-27) |
+| Regression suite | **1863 checks, all green** (§1–§118; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
-| Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
+| Self-hosted tools | **17** (written in Ming; unified `ming tools` entry) |
 | Capability matrix | 55 rows ≈85% ([docs/capabilities.md](docs/capabilities.md)) |
 | Requirements | Node.js ≥ 18, zero third-party deps; C backend needs gcc/clang |
 | Artifacts | `ming build` AOT bytecode (content-addressed cache); `ming cc` native C |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.4.2 | 2026-11-27 | Self-hosted tools 14→17 (certverify certificate self-consistency checker / treehash directory fingerprint / semver semantic versioning) + five audit fixes in existing tools (batch_rename/file_organizer refuse overwriting an existing target, wc counts empty files as 0, mingkit read start<1 and three-arg interval named rejections, json_query errors append actual keys/length) + merge review (REQUEST_CHANGES) and independent re-review all closed | 1863 |
 | v1.4.1 | 2026-11-27 | CI platform fix: v114.47 corpus made platform-deterministic (pure long chain triggers depthBailed defense; macOS parser-stack platform variance — AGENTS §9 caveat confirmed) + v114.48 platform-tolerant variant | 1837 |
 | v1.4.0 | 2026-11-27 | Contract satisfaction check (S-5/ADR-015): `check --stub` call-site requires satisfaction (b-lite: literal arguments mechanically evaluated, violation emits M3053[bridge-contract-violated]; undecidable counted in `stub_contract.contracts`; no assumption injection) + consumer kit (`examples/consumers/verify_cert.py` independent Python implementation of the certificate criterion + consumption guide) | 1836 |
 | v1.3.2 | 2026-11-27 | R-19 coverage extension: nine SMT fixtures (reserved-word rewrite / non-linearizable / multi-file sections — section order now has a discriminating guard for command-line order) + zero-command allowlist + strengthened matrix assertions | 1818 |

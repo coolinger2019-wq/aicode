@@ -7,6 +7,10 @@
 //   (也可用环境变量 ORGANIZE_ROOT)
 // 目录必须显式给出,不再默认 "."。
 //
+// 工具审计优化(2026-11-27):同名冲突守卫——fs.rename 落到已存在目标会静默覆盖
+// (实测 x.txt 移入 txt/ 时静默顶掉已有 txt/x.txt、exit 0),移动前查目标存在即
+// 拒绝并计入失败,原文件保留(目标位置被目录占用的既有失败口径不变,仍退出 1)。
+//
 // v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]]——每个条目先过
 // std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)再作路径/比较串;
 // 含控制字符等不可作路径的条目计入失败(错误走 stderr 纪律)。良性路径行为与
@@ -43,15 +47,23 @@ fn organize(dir: str, mut moved: i64, mut failed: i64) -> (i64, i64) with io, fs
                                 },
                             }
                             let target = std.path.join(target_dir, clean);
-                            match std.fs.rename(full, target) {
-                                Ok(_) => {
-                                    print("移动: \{full} -> \{target}");
-                                    moved += 1;
-                                },
-                                Err(e) => {
-                                    eprint("file_organizer: 失败: \{full}: \{e}");
-                                    failed += 1;
-                                },
+
+                            // 同名冲突守卫(审计修复):rename 落到已存在目标会静默覆盖
+                            // (实测数据丢失)——目标存在即拒绝,计入失败,原文件保留
+                            if std.fs.exists(target) {
+                                eprint("file_organizer: 失败: \{full}: 目标已存在,拒绝覆盖: \{target}");
+                                failed += 1;} else {
+
+                                match std.fs.rename(full, target) {
+                                    Ok(_) => {
+                                        print("移动: \{full} -> \{target}");
+                                        moved += 1;
+                                    },
+                                    Err(e) => {
+                                        eprint("file_organizer: 失败: \{full}: \{e}");
+                                        failed += 1;
+                                    },
+                                }
                             }
                         }
                     },

@@ -1,8 +1,12 @@
-// tools/wc.ming — 行/词/字节统计(用 Ming 自写;Unix wc 口径)
+// tools/wc.ming — 行/词/字节统计(用 Ming 自写;行数口径见下,不冒充 Unix wc 全口径)
 //
 // v0.51.6 优化:多文件支持(多文件时末尾附 total 行,与 Unix 一致;
 // 单文件保持旧行数不附加)+ 错误纪律(读不了的文件走 stderr 并计入失败,
 // 退出码 1,不中断其余文件)。单文件输出格式与 v0.45.1 完全一致。
+//
+// 口径如实(不再标"Unix wc 口径"):行数在**空文件**与**有尾换行**两形态与 wc 一致
+// (历史修复只收口了空文件面);**无尾换行文件计 1 行**(wc 按 POSIX 口径计 0)——
+// 该差异保留并在此登记,不谎称与 wc 全口径一致。
 //
 // v0.77 污点迁移(ADR-007):read_file → Untrusted[str];行/字节计数走污值代数
 // clean 面(split/ends_with/byte_len,输出计数净值);词计数由 re.split("\\s+")
@@ -41,6 +45,12 @@ fn count_file(path: str) -> Result[(i64, i64, i64), str] with fs {
                 line_count -= 1;
             }
             if line_count < 0 {
+                line_count = 0;
+            }
+
+            // 空文件 = 0 行(split 产生的单空元素不是行;与 mingkit count/edit count/
+            // Unix wc 口径一致,此前实测报告 "1 0 0")
+            if content.is_empty() {
                 line_count = 0;
             }
             let trimmed = content.trim();

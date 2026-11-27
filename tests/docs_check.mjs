@@ -116,7 +116,7 @@ function checkToolCount() {
   const toolsDir = path.join(ROOT, 'tools');
   const count = fs.readdirSync(toolsDir).filter((f) => f.endsWith('.ming')).length;
   pass(`tools/*.ming 实际 ${count} 个`);
-  // README.md 状态表:| 自举工具 | **14 个**(Ming 自写;…) |
+  // README.md 状态表:| 自举工具 | **17 个**(Ming 自写;…) |
   const readme = read('README.md');
   const rm = firstMatch(readme, /^\|\s*自举工具\s*\|\s*\*\*(\d+)\s*个\*\*/);
   if (!rm) {
@@ -126,7 +126,7 @@ function checkToolCount() {
   } else {
     pass(`README.md:${rm.line} 断言 = ${rm.match[1]} 个`);
   }
-  // README.plain.md:| 自举工具 | 14 个工具是用 Ming 自己写的… |
+  // README.plain.md:| 自举工具 | 17 个工具是用 Ming 自己写的… |
   const plain = read('README.plain.md');
   const pm = firstMatch(plain, /^\|\s*自举工具\s*\|\s*(\d+)\s*个工具/);
   if (!pm) {

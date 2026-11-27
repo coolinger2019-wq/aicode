@@ -2114,6 +2114,14 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 
 维护者修订 roadmap.md、或外部消费者首次出现（§4.21.6 口径）——任一发生则启动下一轮评估；否则本表为终态权威。
 
+## 4.24 工具批执行与合并审查登记（2026-11-27，自举工具 14→17：certverify/treehash/semver）
+
+> 两 agent 并发：五项行为修复审计（batch_rename/file_organizer/wc/mingkit/json_query）+ 三新工具（certverify/treehash/semver）；文档侧同步与本登记归文档 agent（GUIDE §19 工具表/§24 修订记录 + 本节 + §5.1 NOTE-4/5/6）。
+
+- **执行**：三新工具实现 + 注册面（`bin/ming.js` TOOL_CMDS/`tools --list`、GUIDE §19/§24、README 三语、AGENTS §3、tests/docs_check、tests/run.mjs §118 + PAR_GROUPS 组 3）由工具批 agent 落地（详记 GUIDE §24 v1.4.2 条目，此处不重复）；五项行为修复：batch_rename 同名目标拒绝覆盖（具名 exit 1）+ 扩展名 `txt`/`.txt` 同义、file_organizer 同名目标覆盖守卫、wc 空文件计 0 行（`0 0 0`）、mingkit read start<1 具名拒绝（与 delete-lines 同口径）、json_query 键不存在/下标越界提示附该层实际键/实际长度 N。
+- **合并审查**：REQUEST_CHANGES——1 MAJOR（certverify 游离 dir 放行）+ 4 MINOR + 6 NOTE（其中 NOTE-4/5/6 登记 §5.1，余者归代码/文档侧处置）；修复已落地并通过独立复核（APPROVE-with-minor）：MAJOR 具名拒绝（v118.19 锁定）、大数解析期上界 2^31 + can_add 余量守卫（溢出面闭合，v118.20/21）、文法收紧两处（v118.22）、semver ASCII 段（v118.23）、batch_rename ext `.` 拒绝（v118.24）、wc/treehash 头注如实化；复核残留四项均已收口——v118.4 注释纠错（Python 在计数不匹配时跳过序号检查，仅 Ming 发"引用序号不连续"）、GUIDE §24 两处重复行删除、mingkit read 三参形态具名拒绝 + §27 补 2 测试锚（start<1/区间须两参数）、集成措辞随提交收口。
+- **版本定稿**：v1.4.2 由架构师合并批统一执行（package.json/bin VERSION/GUIDE 头部三处同步 + README 路线图 + 本节收尾）。
+- **门槛**：全量基线 1855 项/0 失败（1837 基线 + §118 的 18）；fuzz seed 44044×25 0 分歧。
 
 
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
@@ -2339,6 +2347,16 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 | 92 | **二元操作数 `wa() / wb()` 守卫先求值右操作数(四引擎 gap,pre-existing)**:`/`、`%`、`<<`、`>>` 不走 `__builtin_*_overflow` 实参位而是先发守卫(守卫语句只引用 RHS 且先于任何 LHS 引用——语句序确定地先求值 RHS;成功路径还多次重求值)→ 双 panic 时 cc 首行 = wb、tree/VM = wa(违反 panic 逐字对齐);`+ - *`/比较/`& \| ^` 不受影响 | P3 | **已修(v1.2.4,2026-11-27)**:emitBin checked 算术按源码序物化左右操作数(emitArgTmp;#90 同哲学),守卫/消息/正式运算只引用临时——每侧恰一次、跨编译器顺序稳定;消息经 fprintf 值实参零漂移;extern/ffi 操作数副作用按源码序单次(行为变化属修复面,如 `putchar(65)/putchar(66)` 输出 `BBAB0`→`AB0`);§115 v115.23–33(11 check,审查 MINOR 全修);1755→1767 项全绿(含 §116 本地 fixture 门槛);v58.11 指纹理由化重校准;独立审查 APPROVE-with-minor(MINOR-1 根因表述/用户可见面限定、MINOR-2 七算子+最强形态用例均落实) |
 | 93 | **比较/f64/位运算二元操作数求值序未规定(残余登记)**:`src/cbackend.js` 数值比较、f64 `+ - * /`、`& \| ^` 仍是单表达式(C 未规定操作数求值序);本机 gcc 16.2 实测左先(与 JS 一致,无观测分歧)——跨编译器确定性未闭合;与 #92 修复同族但不在 checked 算术面 | P3 | **登记未修**(v1.2.4 审查 NOTE-3;若物化,同 emitArgTmp 定式 + 消息零漂移 + BASE_C_SHA 重校准) |
 | 94 | **`<<=`/`>>=` 死分支(语法不支持但实现有分支)**:`src/parser.js` ASSIGN_OPS 无移位复合(实测 M2001);`src/cbackend.js` 白名单含 `<<=`/`>>=`(若可达 `op=s.op[0]='<'` → 误导性错误);`src/compiler.js` 通用路径 `BIN['<']=13`/`BIN['>']=15`——**若未来语法放开,VM 会静默发射比较指令**;`src/wasm.js` 注释已自认死分支 | P3 | **登记未修**(v1.2.4 审查 NOTE-4;建议三处一并删除死分支或加显式断言,单一事实来源) |
+
+### 新登记(2026-11-27,工具批合并审查 NOTE-4/5/6;登记不修)
+
+> 编号承接工具批合并审查(§4.24);NOTE-1–3 归该审查代码/文档侧处置,不在本表。NOTE-4 已随修复批复核收口(2026-11-27 集成时更新)。
+
+| # | 缺陷 | 严重度 | 状态 |
+|---|------|--------|------|
+| NOTE-4 | **certverify 语法宽松两处**(义务头不要求"索引 "前缀/空文件名被接受) | P3 | **已修**(义务头"索引 "前缀 + 空文件名具名拒绝,§118.22 锁定) |
+| NOTE-5 | **treehash collect 值语义逐目录深拷贝 + acc O(n²) 拼接**:递归收集对每目录深拷贝、路径串累加拼接为平方复杂度——工具规模内无碍,大目录留意 | P3 | **登记未修**(工具规模内无实际影响;大目录使用留意,优化待真实用例) |
+| NOTE-6 | **batch_rename exists→rename TOCTOU 窗口**(检查目标存在与 rename 执行之间非原子,并发方可穿越)——CLI 单用户场景可接受;彻底闭合需语言面 no-replace 语义 | P3 | **登记未修**(单用户 CLI 可接受;no-replace 语义登记为语言出口候选,须架构师/ADR 裁决) |
 
 ## 6. 过程纪律（所有版本适用）
 

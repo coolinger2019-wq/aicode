@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.4.1';
+export const VERSION = '1.4.2';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -1208,6 +1208,9 @@ const TOOL_CMDS = {
   log: { file: 'log_analyzer.ming', prefix: [] },
   rename: { file: 'batch_rename.ming', prefix: [] },
   organize: { file: 'file_organizer.ming', prefix: [] },
+  certverify: { file: 'certverify.ming', prefix: [] },
+  treehash: { file: 'treehash.ming', prefix: [] },
+  semver: { file: 'semver.ming', prefix: [] },
 };
 
 const toolsUsage = `
@@ -1234,6 +1237,9 @@ ming tools — 自举工具统一入口(工具均为 tools/*.ming,用 Ming 自�
   log <文件>                      ERROR/WARN/INFO 行计数
   rename <目录> <前缀> [扩展名]   批量改名(幂等:已带前缀的跳过)
   organize <目录>                 按扩展名移动进子目录
+  certverify <证书>               线性不可满足证书自洽校验(§10 判据;仅自洽模式)
+  treehash <目录>                 目录确定性指纹(逐文件行 + 末行 TREEHASH 根哈希)
+  semver <A> <B> | bump ...       语义化版本比较(-1/0/1)/bump(major|minor|patch)/check
   任意已有文件也可直接: ming tools <名> [参数...](对应 tools/<名>.ming)
 纪律:所有工具错误走 stderr,失败退出码 1;破坏性操作(rename/organize)目录必须显式给出。
 示例: ming tools patch src/x.js "旧串" "新串"

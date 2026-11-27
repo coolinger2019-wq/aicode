@@ -1,0 +1,908 @@
+// tools/certverify.ming — Ming 线性不可满足证书的自洽校验器(用 Ming 自写)
+//
+// 动机(v1.4.2 合并批):证书判据(docs/proof-protocol.md §10 冻结判据)此前只有
+// JS 参考检查器(tests/cert_check.mjs,测试基建)与 Python 独立验证器
+// (examples/consumers/verify_cert.py)——用 Ming 写 Ming 自己的证明检查器是最强
+// 自举演示,且让判据无需 Node/Python 即可复核。
+//
+// **MVP = 仅自洽模式**(对应 Python 验证器不给 --smt 的口径,逐方向校验):
+//   ① Σλc = 0(逐变量恒等,按证书声明的 norm 行重算);
+//   ② ΣλK < 0;
+//   ③ refs 序号 = 1 起连续、按(断言序号, 归一方向)升序、#ai ≥ 1、d ∈ {0,1}、λ ≥ 1;
+//   ④ uses_goal/vacuous 形态(proven+证书方向必须 true/false,缺行/n/a 具名失败);
+//   ⑤ 无证书原因 ∈ 登记集(src/proofcert.js REASON_TEXT 八条 = §10.5 表 + refuted 判定态;
+//      未登记措辞 = 失败——验证器不替生产者发明/容忍新说法);
+//   ⑥ 结构面:文件节/义务节/方向节文法逐行严格(未知行具名失败)、low 在前 high 在后、
+//      refs 计数与引用行数一致、identity 行与重算 ΣK 一致;义务头须带"索引 "前缀、
+//      文件名非空、义务节外的游离 dir 节——均具名拒绝(两份参考实现同判)。
+//   ⑦ 数值面:λ/K/系数具名上界 2^31(|v| ≤ 2147483648;防 i64 乘加 M4002 溢出 panic,
+//      累加侧另有 can_add 余量守卫)——参考实现用大数(Python)/浮点(JS),上界是 Ming
+//      实现的如实登记差异(合法证书数值远小于该界,正例不受影响)。
+// **对照 SMT 重算不做**(需 S-表达式解析器,登记为后续版本候选)——因此系数篡改与
+// 块外引用**无法发现**;输出恒标注"仅自洽,未与脚本对照",不冒充对照模式。
+//
+// 诚实边界(照 ADR-014/协议 §10 措辞,固定输出):
+//   证书只证"该义务按本协议编码后的约束集在整数域不可满足";不证编码忠实于源码、
+//   不证运行时安全(proven 不消除 M4003),不是程序正确性证明。
+//
+// 输入:ming check f.ming --proof-format cert 的输出文本(UTF-8;CRLF/孤立 CR 归一;
+// BOM 剥离)。格式样本:tests/cert_fixtures/*.cert(七语料,逐字节黄金)。
+// 纪律:错误走 stderr(具名 义务|方向 + 原因)、失败退出码 1;确定性(无时间/随机)。
+// 效果:io(print/eprint)+ fs(read_file)。
+use std.fs;
+
+// 精确等值:污串与登记字面量比较(两侧同为 Untrusted[str];== 无隐式转换)
+fn eq_lit(s: Untrusted[str], lit: str) -> bool {
+    return s == std.unstr.mark(lit);
+}
+
+// 剥前缀:line 恰为 prefix + rest(前缀出现且仅在行首一次)→ Some(rest),否则 None
+fn peel(line: Untrusted[str], prefix: str) -> Option[Untrusted[str]] {
+    if !line.starts_with(prefix) {
+        return None;
+    }
+    let parts = line.split(prefix);
+    if parts.len() != 2 || !parts[0].is_empty() {
+        return None;
+    }
+    return Some(parts[1]);
+}
+
+// 污串 → i64(Err 载荷是污串,不能拼进净消息——只回带 what 说明)
+fn to_i64(s: Untrusted[str], what: str) -> Result[i64, str] {
+    match s.parse_i64() {
+        Ok(n) => {
+            return Ok(n);
+        },
+        Err(_) => {
+            return Err(what + "不是整数");
+        },
+    }
+}
+
+// F2(MINOR-3):λ/K/系数解析期具名上界 2^31(= 2147483648)——任两值之积 ≤ 2^62,
+// 单次乘法不可能触发 M4002 溢出 panic;跨引用累加由 can_add 余量守卫兜住。
+// 参考实现用大数(Python)/浮点(JS),该上界是 Ming 实现的如实登记差异。
+fn within_bound(v: i64) -> bool {
+    return v >= -2147483648 && v <= 2147483648;
+}
+
+// 累加余量守卫:acc + term 是否必然不溢出(先核后加——直接求和在溢出时 panic)。
+// term ≥ 0:溢出 iff acc > MAX - term(MAX - term 自身不溢出,term ≤ 2^62);
+// term < 0:溢出 iff acc < MIN - term,MIN = -(MAX+1) 改写为
+// acc ≥ -((MAX - |term|) + 1)(|term| ≤ 2^62 → 内式为正,自身不溢出)。
+fn can_add(acc: i64, term: i64) -> bool {
+    if term >= 0 {
+        return acc <= 9223372036854775807 - term;
+    }
+    return acc >= -(9223372036854775807 - -term + 1);
+}
+
+// 无证书原因登记集(逐字取自 src/proofcert.js REASON_TEXT;= 协议 §10.5 表 + refuted 判定态)
+fn no_cert_registry() -> Vec[str] {
+    let mut reg: Vec[str] = [];
+    reg.push("refuted 方向无不可满足性证书(内部判定:违反方向被假设集强制)");
+    reg.push("内部未判定(unknown;目标未编码或超出差分片段)");
+    reg.push("常量矛盾(constFalse;LHS 为空的单条矛盾断言,v1 不渲染该形态)");
+    reg.push("判定来源无单一负环(防御路径;cycle 为空)");
+    reg.push("目标为 == 双向拆分证明(两向各自成立,无单一负环)");
+    reg.push("目标取反为合取(!=;无单一负环)");
+    reg.push("该方向的假设集含不可渲染为 SMT 断言的形态(!= 等),断言序号无法与 smt-lib 块对齐(v1 不产证书)");
+    reg.push("证书数据缺失(内部一致性缺口——不应出现,请报告)");
+    return reg;
+}
+
+// 单条 ref 行解析:"<n>: #<ai> d<d> | norm: {var: coef, ...} <= <K> | λ=<m>"
+// 形状错误 = eprint 具名 + ok:false;系数/常数成功解析后交 verify_dir 累加
+struct RefOut {
+    ok: bool,
+    n: i64,
+    ai: i64,
+    d: i64,
+    lambda: i64,
+    k: i64,
+    names: Vec[Untrusted[str]],
+    coefs: Vec[i64],
+}
+
+fn parse_ref(rest: Untrusted[str], dtag: Untrusted[str], lineno: i64) -> RefOut with io {
+    let out = RefOut { ok: false, n: 0, ai: 0, d: 0, lambda: 0, k: 0, names: [], coefs: [] };
+    let parts = rest.split(" | ");
+    if parts.len() != 3 {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 ref 行形状不符(应 \"ref <n>: #<ai> d<d> | norm: {…} <= <K> | λ=<m>\"):" + rest);
+        return out;
+    }
+    let head = parts[0].split(": ");
+    if head.len() != 2 {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 ref 头形状不符(应 \"<n>: #<ai> d<d>\"):" + rest);
+        return out;
+    }
+    let serial = match to_i64(head[0], "ref 序号") { Ok(v) => v, Err(m) => { eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 " + m + ":" + rest); return out; } };
+    let goal = head[1];
+    if !goal.starts_with("#") {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行断言序号形状不符(应 #<n>):" + rest);
+        return out;
+    }
+    let gp = goal.slice_chars(1, goal.char_len()).split(" d");
+    if gp.len() != 2 {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行断言序号/归一方向形状不符(应 \"#<ai> d<d>\"):" + rest);
+        return out;
+    }
+    let ai = match to_i64(gp[0], "断言序号") { Ok(v) => v, Err(m) => { eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 " + m + ":" + rest); return out; } };
+    let d = match to_i64(gp[1], "归一方向") { Ok(v) => v, Err(m) => { eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 " + m + ":" + rest); return out; } };
+    let rowparts = parts[1].split("norm: ");
+    if rowparts.len() != 2 || !rowparts[0].is_empty() {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 段形状不符(应 \"norm: {…} <= <K>\"):" + rest);
+        return out;
+    }
+    let rp = rowparts[1].split("} <= ");
+    if rp.len() != 2 {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 行形状不符:" + rest);
+        return out;
+    }
+    if !rp[0].starts_with("{") {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 行形状不符(缺 \"{\"):" + rest);
+        return out;
+    }
+    let k = match to_i64(rp[1], "norm 常数项") { Ok(v) => v, Err(m) => { eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 " + m + ":" + rest); return out; } };
+    if !within_bound(k) {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 常数项超界(|v| 须 ≤ 2147483648;参考实现用大数/浮点,本实现防乘加溢出):" + rest);
+        return out;
+    }
+    let lparts = parts[2].split("λ=");
+    if lparts.len() != 2 || !lparts[0].is_empty() {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 λ 段形状不符(应 \"λ=<m>\"):" + rest);
+        return out;
+    }
+    let lambda = match to_i64(lparts[1], "λ") { Ok(v) => v, Err(m) => { eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 " + m + ":" + rest); return out; } };
+    if !within_bound(lambda) {
+        eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 λ 超界(|v| 须 ≤ 2147483648;参考实现用大数/浮点,本实现防乘加溢出):" + rest);
+        return out;
+    }
+
+    // 系数表:{var: coef, ...};行内变量重复 = 具名失败
+    let inner = rp[0].slice_chars(1, rp[0].char_len());
+    let mut names: Vec[Untrusted[str]] = [];
+    let mut coefs: Vec[i64] = [];
+    if !inner.is_empty() {
+        for pair in inner.split(", ") {
+            let kv = pair.split(": ");
+            if kv.len() != 2 {
+                eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 系数项形状不符:" + rest);
+                return out;
+            }
+            let mut dup = false;
+            let mut q = 0;
+            while q < names.len() {
+                if names[q] == kv[0] {
+                    dup = true;
+                }
+                q += 1;
+            }
+            if dup {
+                eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 行变量重复:" + rest);
+                return out;
+            }
+            let coef = match to_i64(kv[1], "norm 系数") { Ok(v) => v, Err(m) => { eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 " + m + ":" + rest); return out; } };
+            if !within_bound(coef) {
+                eprint("[fail] " + dtag + ": 第 " + str(lineno) + " 行 norm 系数超界(|v| 须 ≤ 2147483648;参考实现用大数/浮点,本实现防乘加溢出):" + rest);
+                return out;
+            }
+            names.push(kv[0]);
+            coefs.push(coef);
+        }
+    }
+    let good = RefOut { ok: true, n: serial, ai: ai, d: d, lambda: lambda, k: k, names: names, coefs: coefs };
+    return good;
+}
+
+// 义务节头解析:"; ---- vc:<fn>:<n> — 索引 <text>(scope: <body|loop>)----"
+struct ObHead {
+    ok: bool,
+    vcid: Untrusted[str],
+    idxtext: Untrusted[str],
+    scope: Untrusted[str],
+}
+
+fn parse_ob(line: Untrusted[str], lineno: i64) -> ObHead with io {
+    let bad = ObHead { ok: false, vcid: std.unstr.mark(""), idxtext: std.unstr.mark(""), scope: std.unstr.mark("") };
+    let bp = line.split("; ---- vc:");
+    if bp.len() != 2 || !bp[0].is_empty() || !bp[1].ends_with("----") {
+        eprint("certverify: 第 " + str(lineno) + " 行义务节形状不符:" + line);
+        return bad;
+    }
+    let cp = bp[1].split("----");
+    if cp.len() != 2 || !cp[1].is_empty() {
+        eprint("certverify: 第 " + str(lineno) + " 行义务节形状不符:" + line);
+        return bad;
+    }
+    let core = cp[0];
+    let sp = core.split(" — ");
+    if sp.len() != 2 {
+        eprint("certverify: 第 " + str(lineno) + " 行义务节形状不符(缺 \" — \"):" + line);
+        return bad;
+    }
+    let vp = sp[0].split(":");
+    if vp.len() != 2 || vp[0].is_empty() {
+        eprint("certverify: 第 " + str(lineno) + " 行义务 id 形状不符(应 vc:<fn>:<n>):" + line);
+        return bad;
+    }
+    match to_i64(vp[1], "义务序号") {
+        Ok(_) => {
+        },
+        Err(m) => {
+            eprint("certverify: 第 " + str(lineno) + " 行 " + m + ":" + line);
+            return bad;
+        },
+    }
+    let ip = sp[1].split("(scope: ");
+    if ip.len() != 2 || !eq_lit(ip[1], "body)") && !eq_lit(ip[1], "loop)") {
+        eprint("certverify: 第 " + str(lineno) + " 行 scope 形状不符(应 (scope: body|loop)):" + line);
+        return bad;
+    }
+
+    // F3(NOTE-4a):义务头必须带"索引 "字面前缀(与 Python RE_OBLIGATION/JS 正则同口径,
+    // 此前缺失时把整段当索引文本放行)
+    let itp = ip[0].split("索引 ");
+    if itp.len() != 2 || !itp[0].is_empty() {
+        eprint("certverify: 第 " + str(lineno) + " 行义务节形状不符(缺 \"索引 \"):" + line);
+        return bad;
+    }
+    let idxtext = itp[1];
+    let scope = if eq_lit(ip[1], "body)") { std.unstr.mark("body") } else { std.unstr.mark("loop") };
+    let good = ObHead { ok: true, vcid: std.unstr.mark("vc:") + sp[0], idxtext: idxtext, scope: scope };
+    return good;
+}
+
+// 文件节头解析:"; ===== 文件:<展示路径> ====="(F3 NOTE-4b:文件名必须非空,
+// 与 Python RE_FILE/JS `(.+)` 同口径——空名此前被静默接受)
+fn parse_filesec(line: Untrusted[str], lineno: i64) -> Option[Untrusted[str]] with io {
+    let fp = line.split("; ===== 文件:");
+    if fp.len() == 2 && fp[0].is_empty() {
+        let np = fp[1].split(" =====");
+        if np.len() == 2 && np[1].is_empty() {
+            if np[0].is_empty() {
+                eprint("certverify: 第 " + str(lineno) + " 行文件节形状不符(文件名为空):" + line);
+                return None;
+            }
+            return Some(np[0]);
+        }
+    }
+    eprint("certverify: 第 " + str(lineno) + " 行文件节形状不符:" + line);
+    return None;
+}
+
+// 方向节头解析:"; dir: low|high" → 0/1;形状/取值错误 = -1(已 eprint)
+fn parse_dirkind(line: Untrusted[str], lineno: i64) -> i64 with io {
+    match peel(line, "; dir: ") {
+        Some(v) => {
+            if eq_lit(v, "low") {
+                return 0;
+            }
+            if eq_lit(v, "high") {
+                return 1;
+            }
+            eprint("certverify: 第 " + str(lineno) + " 行方向名不是 low/high:" + line);
+            return -1;
+        },
+        None => {
+            eprint("certverify: 第 " + str(lineno) + " 行方向节形状不符:" + line);
+            return -1;
+        },
+    }
+}
+
+fn is_section_start(line: Untrusted[str]) -> bool {
+    if line.starts_with("; ===== 文件:") {
+        return true;
+    }
+    if line.starts_with("; ---- vc:") {
+        return true;
+    }
+    if line.starts_with("; dir: ") {
+        return true;
+    }
+    return false;
+}
+
+// 义务关闭时的方向节结构检查(low 在前 high 在后、恰 2 个;义务须在文件节内)
+fn check_dirs(tag: Untrusted[str], ndirs: i64, k0: i64, k1: i64, have_file: bool) -> i64 with io {
+    let mut e = 0;
+    if !have_file {
+        eprint("[fail] " + tag + ": 义务节不在任何文件节内");
+        e += 1;
+    }
+    if ndirs != 2 {
+        eprint("[fail] " + tag + ": 方向节数 " + str(ndirs) + " ≠ 2(应为 low 在前、high 在后)");
+        e += 1;} else {
+
+        if k0 != 0 {
+            eprint("[fail] " + tag + ": 第 1 个方向节应为 low");
+            e += 1;
+        }
+        if k1 != 1 {
+            eprint("[fail] " + tag + ": 第 2 个方向节应为 high");
+            e += 1;
+        }
+    }
+    return e;
+}
+
+// 单个方向节的解析 + 自洽校验(lines 的 [from, to) 切片;from 是 "; dir:" 行本身)。
+// 失败逐条 eprint(具名 义务|方向 + 原因);返回增量计数:
+// [dirs, cert_dirs, 具名无证书, refs, 恒等式, 本方向错误数, 内部中止(0/1)]
+fn verify_dir(lines: Vec[Untrusted[str]], from: i64, to: i64, kind: i64, ob_tag: Untrusted[str]) -> Vec[i64] with io {
+    let mut out: Vec[i64] = [0, 0, 0, 0, 0, 0, 0];
+    let dname = if kind == 0 { "low" } else { "high" };
+    let dtag = ob_tag + "/" + dname;
+
+    // 0=proven 1=refuted 2=unknown -1=缺行
+    let mut verdict = -1;
+
+    // 1/0/-1(n/a)/-2 缺行
+    let mut uses_goal = -2;
+    let mut has_vacuous = false;
+    let mut vacuous = -1;
+    let mut has_refs_count = false;
+    let mut refs_count = -1;
+    let mut n_refs = 0;
+    let mut prev_ai = -1;
+    let mut prev_d = -1;
+    let mut acc_names: Vec[Untrusted[str]] = [];
+    let mut acc_vals: Vec[i64] = [];
+    let mut sum_k: i64 = 0;
+    let mut has_identity = false;
+    let mut identity_k: i64 = 0;
+    let mut identity_coeff_ok = false;
+    let mut has_no_cert = false;
+    let mut no_cert_known = false;
+    let mut no_cert_text: Untrusted[str] = std.unstr.mark("");
+    let mut errs = 0;
+    let mut aborted = false;
+    let mut k = from + 1;
+    while k < to {
+        let line = lines[k];
+        if line.is_empty() {
+            k += 1;} else if line.starts_with("; verdict: ") {
+
+            match peel(line, "; verdict: ") {
+                Some(v) => {
+                    if eq_lit(v, "proven") {
+                        verdict = 0;} else if eq_lit(v, "refuted") {
+
+                        verdict = 1;} else if eq_lit(v, "unknown") {
+
+                        verdict = 2;} else {
+
+                        eprint("certverify: 第 " + str(k + 1) + " 行内部判定未知:" + line);
+                        errs += 1;
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行 verdict 行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; uses_goal: ") {
+
+            match peel(line, "; uses_goal: ") {
+                Some(v) => {
+                    if eq_lit(v, "true") {
+                        uses_goal = 1;} else if eq_lit(v, "false") {
+
+                        uses_goal = 0;} else if eq_lit(v, "n/a") {
+
+                        uses_goal = -1;} else {
+
+                        eprint("certverify: 第 " + str(k + 1) + " 行 uses_goal 取值未知:" + line);
+                        errs += 1;
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行 uses_goal 行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; vacuous: ") {
+
+            match peel(line, "; vacuous: ") {
+                Some(v) => {
+                    if eq_lit(v, "true") {
+                        vacuous = 1;
+                        has_vacuous = true;} else if eq_lit(v, "false") {
+
+                        vacuous = 0;
+                        has_vacuous = true;} else {
+
+                        eprint("certverify: 第 " + str(k + 1) + " 行 vacuous 取值未知:" + line);
+                        errs += 1;
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行 vacuous 行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; refs: ") {
+
+            match peel(line, "; refs: ") {
+                Some(v) => {
+                    match to_i64(v, "refs 计数") {
+                        Ok(n) => {
+                            refs_count = n;
+                            has_refs_count = true;
+                        },
+                        Err(m) => {
+                            eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 " + m);
+                            errs += 1;
+                        },
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行 refs 行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; ref ") {
+
+            match peel(line, "; ref ") {
+                Some(rest) => {
+                    let r = parse_ref(rest, dtag, k + 1);
+                    if r.ok {
+                        n_refs += 1;
+                        out[3] += 1;
+                        if r.n != n_refs {
+                            eprint("[fail] " + dtag + ": 引用序号不连续(ref " + str(r.n) + " 出现在第 " + str(n_refs) + " 位)");
+                            errs += 1;
+                        }
+                        if r.ai < 1 {
+                            eprint("[fail] " + dtag + ": 引用断言序号必须 ≥ 1(得到 #" + str(r.ai) + ")");
+                            errs += 1;
+                        }
+                        if r.d != 0 && r.d != 1 {
+                            eprint("[fail] " + dtag + ": 归一方向必须是 d0/d1(得到 d" + str(r.d) + ")");
+                            errs += 1;
+                        }
+                        if r.lambda < 1 {
+                            eprint("[fail] " + dtag + ": λ 须为正整数(≥1;判据允许多重引用,本实现恒 1)(得到 " + str(r.lambda) + ")");
+                            errs += 1;
+                        }
+                        if r.ai < prev_ai || r.ai == prev_ai && r.d < prev_d {
+                            eprint("[fail] " + dtag + ": 引用未按假设采集序输出(#" + str(r.ai) + " d" + str(r.d) + ")");
+                            errs += 1;
+                        }
+                        prev_ai = r.ai;
+                        prev_d = r.d;
+
+                        // Σλc / ΣλK 累加(λ 逐引用乘);F2:系数/λ 已过解析期上界 2^31,
+                        // 单乘积 ≤ 2^62 不可能溢出;跨引用累加过 can_add 余量守卫——
+                        // 超界具名拒绝,不靠 M4002 panic
+                        let mut idx = 0;
+                        while idx < r.names.len() {
+                            let coef = r.coefs[idx] * r.lambda;
+                            let mut found = -1;
+                            let mut q = 0;
+                            while q < acc_names.len() {
+                                if acc_names[q] == r.names[idx] {
+                                    found = q;
+                                }
+                                q += 1;
+                            }
+                            if found >= 0 {
+                                if can_add(acc_vals[found], coef) {
+                                    acc_vals[found] = acc_vals[found] + coef;} else {
+
+                                    eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 Σλc 累加超出 i64 余量(参考实现用大数,本实现防溢出拒绝):" + line);
+                                    errs += 1;
+                                }} else {
+
+                                acc_names.push(r.names[idx]);
+                                acc_vals.push(coef);
+                            }
+                            idx += 1;
+                        }
+                        let term_k = r.k * r.lambda;
+                        if can_add(sum_k, term_k) {
+                            sum_k = sum_k + term_k;} else {
+
+                            eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 ΣλK 累加超出 i64 余量(参考实现用大数,本实现防溢出拒绝):" + line);
+                            errs += 1;
+                        }} else {
+
+                        errs += 1;
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行 ref 行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; identity: ") {
+
+            match peel(line, "; identity: ") {
+                Some(rest) => {
+                    let ip = rest.split(" | ");
+                    if ip.len() != 2 {
+                        eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 identity 行形状不符:" + rest);
+                        errs += 1;} else {
+
+                        identity_coeff_ok = eq_lit(ip[0], "Σc = 0(逐变量恒等)");
+                        if ip[1].starts_with("ΣK = ") {
+                            let kp = ip[1].split("ΣK = ");
+                            if kp.len() == 2 && kp[0].is_empty() && kp[1].ends_with(" (< 0)") {
+                                let np = kp[1].split(" (< 0)");
+                                if np.len() == 2 && np[1].is_empty() {
+                                    match to_i64(np[0], "ΣK") {
+                                        Ok(v) => {
+                                            identity_k = v;
+                                            has_identity = true;
+                                        },
+                                        Err(m) => {
+                                            eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 " + m);
+                                            errs += 1;
+                                        },
+                                    }} else {
+
+                                    eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 identity 行形状不符:" + rest);
+                                    errs += 1;
+                                }} else {
+
+                                eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 identity 行形状不符:" + rest);
+                                errs += 1;
+                            }} else {
+
+                            eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行 identity 行形状不符:" + rest);
+                            errs += 1;
+                        }
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行 identity 行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; 无证书:") {
+
+            match peel(line, "; 无证书:") {
+                Some(v) => {
+                    has_no_cert = true;
+                    no_cert_text = v;
+                    let reg = no_cert_registry();
+                    let mut q = 0;
+                    while q < reg.len() {
+                        if eq_lit(no_cert_text, reg[q]) {
+                            no_cert_known = true;
+                        }
+                        q += 1;
+                    }
+                },
+                None => {
+                    eprint("certverify: 第 " + str(k + 1) + " 行无证书行形状不符:" + line);
+                    errs += 1;
+                },
+            }
+            k += 1;} else if line.starts_with("; spec:") || line.starts_with("; 判据:") || line.starts_with("; 归一:") || line.starts_with("; 覆盖边界:") || line.starts_with("; 有效性:") || line.starts_with("; 引用序号") {
+
+            // 头注(六条;逐字固定,内容不解析)——出现在方向节内同样按头注跳过(Python 口径)
+            k += 1;} else {
+
+            // 未知行:本方向中止(不再补发结构错误——与参考实现"未知 = 具名失败"同口径)
+            eprint("[fail] " + dtag + ": 第 " + str(k + 1) + " 行未识别:" + line);
+            errs += 1;
+            aborted = true;
+            k = to;
+        }
+    }
+
+    // ---- 关闭检查(与 Python 验证器 verify() 同序) ----
+    if !aborted {
+        if verdict == -1 {
+            eprint("[fail] " + dtag + ": 缺 verdict 行");
+            errs += 1;} else if verdict != 0 {
+
+            // refuted / unknown:必须无引用,且必须携带登记过的"无证书"具名行
+            if n_refs > 0 {
+                eprint("[fail] " + dtag + ": 非 proven 方向必须无引用(实际 " + str(n_refs) + " 条)");
+                errs += 1;} else if !has_no_cert {
+
+                eprint("[fail] " + dtag + ": 非 proven 方向必须携带\"无证书\"具名行");
+                errs += 1;} else if !no_cert_known {
+
+                eprint("[fail] " + dtag + ": 未登记的无证书原因:" + no_cert_text);
+                errs += 1;} else {
+
+                out[2] += 1;
+            }} else if has_no_cert {
+
+            // proven 但无证书:具名跳过(不伪装、不静默)
+            if n_refs > 0 {
+                eprint("[fail] " + dtag + ": 无证书方向不得携带引用行");
+                errs += 1;} else if !no_cert_known {
+
+                eprint("[fail] " + dtag + ": 未登记的无证书原因:" + no_cert_text);
+                errs += 1;} else {
+
+                out[2] += 1;
+            }} else {
+
+            out[1] += 1;
+            let mut bad = false;
+            if !has_refs_count {
+                eprint("[fail] " + dtag + ": 缺 refs: 计数行");
+                errs += 1;
+                bad = true;} else if refs_count != n_refs {
+
+                eprint("[fail] " + dtag + ": refs 计数 " + str(refs_count) + " ≠ 引用行数 " + str(n_refs));
+                errs += 1;
+                bad = true;
+            }
+            if uses_goal < 0 || !has_vacuous {
+                eprint("[fail] " + dtag + ": proven 证书缺 uses_goal/vacuous 字段(n/a 或缺行)");
+                errs += 1;
+            }
+            if !bad {
+                let mut nz: Vec[Untrusted[str]] = [];
+                let mut q = 0;
+                while q < acc_names.len() {
+                    if acc_vals[q] != 0 {
+                        nz.push(acc_names[q]);
+                    }
+                    q += 1;
+                }
+                if nz.len() > 0 {
+                    let mut listing = std.unstr.mark("");
+                    let mut q2 = 0;
+                    while q2 < nz.len() {
+                        if q2 > 0 {
+                            listing = listing + std.unstr.mark(", ");
+                        }
+                        listing = listing + nz[q2];
+                        q2 += 1;
+                    }
+                    eprint("[fail] " + dtag + ": Σλc 在变量 " + listing + " 上非零(漏引用/引用不足)");
+                    errs += 1;} else if sum_k >= 0 {
+
+                    eprint("[fail] " + dtag + ": ΣλK = " + str(sum_k) + " ≥ 0(不构成不可满足证书)");
+                    errs += 1;} else {
+
+                    out[4] += 1;
+                    if !has_identity {
+                        eprint("[fail] " + dtag + ": 缺 identity 行");
+                        errs += 1;} else {
+
+                        if identity_k != sum_k {
+                            eprint("[fail] " + dtag + ": 证书自述 ΣK=" + str(identity_k) + " ≠ 重算 ΣK=" + str(sum_k));
+                            errs += 1;
+                        }
+                        if !identity_coeff_ok {
+                            eprint("[fail] " + dtag + ": 证书自述 Σc 形态异常(应 \"Σc = 0(逐变量恒等)\")");
+                            errs += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- 方向判定行(stdout) ----
+    let mut desc = std.unstr.mark("");
+    if verdict == 0 {
+        if has_no_cert {
+            desc = "proven(无证书:" + no_cert_text + ")";} else {
+
+            desc = std.unstr.mark("proven(" + str(n_refs) + " 引用,ΣλK=" + str(sum_k) + ")");
+        }} else if verdict == 1 {
+
+        desc = std.unstr.mark("refuted");} else if verdict == 2 {
+
+        desc = std.unstr.mark("unknown");} else {
+
+        desc = std.unstr.mark("(缺 verdict)");
+    }
+    if errs > 0 {
+        print("    " + dname + ": FAIL " + desc + "(明细见 stderr)");} else {
+
+        print("    " + dname + ": OK " + desc);
+    }
+    out[0] += 1;
+    out[5] = errs;
+    return out;
+}
+
+fn usage_out() with io {
+    print("用法: ming tools certverify <证书文件>");
+    print("Ming 线性不可满足证书的自洽校验器(判据:docs/proof-protocol.md §10;Ming 自写第二实现)。");
+    print("MVP = 仅自洽模式:逐方向校验 Σλc=0(逐变量)+ ΣλK<0 + refs 序号/形态 + uses_goal/vacuous");
+    print("+ 无证书原因登记集 + 结构文法;对照 SMT 脚本重算不做(登记为后续版本候选)。");
+    print("退出码:0 = 全部通过;1 = 任一失败/输入不可读/用法错误(失败明细走 stderr,具名 义务|方向)。");
+}
+
+// v0.82 污点迁移先例(ADR-008):argv 元素级污点——逐元素过 std.unstr.sanitize_cli_path
+// (校验不改写:拒控制字符,Ok 原样)取净值作证书路径;证书内容本身保持 Untrusted,
+// 解析全程走污值代数(starts_with/ends_with/split/slice_chars 保污;谓词与 parse_i64 净化;
+// 等值比较经 std.unstr.mark 对齐两侧类型;诊断串拼接污片段后 eprint 出向透传)。
+fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs {
+    let mut args: Vec[str] = [];
+    for a in raw_args {
+        if a.is_empty() {
+            args.push("");} else {
+            match std.unstr.sanitize_cli_path(a) {
+                Ok(p) => {
+                    args.push(p);
+                },
+                Err(e) => {
+                    eprint("certverify: " + e);
+                    return 1;
+                },
+            }
+        }
+    }
+    if args.len() == 0 {
+        eprint("用法: ming tools certverify <证书文件>");
+        return 1;
+    }
+    if args[0] == "--help" || args[0] == "-h" {
+        usage_out();
+        return 0;
+    }
+    if args.len() != 1 {
+        eprint("certverify: 只接受一个证书路径");
+        return 1;
+    }
+    let path_arg = args[0];
+    let content = match std.fs.read_file(path_arg) { Ok(t) => t, Err(e) => { eprint("certverify: 无法读取证书: " + e); return 1; } };
+
+    // 行尾归一(CRLF/孤立 CR → LF)+ BOM 剥离(Python 验证器同口径)
+    let mut norm = content.replace("\r\n", "\n").replace("\r", "\n");
+    if norm.starts_with("﻿") {
+        norm = norm.slice_chars(1, norm.char_len());
+    }
+    let lines = norm.split("\n");
+    if lines[0].is_empty() {
+        eprint("certverify: 首行不是证书头(得到 (空文件))");
+        return 1;
+    }
+    if !eq_lit(lines[0], "; ===== Ming 线性不可满足证书(cert v1)=====") {
+        eprint("certverify: 首行不是证书头(得到 " + lines[0] + ")");
+        return 1;
+    }
+    print("certverify — Ming 线性不可满足证书自洽校验(判据:docs/proof-protocol.md §10;Ming 自写第二实现)");
+    print("证书:" + path_arg);
+    print("模式:仅自洽——只校验证书声明行的内部恒等式;系数篡改与引用序号越界(块外引用)无法发现");
+    print("(对照 SMT 脚本重算不做——需 S-表达式解析器,登记为后续版本候选)");
+
+    // stats: [义务, 方向, 证书方向, 具名无证书, refs, 恒等式, 错误总数, 0]
+    let mut stats: Vec[i64] = [0, 0, 0, 0, 0, 0, 0, 0];
+    let mut extra_errs: i64 = 0;
+    let mut cur_file: Untrusted[str] = std.unstr.mark("");
+    let mut have_file = false;
+    let mut have_ob = false;
+    let mut ob_tag: Untrusted[str] = std.unstr.mark("");
+    let mut ob_ndirs: i64 = 0;
+    let mut ob_k0: i64 = -1;
+    let mut ob_k1: i64 = -1;
+    let mut zero_note = false;
+    let mut aborted = false;
+
+    // 首行 = 证书头,已验
+    let mut i: i64 = 1;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.is_empty() {
+            i += 1;} else if line.starts_with("; ===== 文件:") {
+
+            if have_ob {
+                extra_errs += check_dirs(ob_tag, ob_ndirs, ob_k0, ob_k1, have_file);
+                have_ob = false;
+            }
+            match parse_filesec(line, i + 1) {
+                Some(name) => {
+                    cur_file = name;
+                    have_file = true;
+                    i += 1;
+                },
+                None => {
+                    extra_errs += 1;
+                    aborted = true;
+                },
+            }
+            if aborted {
+                break;
+            }} else if line.starts_with("; ---- vc:") {
+
+            if have_ob {
+                extra_errs += check_dirs(ob_tag, ob_ndirs, ob_k0, ob_k1, have_file);
+                have_ob = false;
+            }
+            let oh = parse_ob(line, i + 1);
+            if oh.ok {
+                let filepart = if have_file { cur_file } else { std.unstr.mark("(无文件节)") };
+                ob_tag = filepart + "|" + oh.vcid;
+                have_ob = true;
+                ob_ndirs = 0;
+                ob_k0 = -1;
+                ob_k1 = -1;
+                stats[0] += 1;
+                print("  " + oh.vcid + " — 索引 " + oh.idxtext + "(scope: " + oh.scope + ")");
+                i += 1;} else {
+
+                extra_errs += 1;
+                aborted = true;
+            }
+            if aborted {
+                break;
+            }} else if line.starts_with("; dir: ") {
+
+            // F1(MAJOR-1):义务节外的游离方向节 = 结构错误——此前被当作合法计入统计
+            // 并整体放行 exit 0(两份参考实现同判:verify_cert.py "第 N 行 dir 不在任何
+            // 义务节内" / cert_check.mjs 同文)
+            if !have_ob {
+                eprint("certverify: 第 " + str(i + 1) + " 行 dir 不在任何义务节内");
+                extra_errs += 1;
+                aborted = true;
+                break;
+            }
+            let kd = parse_dirkind(line, i + 1);
+            if kd < 0 {
+                extra_errs += 1;
+                break;
+            }
+
+            // 方向节 = [i, 下一个节头行)——切片整体交 verify_dir 解析与校验
+            let mut j = i + 1;
+            while j < lines.len() && !is_section_start(lines[j]) {
+                j += 1;
+            }
+            let sd = verify_dir(lines, i, j, kd, ob_tag);
+            let mut q = 0;
+            while q < 7 {
+                stats[q + 1] = stats[q + 1] + sd[q];
+                q += 1;
+            }
+            ob_ndirs += 1;
+            if ob_ndirs == 1 {
+                ob_k0 = kd;} else {
+
+                if ob_ndirs == 2 {
+                    ob_k1 = kd;
+                }
+            }
+            i = j;} else if eq_lit(line, "; 无证明义务") {
+
+            zero_note = true;
+            i += 1;} else if line.starts_with("; spec:") || line.starts_with("; 判据:") || line.starts_with("; 归一:") || line.starts_with("; 覆盖边界:") || line.starts_with("; 有效性:") || line.starts_with("; 引用序号") {
+
+            i += 1;} else {
+
+            if line.starts_with(";") {
+                eprint("certverify: 第 " + str(i + 1) + " 行未识别:" + line);} else {
+
+                eprint("certverify: 第 " + str(i + 1) + " 行不是注释面(证书全部以 ; 起行):" + line);
+            }
+            extra_errs += 1;
+            aborted = true;
+            break;
+        }
+    }
+    if have_ob && !aborted {
+        extra_errs += check_dirs(ob_tag, ob_ndirs, ob_k0, ob_k1, have_file);
+    }
+    if stats[0] == 0 && !zero_note && !aborted {
+        eprint("certverify: 证书没有任何义务节,也没有 \"; 无证明义务\" 标记(空证书不伪装成有结论)");
+        extra_errs += 1;
+    }
+    if stats[0] == 0 && zero_note {
+        print("");
+        print("(零证明义务:证书只有头注与 \"; 无证明义务\")");
+    }
+    let total_errs = extra_errs + stats[6];
+    print("");
+    print("汇总: 义务 " + str(stats[0]) + " · 方向 " + str(stats[1]) + " · 证书方向 " + str(stats[2]) + " · 具名无证书 " + str(stats[3]) + " · 引用 " + str(stats[4]) + " · 恒等式 " + str(stats[5]));
+    print("边界:证书只证\"该义务按本协议编码后的约束集在整数域不可满足\";不证编码忠实于源码、不证运行时安全(proven 不消除 M4003),不是程序正确性证明。");
+    if total_errs > 0 {
+        print("结论:失败(" + str(total_errs) + " 项)——明细见 stderr");
+        return 1;
+    }
+    print("结论:通过 — 仅自洽,未与脚本对照(成立的是\"证书自述恒等式自洽\",不是\"编码后的约束集不可满足\")");
+    return 0;
+}

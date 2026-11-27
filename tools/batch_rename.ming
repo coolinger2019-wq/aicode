@@ -7,6 +7,11 @@
 //   (也可用环境变量 RENAME_DIR / RENAME_PREFIX / RENAME_EXT)
 // 目录必须显式给出,不再默认 "."。
 //
+// 工具审计优化(2026-11-27):①同名冲突守卫——fs.rename 落到已存在目标会静默
+// 覆盖(实测 a.txt+p_a.txt 双文件变单文件、内容丢失、exit 0),改名前查目标存在
+// 即拒绝并计入失败,原文件保留;②扩展名过滤归一化——"txt"/".txt" 同义(此前
+// 只有 ".txt" 生效,"txt" 静默零改名 exit 0)。
+//
 // v0.77 污点迁移(ADR-007):list_dir 条目 → Vec[Untrusted[str]]——每个条目先过
 // std.unstr.sanitize_cli_path(校验不改写:拒控制字符,Ok 原样)再作路径/比较串;
 // 含控制字符等不可作路径的条目计入失败(错误走 stderr 纪律)。良性路径行为与
@@ -27,20 +32,35 @@ fn batch_rename(dir: str, prefix: str, ext: str, mut count: i64, mut failed: i64
                         // 幂等:已带前缀的跳过
                         let has_prefix = clean.starts_with(prefix);
                         let file_ext = std.path.extension(clean);
-                        let ext_skip = ext != "" && file_ext != ext;
+
+                        // 扩展名比较归一化(去前导点,与 main 侧用户输入归一化对称):
+                        // extension() 带点返回,"txt"/".txt" 同义
+                        let mut fe = file_ext;
+                        if fe.starts_with(".") {
+                            fe = fe.slice_chars(1, fe.char_len());
+                        }
+                        let ext_skip = ext != "" && fe != ext;
                         if !is_dir && !has_prefix && !ext_skip {
                             let new_name = prefix + clean;
                             let old_path = std.path.join(dir, clean);
                             let new_path = std.path.join(dir, new_name);
-                            match std.fs.rename(old_path, new_path) {
-                                Ok(_) => {
-                                    print("重命名: \{clean} -> \{new_name}");
-                                    count += 1;
-                                },
-                                Err(e) => {
-                                    eprint("batch_rename: 失败: \{clean}: \{e}");
-                                    failed += 1;
-                                },
+
+                            // 同名冲突守卫(审计修复):rename 落到已存在目标会静默覆盖
+                            // (实测数据丢失)——目标存在即拒绝,计入失败,原文件保留
+                            if std.fs.exists(new_path) {
+                                eprint("batch_rename: 失败: \{clean}: 目标已存在,拒绝覆盖: \{new_name}");
+                                failed += 1;} else {
+
+                                match std.fs.rename(old_path, new_path) {
+                                    Ok(_) => {
+                                        print("重命名: \{clean} -> \{new_name}");
+                                        count += 1;
+                                    },
+                                    Err(e) => {
+                                        eprint("batch_rename: 失败: \{clean}: \{e}");
+                                        failed += 1;
+                                    },
+                                }
                             }
                         }
                     },
@@ -146,10 +166,23 @@ fn main(raw_args: Vec[Untrusted[str]]) -> i64 with io, fs, env {
             },
         }
     }
+
+    // 扩展名归一化(审计修复):接受 "txt" 与 ".txt" 两种写法——此前只有 ".txt"
+    // 生效,"txt" 静默零改名 exit 0;F5(NOTE-3):"." 归一化后为空串,扩展名过滤整体
+    // 失效(ext_skip 恒 false → 全部文件被改名)——输入非空而归一化后为空 = 具名
+    // 拒绝,不静默
+    let raw_ext = ext;
+    if ext.starts_with(".") {
+        ext = ext.slice_chars(1, ext.char_len());
+    }
     if dir == "" || prefix == "" {
         eprint("用法: node bin/ming.js run tools/batch_rename.ming -- <目录> <前缀> [扩展名]");
         eprint("  (也可用环境变量 RENAME_DIR / RENAME_PREFIX / RENAME_EXT)");
-        eprint("  幂等:文件名已带前缀的跳过;存在失败时退出码 1");
+        eprint("  幂等:文件名已带前缀的跳过;扩展名过滤 txt/.txt 均可;同名目标拒绝覆盖;存在失败时退出码 1");
+        return 1;
+    }
+    if ext == "" && raw_ext != "" {
+        eprint("batch_rename: 扩展名 \"" + raw_ext + "\" 归一化后为空(会使扩展名过滤整体失效;只接受 txt/.txt 形态),拒绝执行");
         return 1;
     }
     print("目录: \{dir}, 前缀: \{prefix}, 扩展名过滤: \{ext}");

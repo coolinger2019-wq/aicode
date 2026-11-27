@@ -22,6 +22,10 @@
 // v0.77"语言面无码点数值途径"的登记结论据此修正:无需码点算术——replace 纯函数
 // 逐字面量枚举即可逐字节复刻(JSON.stringify 同款覆盖面)。字符串叶子 print 裸
 // 输出是设计内行为(出向透传,CLI 存储面),不在本收敛范围。
+//
+// 工具审计优化(2026-11-27):键不存在/下标越界的错误消息附"该层实际键/实际长度"
+// 提示(M3015 nearest 先例,键序 = Map 插入序,确定性)——AI 修正回路不必再猜一轮。
+// 注意:tests/run.mjs v89.9d 对键不存在路径有逐字节断言,需同步(已报告)。
 use std.json;
 
 use std.fs;
@@ -40,7 +44,23 @@ fn lookup(j: Untrusted[Json], path: str) -> Result[Untrusted[Json], str] {
                     cur = v;
                 },
                 None => {
-                    return Err("键不存在: " + seg + "(路径 " + path + ")");
+
+                    // M3015 nearest 先例:错误消息附"实际拥有的键"(Map 插入序,确定性),
+                    // 让 AI 不必再猜一次再查一轮
+                    let mut hint = "";
+                    match cur.as_obj() {
+                        Some(m) => {
+                            let ks = m.keys();
+                            if ks.len() == 0 {
+                                hint = ";该层实际键: (无)";} else {
+
+                                hint = ";该层实际键: " + ks.join(", ");
+                            }
+                        },
+                        None => {
+                        },
+                    }
+                    return Err("键不存在: " + seg + "(路径 " + path + hint + ")");
                 },
             }} else if cur.is_arr() {
 
@@ -53,7 +73,17 @@ fn lookup(j: Untrusted[Json], path: str) -> Result[Untrusted[Json], str] {
                     cur = v;
                 },
                 None => {
-                    return Err("下标越界: " + seg + "(路径 " + path + ")");
+
+                    // 同键不存在提示口径:越界时附实际长度(确定性)
+                    let mut hint = "";
+                    match cur.as_arr() {
+                        Some(arr) => {
+                            hint = ";实际长度 " + str(arr.len());
+                        },
+                        None => {
+                        },
+                    }
+                    return Err("下标越界: " + seg + "(路径 " + path + hint + ")");
                 },
             }} else {
 
