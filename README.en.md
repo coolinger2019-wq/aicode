@@ -77,7 +77,7 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.5.0** (2026-11-27) |
+| Current version | **v1.5.1** (2026-11-28) |
 | Regression suite | **1894 checks, all green** (§1–§119; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.5.1 | 2026-11-28 | First external consumer lands (ming-proof-consumer, a standalone repo: independent proof re-verifier, three-corpus evidence run exit 0 without the Ming toolchain) + ADR-017 consumer criteria pinned (C1 separate repo / C2 runs without Ming toolchain / C3 consumes exported artifacts only; P1 admission met — honesty note: self-built bridgehead ≠ third-party adoption) + docs_check AGENTS header anchoring | docs_check 17 |
 | v1.5.0 | 2026-11-27 | moltbook integration tool #18 (register/login/me/post/comment/read/feed/notifications; full taint chain, credentials never printed) + ADR-016 two language exits (http request body gains the same out-facing passthrough as local file writes — url/method/headers stay sinks; json.stringify_untrusted lands) — real-API end-to-end smoke passed | 1894 |
 | v1.4.2 | 2026-11-27 | Self-hosted tools 14→17 (certverify certificate self-consistency checker / treehash directory fingerprint / semver semantic versioning) + five audit fixes in existing tools (batch_rename/file_organizer refuse overwriting an existing target, wc counts empty files as 0, mingkit read start<1 and three-arg interval named rejections, json_query errors append actual keys/length) + merge review (REQUEST_CHANGES) and independent re-review all closed | 1863 |
 | v1.4.1 | 2026-11-27 | CI platform fix: v114.47 corpus made platform-deterministic (pure long chain triggers depthBailed defense; macOS parser-stack platform variance — AGENTS §9 caveat confirmed) + v114.48 platform-tolerant variant | 1837 |

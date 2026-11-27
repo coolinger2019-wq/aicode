@@ -14,10 +14,17 @@
 //    条目——历史条目如"共 12 个"是版本快照不是当前断言,校验会误报,故不纳入);
 // 4. 能力矩阵计数:docs/capabilities.md 判定列 ✅/🟡/❌ 行数 == 42/11/3
 //    (数字来源:2026-11-19 架构师复核,capabilities.md 尾注 2026-11-18 复算同口径;v1.2 契约桥行使 🟡 10→11;矩阵行变更必须同步此处);
-// 5. README 版本历史表首行版本 == package.json version(README.md / README.en.md)。
+// 5. README 版本历史表首行版本 == package.json version(README.md / README.en.md);
+// 6. AGENTS.md 头部锚定(ADR-017 §5 配套;plan §4.26 观察四"人工提醒"机制化,维护者指令 2026-11-28):
+//    a) §1 头部版本行「（当前 vX.Y.Z，1.0 已正式发布）」↔ package.json version;
+//    b) §3 套件行「回归套件（N 项，含各版本分节 §1..§M；…）」的 N 与 §M ↔ README.md 回归测试行
+//       「| 回归测试 | **N 项全绿**(§1–§M;每次全量运行) |」(两文件措辞不同——全角叙述 vs 表格、§1..§ vs §1–§,
+//       数字必须一致)。窄范围纪律:只校验这三处数字,不扩展到整个头部(维护者明示"范围窄、误报低");
+//       README.en.md/README.plain.md 的同义行不纳入。
 //
-// 明确不校验(轻量一致性边界):测试总数(1539 类——需 6 分钟套件,CI 全量回归另行保证)、
-// coverage/bench 数字(随复测漂移,属 T5.1 口径)、诊断码总数(随版本增长,无稳定断言)。
+// 明确不校验(轻量一致性边界):文档数字与实际套件数的一致(需 6 分钟套件,CI 全量回归另行保证——
+// 第 6 项只保证 AGENTS/README 两处文档互一致)、coverage/bench 数字(随复测漂移,属 T5.1 口径)、
+// 诊断码总数(随版本增长,无稳定断言)。
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -166,6 +173,47 @@ function checkCapabilityCounts() {
   }
 }
 
+// ---------- 6. AGENTS.md 头部锚定(ADR-017 §5;plan §4.26 观察四机制化) ----------
+// 一条窄检查,三个子断言(a 版本 / b1 套件数 N / b2 分节上限 §M)。真值:package.json + README.md 回归测试行。
+function checkAgentsHeader(pkgVersion) {
+  console.log('[6] AGENTS.md 头部锚定(§1 版本行 ↔ package.json;§3 套件行 N/§M ↔ README.md 回归测试行)');
+  const SYNC = '版本发布时 AGENTS §1/§3 需同步(plan §4.26 观察四;ADR-017 §5)';
+  const agents = read('AGENTS.md');
+  // a) §1 头部版本行「（当前 vX.Y.Z，1.0 已正式发布）」——真值 = package.json version
+  const vm = firstMatch(agents, /（当前 v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)，/);
+  if (!vm) {
+    fail('AGENTS.md', null, `§1 头部版本行未找到(${SYNC})`, `（当前 v${pkgVersion}，1.0 已正式发布）`, '行缺失或措辞漂移');
+  } else if (vm.match[1] !== pkgVersion) {
+    fail('AGENTS.md', vm.line, `头部版本 v${vm.match[1]} ≠ package.json v${pkgVersion}——${SYNC}`, `v${pkgVersion}`, `v${vm.match[1]}`);
+  } else {
+    pass(`AGENTS.md:${vm.line} §1 头部版本 = v${vm.match[1]}(package.json 锚定)`);
+  }
+  // b) §3 套件行「回归套件（N 项，含各版本分节 §1..§M；…）」——真值 = README.md 回归测试行(锚定源先取)
+  const readme = read('README.md');
+  const rm = firstMatch(readme, /^\|\s*回归测试\s*\|\s*\*\*(\d+) 项全绿\*\*\(§1[–—-]§?(\d+)/);
+  if (!rm) {
+    fail('README.md', null, '回归测试行未找到(AGENTS §3 套件行的锚定源;ADR-017 §5)', '| 回归测试 | **N 项全绿**(§1–§M;…) |', '行缺失或措辞漂移');
+    return;
+  }
+  const am = firstMatch(agents, /回归套件（(\d+) 项，含各版本分节 §1\.\.§(\d+)/);
+  if (!am) {
+    fail('AGENTS.md', null, `§3 套件行未找到(锚定 README.md:${rm.line} 回归测试行;${SYNC})`, `回归套件（${rm.match[1]} 项，含各版本分节 §1..§${rm.match[2]}；…）`, '行缺失或措辞漂移');
+    return;
+  }
+  // b1) 套件数 N
+  if (Number(am.match[1]) !== Number(rm.match[1])) {
+    fail('AGENTS.md', am.line, `套件数 N ${am.match[1]} ≠ README.md:${rm.line} 回归行 ${rm.match[1]}——套件扩容时 AGENTS §3 需同步(ADR-017 §5;plan §4.26 观察四)`, `${rm.match[1]} 项`, `${am.match[1]} 项`);
+  } else {
+    pass(`AGENTS.md:${am.line} §3 套件数 N = ${am.match[1]}(README.md:${rm.line} 回归测试行锚定)`);
+  }
+  // b2) 分节上限 §M
+  if (Number(am.match[2]) !== Number(rm.match[2])) {
+    fail('AGENTS.md', am.line, `分节上限 §${am.match[2]} ≠ README.md:${rm.line} 回归行 §${rm.match[2]}——新增分节时 AGENTS §3 需同步(ADR-017 §5;plan §4.26 观察四)`, `§1..§${rm.match[2]}`, `§1..§${am.match[2]}`);
+  } else {
+    pass(`AGENTS.md:${am.line} §3 分节上限 = §${am.match[2]}(README.md:${rm.line} 回归测试行锚定)`);
+  }
+}
+
 // ---------- 主流程 ----------
 const pkg = JSON.parse(read('package.json'));
 const pkgVersion = pkg.version;
@@ -178,6 +226,8 @@ console.log('');
 checkToolCount();
 console.log('');
 checkCapabilityCounts();
+console.log('');
+checkAgentsHeader(pkgVersion);
 console.log('');
 if (errors.length > 0) {
   console.log(`docs_check: ${errors.length} 处数字漂移 ✗(见上;文档数字以脚本输出为唯一事实来源,修文档而不是改脚本)`);

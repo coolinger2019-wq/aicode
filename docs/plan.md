@@ -2138,7 +2138,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 
 ## 4.26 第二十一轮评估——roadmap.md 四读：v1.5.0 后差距重估与消费者门槛终态（维护者指令，2026-11-28）
 
-> 第四次复读 docs/roadmap.md（维护者草案，不入库）。文本自 2026-11-23 起逐字节未变（mtime + 内容确认）——§4.22（十九轮）时为 1650 项/17 工具时代，§4.23（二十轮）确认 P0 全兑现，本轮对照 **v1.5.0（1894 项/18 工具）** 的推进后状态。
+> 第四次复读 roadmap.md（仓库根,维护者原稿——已随 §4.21 八轮入库(8539015),去转义注册本 = docs/roadmap-infrastructure.md;此前各轮"不入库"表述过时,本节顺带勘误）。文本自 2026-11-23 起逐字节未变（mtime + 内容确认）——§4.22（十九轮）时为 1650 项/17 工具时代，§4.23（二十轮）确认 P0 全兑现，本轮对照 **v1.5.0（1894 项/18 工具）** 的推进后状态。
 
 ### 一、两句复读结论（与前三读一致，不再展开）
 
@@ -2176,6 +2176,20 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 ### 五、结论
 
 roadmap 无新增项、P0 六项维持全兑现、P1/P2 四项门槛全部未变——**本轮不产生新计划动作**。当前可做工作 = 0（全部带门槛：外部消费者 / 维护者 ADR 裁决）。下轮评估触发条件：roadmap.md 文本变更 / 出现第一个外部消费者 / 维护者点名新任务。
+
+
+## 4.27 第二十二轮——"外部消费者"门槛由被动等待转主动构建：首个外部消费者落地（维护者指令，2026-11-28，ADR-017，v1.5.1）
+
+> 维护者指令（2026-11-28）："把门槛从'被动等待'改成'主动造第一个过桥的人'，并先把口径钉死，防止到时候自欺……这不是造数据，是先造桥、再造第一个过桥的人"。架构师裁决 docs/adr-017-external-consumer.md（go），两 agent 并发执行（A = 独立消费者仓库构建 / B = docs_check 机制化）。
+
+- **认定标准钉死（ADR-017 §1，三条件缺一即不算）**：C1 消费方代码独立于 Ming 仓库（独立 git 仓库）；C2 不依赖 Ming 工具链即可运行（中性目录断言）；C3 只消费导出工件（report JSON/.smt2/.mingi/证书），不调用 Ming 运行时。按此口径在库面（tests/z3_check.mjs、examples/consumers/verify_cert.py）如实归类为**消费套件**——§4.26"消费者 = 0"判定与本口径一致。
+- **首个外部消费者 = ming-proof-consumer**（`C:\code\ming-proof-consumer\`，独立 git 仓库，commit 79875d4 初版 → 30ce228 复核收口 → 3083885 记录）：独立证明复核器（Python 纯标准库 + Z3）——`.smt2` 块文法冻结解析（`vc:<fn>:<n>` 义务 + 方向判定声明注释）逐块 Z3 重解（proven⇒unsat 硬判定 / violated⇒sat 含规则 4 豁免（剥 goal 二解假设集）/ **unknown 三值化不是通过** / unproven 跳过但计数）+ report↔script 双工件交叉核对（(文件,fn,kind) 多重集计数对齐 + summary 四计数三方一致）；退出码 0/1/2；z3-solver pip 兜底驱动（本机无 z3 二进制，如实登记）。
+- **证据运行（C2 硬证据，2026-11-28 00:56 +0800）**：三形态语料工件（proven 1 义务两向 unsat / violated M3045 语料 low SKIP + high sat / loop scope:loop 循环符号 `i$0` 两向 unsat）拷贝为纯数据后，在 `%TEMP%\a17-evidence\` 中性目录（Ming 仓库不参与）运行 `python verify_report.py --all examples` → **exit 0**（5 OK + 1 SKIP，`{"verified":5,"failed":0,"exemptions":0,"unknown":0,"skipped":1,"mismatches":0}`）。selftest 7/7：含真实 FAIL 路径（篡改声明 → Z3 unsat → `FAIL vc:pick:1 low` exit 1）与合成 EXEMPT 路径（假设集自矛盾 → exemptions:1 exit 0）。
+- **门槛裁决（ADR-017 §3）**：roadmap §6 **P1 准入达成**（P0 稳定 + 外部消费者存在）——§6.1 Agent 原生协议 / §6.2 参数化效果由"不可做"转"可排期"，是否启动仍由维护者逐批裁决，不自动开工。**诚实边界**：自建桥head ≠ 第三方采用，第三方采用仍为 0，任何表述不得说"已有第三方采用"；复核不对称如实（实现独立 ≠ 组织独立）。
+- **docs_check 机制化（维护者指令第 2 项）**：AGENTS.md §1 版本行 + §3 套件行（N/§M）锚定 package.json 与 README 回归测试行，漂移具名失败（含同步处方指向 plan §4.26 观察四）——"人工维护面提醒"升级为机制；篡改副本自验三条失败路径全通（版本错/整行删/锚定侧错），真文件零改动。
+- **独立复核（APPROVE-with-minor：0 BLOCKER/0 MAJOR）**：reviewer 独立重演 C2 中性目录证据运行（逐字一致）、C1 源码级零引用、工件真实性（v1.5.1 发射器重生成 ↔ examples 逐字节）、FAIL 路径真实性（Z3 两级回答驱动非恒过）、诚实边界全仓扫描守得住、1894/0 + fuzz 0 分歧零回归。四处收口：MINOR-1 ADR/plan 的 roadmap 引用路径修正（实为仓库根 roadmap.md，已随 §4.21 入库——§4.26"不入库"表述顺带勘误）；MINOR-2 消费者解析器补三条结构不变式（块末行须 (pop)/check-sat 恰 1/嵌套 push 与游离 pop 具名拒绝）+ selftest 7→10（10/10）+ 补丁后中性目录二次重演 exit 0；NOTE-1/2/3（注释对齐/占位串等值/README SKIP≠UNKNOWN 退出码句）。
+- **版本定稿**：v1.5.1 由架构师合并批统一执行（package.json/bin VERSION/GUIDE 头部 + §24 终稿 + README 三语版本行 + AGENTS §1/§10——AGENTS §1 首次受 docs_check 第 6 项锚定）。
+- **门槛**：docs_check **17 项断言全绿**（14 + 新增检查项 [6] 的 3 子断言）；语言面零变化、零新增 M 码、run.mjs 套件总数不变（1894——docs_check 不入套件，CI 独立跑）；消费者仓库 selftest 7/7。
 
 
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)

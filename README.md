@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v1.5.1 | 2026-11-28 | 首个外部消费者落地(ming-proof-consumer 独立仓库:独立证明复核器,三形态工件中性目录证据运行 exit 0)+ ADR-017 外部消费者三条件钉死(P1 准入达成;诚实边界:自建桥head ≠ 第三方采用)+ docs_check AGENTS 头部锚定 | docs_check 17 |
 | v1.5.0 | 2026-11-27 | moltbook 集成工具 #18(register/login/me/post/comment/read/feed/notifications;污点全链,凭证永不打印)+ ADR-016 两项语言出口(http 请求 body 槽位出向透传——url/method/headers sink 不变;json.stringify_untrusted 落地)——真实 API 端到端烟测通过 | 1894 |
 | v1.4.2 | 2026-11-27 | 自举工具 14→17(certverify 证书自洽校验/treehash 目录确定性指纹/semver 语义化版本)+ 既有工具五项审计修复(batch_rename/file_organizer 同名目标拒绝覆盖、wc 空文件计 0 行、mingkit read start<1 与三参区间具名拒绝、json_query 错误提示附实际键/实际长度)+ 合并审查(REQUEST_CHANGES)与独立复核全部收口 | 1863 |
 | v1.4.1 | 2026-11-27 | CI 平台修复:v114.47 语料平台确定化(纯长链触发 depthBailed 防御;macOS 解析器栈平台差异——AGENTS §9 口径实锤)+ v114.48 平台容忍版 | 1837 |
@@ -286,7 +287,7 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v1.5.0**(2026-11-27) |
+| 当前版本 | **v1.5.1**(2026-11-28) |
 | 回归测试 | **1894 项全绿**(§1–§119;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.1% 行 / 90.9% 函数**(v0.96 复测 2026-11-20;16 文件含 opt.js 99.3%/100%;vm.js 函数 76.6%) |
