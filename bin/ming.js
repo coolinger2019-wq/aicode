@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.3.2';
+export const VERSION = '1.4.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -108,7 +108,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   * 诊断同时输出人类可读格式与 --json 结构化格式,错误码稳定(见 docs/diagnostics.md)
   * doc --json schema:{ok,file,items:[{kind:fn|struct|enum|trait|const|impl,name,line,doc,signature}]};doc 为 /// 行去前缀原文(无文档为 []),signature 为 AST 重建(impl 方法含 with 效果与 requires/ensures);impl 的 name 为 "impl <trait> for <类型>"(v0.58)
   * doc --index:多文件聚合 {ok,files:N,items:[{file,...同上}]};单文件也可用;错误路径与 --json 协议一致(v0.58)
-  * bridge:--from 仅支持 ts(MVP);生成物确定性(无时间戳);规范见 docs/bridge-protocol.md;check --stub 对同名 extern fn 做签名核对(失配 M3052)
+  * bridge:--from 仅支持 ts(MVP);生成物确定性(无时间戳);规范见 docs/bridge-protocol.md;check --stub 对同名 extern fn 做签名核对(失配 M3052),并对调用点字面量实参做桩 requires 满足性检查(违反 M3053;不可判只计数 contracts)
   * 副作用必须显式声明:fn main() with io { ... };v0.4 无文件系统/网络能力(io/time 之外)
   * 顶层声明:fn / struct / enum / use / test / const / trait / impl
   * 项目模式:run/check/test/build 不带文件参数时,自动向上查找 ming.toml
@@ -481,6 +481,12 @@ async function cmdCheck(files, flags, opts = {}, projectDir = null) {
     const bridgeCheck = bridge.checkExternsAgainstStubs(checked, loaded.index, opts.stub);
     allDiags.push(...bridgeCheck.diags);
     bridgeSummary = bridgeCheck.summary;
+    // v1.4 S-5(ADR-015,MVP = b-lite):调用点契约满足性检查——纯报告,不改语义。
+    // 实参全字面量时机械求值同名桩 requires → 违反 M3053;不可判只计数(contracts)。
+    // additive:stub_contract.contracts = {checked, violated, unchecked}(键序固定)。
+    const contractCheck = bridge.checkContractSatisfaction(checked, loaded.index);
+    allDiags.push(...contractCheck.diags);
+    bridgeSummary.contracts = contractCheck.contracts;
   }
   const diags = sortDiags(allDiags);
   const hasError = diags.some(d => d.severity === SEVERITY.ERROR);

@@ -1218,7 +1218,11 @@ export class Checker {
           '把内层 serve 移到入口函数(main)或独立程序;v1 一个进程只挂一个服务,嵌套服务随外层超时被硬杀。'));
       }
     }
-    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords, summaries: this.buildSummaryReport(), vcs: this.proofVcs };
+    // v1.4(S-5 审查 MAJOR-1):depthBailed 随结果暴露——后续只读 AST 的静态遍历
+    // (src/bridge.js 的调用点扫描)必须跳过这些声明,防根因报告后的二次裸崩
+    // (v0.75 纪律,与 buildSummaryReport/静态证明的 depthBailed 门槛同源)。
+    // 内部字段:不进 CLI/JSON,零行为变化。
+    return { modules: this.modules, entry: this.entry, diags: this.diags, methodImpls: this.methodImpls, proofs: this.proofRecords, summaries: this.buildSummaryReport(), vcs: this.proofVcs, depthBailed: this.depthBailed };
   }
 
   resolveSigs(mod) {

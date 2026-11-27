@@ -2074,7 +2074,7 @@ Backlog 全部剩余项均为外部门槛：v1.2 内容源扩面（ADR-002 修�
 
 | 项 | 批次 | 前置 |
 |---|---|---|
-| S-5 契约满足性（ADR-015 → 实现） | v1.4 候选 | ADR 裁决；无外部消费者门禁（Tier-1 残项） |
+| S-5 契约满足性（ADR-015 → 实现） **✅ 交付（v1.4.0，2026-11-27）**：`check --stub` 调用点 requires 满足性（b-lite：全字面量实参机械求值，违反 → M3053 三处登记；不可判 → `stub_contract.contracts` 互斥计数；**不注入任何推导**）；审查 REQUEST_CHANGES 全修（MAJOR：`--stub` 深链裸栈崩溃面——depthBailed 消费 + walker 500 限深 + RangeError 兜底三重防御，400–20000 项实测无崩）；§114 47 check；1836 项全绿；**可判面极窄如实登记**（bridge_demo contracts={0,0,1};b-full/ensures 门禁） | **v1.4.0 交付** | ADR-015；无外部消费者门禁（Tier-1 残项） |
 | Tier-2/3（Agent 协议/参数化效果/WIT/证明缓存） | 门禁后另行 | 外部消费者 ≥1（§4.21.6 口径）+ 各自 ADR |
 | R-21 / 跨目录 id / #91 | 不排期 | 既有门槛 |
 

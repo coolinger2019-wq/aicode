@@ -29067,6 +29067,469 @@ secBegin('114');
     && r114bare.code === 1 && r114bare.stderr.includes('effects 行没有效果名')
     && r114v1eff.code === 1 && r114v1eff.stderr.includes('effects 行是 mingi 2 起的格式,当前文件版本为 1'),
     `edge=${r114edge.code} notes=${JSON.stringify(edgeNotes.map((l) => l.slice(0, 46)))} bare=${r114bare.code}/${JSON.stringify(r114bare.stderr.slice(0, 80))} v1=${r114v1eff.code}/${JSON.stringify(r114v1eff.stderr.slice(0, 80))}`);
+
+  // ---- v1.4 S-5(ADR-015,MVP = b-lite):调用点契约满足性检查(M3053)v114.30–v114.47 ----
+  // 可判子集 = 调用实参全为字面量时机械求值同名桩 requires;违反 → M3053(同一调用点
+  // 至多 1 条,全部违反子句入 message),不可判只进 stub_contract.contracts 计数
+  // (checked/violated/unchecked 互斥,和 = 审查覆盖的"桩带 ≥1 条 requires"调用点总数)。
+  // 语义零变化:纯 check 面(不碰 tree/VM/wasm/cc),不把 requires 注入任何推导。
+  const s5Dir = path.join(dir114, 's5');
+  fs.mkdirSync(s5Dir, { recursive: true });
+  const s5Stub = w114(path.join(s5Dir, 'clamp.mingi'), [
+    '// mingi 2',
+    '// source: s5.ts',
+    '',
+    'fn clamp(x: f64, lo: f64, hi: f64) -> f64',
+    '  requires x >= lo',
+    '  requires x <= hi',
+    '  requires lo <= hi',
+    'fn bump(n: i64) -> i64',
+    '  requires n >= -5',
+  ].join('\n'));
+  const s5Externs = [
+    'extern "libs5" fn clamp(x: f64, lo: f64, hi: f64) -> f64;',
+    'extern "libs5" fn bump(n: i64) -> i64;',
+    '',
+  ];
+
+  // v114.30 ① 字面量违反 → 恰 1 条 M3053;message 含子句原文/代入值/桩 file:line;
+  //         span = 调用表达式(Call 节点 span);hint 指向 bridge-protocol;exit 1。
+  const s5Calls = w114(path.join(s5Dir, 'calls.ming'), [...s5Externs,
+    'fn main() with io, ffi {',
+    '    let _a = clamp(-1.0, 0.0, 10.0);',
+    '    let _b = clamp(2.5, 0.0, 10.0);',
+    '    print("done");',
+    '}'].join('\n'));
+  const r114s5a = runMing(['check', s5Calls, '--stub', s5Stub, '--json']);
+  let j114s5a = null;
+  try { j114s5a = JSON.parse(r114s5a.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m3053a = (j114s5a?.diagnostics ?? []).filter((d) => d.code === 'M3053');
+  check('v114.30:S-5 字面量违反 → 恰 1 条 M3053(error;message 含子句原文/代入值/桩 file:line;span=调用表达式;hint 指向 docs/bridge-protocol.md),exit 1',
+    r114s5a.code === 1 && m3053a.length === 1
+    && m3053a[0].severity === 'error' && m3053a[0].name === 'bridge-contract-violated'
+    && m3053a[0].message.includes('"x >= lo"') && m3053a[0].message.includes('x = -1') && m3053a[0].message.includes('lo = 0')
+    && m3053a[0].message.includes('clamp.mingi:4')
+    && m3053a[0].line === 5 && m3053a[0].endLine === 5
+    && m3053a[0].hint.includes('docs/bridge-protocol.md')
+    && j114s5a?.stub_contract?.contracts?.violated === 1 && j114s5a?.stub_contract?.contracts?.checked === 1,
+    `code=${r114s5a.code} m3053=${m3053a.length} msg=${JSON.stringify(m3053a[0]?.message?.slice(0, 150))} contracts=${JSON.stringify(j114s5a?.stub_contract?.contracts)}`);
+
+  // v114.31 ② 字面量满足(含一元负号字面量 -5)→ 零 M3053/零诊断,checked 计数。
+  const s5Ok = w114(path.join(s5Dir, 'ok.ming'), [...s5Externs,
+    'fn main() with io, ffi {',
+    '    let _a = clamp(2.5, 0.0, 10.0);',
+    '    let _b = bump(-5);',
+    '    let _c = bump(3);',
+    '    print("ok");',
+    '}'].join('\n'));
+  const r114s5b = runMing(['check', s5Ok, '--stub', s5Stub, '--json']);
+  let j114s5b = null;
+  try { j114s5b = JSON.parse(r114s5b.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.31:S-5 字面量满足(含一元负号字面量 n = -5)→ 零 M3053/零诊断,contracts.checked=3,violated=0,exit 0',
+    r114s5b.code === 0 && j114s5b?.ok === true && (j114s5b?.diagnostics ?? []).length === 0
+    && j114s5b?.stub_contract?.contracts?.checked === 3 && j114s5b?.stub_contract?.contracts?.violated === 0
+    && j114s5b?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5b.code} diags=${JSON.stringify((j114s5b?.diagnostics ?? []).map((d) => d.code))} contracts=${JSON.stringify(j114s5b?.stub_contract?.contracts)}`);
+
+  // v114.32 ③ 非字面量实参(变量)→ 该调用点 unchecked、零诊断。
+  const s5Var = w114(path.join(s5Dir, 'var.ming'), [...s5Externs,
+    'fn main() with io, ffi {',
+    '    let x = -1.0;',
+    '    let n = -6;',
+    '    let _a = clamp(x, 0.0, 10.0);',
+    '    let _b = bump(n);',
+    '    print("x");',
+    '}'].join('\n'));
+  const r114s5c = runMing(['check', s5Var, '--stub', s5Stub, '--json']);
+  let j114s5c = null;
+  try { j114s5c = JSON.parse(r114s5c.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.32:S-5 非字面量实参 → 两个调用点 unchecked、零 M3053(exit 0;绝不猜)',
+    r114s5c.code === 0 && (j114s5c?.diagnostics ?? []).length === 0
+    && j114s5c?.stub_contract?.contracts?.checked === 0 && j114s5c?.stub_contract?.contracts?.violated === 0
+    && j114s5c?.stub_contract?.contracts?.unchecked === 2,
+    `code=${r114s5c.code} diags=${JSON.stringify((j114s5c?.diagnostics ?? []).map((d) => d.code))} contracts=${JSON.stringify(j114s5c?.stub_contract?.contracts)}`);
+
+  // v114.33 ④ `use` 引入模块内的调用点被审查(file = 被 use 的模块)。
+  const s5Lib = w114(path.join(s5Dir, 's5lib.ming'), [
+    'extern "libs5" fn clamp(x: f64, lo: f64, hi: f64) -> f64;',
+    '',
+    'pub fn bad() -> f64 with ffi {',
+    '    clamp(-1.0, 0.0, 10.0)',
+    '}',
+    '',
+    'pub fn good() -> f64 with ffi {',
+    '    clamp(2.5, 0.0, 10.0)',
+    '}',
+  ].join('\n'));
+  const s5App = w114(path.join(s5Dir, 'app.ming'), [
+    'use s5lib;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = s5lib.bad();',
+    '    let _b = s5lib.good();',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5d = runMing(['check', s5App, '--stub', s5Stub, '--json']);
+  let j114s5d = null;
+  try { j114s5d = JSON.parse(r114s5d.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m3053d = (j114s5d?.diagnostics ?? []).filter((d) => d.code === 'M3053');
+  check('v114.33:S-5 use 引入模块内的调用点被审查——M3053 的 file 为 s5lib.ming(被 use 模块),bad=违反/good=满足 → violated=1/checked=1',
+    r114s5d.code === 1 && m3053d.length === 1 && String(m3053d[0].file).endsWith('s5lib.ming')
+    && m3053d[0].line === 4
+    && j114s5d?.stub_contract?.contracts?.violated === 1 && j114s5d?.stub_contract?.contracts?.checked === 1,
+    `code=${r114s5d.code} m3053=${m3053d.length} file=${JSON.stringify(m3053d[0]?.file)} line=${m3053d[0]?.line} contracts=${JSON.stringify(j114s5d?.stub_contract?.contracts)}`);
+
+  // v114.34 ⑤ 同名遮蔽不误报:本地 fn(块级条目)与 let 绑定的 lambda 各遮蔽 extern,
+  //         字面量即使"违反"也不归属 extern → 零 M3053、零计数。
+  const s5Shadow = w114(path.join(s5Dir, 'shadow.ming'), [
+    'extern "libs5" fn clamp(x: f64, lo: f64, hi: f64) -> f64;',
+    '',
+    'fn shadow_local_fn() -> f64 with ffi {',
+    '    fn clamp(a: f64, b: f64, c: f64) -> f64 { a }',
+    '    clamp(-1.0, 0.0, 1.0)',
+    '}',
+    '',
+    'fn shadow_let() -> f64 with ffi {',
+    '    let clamp = (a: f64, b: f64, c: f64) => b;',
+    '    clamp(-2.0, 0.0, 1.0)',
+    '}',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = shadow_local_fn();',
+    '    let _b = shadow_let();',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5e = runMing(['check', s5Shadow, '--stub', s5Stub, '--json']);
+  let j114s5e = null;
+  try { j114s5e = JSON.parse(r114s5e.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.34:S-5 同名遮蔽不误报——块级本地 fn 与 let 绑定 lambda 各遮蔽同名 extern,字面量调用零 M3053 且零计数(exit 0)',
+    r114s5e.code === 0 && (j114s5e?.diagnostics ?? []).length === 0
+    && j114s5e?.stub_contract?.contracts?.checked === 0 && j114s5e?.stub_contract?.contracts?.violated === 0
+    && j114s5e?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5e.code} diags=${JSON.stringify((j114s5e?.diagnostics ?? []).map((d) => d.code))} contracts=${JSON.stringify(j114s5e?.stub_contract?.contracts)}`);
+
+  // v114.35 ⑥ 不带 --stub 输出零变化:同一违反语料无 M3053、JSON 键仍为 {ok, diagnostics}。
+  const r114s5plain = runMing(['check', s5Calls, '--json']);
+  let j114s5plain = null;
+  try { j114s5plain = JSON.parse(r114s5plain.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.35:S-5 不带 --stub 零变化——同一违反语料零 M3053、exit 0、JSON 键仍为 {ok, diagnostics}(stub_contract/contracts 不存在)',
+    r114s5plain.code === 0 && j114s5plain?.ok === true
+    && Object.keys(j114s5plain).join(',') === 'ok,diagnostics'
+    && !(j114s5plain?.diagnostics ?? []).some((d) => d.code === 'M3053'),
+    `code=${r114s5plain.code} keys=${JSON.stringify(Object.keys(j114s5plain ?? {}))} diags=${JSON.stringify((j114s5plain?.diagnostics ?? []).map((d) => d.code))}`);
+
+  // v114.36 ⑦ M3052 零校准:签名失配照报(带调用点时不叠加 M3053)。
+  const s5BadSig = w114(path.join(s5Dir, 'badsig.ming'), [
+    'extern "libs5" fn bump(n: i64) -> f64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = bump(3);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5f = runMing(['check', s5BadSig, '--stub', s5Stub, '--json']);
+  let j114s5f = null;
+  try { j114s5f = JSON.parse(r114s5f.stdout); } catch { /* 下方 check 具名失败 */ }
+  const codes114s5f = (j114s5f?.diagnostics ?? []).map((d) => d.code);
+  check('v114.36:S-5 M3052 零校准——签名失配照报 1 条 M3052/mismatched=1;该语料调用点字面量满足桩 requires 故无 M3053(声明面与调用点面两类诊断共存是正确语义,不做抑制)',
+    r114s5f.code === 1 && codes114s5f.filter((c) => c === 'M3052').length === 1 && !codes114s5f.includes('M3053')
+    && j114s5f?.stub_contract?.mismatched === 1,
+    `code=${r114s5f.code} codes=${JSON.stringify(codes114s5f)} mismatched=${j114s5f?.stub_contract?.mismatched}`);
+
+  // v114.37 ⑧ --json additive 形状:stub_contract 键序不变(contracts 固定末位)、
+  //          contracts 三键互斥计数;无 requires 桩的既有语料三者均 0。
+  const sc114keys = Object.keys(j114s5a?.stub_contract ?? {}).join(',');
+  const contractKeys = Object.keys(j114s5a?.stub_contract?.contracts ?? {}).join(',');
+  check('v114.37:S-5 --json additive 形状——stub_contract 键序 [stub, entries_loaded, checked, mismatched, skipped_poisoned, contracts];contracts 键序 [checked, violated, unchecked];无同名桩语料三者均 0(无 requires 桩面见 v114.45)',
+    sc114keys === 'stub,entries_loaded,checked,mismatched,skipped_poisoned,contracts'
+    && contractKeys === 'checked,violated,unchecked'
+    && j114no?.stub_contract?.contracts?.checked === 0 && j114no?.stub_contract?.contracts?.violated === 0
+    && j114no?.stub_contract?.contracts?.unchecked === 0,
+    `keys=${JSON.stringify(sc114keys)} ckeys=${JSON.stringify(contractKeys)} noStubContracts=${JSON.stringify(j114no?.stub_contract?.contracts)}`);
+
+  // v114.38 ⑨ 确定性:同命令双跑 --json 输出逐字节相同。
+  const r114s5g2 = runMing(['check', s5Calls, '--stub', s5Stub, '--json']);
+  check('v114.38:S-5 确定性——同一命令(--stub --json)双跑 stdout 逐字节相同',
+    r114s5a.code === r114s5g2.code && r114s5a.stdout === r114s5g2.stdout && r114s5a.stdout.length > 0,
+    `codes=${r114s5a.code}/${r114s5g2.code} equal=${r114s5a.stdout === r114s5g2.stdout} len=${r114s5a.stdout.length}`);
+
+  // v114.39 ⑩ 不可解析子句/str 载体/len$ 变量实参 → unchecked 不报(绝不猜);
+  //          字面量 Vec 的 len$ 可判(交 v114.41 锁定违反面)。
+  const s5UnStub = w114(path.join(s5Dir, 'un.mingi'), [
+    '// mingi 2',
+    'fn g(x: i64) -> i64',
+    '  requires weird_thing &&',
+    'fn s(v: str) -> i64',
+    '  requires v >= 0',
+    'fn sz(xs: Vec[f64]) -> f64',
+    '  requires len$xs > 0',
+  ].join('\n'));
+  const s5Un = w114(path.join(s5Dir, 'un.ming'), [
+    'extern "libu" fn g(x: i64) -> i64;',
+    'extern "libu" fn s(v: str) -> i64;',
+    'extern "libu" fn sz(xs: Vec[f64]) -> f64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let vs: Vec[f64] = [3.0];',
+    '    let _a = g(5);',
+    '    let _b = s("abc");',
+    '    let _c = sz(vs);',
+    '    let _d = sz([1.0, 2.0]);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5h = runMing(['check', s5Un, '--stub', s5UnStub, '--json']);
+  let j114s5h = null;
+  try { j114s5h = JSON.parse(r114s5h.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.39:S-5 不可判不报——不可解析子句(`weird_thing &&`)/str 载体不等式/len$ 变量实参 → 3 个 unchecked 零 M3053;字面量 Vec 的 len$ 可判 → checked=1',
+    r114s5h.code === 0 && (j114s5h?.diagnostics ?? []).length === 0
+    && j114s5h?.stub_contract?.contracts?.checked === 1 && j114s5h?.stub_contract?.contracts?.violated === 0
+    && j114s5h?.stub_contract?.contracts?.unchecked === 3,
+    `code=${r114s5h.code} diags=${JSON.stringify((j114s5h?.diagnostics ?? []).map((d) => d.code))} contracts=${JSON.stringify(j114s5h?.stub_contract?.contracts)}`);
+
+  // v114.40 ⑪ 同一调用点多条违反子句 → 恰 1 条 M3053(message 含全部违反子句)。
+  const s5Multi = w114(path.join(s5Dir, 'multi.ming'), [
+    'extern "libs5" fn clamp(x: f64, lo: f64, hi: f64) -> f64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = clamp(-2.0, 5.0, 1.0);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5i = runMing(['check', s5Multi, '--stub', s5Stub, '--json']);
+  let j114s5i = null;
+  try { j114s5i = JSON.parse(r114s5i.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m3053i = (j114s5i?.diagnostics ?? []).filter((d) => d.code === 'M3053');
+  check('v114.40:S-5 同一调用点至多 1 条 M3053——x >= lo 与 lo <= hi 两条同时违反仍恰 1 条(message 含两条子句原文与代入值)',
+    r114s5i.code === 1 && m3053i.length === 1
+    && m3053i[0].message.includes('"x >= lo"') && m3053i[0].message.includes('"lo <= hi"')
+    && m3053i[0].message.includes('x = -2') && m3053i[0].message.includes('hi = 1')
+    && j114s5i?.stub_contract?.contracts?.violated === 1 && j114s5i?.stub_contract?.contracts?.checked === 0,
+    `code=${r114s5i.code} m3053=${m3053i.length} msg=${JSON.stringify(m3053i[0]?.message?.slice(0, 180))} contracts=${JSON.stringify(j114s5i?.stub_contract?.contracts)}`);
+
+  // v114.41 ⑫ 链式子句按相邻对求值 + i64 边界精确比较 + len$ 字面量 Vec 违反。
+  const s5ChainStub = w114(path.join(s5Dir, 'chain.mingi'), [
+    '// mingi 2',
+    'fn h(n: i64) -> i64',
+    '  requires 0 <= n <= 10',
+    'fn k(x: i64) -> i64',
+    '  requires x >= 0',
+  ].join('\n'));
+  const s5Chain = w114(path.join(s5Dir, 'chain.ming'), [
+    'extern "libc" fn h(n: i64) -> i64;',
+    'extern "libc" fn k(x: i64) -> i64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = h(11);',
+    '    let _b = h(5);',
+    '    let _c = k(9223372036854775807);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5j = runMing(['check', s5Chain, '--stub', s5ChainStub, '--json']);
+  let j114s5j = null;
+  try { j114s5j = JSON.parse(r114s5j.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m3053j = (j114s5j?.diagnostics ?? []).filter((d) => d.code === 'M3053');
+  const s5LenStub = w114(path.join(s5Dir, 'len2.mingi'), [
+    '// mingi 2',
+    'fn sz2(xs: Vec[f64]) -> f64',
+    '  requires len$xs > 0',
+  ].join('\n'));
+  const s5Len = w114(path.join(s5Dir, 'len2.ming'), [
+    'extern "libl" fn sz2(xs: Vec[f64]) -> f64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = sz2([]);',
+    '    let _b = sz2([1.0]);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5k = runMing(['check', s5Len, '--stub', s5LenStub, '--json']);
+  let j114s5k = null;
+  try { j114s5k = JSON.parse(r114s5k.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m3053k = (j114s5k?.diagnostics ?? []).filter((d) => d.code === 'M3053');
+  check('v114.41:S-5 链式 `0 <= n <= 10` 相邻对求值(h(11) 违反/h(5) 满足)+ i64 最大值精确比较(k(2^63-1) 满足)+ len$ 字面量 Vec(sz2([]) 违反,代入 len$xs = 0)',
+    r114s5j.code === 1 && m3053j.length === 1 && m3053j[0].message.includes('"0 <= n <= 10"') && m3053j[0].message.includes('n = 11')
+    && j114s5j?.stub_contract?.contracts?.checked === 2 && j114s5j?.stub_contract?.contracts?.violated === 1
+    && j114s5j?.stub_contract?.contracts?.unchecked === 0
+    && r114s5k.code === 1 && m3053k.length === 1 && m3053k[0].message.includes('"len$xs > 0"') && m3053k[0].message.includes('len$xs = 0')
+    && j114s5k?.stub_contract?.contracts?.checked === 1 && j114s5k?.stub_contract?.contracts?.violated === 1,
+    `chain=${r114s5j.code}/${m3053j.length}/${JSON.stringify(j114s5j?.stub_contract?.contracts)} len=${r114s5k.code}/${m3053k.length}/${JSON.stringify(j114s5k?.stub_contract?.contracts)} msg=${JSON.stringify(m3053j[0]?.message?.slice(0, 120))}`);
+
+  // v114.42 ⑬ 毒化跳过(§7.1 声称、原零测试):实参类型错误(M3002,span 在调用实参内)
+  //          与调用表达式重叠 → 不审查、不计数,只报根因。
+  const s5Poison = w114(path.join(s5Dir, 'poison.ming'), [
+    'extern "libs5" fn bump(n: i64) -> i64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = bump("abc");',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5p = runMing(['check', s5Poison, '--stub', s5Stub, '--json']);
+  let j114s5p = null;
+  try { j114s5p = JSON.parse(r114s5p.stdout); } catch { /* 下方 check 具名失败 */ }
+  const codes114s5p = (j114s5p?.diagnostics ?? []).map((d) => d.code);
+  check('v114.42:S-5 毒化跳过——调用实参类型错误(M3002,span 在调用表达式内)重叠 → 不审查不计数:无 M3053、contracts 全零,只报根因 M3002',
+    r114s5p.code === 1 && codes114s5p.includes('M3002') && !codes114s5p.includes('M3053')
+    && j114s5p?.stub_contract?.contracts?.checked === 0 && j114s5p?.stub_contract?.contracts?.violated === 0
+    && j114s5p?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5p.code} codes=${JSON.stringify(codes114s5p)} contracts=${JSON.stringify(j114s5p?.stub_contract?.contracts)}`);
+
+  // v114.43 ⑭ 遮蔽五形态(形参 / lambda 形参 / match 臂 / for 模式 / while-let 模式):
+  //          函数体内任何位置出现同名绑定 → 该函数内字面量调用不归属 extern(只漏不误报)。
+  //          形参/lambda 形参用函数类型值调用(合法程序);模式绑定用例的 extern 调用在
+  //          作用域外,真实解析仍是 extern——保守口径下整函数不审查(如实锁定)。
+  const s5ShadowForms = w114(path.join(s5Dir, 'shadow_forms.ming'), [
+    'extern "libs5" fn clamp(x: f64, lo: f64, hi: f64) -> f64;',
+    'extern "libs5" fn bump(n: i64) -> i64;',
+    '',
+    'fn sh_param(clamp: (f64, f64, f64) -> f64) -> f64 with ffi {',
+    '    clamp(-1.0, 0.0, 1.0)',
+    '}',
+    '',
+    'fn sh_lambda() -> f64 with ffi {',
+    '    let f = (clamp: (f64, f64, f64) -> f64) => clamp(-2.0, 0.0, 1.0);',
+    '    f((a: f64, b: f64, c: f64) => a)',
+    '}',
+    '',
+    'fn sh_match(v: i64) -> i64 with ffi {',
+    '    let _p = match v {',
+    '        bump => bump + 0,',
+    '        _ => 1,',
+    '    };',
+    '    bump(-9)',
+    '}',
+    '',
+    'fn sh_for(xs: Vec[i64]) -> i64 with ffi {',
+    '    for bump in xs { let _ = bump; }',
+    '    bump(-9)',
+    '}',
+    '',
+    'fn sh_while_let(o: Option[i64]) -> i64 with ffi {',
+    '    while let Some(bump) = o { break; }',
+    '    bump(-9)',
+    '}',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = sh_param((a: f64, b: f64, c: f64) => a);',
+    '    let _b = sh_lambda();',
+    '    let _c = sh_match(1);',
+    '    let _d = sh_for([1, 2, 3]);',
+    '    let _e = sh_while_let(Some(1));',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5q = runMing(['check', s5ShadowForms, '--stub', s5Stub, '--json']);
+  let j114s5q = null;
+  try { j114s5q = JSON.parse(r114s5q.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.43:S-5 遮蔽保守口径五形态——形参/lambda 形参/match 臂/for 模式/while-let 模式各含同名绑定 → 该函数内字面量调用零 M3053、contracts 全零(只漏不误报)',
+    r114s5q.code === 0 && (j114s5q?.diagnostics ?? []).length === 0
+    && j114s5q?.stub_contract?.contracts?.checked === 0 && j114s5q?.stub_contract?.contracts?.violated === 0
+    && j114s5q?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5q.code} diags=${JSON.stringify((j114s5q?.diagnostics ?? []).map((d) => d.code))} contracts=${JSON.stringify(j114s5q?.stub_contract?.contracts)}`);
+
+  // v114.44 ⑮ f64×整数混合比较:整数侧在 ±(2^53−1) 内才转 Number(精确);
+  //          2^53+1 不可精确表示 → unchecked(精度取舍即猜测,绝不猜)。
+  const s5MixStub = w114(path.join(s5Dir, 'mix.mingi'), [
+    '// mingi 2',
+    'fn m(n: i64) -> i64',
+    '  requires n > 2.5',
+  ].join('\n'));
+  const s5Mix = w114(path.join(s5Dir, 'mix.ming'), [
+    'extern "libm" fn m(n: i64) -> i64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = m(3);',
+    '    let _b = m(2);',
+    '    let _c = m(9007199254740993);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5r = runMing(['check', s5Mix, '--stub', s5MixStub, '--json']);
+  let j114s5r = null;
+  try { j114s5r = JSON.parse(r114s5r.stdout); } catch { /* 下方 check 具名失败 */ }
+  const m3053r = (j114s5r?.diagnostics ?? []).filter((d) => d.code === 'M3053');
+  check('v114.44:S-5 f64×整数混合比较——3 > 2.5 满足/2 > 2.5 违反(M3053 代入 n = 2)/2^53+1 整数侧不可精确转 Number → unchecked(精度不猜)',
+    r114s5r.code === 1 && m3053r.length === 1 && m3053r[0].message.includes('"n > 2.5"') && m3053r[0].message.includes('n = 2')
+    && j114s5r?.stub_contract?.contracts?.checked === 1 && j114s5r?.stub_contract?.contracts?.violated === 1
+    && j114s5r?.stub_contract?.contracts?.unchecked === 1,
+    `code=${r114s5r.code} m3053=${m3053r.length} contracts=${JSON.stringify(j114s5r?.stub_contract?.contracts)} msg=${JSON.stringify(m3053r[0]?.message?.slice(0, 110))}`);
+
+  // v114.45 ⑯ 无 requires 桩:无契约可判 → 调用点不进入任何计数、零 M3053。
+  const s5NoReqStub = w114(path.join(s5Dir, 'noreq.mingi'), [
+    '// mingi 2',
+    'fn p(x: f64) -> f64',
+  ].join('\n'));
+  const s5NoReq = w114(path.join(s5Dir, 'noreq.ming'), [
+    'extern "libp" fn p(x: f64) -> f64;',
+    '',
+    'fn main() with io, ffi {',
+    '    let _a = p(-1.0);',
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5s = runMing(['check', s5NoReq, '--stub', s5NoReqStub, '--json']);
+  let j114s5s = null;
+  try { j114s5s = JSON.parse(r114s5s.stdout); } catch { /* 下方 check 具名失败 */ }
+  check('v114.45:S-5 无 requires 桩不计数——桩只有签名时调用点零 M3053、contracts 全零、exit 0(无契约可判)',
+    r114s5s.code === 0 && (j114s5s?.diagnostics ?? []).length === 0
+    && j114s5s?.stub_contract?.entries_loaded === 1
+    && j114s5s?.stub_contract?.contracts?.checked === 0 && j114s5s?.stub_contract?.contracts?.violated === 0
+    && j114s5s?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5s.code} diags=${JSON.stringify((j114s5s?.diagnostics ?? []).map((d) => d.code))} contracts=${JSON.stringify(j114s5s?.stub_contract?.contracts)}`);
+
+  // v114.46 ⑰ 审查 MAJOR-1 深链裸崩回归:3400 项左结合链(AST 深度 = 项数,parser
+  //          exprDepth 管不到;实测无守卫遍历 3200 项即裸栈 RangeError)。**文件里没有任何
+  //          extern/桩**——崩溃面来自对全部 checked 文件的**无条件**遍历。checker 先报
+  //          M4005 且声明入 depthBailed → 只读遍历必须跳过:不裸崩、stdout 可解析、
+  //          无 M3053、contracts 全零。
+  const s5DeepChain = w114(path.join(s5Dir, 'deep_chain.ming'), [
+    'fn main() with io {',
+    `    let _x = ${Array.from({ length: 3400 }, () => '1').join(' + ')};`,
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5t = runMing(['check', s5DeepChain, '--stub', s5Stub, '--json']);
+  let j114s5t = null;
+  try { j114s5t = JSON.parse(r114s5t.stdout); } catch { /* 下方 check 具名失败 */ }
+  const codes114s5t = (j114s5t?.diagnostics ?? []).map((d) => d.code);
+  check('v114.46:S-5 深链裸崩回归(审查 MAJOR-1)——3400 项左结合链 + --stub --json:不裸崩(stdout 可解析/stderr 无 RangeError)、checker M4005 根因在、无 M3053、contracts 全零',
+    j114s5t !== null && r114s5t.code === 1 && codes114s5t.includes('M4005') && !codes114s5t.includes('M3053')
+    && !r114s5t.stderr.includes('RangeError') && !r114s5t.stderr.includes('bridge.js')
+    && j114s5t?.stub_contract?.contracts?.checked === 0 && j114s5t?.stub_contract?.contracts?.violated === 0
+    && j114s5t?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5t.code} parse=${j114s5t !== null} codes=${JSON.stringify(codes114s5t)} stderr=${JSON.stringify(r114s5t.stderr.slice(0, 100))} contracts=${JSON.stringify(j114s5t?.stub_contract?.contracts)}`);
+
+  // v114.47 ⑱ 遍历器深度守护(纵深防御):110 层嵌套块 + 330 项链——单路径 walker 深度
+  //          > 500 而 checker 未 bail(其 BlockExpr 计数 ~440 < 450):整函数对称跳过,
+  //          零 M3053/零计数/不裸崩(外层 if 内的 bump(-9) 也不得审查——函数级放弃)。
+  const nestDepth114 = 110;
+  const nestChain114 = Array.from({ length: 330 }, () => '1').join(' + ');
+  let nestBody114 = '';
+  for (let i = 0; i < nestDepth114; i++) nestBody114 += `{ let v${i} = 1;`;
+  nestBody114 += ` let _z = bump(-9); let _w = ${nestChain114}; `;
+  for (let i = 0; i < nestDepth114; i++) nestBody114 += '}';
+  const s5Nested = w114(path.join(s5Dir, 'nested.ming'), [
+    'extern "libs5" fn bump(n: i64) -> i64;',
+    '',
+    'fn main() with io, ffi {',
+    `    ${nestBody114}`,
+    '    print("x");',
+    '}',
+  ].join('\n'));
+  const r114s5u = runMing(['check', s5Nested, '--stub', s5Stub, '--json']);
+  let j114s5u = null;
+  try { j114s5u = JSON.parse(r114s5u.stdout); } catch { /* 下方 check 具名失败 */ }
+  const codes114s5u = (j114s5u?.diagnostics ?? []).map((d) => d.code);
+  check('v114.47:S-5 遍历器深度守护(纵深防御)——110 层嵌套块 + 330 项链(单路径 > 500,checker 未 bail):函数整体对称跳过,零 M3053/零计数/不裸崩',
+    j114s5u !== null && r114s5u.code === 0 && !codes114s5u.includes('M4005') && !codes114s5u.includes('M3053')
+    && !r114s5u.stderr.includes('RangeError') && !r114s5u.stderr.includes('bridge.js')
+    && j114s5u?.stub_contract?.contracts?.checked === 0 && j114s5u?.stub_contract?.contracts?.violated === 0
+    && j114s5u?.stub_contract?.contracts?.unchecked === 0,
+    `code=${r114s5u.code} parse=${j114s5u !== null} hasM4005=${codes114s5u.includes('M4005')} hasM3053=${codes114s5u.includes('M3053')} stderr=${JSON.stringify(r114s5u.stderr.slice(0, 100))} contracts=${JSON.stringify(j114s5u?.stub_contract?.contracts)}`);
 }
 
 // ===================== §115 #85:cc 短路求值序(&&/|| + 值型 if / match guard / while 条件;v1.2.1)====================

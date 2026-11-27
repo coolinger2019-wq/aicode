@@ -4,7 +4,7 @@
 // Ming `extern fn` ↔ TS 导出函数。不做 Python / WASM component / 运行时插桩。
 //
 // 本模块是纯 Node 侧工具域(与 ming doc/build 同类,零依赖):
-//   1. extractTs   —— 逐行扫描 TS 源(轻量正则/行扫描,不做完整 AST;限制见规范 §7),
+//   1. extractTs   —— 逐行扫描 TS 源(轻量正则/行扫描,不做完整 AST;限制见规范 §9),
 //                     把导出函数的 Ming 类型签名 + JSDoc 算术不等式候选契约 +
 //                     桥接元数据(@effects 效果面 / @taint 污点面,R-18)提取为数据;
 //   2. renderMingi —— 确定性渲染 .mingi 契约桩(无时间戳/无随机序,逐字节可复现);
@@ -12,7 +12,11 @@
 //                     v1 与 v2 都接受——v1 桩零改动可读);
 //   4. loadStubs   —— 目录/单文件桩装载(目录递归,路径码元序排序,确定性);
 //   5. checkExternsAgainstStubs —— 同名 extern fn 签名逐位核对(参数个数/映射类型),
-//                     失配 → M3052[bridge-signature-mismatch](诊断码三处登记之一:diag.js CODES)。
+//                     失配 → M3052[bridge-signature-mismatch](诊断码三处登记之一:diag.js CODES);
+//   6. checkContractSatisfaction —— 调用点契约满足性(v1.4 S-5 / ADR-015,MVP = b-lite):
+//                     对指向有桩 extern fn 的 Call 节点,实参全为字面量时机械求值桩
+//                     requires → 违反 M3053[bridge-contract-violated];不可判只计数
+//                     (`stub_contract.contracts`,不猜)。**纯报告**:不注入任何推导。
 // 诚实边界:提取只认 docs/bridge-protocol.md 登记的类型映射表与 JSDoc 不等式模式;
 // 表外类型 → 该函数跳过并在桩头具名注记;解析不了的文本 → 桩只含签名,不发明语义。
 // 效果面(R-18)是**元数据**:extern fn 在 Ming 语言面隐含 ffi、无法再声明效果,
@@ -65,7 +69,7 @@ function mapTsType(raw) {
 // 单遍 token 扫描(2026-11-23 审查 M1/m5 修复):先定位比较操作符,再向两侧取
 // **最大连续 token**(字符集 [A-Za-z0-9_$.\[\]]),token 必须整体匹配操作数文法,
 // 否则该条不等式整条丢弃——不做子串截断(旧前瞻正则会把 `max >= 0` 截成 `x >= 0`、
-// `x > y.z` 截成 `x > y`,静默发明候选,违反规范 §5.2/§8.2"不发明语义"承诺)。
+// `x > y.z` 截成 `x > y`,静默发明候选,违反规范 §5.2/§9.2"不发明语义"承诺)。
 // token 化同时消除旧正则对超长描述的指数级回溯(实测 100k 字符 22–37s)。
 const TOKEN_CH = /[A-Za-z0-9_$.\[\]]/;
 const NUM_LIT = /^-?\d+(?:\.\d+)?$/;
@@ -288,7 +292,7 @@ export function extractTs(source, sourceName) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // JSDoc 块(支持多行闭合;与函数声明同行的形态不关联,规范 §7 已登记)
+    // JSDoc 块(支持多行闭合;与函数声明同行的形态不关联,规范 §5.4 已登记)
     const docStart = line.indexOf('/**');
     if (docStart >= 0) {
       let text = line.slice(docStart + 3);
@@ -649,7 +653,7 @@ export function collectTsFiles(target) {
   return list.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
 }
 
-// 装载桩索引:Map<函数名, 条目>。目录内同名条目按路径码元序首个生效(规范 §6.3 登记)。
+// 装载桩索引:Map<函数名, 条目>。目录内同名条目按路径码元序首个生效(规范 §9 第 9 条登记)。
 // 解析错误汇总返回;调用方必须失败退出而不是丢弃错误。
 export function loadStubs(target) {
   const files = collectStubFiles(target);
@@ -788,4 +792,483 @@ export function checkExternsAgainstStubs(checked, stubIndex, stubDisplay) {
       skipped_poisoned: skippedPoisoned,
     },
   };
+}
+
+// ---------- 契约满足性检查(S-5,ADR-015;MVP = b-lite) ----------
+//
+// 触发面(`ming check --stub`,消费点在 bin/ming.js):
+//   每个 checked 模块内**指向同名 extern fn(且有桩)**的 Call 节点逐调用审查——
+//   · 裸调用 `f(...)`:callee 为 Ident;模块级 items 命中 extern fn(词法遮蔽见下);
+//   · `use` 引入的模块内调用 `m.f(...)`:callee 为 Field(Ident m),m 是本地模块绑定。
+//   同一调用点至多 1 条 M3053。
+//
+// 可判条件(ADR-015 §3.2):桩 requires 的**每一条**子句都可解析且全部操作数可赋值。
+//   操作数 = 调用实参字面量(IntLit/FloatLit/StrLit/BoolLit/一元负号字面量),
+//   或 `len$x`(仅当实参是字面量 Vec——check 层实测可达,如 sz([1.0, 2.0]);
+//   变量/表达式实参 → 长度不可得)。实参含变量/表达式/调用、子句不可解析、未知操作数、
+//   实参个数与桩不符 → 整个调用点 unchecked(绝不猜)。
+//
+// 调用点归属:用 checker 真实解析结果做**节点身份扫描**(v0.64 嵌套 serve 两遍式先例的
+//   只读变体——本模块不修改 checker,而是沿它的 Module/items/imports 与 AST 复刻
+//   checker 的名字解析优先级:局部绑定(词法最近)> 模块 items > 内建。遮蔽判定取
+//   保守口径:函数体内**任何位置**出现同名绑定(形参 / let / 本地 fn / match·for·
+//   while-let 模式 / lambda 形参)→ 该名字在本函数内一律不归属模块级 extern,
+//   不审查、不计数(只漏不误报;ADR-015 §5 风险表"误报优先防御")。
+//
+// 语义零变化:纯 check 面(不碰 tree/VM/wasm/cc),不把桩 requires 注入任何推导;
+//   不带 --stub 时本函数不被调用。确定性:模块按 checked 顺序 × 加载序,函数体按源码序,
+//   调用节点按固定子节点序遍历;同一物理模块(绝对路径)只扫描一次。
+
+// requires 子句求值器只认本协议 §4.3/§5.1 文档化文法:
+//   clause := operand (<|<=|>|>=) operand (same-op chain 允许,按相邻对求值)
+//   operand := 十进制整数/小数字面量(可负,禁止 1_000/0x10/1e9 等非十进制形态)
+//            | <桩参数名> | len$<桩参数名>
+// 其他任何字符/形态 → null(整行不可解析 → 调用点 unchecked,不猜)。
+const CLAUSE_IDENT = /^[A-Za-z_$][\w$]*$/;
+const CLAUSE_INT = /^-?\d+$/;
+const CLAUSE_FLOAT = /^-?\d+\.\d+$/;
+const CLAUSE_OP_CH = '<>';
+
+function tokenizeClause(text) {
+  const toks = [];
+  const isDigit = (c) => c >= '0' && c <= '9';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === ' ' || c === '\t') { i += 1; continue; }
+    if (CLAUSE_OP_CH.includes(c)) {
+      if (text[i + 1] === '=') { toks.push({ t: 'op', v: c + '=' }); i += 2; }
+      else { toks.push({ t: 'op', v: c }); i += 1; }
+      continue;
+    }
+    // 负字面量:仅当 '-' 紧跟数字时并入 token(其余 '-' 是未知字符 → 不可解析)。
+    let j = i;
+    if (c === '-' && isDigit(text[i + 1] ?? '')) j += 1;
+    if (isDigit(text[j] ?? '')) {
+      let k = j;
+      while (k < text.length && (isDigit(text[k]) || text[k] === '.' || text[k] === '_')) k += 1;
+      toks.push({ t: 'num', v: text.slice(i, k) });
+      i = k;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(c)) {
+      let k = i;
+      while (k < text.length && /[A-Za-z0-9_$]/.test(text[k])) k += 1;
+      toks.push({ t: 'id', v: text.slice(i, k) });
+      i = k;
+      continue;
+    }
+    return null; // 未知字符(含 `.` `[` `]` `+` `/` 等)→ 整行不可解析
+  }
+  return toks;
+}
+
+function parseClauseOperand(tok, paramSet) {
+  if (tok.t === 'num') {
+    if (CLAUSE_INT.test(tok.v)) return { kind: 'int', v: BigInt(tok.v), text: tok.v };
+    if (CLAUSE_FLOAT.test(tok.v)) return { kind: 'float', v: Number(tok.v), text: tok.v };
+    return null;
+  }
+  if (tok.t !== 'id') return null;
+  const name = tok.v;
+  if (name.startsWith('len$')) {
+    const base = name.slice('len$'.length);
+    if (!CLAUSE_IDENT.test(base) || !paramSet.has(base)) return null;
+    return { kind: 'len', name: base, text: name };
+  }
+  // `result` 不是 requires 的合法操作数(入口处尚不存在;协议 §5.2)→ 不可判。
+  if (name === 'result') return null;
+  if (!paramSet.has(name)) return null;
+  return { kind: 'param', name, text: name };
+}
+
+// 解析一条 requires 行 → {text, operands, ops} 或 null(不可解析)。
+function parseRequiresClause(text, paramSet) {
+  const toks = tokenizeClause(String(text));
+  if (!toks || toks.length === 0) return null;
+  const operands = [];
+  const ops = [];
+  let expectOperand = true;
+  for (const tok of toks) {
+    if (expectOperand) {
+      if (tok.t === 'op') return null;
+      const opd = parseClauseOperand(tok, paramSet);
+      if (!opd) return null;
+      operands.push(opd);
+      expectOperand = false;
+    } else {
+      if (tok.t !== 'op') return null;
+      ops.push(tok.v);
+      expectOperand = true;
+    }
+  }
+  if (expectOperand || ops.length === 0) return null; // 悬空操作符 / 无比较符
+  return { text: String(text), operands, ops };
+}
+
+// 调用实参 → 字面量值(见 §3.2 可判条件)。非字面量/插值串/多级负号 → null。
+function argLiteral(e) {
+  if (!e) return null;
+  switch (e.nt) {
+    case 'IntLit': return { kind: 'int', v: e.v };
+    case 'FloatLit': return { kind: 'float', v: e.v };
+    case 'StrLit':
+      // 纯字面量串:恰一个 lit 片段(`\{expr}` 插值串的 parts 含 expr,不是字面量)。
+      if (e.parts?.length === 1 && Object.prototype.hasOwnProperty.call(e.parts[0], 'lit')) {
+        return { kind: 'str', v: e.parts[0].lit };
+      }
+      return null;
+    case 'BoolLit': return { kind: 'bool', v: e.v };
+    case 'VecLit': return { kind: 'vec', len: e.elems?.length ?? 0 };
+    case 'Unary': {
+      if (e.op !== '-' || !e.expr) return null;
+      const inner = argLiteral(e.expr);
+      if (inner?.kind === 'int') return { kind: 'int', v: -inner.v };
+      if (inner?.kind === 'float') return { kind: 'float', v: -inner.v };
+      return null;
+    }
+    default: return null;
+  }
+}
+
+function clauseValueText(v) {
+  if (v.kind === 'int') return v.v.toString();
+  if (v.kind === 'float') return String(v.v);
+  if (v.kind === 'str') return JSON.stringify(v.v);
+  if (v.kind === 'bool') return v.v ? 'true' : 'false';
+  return `Vec(长度 ${v.len})`;
+}
+
+// 子句操作数 → 具体值。param/len 从调用点实参取;不可得 → null(调用点 unchecked)。
+// subst:参数/长度符号 → 代入值文本(消息用;首个出现序,确定性)。
+function evalClauseOperand(opd, stubEntry, args, subst) {
+  if (opd.kind === 'int') return { kind: 'int', v: opd.v };
+  if (opd.kind === 'float') return { kind: 'float', v: opd.v };
+  const idx = stubEntry.params.findIndex((p) => p.name === opd.name);
+  if (idx < 0 || idx >= args.length) return null;
+  const lit = argLiteral(args[idx]);
+  if (!lit) return null;
+  let val;
+  if (opd.kind === 'len') {
+    // len$x 仅当对应实参是字面量 Vec(变量/表达式实参 → 长度不可得 → unchecked)。
+    if (lit.kind !== 'vec') return null;
+    val = { kind: 'int', v: BigInt(lit.len) };
+  } else {
+    val = lit;
+  }
+  if (!subst.has(opd.text)) subst.set(opd.text, clauseValueText(val));
+  return val;
+}
+
+// 数值比较:两侧整数 → BigInt 精确;含 f64 → 仅当整数侧在 ±(2^53-1) 内可精确表示时
+// 转 Number(其余不可判——精度取舍就是猜测)。str/bool/vec 不参与不等式 → null。
+const SAFE_INT = 9007199254740991n;
+function compareValues(l, op, r) {
+  if (!l || !r) return null;
+  const num = (x) => {
+    if (x.kind === 'int') return x.v >= -SAFE_INT && x.v <= SAFE_INT ? Number(x.v) : null;
+    if (x.kind === 'float') return x.v;
+    return null;
+  };
+  if (l.kind === 'int' && r.kind === 'int') {
+    const a = l.v, b = r.v;
+    switch (op) {
+      case '<': return a < b;
+      case '<=': return a <= b;
+      case '>': return a > b;
+      case '>=': return a >= b;
+      default: return null;
+    }
+  }
+  const a = num(l), b = num(r);
+  if (a === null || b === null) return null;
+  switch (op) {
+    case '<': return a < b;
+    case '<=': return a <= b;
+    case '>': return a > b;
+    case '>=': return a >= b;
+    default: return null;
+  }
+}
+
+// 一条子句的求值:先解析全部操作数(任一不可得 → unchecked),再逐对比较。
+// 返回 {status:'ok'} | {status:'violated', text, subst} | {status:'unchecked'}。
+function evalRequiresClause(clause, stubEntry, args) {
+  const subst = new Map();
+  const vals = [];
+  for (const opd of clause.operands) {
+    const v = evalClauseOperand(opd, stubEntry, args, subst);
+    if (v === null) return { status: 'unchecked' };
+    vals.push(v);
+  }
+  for (let i = 0; i < clause.ops.length; i++) {
+    const ok = compareValues(vals[i], clause.ops[i], vals[i + 1]);
+    if (ok === null) return { status: 'unchecked' };
+    if (!ok) return { status: 'violated', text: clause.text, subst };
+  }
+  return { status: 'ok' };
+}
+
+// 一个调用点的判定:桩带 ≥1 条 requires 才进入计数;任一行不可解析/不可判 → 整个
+// 调用点 unchecked(MVP 只报告全可判的事实,不猜)。
+function evaluateCallSite(args, stubEntry) {
+  if (args.length !== stubEntry.params.length) return { status: 'unchecked' };
+  const paramSet = new Set(stubEntry.params.map((p) => p.name));
+  const violations = [];
+  const seen = new Set();
+  for (const text of stubEntry.requires) {
+    if (seen.has(text)) continue;
+    seen.add(text);
+    const clause = parseRequiresClause(text, paramSet);
+    if (!clause) return { status: 'unchecked' };
+    const res = evalRequiresClause(clause, stubEntry, args);
+    if (res.status === 'unchecked') return { status: 'unchecked' };
+    if (res.status === 'violated') violations.push(res);
+  }
+  if (violations.length) return { status: 'violated', violations };
+  return { status: 'ok' };
+}
+
+// ---- AST 行走(只读;节点形态以 src/parser.js 为准)----
+// v 接口:{ onExpr(node), onName(name) }——绑定名收集与调用点收集复用同一遍历。
+//
+// v1.4 S-5 审查 MAJOR-1(裸崩面收口):遍历自带深度守卫——Binary/调用链是
+// parseBinLevel 的**循环**产物(AST 深度 = 项数),parser 的 exprDepth 守卫管不到;
+// 实测 3200 项左结合链在无守卫遍历下裸栈 RangeError(v0.73/0.75/0.76 裸崩面纪律同款)。
+// 三重防御(方向一致:只漏不误报):
+//   ① 调用方跳过 checker 的 depthBailed 声明(checker 已报 M4005;与 buildSummaryReport/
+//      静态证明的 depthBailed 门槛同源,v0.75 纪律);
+//   ② 本遍历器 depth 计数超限(WALK_DEPTH_LIMIT)即返回 false(对称放弃)——调用方把
+//      整个函数视为不可审查:不审查、不计数;
+//   ③ 调用方 try/catch RangeError 兜底(理论不可达;不让裸栈穿出工具)。
+const WALK_DEPTH_LIMIT = 500; // 合法语料实测最大嵌套 12 层;checker 表达式守卫 450 同量级
+
+function walkScopedBlock(block, v, depth = 0) {
+  if (!block) return true;
+  if (depth > WALK_DEPTH_LIMIT) return false;
+  for (const s of block.stmts ?? []) {
+    if (!walkScopedStmt(s, v, depth + 1)) return false;
+  }
+  if (block.tail) return walkScopedExpr(block.tail, v, depth + 1);
+  return true;
+}
+
+function bindPatternNames(p, v, depth = 0) {
+  if (!p) return true;
+  if (depth > WALK_DEPTH_LIMIT) return false;
+  if (p.nt === 'PIdent') { v.onName(p.name); return true; }
+  if (p.nt === 'PTuple') {
+    for (const q of p.pats ?? []) if (!bindPatternNames(q, v, depth + 1)) return false;
+    return true;
+  }
+  if (p.nt === 'PEnum') {
+    for (const q of p.args ?? []) if (!bindPatternNames(q, v, depth + 1)) return false;
+    return true;
+  }
+  // PWild / PLit:无绑定
+  return true;
+}
+
+function walkScopedStmt(s, v, depth = 0) {
+  if (!s) return true;
+  if (depth > WALK_DEPTH_LIMIT) return false;
+  switch (s.nt) {
+    case 'Let':
+      if (!bindPatternNames(s.pat, v, depth + 1)) return false;
+      return s.init ? walkScopedExpr(s.init, v, depth + 1) : true;
+    case 'ExprStmt': return walkScopedExpr(s.expr, v, depth + 1);
+    case 'Return': return s.value ? walkScopedExpr(s.value, v, depth + 1) : true;
+    case 'Assign':
+      return walkScopedExpr(s.target, v, depth + 1) && walkScopedExpr(s.value, v, depth + 1);
+    case 'While':
+      return walkScopedExpr(s.cond, v, depth + 1) && walkScopedBlock(s.body, v, depth + 1);
+    case 'WhileLet':
+      return bindPatternNames(s.pat, v, depth + 1)
+        && walkScopedExpr(s.expr, v, depth + 1)
+        && walkScopedBlock(s.body, v, depth + 1);
+    case 'For':
+      return bindPatternNames(s.pat, v, depth + 1)
+        && walkScopedExpr(s.iter, v, depth + 1)
+        && walkScopedBlock(s.body, v, depth + 1);
+    case 'Loop':
+    case 'UnsafeBlock':
+    case 'SyncScopeBlock':
+      return walkScopedBlock(s.body, v, depth + 1);
+    case 'FnStmt':
+      v.onName(s.decl?.name);
+      for (const p of s.decl?.params ?? []) v.onName(p.name);
+      return walkScopedBlock(s.decl?.body, v, depth + 1);
+    case 'AsmBlock':
+      // asm 的 out/in 只含名字或完整表达式;模板/clobber 是字面量(无绑定/无调用点)。
+      for (const x of s.ins ?? []) if (!walkScopedExpr(x.value, v, depth + 1)) return false;
+      return true;
+    case 'Break':
+    case 'Continue':
+      return true;
+    default:
+      // If/Match/BlockExpr/LoopExpr 作语句时由 finishExprStmt 包成 ExprStmt;
+      // 其余未知节点按无子节点处理(保守:不深入 → 只可能漏报,不会误报)。
+      return true;
+  }
+}
+
+function walkScopedExpr(e, v, depth = 0) {
+  if (!e) return true;
+  if (depth > WALK_DEPTH_LIMIT) return false;
+  v.onExpr(e);
+  switch (e.nt) {
+    case 'Call':
+      if (!walkScopedExpr(e.callee, v, depth + 1)) return false;
+      for (const a of e.args ?? []) if (!walkScopedExpr(a, v, depth + 1)) return false;
+      return true;
+    case 'Field': return walkScopedExpr(e.base, v, depth + 1);
+    case 'Index':
+      return walkScopedExpr(e.base, v, depth + 1) && walkScopedExpr(e.index, v, depth + 1);
+    case 'Binary':
+      return walkScopedExpr(e.l, v, depth + 1) && walkScopedExpr(e.r, v, depth + 1);
+    case 'Unary':
+    case 'PostQ':
+    case 'As':
+      return walkScopedExpr(e.expr, v, depth + 1);
+    case 'Range':
+      return walkScopedExpr(e.lo, v, depth + 1) && walkScopedExpr(e.hi, v, depth + 1);
+    case 'TupleLit':
+    case 'VecLit':
+      for (const x of e.elems ?? []) if (!walkScopedExpr(x, v, depth + 1)) return false;
+      return true;
+    case 'MapLit':
+      for (const en of e.entries ?? []) {
+        if (!walkScopedExpr(en.k, v, depth + 1) || !walkScopedExpr(en.v, v, depth + 1)) return false;
+      }
+      return true;
+    case 'StructLit':
+      for (const f of e.fields ?? []) if (!walkScopedExpr(f.value, v, depth + 1)) return false;
+      return true;
+    case 'StrLit':
+      for (const p of e.parts ?? []) if (p.expr && !walkScopedExpr(p.expr, v, depth + 1)) return false;
+      return true;
+    case 'If':
+      if (!walkScopedExpr(e.cond, v, depth + 1)) return false;
+      if (!walkScopedBlock(e.then, v, depth + 1)) return false;
+      if (!e.els) return true;
+      return e.els.nt === 'If' ? walkScopedExpr(e.els, v, depth + 1) : walkScopedBlock(e.els, v, depth + 1);
+    case 'Match':
+      if (!walkScopedExpr(e.scrutinee, v, depth + 1)) return false;
+      for (const arm of e.arms ?? []) {
+        if (!bindPatternNames(arm.pat, v, depth + 1)) return false;
+        if (arm.guard && !walkScopedExpr(arm.guard, v, depth + 1)) return false;
+        if (!walkScopedExpr(arm.expr, v, depth + 1)) return false;
+      }
+      return true;
+    case 'BlockExpr':
+      return walkScopedBlock(e.block, v, depth + 1);
+    case 'LoopExpr':
+      return walkScopedBlock(e.body, v, depth + 1);
+    case 'Lambda':
+      for (const p of e.params ?? []) v.onName(p.name);
+      return walkScopedExpr(e.body, v, depth + 1);
+    default:
+      // Ident / IntLit / FloatLit / BoolLit 等叶子
+      return true;
+  }
+}
+
+// 调用点归属:复刻 checker.checkCall 的名字解析优先级(局部 > 模块 items > 内建)。
+// `m.f(...)`(Field + 本地模块绑定)分支是**防御性保留**:extern fn 永非 pub(parser
+// `pub` 白名单只允许 fn/struct/enum/const;checker 注册 extern 时 pub:false),跨模块
+// 访问必先 M3001,其 span 为 callee(止于 "(")与 Call span 起点相接 → 毒化跳过;
+// 该分支只在未来可见性口径变化时才有活路(当前不可达,文档 §7.1 如实登记)。
+function resolveExternStub(call, mod, bound, stubIndex) {
+  const callee = call.callee;
+  if (!callee) return null;
+  if (callee.nt === 'Ident') {
+    if (bound.has(callee.name)) return null; // 词法遮蔽 → 不是该 extern 的调用点
+    const entry = mod.items.get(callee.name);
+    if (!entry || entry.kind !== 'fn' || !entry.extern) return null;
+    return { name: callee.name, stub: stubIndex.get(callee.name) ?? null };
+  }
+  if (callee.nt === 'Field' && callee.base?.nt === 'Ident') {
+    const base = callee.base.name;
+    if (bound.has(base)) return null; // 局部值遮蔽导入绑定 → 方法调用
+    const imp = mod.imports.get(base);
+    if (!imp || !imp.local) return null; // std 模块 / 非导入基名 → 非 extern 调用点
+    const entry = imp.local.items.get(callee.name);
+    if (!entry || entry.kind !== 'fn' || !entry.extern) return null;
+    return { name: callee.name, stub: stubIndex.get(callee.name) ?? null };
+  }
+  return null;
+}
+
+// 对全部 checked 模块做调用点扫描(每物理模块只扫一次;多入口共享模块不重复计数)。
+// 返回 {diags, contracts:{checked, violated, unchecked}};contracts 是 `--json` 的
+// additive 计数(ADR-015 §3.3):checked = 判定满足的调用点数,violated = 违反数,
+// unchecked = 不可判数——三者互斥,和 = 审查覆盖的调用点总数(仅桩带 ≥1 条 requires)。
+export function checkContractSatisfaction(checked, stubIndex) {
+  const diags = [];
+  const contracts = { checked: 0, violated: 0, unchecked: 0 };
+  // 毒化跳过(v0.67 诊断纪律;与 M3052 的 skipped_poisoned 同源):调用表达式与既有
+  // error 级诊断 overlap 时表达式不可信——不审查、不计数,根因诊断优先。
+  const errorSpans = [];
+  for (const result of checked) {
+    for (const d of result.diags ?? []) if (d.severity === SEVERITY.ERROR && d.span) errorSpans.push(d.span);
+  }
+  const seenModules = new Set();
+  const seenSites = new Set(); // 绝对路径 + 调用 span + 目标名(双保险;跨入口去重)
+
+  // 单个调用点审查(modKey 用于站点去重键;errorSpans/seenSites/契约计数共享)。
+  const reviewCall = (mod, modKey, call, bound) => {
+    const target = resolveExternStub(call, mod, bound, stubIndex);
+    if (!target?.stub || !(target.stub.requires?.length)) return; // 无桩/无 requires → 无契约可判
+    if (errorSpans.some((sp) => spanOverlaps(call.span, sp))) return; // 毒化跳过
+    const siteKey = `${modKey}\u0000${call.span?.line ?? 0}:${call.span?.col ?? 0}\u0000${target.name}`;
+    if (seenSites.has(siteKey)) return;
+    seenSites.add(siteKey);
+    const res = evaluateCallSite(call.args ?? [], target.stub);
+    if (res.status === 'unchecked') { contracts.unchecked += 1; return; }
+    if (res.status === 'ok') { contracts.checked += 1; return; }
+    contracts.violated += 1;
+    // 同一调用点至多 1 条 M3053:全部违反子句列入 message(顺序 = 桩 requires 序)。
+    const detail = res.violations.map((v) => {
+      const sub = [...v.subst.entries()].map(([n, val]) => `${n} = ${val}`).join(', ');
+      return sub ? `"${v.text}" 代入 ${sub}` : `"${v.text}"`;
+    }).join(';');
+    diags.push(err('M3053',
+      `桥接契约违例:extern 函数 "${target.name}" 的调用不满足契约桩 ${target.stub.stub}:${target.stub.line} 的 requires——${detail}`,
+      call.span));
+  };
+
+  for (const result of checked) {
+    const bailed = result.depthBailed ?? new Set(); // ① 已报 M4005 的顶层声明不碰
+    for (const mod of result.modules ?? []) {
+      const modKey = mod.absPath ?? mod.file;
+      if (seenModules.has(modKey)) continue;
+      seenModules.add(modKey);
+      for (const item of mod.program?.items ?? []) {
+        let bodies;
+        if (item.nt === 'FnDecl' || item.nt === 'TestDecl') bodies = [{ params: item.params ?? [], body: item.body, decl: item }];
+        else if (item.nt === 'ImplDecl') bodies = (item.methods ?? []).map((m) => ({ params: m.params ?? [], body: m.body, decl: m }));
+        else continue;
+        for (const { params, body, decl } of bodies) {
+          if (!body || bailed.has(decl)) continue;
+          // 第一遍:保守收集函数体内任何位置的绑定名(遮蔽 → 不归属模块级 extern)。
+          // ② 深度超限 → 整个函数不审查、不计数(只漏不误报)。
+          const bound = new Set();
+          for (const p of params) bound.add(p.name);
+          try {
+            const bindOk = walkScopedBlock(body, { onExpr: () => {}, onName: (n) => { if (n) bound.add(n); } });
+            if (!bindOk) continue;
+            // 第二遍:按源码序审查调用点(同树同限深,bindOk 已保证不会超限)。
+            walkScopedBlock(body, {
+              onName: () => {},
+              onExpr: (e) => { if (e.nt === 'Call') reviewCall(mod, modKey, e, bound); },
+            });
+          } catch (e) {
+            // ③ 纵深防御:遍历器/求值器内部 RangeError → 具名跳过该函数,不让裸栈穿出。
+            if (!(e instanceof RangeError)) throw e;
+          }
+        }
+      }
+    }
+  }
+  return { diags, contracts };
 }

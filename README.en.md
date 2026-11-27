@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.3.2** (2026-11-27) |
-| Regression suite | **1818 checks, all green** (§1–§117; full run every time) |
+| Current version | **v1.4.0** (2026-11-27) |
+| Regression suite | **1836 checks, all green** (§1–§117; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **14** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.4.0 | 2026-11-27 | Contract satisfaction check (S-5/ADR-015): `check --stub` call-site requires satisfaction (b-lite: literal arguments mechanically evaluated, violation emits M3053[bridge-contract-violated]; undecidable counted in `stub_contract.contracts`; no assumption injection) + consumer kit (`examples/consumers/verify_cert.py` independent Python implementation of the certificate criterion + consumption guide) | 1836 |
 | v1.3.2 | 2026-11-27 | R-19 coverage extension: nine SMT fixtures (reserved-word rewrite / non-linearizable / multi-file sections — section order now has a discriminating guard for command-line order) + zero-command allowlist + strengthened matrix assertions | 1818 |
 | v1.3.1 | 2026-11-27 | Manifest v2: certificate fingerprint binding (`artifacts` = hash of the exact artifact bytes of this export, closing TOCTOU for a single export; `--proof-manifest` opened to cert mode; per-direction `{has_cert, uses_goal, vacuous, reason}`; v1→v2 pure additive) | 1818 |
 | v1.3.0 | 2026-11-27 | Self-produced linear certificates (S-3a/ADR-014): `ming check --proof-format cert` -- negative cycles from the decision procedure ARE Farkas certificates with coefficients 1; self-contained integer-arithmetic criterion (a third party re-checks in a few dozen lines); `uses_goal`/`vacuous` fields; coverage not promised, certificate-less proven obligations named; `tests/cert_check.mjs` reference checker (independent recomputation + three negative cases) + 7-corpus goldens | 1809 |

@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v1.4.0 | 2026-11-27 | 契约满足性检查(S-5/ADR-015):`check --stub` 调用点 requires 满足性(MVP=b-lite:全字面量实参机械求值,违反发 M3053[bridge-contract-violated];不可判 `stub_contract.contracts` 计数;不注入任何推导)+ 消费套件(`examples/consumers/verify_cert.py` Python 独立实现证书判据 + 消费指南) | 1836 |
 | v1.3.2 | 2026-11-27 | R-19 覆盖扩面:SMT fixture 九语料(保留字重写/不可线性化/多文件分节——分节按命令行顺序具判别性守卫)+ 零命令允许列表 + 矩阵断言强化 | 1818 |
 | v1.3.1 | 2026-11-27 | manifest v2:证书指纹绑定(`artifacts` = 该次导出的确切工件字节哈希,TOCTOU 单次导出闭环;`--proof-manifest` 放开到 cert 模式;cert 模式义务条目 `{has_cert,uses_goal,vacuous,reason}`;v1→v2 纯追加) | 1818 |
 | v1.3.0 | 2026-11-27 | 自产线性证书(S-3a/ADR-014):`ming check --proof-format cert`——判定阶段负环即系数为 1 的 Farkas 证书,判据自包含(整数算术,第三方数十行可复核);`uses_goal`/`vacuous` 双字段;覆盖率不承诺、无证书 proven 具名;`tests/cert_check.mjs` 参考检查器(独立重算+三负例)+ 7 语料黄金 | 1809 |
@@ -282,8 +283,8 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v1.3.2**(2026-11-27) |
-| 回归测试 | **1818 项全绿**(§1–§117;每次全量运行) |
+| 当前版本 | **v1.4.0**(2026-11-27) |
+| 回归测试 | **1836 项全绿**(§1–§117;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.1% 行 / 90.9% 函数**(v0.96 复测 2026-11-20;16 文件含 opt.js 99.3%/100%;vm.js 函数 76.6%) |
 | 自举工具 | **14 个**(Ming 自写;`ming tools` 统一入口) |
@@ -291,4 +292,4 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 | 运行要求 | Node.js ≥ 18,零第三方依赖;C 后端需 gcc/clang |
 | 构建产物 | `ming build` AOT 字节码(内容寻址缓存);`ming cc` C 原生可执行 |
 
-下一步:外部消费者接触(证明工件——SMT-LIB/自产证书/manifest v2——已具备被独立消费的全部条件)/ R-21 Alethe 观察项(门槛三条)/ 跨目录义务 id 消歧(manifest 后续版本候选);按 [docs/plan.md](docs/plan.md) §4.20 P2 与 §5.1 推进。
+下一步:外部消费者接触(证明工件与消费指南齐备,`examples/consumers/verify_cert.py` 可作任何第三方实现的验收参照)/ R-21 Alethe 观察项(门槛三条)/ 跨目录义务 id 消歧 / contracts b-full(非字面量实参,预支证明扩面门禁);按 [docs/plan.md](docs/plan.md) §4.22 推进。
