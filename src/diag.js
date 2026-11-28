@@ -20,6 +20,7 @@ export const CODES = {
   M2005: 'chained-comparison',
   M2006: 'duplicate-parameter',
   M2007: 'invalid-assignment-target',
+  M2008: 'invalid-effect-param', // v1.9.0(ADR-021 §1/§2):效果参数文法非法(非 fs 带参/中段通配/?/空串;非字面量参数走 M2001 注入卫生先例)
   // ---- 类型/语义 M3xxx ----
   M3001: 'cannot-find-name',
   M3002: 'mismatched-types',
@@ -69,6 +70,8 @@ export const CODES = {
   M3051: 'slice-escape', // v0.87(ADR-009 S2):Slice 视图违反块内线性/构造规则(不可逃逸/跨函数/被捕获)
   M3052: 'bridge-signature-mismatch', // v1.2(S-4 契约桥 MVP):同名 extern fn 与 .mingi 契约桩签名不一致
   M3053: 'bridge-contract-violated', // v1.4(S-5/ADR-015 MVP):调用点字面量实参不满足同名桩的 requires 子句(纯报告,不改语义)
+  M3054: 'fs-path-denied', // v1.9.0(ADR-021 §4):运行时 fs 路径越权(路径 ∉ 活跃授权集;发射点 = interp fs switch,参数化效果批的运行时面)
+  M3055: 'fs-effect-param-containment', // v1.9.0(ADR-021 §3):参数化调用方 fs(P) 无法证明覆盖被调方 fs(Q)
   // ---- 警告 ----
   W3101: 'unused-variable',
   W3102: 'float-equality',
@@ -112,6 +115,9 @@ export const CODE_HINTS = {
   M3050: "Untrusted 的操作面只有载体白名单(str:污值代数面——数值/布尔/计数 5 项 + 保污纯函数集 trim*/to_upper/to_lower/replace/repeat/slice_chars/pad_*/chars/split/get/bytes/to_bytes/starts_with/ends_with/contains/is_alpha 等,逐函数裁决见 checker UNTRUSTED_STR_ALGEBRA(ADR-007);Json:投影表 get/at/as_*/is_*/eq,见 ADR-004;Vec[u8]:len/is_empty/get 元素读/to_hex(ADR-012);Map[str,str]:投影表 len/is_empty/get/has/keys/values(只读 v1.3,ADR-008);i64(污标量,ADR-012):方法面空白名单——污域算术/位运算与比较(净 bool 出)是唯一处理面,无净化器);产出净 str 的唯一出口是 std.unstr.sanitize_path / sanitize_cli_path(经 as_str 投影)。",
   M3051: "Slice 是块内线性只读视图(ADR-009 §2.2):只能由非 mut Vec[u8] 绑定的 .view(start, len) 创建,并以 len/get/at 就地消费;不可 return、不可存入 Vec/Map/结构体/变体载荷、不可作为实参传递、不可再绑定/赋值、不可被闭包捕获、不可出现在函数形参/返回类型——底层存储生命周期钉在词法块内,无借用检查器的语言里视图逃逸即悬垂风险。",
   M3052: "契约桥只核对有桩的 extern 函数:按 .mingi 桩修正 extern 声明(参数个数/映射类型),或重新运行 ming bridge extract 更新桩。格式与比较规则见 docs/bridge-protocol.md。",
+  M2008: '效果参数只支持三种形态:精确路径 fs("/data/x.csv")、目录前缀 fs("/data/")(授其下全部)、显式通配尾 fs("/data/**")(≡ 目录前缀)或 fs("/data/*")(仅直接子项);中段通配与 "?" 不支持;路径按字面匹配,不做 ".." 解析(路径先过 std.unstr.sanitize_path);当前仅 fs 支持参数(net/exec 带参为登记候选)。',
+  M3055: "扩调用方的 with fs(...) 模式集使每个被调方模式都被覆盖(目录前缀 \"/x/\" 或 \"/x/**\" ⊇ 其下全部路径,\"/*\" 仅直接子项),或把被调方声明收窄为调用方已授予的子集;调用方改裸 fs(无参)即无界授权(覆盖一切)。",
+  M3054: "程序只被授予声明的 fs 路径授权集:让路径落在活跃授权模式内,或扩宽所在函数的 with fs(...) 声明(需同步满足调用链的静态包含关系 M3055);路径先过 std.unstr.sanitize_path 规范化。",
   M3053: "这是跨语言边界的前置条件事实报告(纯 check 面,不改运行时/证明语义):调用点字面量不满足桩 requires。修正实参,或与对端核对契约后重新生成桩;若契约不符实际,改对端契约源(TS JSDoc / Python docstring,ADR-018)而非绕过本检查。可判子集与求值语义见 docs/bridge-protocol.md。",
   M4016: 'unsafe 指针操作仅由 C 原生后端(ming cc)执行;tree/VM 不伪装内存语义。',
   M4017: '内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义。', // v0.74(ADR-006);panic 消息为同一句式(无句号),三引擎逐字一致

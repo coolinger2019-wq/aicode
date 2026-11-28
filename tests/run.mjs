@@ -23,7 +23,7 @@
 // 组布局(4 组,覆盖全部分节;组内顺序 = 文件顺序;定稿依据 = 串行基线逐节耗时 LPT 均衡 269.4–269.5s/组 + 依赖审计):
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108 119
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
-//   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 122 63 69 71 75 78 86 90 98 101 105 109 110
+//   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 122 123 63 69 71 75 78 86 90 98 101 105 109 110
 //   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115 116 117 118 120 121
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
@@ -198,7 +198,7 @@ if (PAR_DRY || PARALLEL) {
     // 组1 = §5(fmt,250.7s 串行最大节)独占载体 + 小节填充;基线 269.5s
     ['3', '5', '9', '12', '13', '15', '19', '20', '24', '36', '47', '53', '70', '84', '85', '92'],
     // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;§122 与 LSP 先例 §62 同组(就近,无端口);基线 269.4s
-    ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '122', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
+    ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '122', '123', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充(契约桥 §114/§120/§121 同组,无端口);基线 269.4s
     ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116', '117', '118', '120', '121'],
   ];
@@ -16530,10 +16530,10 @@ secBegin('78');
       `exit=${res.code} json=${res.j !== null} M4005=${m.length} codes=${codes78(res).join(',')} 裸崩=${crash78(res)}`);
   }
 
-  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(38 文件冒烟;v0.79 工具 12→14;v1.4.2 工具 14→17;v1.5.0 工具 17→18)----
+  // ---- v78.6:合法面不误伤——全部 examples + tools check exit 0(40 文件冒烟;v0.79 工具 12→14;v1.4.2 工具 14→17;v1.5.0 工具 17→18;v1.9.0 参数化效果批 examples 20→22:+fs_effect_demo/fs_effect_demo_denied——denied 语料是运行时 M3054 演示,check 面 exit 0 合法)----
   {
     // 合法程序各域嵌套深度个位数~低两位,守卫阈值 450/950/1450/2000 远离;改前基线同。
-    // 本条同时锁"examples(20)+ 自举工具(18)= 38 文件"两个面(v1.4.2:certverify/treehash/semver;v1.5.0:moltbook)。
+    // 本条同时锁"examples(22)+ 自举工具(18)= 40 文件"两个面(v1.4.2:certverify/treehash/semver;v1.5.0:moltbook;v1.9.0:+2 fs 效果演示)。
     const dirs = ['examples', 'tools'];
     const files = [];
     for (const d of dirs) {
@@ -16546,8 +16546,8 @@ secBegin('78');
       const r = runMing(['check', f]);
       if (r.code !== 0 || crash78({ out: r.stdout + r.stderr })) bad.push(`${path.basename(path.dirname(f))}/${path.basename(f)}(exit=${r.code})`);
     }
-    check('v78.6:合法面不误伤——examples+tools 共 38 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
-      files.length === 38 && bad.length === 0,
+    check('v78.6:合法面不误伤——examples+tools 共 40 文件 check 全 exit 0,零裸栈崩溃(四域守卫阈值远离合法深度)',
+      files.length === 40 && bad.length === 0,
       `n=${files.length} bad=${bad.join(',') || '无'}`);
   }
 
@@ -26680,13 +26680,18 @@ secBegin('111');
   //      函数名;四个 token 均不出现在任何字符串字面量中,剥注释不影响判定);
   //      captureEnvFor 单一路径(创建点 e.body/复制点 v.body 两调用位)。
   {
+    // v1.9.0 修订(§123 批):改对原文扫描(不再剥注释)。根因:参数化效果批(ADR-021)后
+    // interp.js 的 fs 授权公式**代码内**含 '/**' 与 '/*' 字符串字面量(src/interp.js:957-958),
+    // 任何块注释剥法都会把字面量里的 "/*" 误认块注释起点,吞掉其后 ~4 万字符(含
+    // captureEnvFor 创建点调用位)→ v111.15 假失败(先剥行注释的中间方案同样被代码内字面量
+    // 击穿)。原文扫描口径:dead 检查比旧口径更严(注释提及消亡 token 同样计入——语义即
+    // "整文件零残留",与门禁意图一致);single 检查偏松(注释里写出调用位全文可假通过,
+    // 实际风险可忽略)。当前 interp.js 原文四个消亡 token 计数为 0(§123 批复核)。
     const raw111 = fs.readFileSync(path.join(ROOT, 'src', 'interp.js'), 'utf8');
-    const code111 = raw111.replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n').map((l) => l.slice(0, Math.max(0, l.indexOf('//') === -1 ? l.length : l.indexOf('//')))).join('\n');
-    const dead = !code111.includes('snapshotEnv') && !code111.includes('__snapSeq')
-      && !code111.includes('MING_DBG_TYS') && !code111.includes('__dbgId');
-    const single = code111.includes('captureEnvFor(v.body, v.params, v.env)')
-      && code111.includes('captureEnvFor(e.body, e.params, env)');
+    const dead = !raw111.includes('snapshotEnv') && !raw111.includes('__snapSeq')
+      && !raw111.includes('MING_DBG_TYS') && !raw111.includes('__dbgId');
+    const single = raw111.includes('captureEnvFor(v.body, v.params, v.env)')
+      && raw111.includes('captureEnvFor(e.body, e.params, env)');
     check('v111.15:snapshotEnv/__snapSeq 消亡——src/interp.js 代码零残留(剥注释 grep 断言,含 MING_DBG_TYS/__dbgId 观测面);'
       + 'captureEnvFor 单一快照路径(创建点/复制点两调用位)',
       dead && single, `dead=${dead} singlePath=${single}`);
@@ -32649,6 +32654,734 @@ secBegin('122');
       `code=${r.code} ids=${JSON.stringify(rs.map((x) => x.id))} qtc=${JSON.stringify(qtc)} err8=${JSON.stringify(byId(8)?.error)}`);
   }
 }
+
+secBegin('123');
+{
+  // 覆盖:P1 6.2 第一片 = 参数化效果 fs 静态面(ADR-021,裁决先行)。
+  //   parser:with 混列带参效果(`with io, fs("/data/**")`)/单字符串字面量强制(禁插值,注入卫生
+  //     同 asm expectStrLit 先例)/模式文法三形态(精确路径·目录前缀尾 `/`·尾 `/*` 或 `/**`),
+  //     校验单点在 parser(validateEffectParam;选定理由:纯词法判定 + span 精确 + 非法模式不流入
+  //     AST 下游);具名拒绝 M2008(非 fs 带参/中段通配/?/空串),非字面量走 M2001。
+  //   checker:效果有无判定不变(裸名 M3029 面零改动,零破坏锚);新增参数包含面
+  //     M3055[fs-effect-param-containment] ——调用方裸 fs = 覆盖一切;被调方裸 fs = 无界要求
+  //     不可证明覆盖;双方参数化 → ∀q∈Q ∃p∈P: covers(p,q)。覆盖公式(逐字符前缀,按字面,
+  //     不做 `..`/符号链接解析):精确相等;p 尾 `/**` 归一为目录前缀;q 尾 `/**` 递归去尾;
+  //     p 目录前缀(尾 `/`)→ q.startsWith(p);p 尾 `/*`(直接子项)→ q 在其目录下且恰多一段
+  //     (深路径/目录本身不覆盖)。std 内建(std.fs.*)不经本判定(裸名面,路径级授权归运行时)。
+  //   三处登记:src/diag.js(CODES/CODE_HINTS)+ docs/diagnostics.md + 本节。
+  //   fmt 零数据丢失锚:带参效果原样回写(丢参 = 静默扩权为无界裸 fs,v0.56 #36/v0.74 asm 同族)。
+  //   消费链:模块 fn/impl 方法/本地函数三调用点;fn 值路径不携带参数信息(诚实缺口,本节锁定
+  //     现行为,运行时 M3054 兜底);闭包继承所在 fn 授权集;test 块全效果口径(unbounded)。
+  //   **运行时面占位(联调时序)**:M3054[fs-path-denied] panic(exit 101)/裸帧零检查零开销锚
+  //     由 B(interp.js 强制)提供断言口径后由本节补写,预留编号 v123.23 起——静态面先行自绿,
+  //     不写会红的占位断言。
+  const dir123 = path.join(TMP, 'v123');
+  fs.mkdirSync(dir123, { recursive: true });
+  const mk123 = (name, src) => { const f = path.join(dir123, name); fs.writeFileSync(f, src.endsWith('\n') ? src : src + '\n', 'utf8'); return f; };
+  const codes123 = (f) => {
+    const r = runMing(['check', f, '--json']);
+    let ds = [];
+    try { ds = JSON.parse(r.stdout).diagnostics ?? []; } catch { /* JSON 失败 = 空(断言侧具名失败) */ }
+    return { r, ds };
+  };
+  const mOf = (ds, code) => ds.filter((d) => d.code === code);
+  const msgOf = (ds, code) => mOf(ds, code).map((d) => d.message).join(' | ');
+
+  // ---- v123.1:parser 正例——混列声明 + 调用链一致(check exit 0) ----
+  {
+    const f = mk123('pos_mixed.ming', [
+      'use std.fs;',
+      'fn probe() -> bool with fs("/data/**"), io { return fs.exists("/data/a.txt"); }',
+      'fn main() with io, fs("/data/") { print(str(probe())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.1:parser 正例混列——with io, fs("/data/**") 与裸名自由混列,调用链(裸名 M3029 面 + 参数包含)双绿 check exit 0 零诊断',
+      r.code === 0 && ds.length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.2:parser 正例——模式文法三形态(精确/目录前缀//*//**)各自合法 ----
+  {
+    const f = mk123('pos_forms.ming', [
+      'use std.fs;',
+      'fn f_exact() -> bool with fs("/data/x.csv") { return true; }',
+      'fn f_dir() -> bool with fs("/data/") { return true; }',
+      'fn f_star() -> bool with fs("/data/*") { return true; }',
+      'fn f_gstar() -> bool with fs("/data/**") { return true; }',
+      'fn main() with fs, io { print(str(f_exact()) + str(f_dir()) + str(f_star()) + str(f_gstar())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.2:parser 正例三形态——精确路径/目录前缀(尾 /)//* (直接子项)/** (≡ 目录前缀)四声明全合法,裸 fs main 调用 exit 0',
+      r.code === 0 && ds.length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.3:parser 正例——同一声明多个 fs(模式) = 授权集并集 ----
+  {
+    const f = mk123('pos_union.ming', [
+      'use std.fs;',
+      'fn fa() -> bool with fs("/a/x.csv") { return true; }',
+      'fn fb() -> bool with fs("/b/f.txt") { return true; }',
+      'fn main() with fs("/a/"), fs("/b/*"), io { print(str(fa()) + str(fb())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.3:parser 正例并集——同一 fn 多个 fs(模式) = 并集授权(裁决),caller fs("/a/")+fs("/b/*") 覆盖两被调方 exit 0',
+      r.code === 0 && ds.length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.4:fmt 零数据丢失锚——带参效果原样回写 + 幂等定点 ----
+  {
+    const f = mk123('fmt_param.ming', [
+      'fn probe() -> bool with fs("/data/**"), io {',
+      '    return true;',
+      '}',
+      'fn main() with fs("/a/"), fs("/b/*"), io { print(str(probe())); }',
+      '',
+    ].join('\n'));
+    const w = runMing(['fmt', f, '--write']);
+    const after = fs.readFileSync(f, 'utf8');
+    const c1 = runMing(['fmt', f, '--check']);
+    const c2 = runMing(['fmt', f, '--check']);
+    check('v123.4:fmt 带参回写零丢失——--write 后源码保留 fs("/data/**") 与 fs("/a/"), fs("/b/*")(丢参 = 静默扩权,数据丢失锚);--check 两连跑均 exit 0(幂等定点)',
+      w.code === 0 && after.includes('with fs("/data/**"), io') && after.includes('with fs("/a/"), fs("/b/*"), io')
+      && c1.code === 0 && c2.code === 0,
+      `w=${w.code} c1=${c1.code} c2=${c2.code} src=${JSON.stringify(after)}`);
+  }
+
+  // ---- v123.5:parser 具名拒绝——非 fs 带参(net/exec;M2008,消息锚 ADR-021 §1) ----
+  {
+    const f = mk123('neg_netexec.ming', [
+      'fn a() with net("x") { }',
+      'fn b() with exec("ls") { }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    const m = mOf(ds, 'M2008');
+    check('v123.5:parser 拒绝非 fs 带参——net("x")/exec("ls") 各 1 条 M2008(恰 2),消息含 "仅 fs 支持参数(ADR-021 §1);net/exec 带参为登记候选"',
+      r.code === 1 && m.length === 2
+      && m.every((d) => d.message.includes('仅 fs 支持参数(ADR-021 §1);net/exec 带参为登记候选')),
+      `code=${r.code} m=${msgOf(ds, 'M2008')}`);
+  }
+
+  // ---- v123.6:parser 具名拒绝——中段通配与 "?"(M2008,消息锚 ADR-021 §2) ----
+  {
+    const fMid = mk123('neg_mid.ming', [
+      'fn a() with fs("/a/*/b") { }',
+      'fn b() with fs("/x**y") { }',
+    ].join('\n'));
+    const fQ = mk123('neg_q.ming', 'fn main() with fs("/a?") { }');
+    const r1 = codes123(fMid);
+    const r2 = codes123(fQ);
+    check('v123.6:parser 拒绝中段通配与 ?——"/a/*/b" 与 "/x**y" 各 1 条 M2008 含 "中段通配";"/a?" 1 条 M2008 含 通配符 "?"(通配仅允许尾段 /* 与 /**)',
+      r1.r.code === 1 && mOf(r1.ds, 'M2008').length === 2 && msgOf(r1.ds, 'M2008').includes('中段通配 "*"')
+      && r2.r.code === 1 && mOf(r2.ds, 'M2008').length === 1 && msgOf(r2.ds, 'M2008').includes('通配符 "?"'),
+      `mid=${msgOf(r1.ds, 'M2008')} q=${msgOf(r2.ds, 'M2008')}`);
+  }
+
+  // ---- v123.7:parser 具名拒绝——空串参数 ----
+  {
+    const f = mk123('neg_empty.ming', 'fn main() with fs("") { }');
+    const { r, ds } = codes123(f);
+    check('v123.7:parser 拒绝空串参数——fs("") 1 条 M2008 含 "空字符串"',
+      r.code === 1 && mOf(ds, 'M2008').length === 1 && msgOf(ds, 'M2008').includes('空字符串'),
+      `code=${r.code} m=${msgOf(ds, 'M2008')}`);
+  }
+
+  // ---- v123.8:parser 注入卫生——非字面量参数(标识符/插值)M2001(asm expectStrLit 先例) ----
+  {
+    const fId = mk123('neg_nonlit.ming', 'fn a(x: i64) with fs(x) { }');
+    const fIp = mk123('neg_interp.ming', 'fn main() with fs("\\{p}") { }');
+    const r1 = codes123(fId);
+    const r2 = codes123(fIp);
+    check('v123.8:parser 注入卫生——fs(x)(标识符)M2001 "必须是字符串字面量";fs("\\{p}")(插值)M2001 "必须是纯字符串字面量,不允许插值"(与 asm 同款,只允许引号字面量)',
+      r1.r.code === 1 && mOf(r1.ds, 'M2001').some((d) => d.message.includes('必须是字符串字面量'))
+      && r2.r.code === 1 && mOf(r2.ds, 'M2001').some((d) => d.message.includes('必须是纯字符串字面量,不允许插值')),
+      `id=${msgOf(r1.ds, 'M2001')} ip=${msgOf(r2.ds, 'M2001')}`);
+  }
+
+  // ---- v123.9:M3055 正向根——调用方裸 fs = 覆盖一切(零破坏锚) ----
+  {
+    const f = mk123('m_bare_caller.ming', [
+      'use std.fs;',
+      'fn probe() -> bool with fs("/data/**") { return fs.exists("/data/a.txt"); }',
+      'fn main() with io, fs { print(str(probe())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.9:包含正向根——调用方裸 fs(无界)覆盖参数化被调方 fs("/data/**"),exit 0 零诊断(向后兼容根,零破坏锚)',
+      r.code === 0 && ds.length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.10:M3055 反例——参数化调用方 × 裸被调方(无界要求不可证明) ----
+  {
+    const f = mk123('m_param_vs_bare.ming', [
+      'use std.fs;',
+      'fn bare_callee() -> bool with fs { return fs.exists("/data/a.txt"); }',
+      'fn main() with fs("/data/"), io { print(str(bare_callee())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    const m = mOf(ds, 'M3055');
+    check('v123.10:包含反例无界被调方——fs("/data/") 调裸 fs 被调方 → M3055 恰 1,message 含 "无界(裸)" 与调用方授予列表 fs("/data/")',
+      r.code === 1 && m.length === 1
+      && m[0].message.includes('无界(裸)') && m[0].message.includes('fs("/data/")')
+      && m[0].message.includes('"bare_callee"'),
+      `code=${r.code} m=${msgOf(ds, 'M3055')}`);
+  }
+
+  // ---- v123.11:M3055 双参数化覆盖三形态(目录前缀 ⊇ 精确 / /** 归一相等 / /*) ----
+  {
+    const f = mk123('m_both_cover.ming', [
+      'use std.fs;',
+      'fn e1() -> bool with fs("/data/x.csv") { return true; }',
+      'fn e2() -> bool with fs("/data/**") { return true; }',
+      'fn e3() -> bool with fs("/data/*") { return true; }',
+      'fn main() with fs("/data/"), io { print(str(e1()) + str(e2()) + str(e3())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.11:包含覆盖三形态——目录前缀 fs("/data/") ⊇ 精确文件、⊇ fs("/data/**")(归一相等)、⊇ fs("/data/*")(直接子项),exit 0 零诊断',
+      r.code === 0 && ds.length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.12:M3055 双参数化不覆盖——恰 1 条/调用点,列出 q 与 P ----
+  {
+    const f = mk123('m_both_uncover.ming', [
+      'use std.fs;',
+      'fn other() -> bool with fs("/other/**") { return true; }',
+      'fn ycsv() -> bool with fs("/data/y.csv") { return true; }',
+      'fn main() with fs("/data/x.csv"), io { print(str(other()) + str(ycsv())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    const m = mOf(ds, 'M3055');
+    const mOther = m.find((d) => d.message.includes('"other"'));
+    const mY = m.find((d) => d.message.includes('"ycsv"'));
+    check('v123.12:包含不覆盖——精确授权 fs("/data/x.csv") 对两个异模式被调方各 1 条 M3055(共 2),消息列出被调方模式("/other/**"/"/data/y.csv")与调用方 P fs("/data/x.csv")(精确模式只授该路径,前缀不含即不覆盖)',
+      r.code === 1 && m.length === 2
+      && !!mOther && mOther.message.includes('"/other/**"') && mOther.message.includes('fs("/data/x.csv")')
+      && !!mY && mY.message.includes('"/data/y.csv"') && mY.message.includes('fs("/data/x.csv")'),
+      `code=${r.code} m=${msgOf(ds, 'M3055')}`);
+  }
+
+  // ---- v123.13:M3055 "/*" 直接子项边界(直接子项 ✓ / 深路径 × / 目录本身 ×) ----
+  {
+    const fOk = mk123('m_star_ok.ming', [
+      'use std.fs;',
+      'fn direct() -> bool with fs("/data/a.txt") { return true; }',
+      'fn main() with fs("/data/*"), io { print(str(direct())); }',
+    ].join('\n'));
+    const fDeep = mk123('m_star_deep.ming', [
+      'use std.fs;',
+      'fn deep() -> bool with fs("/data/sub/x.txt") { return true; }',
+      'fn main() with fs("/data/*"), io { print(str(deep())); }',
+    ].join('\n'));
+    const fSelf = mk123('m_star_self.ming', [
+      'use std.fs;',
+      'fn selfdir() -> bool with fs("/data") { return true; }',
+      'fn main() with fs("/data/*"), io { print(str(selfdir())); }',
+    ].join('\n'));
+    const rOk = codes123(fOk);
+    const rDeep = codes123(fDeep);
+    const rSelf = codes123(fSelf);
+    check('v123.13:"/*" 直接子项边界——直接子项 /data/a.txt 覆盖 exit 0;深路径 /data/sub/x.txt → M3055 恰 1(裁决:/* 授直接子项,不含更深);目录本身 /data → M3055 恰 1(仅多一段,目录本身非直接子项)',
+      rOk.r.code === 0 && rOk.ds.length === 0
+      && rDeep.r.code === 1 && mOf(rDeep.ds, 'M3055').length === 1 && msgOf(rDeep.ds, 'M3055').includes('"/data/sub/x.txt"')
+      && rSelf.r.code === 1 && mOf(rSelf.ds, 'M3055').length === 1 && msgOf(rSelf.ds, 'M3055').includes('"/data"'),
+      `ok=${rOk.r.code}/${JSON.stringify(rOk.ds)} deep=${msgOf(rDeep.ds, 'M3055')} self=${msgOf(rSelf.ds, 'M3055')}`);
+  }
+
+  // ---- v123.14:M3055 多模式被调方部分覆盖——只列缺失项 ----
+  {
+    const f = mk123('m_multi_partial.ming', [
+      'use std.fs;',
+      'fn both() -> bool with fs("/a/f.csv"), fs("/b/g.csv") { return true; }',
+      'fn main() with fs("/a/"), io { print(str(both())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    const m = mOf(ds, 'M3055');
+    check('v123.14:包含部分覆盖——被调方并集 {"/a/f.csv","/b/g.csv"} 对调用方 fs("/a/"):M3055 恰 1,"不可证明覆盖" 列表只含 "/b/g.csv"(已覆盖项 /a/f.csv 不入该列表,Q 全列如实)',
+      r.code === 1 && m.length === 1
+      && m[0].message.includes('以下模式不可证明覆盖: "/b/g.csv"') && !m[0].message.includes('以下模式不可证明覆盖: "/b/g.csv", "/a/f.csv"'),
+      `code=${r.code} m=${msgOf(ds, 'M3055')}`);
+  }
+
+  // ---- v123.15:消费链——impl 方法与本地函数调用点(覆盖 ✓ / 不覆盖 M3055) ----
+  {
+    const fPos = mk123('m_impl_local_pos.ming', [
+      'use std.fs;',
+      'struct Box { v: i64, }',
+      'trait Probe { fn go(self) -> bool; }',
+      'impl Probe for Box {',
+      '    fn go(self) -> bool with fs("/data/*") { return fs.exists("/data/a.txt"); }',
+      '}',
+      'fn main() with fs("/data/"), io {',
+      '    let b = Box { v: 1, };',
+      '    let ok = b.go();',
+      '    fn inner() -> bool with fs("/data/x.csv") { return true; }',
+      '    let i = inner();',
+      '    print(str(ok) + str(i));',
+      '}',
+    ].join('\n'));
+    const fNeg = mk123('m_impl_local_neg.ming', [
+      'use std.fs;',
+      'struct Box { v: i64, }',
+      'trait Probe { fn go(self) -> bool; }',
+      'impl Probe for Box {',
+      '    fn go(self) -> bool with fs("/data/*") { return true; }',
+      '}',
+      'fn main() with fs("/other/"), io {',
+      '    let b = Box { v: 1, };',
+      '    let ok = b.go();',
+      '    fn inner() -> bool with fs("/data/x.csv") { return true; }',
+      '    let i = inner();',
+      '    print(str(ok) + str(i));',
+      '}',
+    ].join('\n'));
+    const rPos = codes123(fPos);
+    const rNeg = codes123(fNeg);
+    const mNeg = mOf(rNeg.ds, 'M3055');
+    check('v123.15:消费链三调用点——impl 方法(fs("/data/*")⊆fs("/data/"))与本地函数(精确⊆目录前缀)覆盖 exit 0;调用方 fs("/other/") 时方法与本地函数各 1 条 M3055(共 2,消息点名 go/inner)',
+      rPos.r.code === 0 && rPos.ds.length === 0
+      && rNeg.r.code === 1 && mNeg.length === 2
+      && mNeg.some((d) => d.message.includes('"go"')) && mNeg.some((d) => d.message.includes('"inner"')),
+      `pos=${rPos.r.code}/${JSON.stringify(rPos.ds)} neg=${msgOf(rNeg.ds, 'M3055')}`);
+  }
+
+  // ---- v123.16:fn 值路径(诚实缺口锁定)——经 fn 值调用不触发 M3055(裸名面照旧) ----
+  // 登记缺口:fn 类型(chk k:'fn')只携带效果名集合,不携带参数模式(MVP 范围外,架构师报告
+  // 已登记)——静态面放行,运行时 M3054(被调方声明集为活跃集)兜底;本条锁定现行为,
+  // 后续批次若给 fn 类型补参数面,此处改为期望 M3055。
+  {
+    const f = mk123('m_fnval.ming', [
+      'use std.fs;',
+      'fn probe() -> bool with fs("/data/**") { return fs.exists("/data/a.txt"); }',
+      'fn main() with fs("/data/"), io {',
+      '    let g = probe;',
+      '    print(str(g()));',
+      '}',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.16:fn 值路径诚实缺口——let g = probe; g() 无 M3055(裸名 M3029 面照旧;fn 类型不携带参数模式,登记缺口,运行时 M3054 兜底)exit 0',
+      r.code === 0 && mOf(ds, 'M3055').length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.17:闭包继承所在 fn 授权集——包含判定在 lambda 体内照常生效 ----
+  {
+    const f = mk123('m_lambda.ming', [
+      'use std.fs;',
+      'fn probe() -> bool with fs("/data/**") { return true; }',
+      'fn caller() -> bool with fs("/other/") {',
+      '    let g = () => probe();',
+      '    return g();',
+      '}',
+      'fn main() with io { print(str(caller())); }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.17:闭包继承授权集——lambda 体内调用带参 fn 沿 {...ctx} 继承调用方 fs("/other/"),M3055 恰 1(继承=静态面保守口径,登记)',
+      r.code === 1 && mOf(ds, 'M3055').length === 1 && msgOf(ds, 'M3055').includes('"caller"'),
+      `code=${r.code} m=${msgOf(ds, 'M3055')}`);
+  }
+
+  // ---- v123.18:test 块全效果口径(unbounded)调用带参 fn 零 M3055 ----
+  {
+    const f = mk123('m_test.ming', [
+      'use std.fs;',
+      'fn probe() -> bool with fs("/data/**") { return true; }',
+      'test smoke { print(str(probe())); }',
+      'fn main() with io { }',
+    ].join('\n'));
+    const { r, ds } = codes123(f);
+    check('v123.18:test 块 unbounded——test 块 ctx 全效果无参数(效应验证脚手架口径),调用带参 fn 零 M3055 exit 0',
+      r.code === 0 && ds.length === 0,
+      `code=${r.code} ds=${JSON.stringify(ds)}`);
+  }
+
+  // ---- v123.19:--json 协议面——M3055 诊断对象 code/name/severity/hint 齐(修复处方) ----
+  {
+    const f = path.join(dir123, 'm_param_vs_bare.ming');
+    const { r, ds } = codes123(f);
+    const m = mOf(ds, 'M3055')[0];
+    check('v123.19:--json 协议面——M3055 诊断对象 name=fs-effect-param-containment·severity=error·hint 含修复处方(扩调用方模式/收窄被调方/裸 fs 无界)',
+      r.code === 1 && !!m && m.name === 'fs-effect-param-containment' && m.severity === 'error'
+      && typeof m.line === 'number' && typeof m.hint === 'string'
+      && m.hint.includes('无界授权'),
+      `m=${JSON.stringify(m)}`);
+  }
+
+  // ---- v123.20:agent 冒烟——带参 fn 的 queryTypeContext 不崩,effects 含 fs ----
+  // 登记适配需求(报告):hover/sigType/agentQueryTypeContext 的 with 渲染与 effects 数组当前
+  // 只回效果名(参数形态不进字符串)——架构师适配后本条断言仍应成立(includes 口径留余地)。
+  {
+    const fAgent = mk123('agent_param.ming', [
+      'fn probe() -> bool with fs("/data/**") {',
+      '    return true;',
+      '}',
+      '',
+    ].join('\n'));
+    const lsp123 = await import('../src/lsp.js');
+    const q = await lsp123.agentQueryTypeContext(fAgent, 1, 5);
+    check('v123.20:agent 冒烟——带参 fn 声明行 queryTypeContext ok:true·effects 数组含 "fs"(带参不崩;参数化渲染为 lsp 适配需求,报告登记)',
+      q.ok === true && Array.isArray(q.effects) && q.effects.includes('fs'),
+      `q=${JSON.stringify(q)}`);
+  }
+
+  // ---- v123.21:零破坏锚——裸效果既有程序输出逐字节不变(旧语法 io/fs 混列 + hello) ----
+  {
+    const fBare = mk123('zero_bare.ming', [
+      'use std.fs;',
+      'fn main() with io, fs { print(str(fs.exists("no_such_file_xyz.txt"))); }',
+    ].join('\n'));
+    const rBare = runMing(['run', fBare]);
+    const rHello = runMing(['run', path.join(ROOT, 'examples', 'hello.ming')]);
+    const helloOut = rHello.stdout.split('\n')[0];
+    check('v123.21:零破坏锚——裸 with io, fs 旧语法 run exit 0 输出 "false"(裸 fs 帧 = 现行为,零检查);examples/hello.ming 首行 "你好, \\{name}!" 逐字节不变',
+      rBare.code === 0 && rBare.stdout === 'false\n'
+      && rHello.code === 0 && helloOut === '你好, 世界!',
+      `bare=${rBare.code}/${JSON.stringify(rBare.stdout)} hello=${rHello.code}/${JSON.stringify(rHello.stdout.split('\n')[0])}`);
+  }
+
+  // ---- v123.22:lambda panic 调用栈三帧锚(复核 M2;§24 v1.9.0 顺带修复的回归锁) ----
+  // 语料形态:main → 闭包 wrap → 本地 fn boom 内 panic——三帧 at boom / at <闭包> / at main。
+  // 修复前 tree 的 callClosure lambda 帧 catch 不填 e.stack → 缺 <闭包> 帧(HEAD 基线实测);
+  // 修复后 interp 的 lambda catch 在弹栈前填全链(与 callUser/callLocalFn/callCompiled 同序,
+  // !e.stack.length 防重)——本锚固化双引擎逐字一致。
+  {
+    const f = mk123('lam_stack.ming', [
+      'fn main() with io {',
+      '    fn boom() with io { panic("x"); }',
+      '    let wrap = () => { boom(); };',
+      '    print("before");',
+      '    let _ = wrap();',
+      '}',
+    ].join('\n'));
+    const rVm = runMing(['run', f]);
+    const rTree = runMing(['run', f, '--tree']);
+    check('v123.22:lambda panic 调用栈三帧——lambda 内 panic 的 stderr 含 "at boom"/"at <闭包>"/"at main" 三帧逐字(修复前 tree 缺 <闭包> 帧)+ 调用栈头行逐字 + M4001 消息;双引擎 stdout/stderr 逐字节一致,均 exit 101',
+      rVm.code === 101 && rTree.code === 101
+      && rVm.stdout === 'before\n' && rTree.stdout === rVm.stdout
+      && rVm.stderr === rTree.stderr
+      && rVm.stderr.includes('error M4001[panic]: x')
+      && rVm.stderr.includes('调用栈(Ming 层,最新在前):')
+      && rVm.stderr.includes('  at boom (')
+      && rVm.stderr.includes('  at <闭包> (')
+      && rVm.stderr.includes('  at main ('),
+      `vm=${rVm.code} tree=${rTree.code} vmErr=${JSON.stringify(rVm.stderr)}`);
+  }
+
+  // ---- v123.23–v123.33:运行时面(复核 B1 收口;口径出处 = B 的 .zcode/b21-e2e/e2e.mjs
+  //   15 场景 × 双引擎 84 断言,复核者逐条独立重演通过——本块按场景族迁移为 11 check) ----
+  // 断言口径(ADR-021 §4):
+  //   · M3054[fs-path-denied] panic 消息逐字 + exit 101(v123.23/24;语料 = examples/
+  //     fs_effect_demo_denied.ming 实测输出为准,模板 = fs 路径未授权: 函数 {fn} 请求
+  //     "{path}",活跃授权集 [fs("…")];提示:四形态处方);
+  //   · 裸帧零检查零开销锚:引用 v123.21(裸效果程序输出逐字节 + hello 首行)——不重写;
+  //   · 模式三形态运行时语义/子帧授权 = 被调方声明集/返回后根集恢复/lambda 透明继承/
+  //     本地函数带参帧/copy_file 双路径位/spawn worker join Err+ok(v123.25–32);
+  //   · tree/VM 双引擎一致 = 同文件同 cwd 下 stdout/stderr 逐字节全等(spawn cwd 传参,
+  //     不用 process.chdir——并行子进程隔离纪律)。
+  //   v123.33 = B2 修复回归锚:interp walkStmts 深遍历(if 分支/match 臂块内 FnStmt 全收)+
+  //   vm 查表 miss fail-closed——src 修复 agent 并行落地(修复期间 VM 曾静默放行 exit 0
+  //   vs tree M3054 exit 101 双引擎分歧,实测),落地后本节 33 check 全绿,锚即回归锁。
+  fs.mkdirSync(path.join(dir123, 'data', 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(dir123, 'data', 'inner'), { recursive: true });
+  fs.writeFileSync(path.join(dir123, 'data', 'a.txt'), 'A');
+  fs.writeFileSync(path.join(dir123, 'data', 'x.csv'), 'X');
+  fs.writeFileSync(path.join(dir123, 'data', 'sub', 'b.txt'), 'B');
+  fs.writeFileSync(path.join(dir123, 'data', 'inner', 'i.txt'), 'I');
+  fs.writeFileSync(path.join(dir123, 'secret.txt'), 'S');
+  fs.writeFileSync(path.join(dir123, 'other.txt'), 'O');
+
+  // ---- v123.23:M3054 panic 逐字 + exit 101(VM 腿;语料 = examples/fs_effect_demo_denied.ming) ----
+  // cwd 用隔离子目录:示例自举 make_dir demo_data/(授权内),重复跑不误断(每腿独立 fresh cwd)。
+  {
+    const cwdDemo = path.join(dir123, 'demo_vm');
+    fs.mkdirSync(cwdDemo, { recursive: true });
+    const r = runMing(['run', path.join(ROOT, 'examples', 'fs_effect_demo_denied.ming')], { cwd: cwdDemo });
+    check('v123.23:M3054 panic 逐字(VM)——授权内建目录/写入两行 stdout 后越权 secret.txt → stderr 消息模板逐字(函数 main 请求 "secret.txt"/活跃授权集 [fs("demo_data/")]/提示:四形态处方)+ 调用栈头行 + at main 帧;exit 101',
+      r.code === 101
+      && r.stdout.includes('授权内建目录 demo_data/ 正常')
+      && r.stdout.includes('授权内写入 demo_data/hello.txt 正常')
+      && r.stderr.includes('error M3054[fs-path-denied]: fs 路径未授权: 函数 main 请求 "secret.txt",活跃授权集 [fs("demo_data/")];提示:在 with fs(...) 声明中加入覆盖该路径的模式(精确 "f.ext"/目录前缀 "dir/"/显式通配 "dir/**"/直接子项 "dir/*")')
+      && r.stderr.includes('调用栈(Ming 层,最新在前):')
+      && r.stderr.includes('  at main ('),
+      `code=${r.code} out=${JSON.stringify(r.stdout)} err1=${JSON.stringify(r.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.24:M3054 panic 逐字 + exit 101(tree 腿)+ 双引擎逐字节一致 ----
+  {
+    const cwdDemo = path.join(dir123, 'demo_tree');
+    fs.mkdirSync(cwdDemo, { recursive: true });
+    const rTree = runMing(['run', path.join(ROOT, 'examples', 'fs_effect_demo_denied.ming'), '--tree'], { cwd: cwdDemo });
+    const cwdDemo2 = path.join(dir123, 'demo_vm2');
+    fs.mkdirSync(cwdDemo2, { recursive: true });
+    const rVm = runMing(['run', path.join(ROOT, 'examples', 'fs_effect_demo_denied.ming')], { cwd: cwdDemo2 });
+    check('v123.24:M3054 panic 逐字(tree)+ 双引擎逐字——--tree 腿 exit 101 且 stdout/stderr 与 VM 腿(fresh cwd 重跑)逐字节全等(同文件同诊断渲染,panic 首行对齐口径全量版)',
+      rTree.code === 101 && rVm.code === 101
+      && rTree.stdout === rVm.stdout && rTree.stderr === rVm.stderr
+      && rTree.stderr.includes('error M3054[fs-path-denied]: fs 路径未授权: 函数 main 请求 "secret.txt"'),
+      `tree=${rTree.code} vm=${rVm.code} eq=${rTree.stdout === rVm.stdout}/${rTree.stderr === rVm.stderr}`);
+  }
+
+  // ---- v123.25:运行时模式语义正例——目录前缀 fs("data/") 与 /** 均授深层路径 ----
+  {
+    const f1 = mk123('rt_dirprefix.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/") {',
+      '    match std.fs.read_file("data/sub/b.txt") { Ok(_) => print("sub:ok"), Err(_) => print("sub:err") }',
+      '}',
+    ].join('\n'));
+    const f2 = mk123('rt_gstar.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    match std.fs.read_file("data/inner/i.txt") { Ok(_) => print("deep:ok"), Err(_) => print("deep:err") }',
+      '}',
+    ].join('\n'));
+    const a1 = runMing(['run', f1], { cwd: dir123 });
+    const b1 = runMing(['run', f1, '--tree'], { cwd: dir123 });
+    const a2 = runMing(['run', f2], { cwd: dir123 });
+    const b2 = runMing(['run', f2, '--tree'], { cwd: dir123 });
+    check('v123.25:运行时模式正例——目录前缀 fs("data/") 授子目录深路径(sub:ok)、/** 授深层(deep:ok),各双引擎 stdout 逐字节一致,exit 0(读真实 fixture,非仅门禁通过)',
+      a1.code === 0 && a1.stdout === 'sub:ok\n' && b1.stdout === a1.stdout && b1.code === 0
+      && a2.code === 0 && a2.stdout === 'deep:ok\n' && b2.stdout === a2.stdout && b2.code === 0,
+      `a1=${a1.code}/${JSON.stringify(a1.stdout)} a2=${a2.code}/${JSON.stringify(a2.stdout)}`);
+  }
+
+  // ---- v123.26:运行时模式语义边界——/* 直接子项(深路径拒)与多模式并集(第三项拒) ----
+  {
+    const f1 = mk123('rt_star.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/*") {',
+      '    match std.fs.read_file("data/a.txt") { Ok(_) => print("a:ok"), Err(_) => print("a:err") }',
+      '    let _ = std.fs.read_file("data/sub/b.txt");',
+      '}',
+    ].join('\n'));
+    const f2 = mk123('rt_union.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/"), fs("secret.txt") {',
+      '    match std.fs.read_file("data/a.txt") { Ok(_) => print("d:ok"), Err(_) => print("d:err") }',
+      '    match std.fs.read_file("secret.txt") { Ok(_) => print("s:ok"), Err(_) => print("s:err") }',
+      '    let _ = std.fs.read_file("other.txt");',
+      '}',
+    ].join('\n'));
+    const a1 = runMing(['run', f1], { cwd: dir123 });
+    const b1 = runMing(['run', f1, '--tree'], { cwd: dir123 });
+    const a2 = runMing(['run', f2], { cwd: dir123 });
+    const b2 = runMing(['run', f2, '--tree'], { cwd: dir123 });
+    check('v123.26:运行时模式边界——/* 授直接子项 a:ok、深路径 data/sub/b.txt → M3054(请求路径逐字);并集授两项 d:ok/s:ok、第三项 other.txt → M3054 且活跃授权集两模式逗号并列 [fs("data/"), fs("secret.txt")];均 exit 101 双引擎 stderr 逐字节一致',
+      a1.code === 101 && b1.code === 101 && a1.stderr === b1.stderr
+      && a1.stdout === 'a:ok\n' && a1.stderr.includes('函数 main 请求 "data/sub/b.txt",活跃授权集 [fs("data/*")]')
+      && a2.code === 101 && b2.code === 101 && a2.stderr === b2.stderr
+      && a2.stdout === 'd:ok\ns:ok\n'
+      && a2.stderr.includes('函数 main 请求 "other.txt",活跃授权集 [fs("data/"), fs("secret.txt")]'),
+      `a1=${a1.code} a2=${a2.code} e1=${JSON.stringify(a1.stderr.split('\n')[0])} e2=${JSON.stringify(a2.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.27:子帧授权 = 被调方声明集 + 返回后根集恢复 ----
+  {
+    const f1 = mk123('rt_callee_set.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    match std.fs.read_file("data/a.txt") { Ok(_) => print("main-in:ok"), Err(_) => print("main-in:err") }',
+      '    f();',
+      '}',
+      'fn f() with io, fs("data/inner/") {',
+      '    let _ = std.fs.read_file("data/other.txt");',
+      '}',
+    ].join('\n'));
+    const f2 = mk123('rt_restore.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    f();',
+      '    match std.fs.read_file("data/a.txt") { Ok(_) => print("root:ok"), Err(_) => print("root:err") }',
+      '}',
+      'fn f() with io, fs("data/inner/") {',
+      '    match std.fs.read_file("data/inner/i.txt") { Ok(_) => print("f-in:ok"), Err(_) => print("f-in:err") }',
+      '}',
+    ].join('\n'));
+    const a1 = runMing(['run', f1], { cwd: dir123 });
+    const b1 = runMing(['run', f1, '--tree'], { cwd: dir123 });
+    const a2 = runMing(['run', f2], { cwd: dir123 });
+    const b2 = runMing(['run', f2, '--tree'], { cwd: dir123 });
+    check('v123.27:子帧授权 = 被调方声明集——main fs("data/**") 内 main-in:ok,f() 帧内 data/other.txt → M3054 报被调方(函数 f 请求 "data/other.txt",活跃授权集 [fs("data/inner/")],含调用栈 at f/at main);返回后根集恢复全程 f-in:ok/root:ok exit 0;双引擎逐字节',
+      a1.code === 101 && b1.code === 101 && a1.stderr === b1.stderr
+      && a1.stdout === 'main-in:ok\n'
+      && a1.stderr.includes('函数 f 请求 "data/other.txt",活跃授权集 [fs("data/inner/")]')
+      && a1.stderr.includes('  at f (') && a1.stderr.includes('  at main (')
+      && a2.code === 0 && b2.code === 0 && a2.stdout === 'f-in:ok\nroot:ok\n' && b2.stdout === a2.stdout,
+      `a1=${a1.code} a2=${a2.code} e=${JSON.stringify(a1.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.28:裸根 + 参数化被调方——被调方自身边界强制(裸 fs 帧 = 无界,现行为) ----
+  {
+    const f = mk123('rt_bare_root.ming', [
+      'use std.fs;',
+      'fn main() with io, fs {',
+      '    match std.fs.read_file("data/a.txt") { Ok(_) => print("root:ok"), Err(_) => print("root:err") }',
+      '    h();',
+      '}',
+      'fn h() with io, fs("data/inner/") {',
+      '    match std.fs.read_file("data/inner/i.txt") { Ok(_) => print("h-in:ok"), Err(_) => print("h-in:err") }',
+      '    let _ = std.fs.read_file("secret.txt");',
+      '}',
+    ].join('\n'));
+    const a = runMing(['run', f], { cwd: dir123 });
+    const b = runMing(['run', f, '--tree'], { cwd: dir123 });
+    check('v123.28:裸根 + 参数化被调方——main 裸 fs 无界(root:ok),被调方 h 自声明集强制:h-in:ok 后 secret.txt → M3054 报 h(函数 h 请求 "secret.txt",活跃授权集 [fs("data/inner/")]);exit 101 双引擎 stderr 逐字节',
+      a.code === 101 && b.code === 101 && a.stderr === b.stderr
+      && a.stdout === 'root:ok\nh-in:ok\n'
+      && a.stderr.includes('函数 h 请求 "secret.txt",活跃授权集 [fs("data/inner/")]'),
+      `a=${a.code} e=${JSON.stringify(a.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.29:lambda 透明继承——继承所在函数活跃集,消息报 函数 <闭包> ----
+  {
+    const f = mk123('rt_lambda.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    let rd = (p: str) => std.fs.read_file(p);',
+      '    match rd("data/a.txt") { Ok(_) => print("lam:ok"), Err(_) => print("lam:err") }',
+      '    let _ = rd("secret.txt");',
+      '}',
+    ].join('\n'));
+    const a = runMing(['run', f], { cwd: dir123 });
+    const b = runMing(['run', f, '--tree'], { cwd: dir123 });
+    check('v123.29:lambda 透明继承——闭包读 data/a.txt ok(lam:ok,继承根集 [fs("data/**")]),secret.txt → M3054 报 函数 <闭包>(lambda 帧名渲染)+ 活跃授权集 [fs("data/**")];exit 101 双引擎 stderr 逐字节',
+      a.code === 101 && b.code === 101 && a.stderr === b.stderr
+      && a.stdout === 'lam:ok\n'
+      && a.stderr.includes('函数 <闭包> 请求 "secret.txt",活跃授权集 [fs("data/**")]'),
+      `a=${a.code} e=${JSON.stringify(a.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.30:本地函数带参帧——真实语法 fn lf() with io, fs("data/inner/") ----
+  {
+    const f = mk123('rt_localfn.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    fn lf() with io, fs("data/inner/") {',
+      '        match std.fs.read_file("data/inner/i.txt") { Ok(_) => print("lf-in:ok"), Err(_) => print("lf-in:err") }',
+      '        let _ = std.fs.read_file("data/a.txt");',
+      '    }',
+      '    lf();',
+      '}',
+    ].join('\n'));
+    const a = runMing(['run', f], { cwd: dir123 });
+    const b = runMing(['run', f, '--tree'], { cwd: dir123 });
+    check('v123.30:本地函数带参帧——main 体内外地 fn lf 自声明集强制:lf-in:ok 后 data/a.txt → M3054 报 函数 lf(活跃授权集 [fs("data/inner/")]);exit 101 双引擎 stderr 逐字节(VM 字节码帧经 fsLocalAuth 副表与 tree decl.effects 同源)',
+      a.code === 101 && b.code === 101 && a.stderr === b.stderr
+      && a.stdout === 'lf-in:ok\n'
+      && a.stderr.includes('函数 lf 请求 "data/a.txt",活跃授权集 [fs("data/inner/")]'),
+      `a=${a.code} e=${JSON.stringify(a.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.31:copy_file 双路径位——src 授权内 / dst 越界 → M3054 报 dst ----
+  {
+    const f = mk123('rt_copy.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    match std.fs.read_file("data/a.txt") { Ok(_) => print("in:ok"), Err(_) => print("in:err") }',
+      '    let _ = std.fs.copy_file("data/a.txt", "out/a2.txt");',
+      '}',
+    ].join('\n'));
+    const a = runMing(['run', f], { cwd: dir123 });
+    const b = runMing(['run', f, '--tree'], { cwd: dir123 });
+    check('v123.31:copy_file 双路径位——src data/a.txt 在授权集内(in:ok),dst out/a2.txt 越界 → M3054 报 dst 路径(函数 main 请求 "out/a2.txt",活跃授权集 [fs("data/**")]);exit 101 双引擎 stderr 逐字节',
+      a.code === 101 && b.code === 101 && a.stderr === b.stderr
+      && a.stdout === 'in:ok\n'
+      && a.stderr.includes('函数 main 请求 "out/a2.txt",活跃授权集 [fs("data/**")]'),
+      `a=${a.code} e=${JSON.stringify(a.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.32:spawn worker——join Ok(授权内)与 join Err(M3054 消息进 Err 逐字)各 1 ----
+  {
+    const f = mk123('rt_spawn.ming', [
+      'use std.fs;',
+      'use std.sync;',
+      '',
+      'fn wok() -> i64 with fs("data/inner/"), io {',
+      '    let _ = std.fs.read_file("data/inner/i.txt");',
+      '    return 7;',
+      '}',
+      '',
+      'fn wdenied() -> i64 with fs("data/inner/"), io {',
+      '    let _ = std.fs.read_file("data/a.txt");',
+      '    return 9;',
+      '}',
+      '',
+      'fn main() with io, sync, fs("data/**") {',
+      '    let h1 = std.sync.spawn(wok);',
+      '    let r1 = std.sync.join(h1);',
+      '    print("j1:" + str(r1.unwrap()));',
+      '    let h2 = std.sync.spawn(wdenied);',
+      '    match std.sync.join(h2) { Ok(_) => print("j2:ok"), Err(e) => print("j2:err:" + e) }',
+      '}',
+    ].join('\n'));
+    const a = runMing(['run', f], { cwd: dir123 });
+    const b = runMing(['run', f, '--tree'], { cwd: dir123 });
+    check('v123.32:spawn worker——wok 授权内 join Ok(j1:7),wdenied 读 data/a.txt → 子任务 M3054 panic 经 join Err 回传(消息逐字:函数 wdenied 请求 "data/a.txt",活跃授权集 [fs("data/inner/")]),外层存活 exit 0;双引擎 stdout 逐字节',
+      a.code === 0 && b.code === 0 && a.stdout === b.stdout
+      && a.stdout.startsWith('j1:7\nj2:err:fs 路径未授权: 函数 wdenied 请求 "data/a.txt",活跃授权集 [fs("data/inner/")];提示:'),
+      `a=${a.code} out=${JSON.stringify(a.stdout)}`);
+  }
+
+  // ---- v123.33:B2 修复回归锚——if/match 臂内参数化本地函数,VM 与 tree 一致 M3054 ----
+  // 依赖 src 修复 agent 的 B2(interp walkStmts 深遍历收集 if 分支/match 臂块内 FnStmt +
+  //   vm 查表 miss 无 entry → fail-closed 拒绝)——落地前 VM 腿暂红(实测 exit 0 静默放行,
+  //   tree 正确 M3054 exit 101;双引擎分歧),联调时间线以最终全量绿为准。
+  {
+    const f1 = mk123('rt_b2_if.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    if true {',
+      '        fn lf() with io, fs("data/inner/") {',
+      '            let _ = std.fs.read_file("data/a.txt");',
+      '        }',
+      '        lf();',
+      '    }',
+      '}',
+    ].join('\n'));
+    const f2 = mk123('rt_b2_match.ming', [
+      'use std.fs;',
+      'fn main() with io, fs("data/**") {',
+      '    match 1 {',
+      '        1 => {',
+      '            fn lm() with io, fs("data/inner/") {',
+      '                let _ = std.fs.read_file("data/a.txt");',
+      '            }',
+      '            lm();',
+      '        },',
+      '        _ => print("no"),',
+      '    }',
+      '}',
+    ].join('\n'));
+    const a1 = runMing(['run', f1], { cwd: dir123 });
+    const b1 = runMing(['run', f1, '--tree'], { cwd: dir123 });
+    const a2 = runMing(['run', f2], { cwd: dir123 });
+    const b2 = runMing(['run', f2, '--tree'], { cwd: dir123 });
+    check('v123.33:B2 回归锚(if/match 臂内参数化本地函数)——if 分支内 lf 与 match 臂块内 lm 各自声明集强制:双引擎一致 M3054 exit 101(函数 lf/lm 请求 "data/a.txt",活跃授权集 [fs("data/inner/")]),stderr 逐字节(依赖 F1 修复落地,联调校准)',
+      a1.code === 101 && b1.code === 101 && a1.stderr === b1.stderr
+      && a1.stderr.includes('函数 lf 请求 "data/a.txt",活跃授权集 [fs("data/inner/")]')
+      && a2.code === 101 && b2.code === 101 && a2.stderr === b2.stderr
+      && a2.stderr.includes('函数 lm 请求 "data/a.txt",活跃授权集 [fs("data/inner/")]'),
+      `a1=${a1.code} b1=${b1.code} a2=${a2.code} b2=${b2.code} e1=${JSON.stringify(a1.stderr.split('\n')[0])}`);
+  }
+
+  // ---- v123.34:fmt 转义参数保真锚(复核 M1 收口)——含转义引号与控制字符的模式经 --write 无损回写 + 幂等 ----
+  {
+    const q123 = String.fromCharCode(34), bs123 = String.fromCharCode(92);
+    const f = mk123('fmt_escape.ming', 'fn probe() -> bool with fs(' + q123 + 'q' + bs123 + q123 + 'b/' + q123 + '), io { return true; }' + '\n');
+    const w1 = runMing(['fmt', f, '--write']);
+    const w2 = runMing(['fmt', f, '--check']);
+    const r3 = runMing(['check', f, '--json']);
+    let n34 = null;
+    try { n34 = JSON.parse(r3.stdout); } catch { /* 下条具名失败 */ }
+    const src34 = fs.readFileSync(f, 'utf8');
+    check('v123.34:fmt 转义参数保真——含转义引号的模式经 --write 重转义回写(escapeStrLit 同集,复核 M1:旧实现裸内插产损坏文件),check exit 0 零诊断,--check 幂等',
+      w1.code === 0 && w2.code === 0 && r3.code === 0 && (n34?.diagnostics ?? []).length === 0
+      && src34.includes('fs(' + q123 + 'q' + bs123 + q123 + 'b/' + q123 + ')') && !src34.includes('q' + q123 + 'b/'),
+      `w1=${w1.code} w2=${w2.code} r3=${r3.code} diag=${JSON.stringify((n34?.diagnostics ?? []).map((d) => d.code))} src=${JSON.stringify(src34.slice(0, 90))}`);
+  }
+}
+
 
 secEndAll();
 // T2.4 并行:子进程末尾补发末节 @@SEC 与总计行(编排器聚合依据;串行模式 PAR_CHILD=false 零输出)。

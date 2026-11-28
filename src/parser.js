@@ -40,6 +40,35 @@ const PARSE_DEPTH_LIMIT = 120;
 const TYPE_DEPTH_LIMIT = 1450;
 const PAT_DEPTH_LIMIT = 2000;
 
+// v1.9.0(ADR-021 §2):效果参数文法校验(单一事实来源;解析层具名拒绝,返回错误消息/null=合法)。
+// 三形态:精确路径(无通配)/ 目录前缀(尾 `/`,授其下全部含子目录)/ 显式通配尾(尾 `/**` ≡ 目录前缀;
+// 尾 `/*` 仅直接子项)。中段 `*`、任何位置的 `?`、空串一律拒绝;仅 fs 允许带参(§1,net/exec 登记
+// 候选)。路径匹配 = 逐字符前缀比较,按字面处理,不做 `..`/符号链接解析——`..` 逃逸由
+// std.unstr.sanitize_path 处理(既有分工,ADR-021 §2 如实登记)。
+function validateEffectParam(name, s) {
+  if (name !== 'fs') {
+    return `效果 "${name}" 不支持参数:当前仅 fs 支持参数(ADR-021 §1);net/exec 带参为登记候选`;
+  }
+  if (s === '') {
+    return '效果参数不能为空字符串(ADR-021 §2;合法形态:精确路径 / 目录前缀尾 "/" / 尾 "/*" 或 "/**")';
+  }
+  if (s.includes('?')) {
+    return '效果参数不支持通配符 "?"(ADR-021 §2;通配仅允许尾段 "/*" 与 "/**")';
+  }
+  const tail = s.endsWith('/**') ? '/**' : (s.endsWith('/*') ? '/*' : null);
+  if (tail === null) {
+    if (s.includes('*')) {
+      return '效果参数不支持中段通配 "*"(ADR-021 §2;通配仅允许尾段 "/*" 与 "/**")';
+    }
+    return null; // 精确路径或目录前缀(尾 "/")
+  }
+  const rest = s.slice(0, s.length - tail.length);
+  if (rest.includes('*')) {
+    return '效果参数不支持中段通配 "*"(ADR-021 §2;通配仅允许尾段 "/*" 与 "/**")';
+  }
+  return null;
+}
+
 export function parse(file, src) {
   const { tokens, comments } = lex(file, src);
   const p = new Parser(tokens, file);
@@ -426,13 +455,29 @@ export class Parser {
     let ret = null;
     if (this.atOp('->')) { this.next(); ret = this.parseType(); }
     // 效果声明:with io, time(副作用必须显式声明)
+    // v1.9.0(ADR-021 §1/§2):参数化效果 MVP——带参效果与裸名自由混列(`with io, fs("/data/**")`)。
+    // 仅 fs 带参合法;参数必须是纯字符串字面量(expectStrLit 禁插值,注入卫生同 asm 先例);
+    // 模式文法三形态(精确路径/目录前缀尾 `/`/尾 `/*` 或 `/**`)由 validateEffectParam 在本处
+    // 校验(单一事实来源,解析层具名拒绝 M2008)。同一声明内多个 fs(模式) = 授权集并集,
+    // parser 保留全部节点。AST 节点形状 {name, span, param?}:裸名节点无 param 键,既有程序
+    // AST 零字节变化(零破坏锚)。文法校验选定在 parser(而非 checker)一处完成:纯词法判定、
+    // span 精确到声明、非法模式不流入 lsp/fmt/运行时可见的 AST。
     let effects = [];
     if (this.atKw('with')) {
       this.next();
       for (;;) {
         // v0.54:unsafe 是关键字也可作效果名(with unsafe);其余效果名保持标识符
         const eTok = this.atKw('unsafe') ? this.next() : this.expectId('效果名');
-        effects.push({ name: eTok.val, span: eTok.span });
+        const effItem = { name: eTok.val, span: eTok.span };
+        if (this.atOp('(')) {
+          this.next();
+          const argTok = this.expectStrLit(`效果 "${eTok.val}" 的参数`);
+          this.expectOp(')');
+          const badParam = validateEffectParam(eTok.val, argTok.val);
+          if (badParam) this.fail('M2008', badParam, this.spanFrom(eTok));
+          effItem.param = argTok.val; // 文法非法也保留(解析诊断已入账,管线不会带错执行)
+        }
+        effects.push(effItem);
         if (this.atOp(',')) { this.next(); continue; }
         break;
       }

@@ -13,7 +13,7 @@
 //    (README.md / README.plain.md;README.en.md 无工具计数行、GUIDE.md 只载历史修订
 //    条目——历史条目如"共 12 个"是版本快照不是当前断言,校验会误报,故不纳入);
 // 4. 能力矩阵计数:docs/capabilities.md 判定列 ✅/🟡/❌ 行数 == 42/11/3
-//    (数字来源:2026-11-19 架构师复核,capabilities.md 尾注 2026-11-18 复算同口径;v1.2 契约桥行使 🟡 10→11;矩阵行变更必须同步此处);
+//    (数字来源:2026-11-19 架构师复核,capabilities.md 尾注 2026-11-18 复算同口径;v1.2 契约桥行使 🟡 10→11;v1.9 参数化效果行使 🟡 11→12;矩阵行变更必须同步此处);
 // 5. README 版本历史表首行版本 == package.json version(README.md / README.en.md);
 // 6. AGENTS.md 头部锚定(ADR-017 §5 配套;plan §4.26 观察四"人工提醒"机制化,维护者指令 2026-11-28):
 //    a) §1 头部版本行「（当前 vX.Y.Z，1.0 已正式发布）」↔ package.json version;
@@ -148,7 +148,7 @@ function checkToolCount() {
 }
 
 // ---------- 4. 能力矩阵计数 ----------
-const CAP_EXPECT = { ok: 42, partial: 11, missing: 3 }; // 来源:2026-11-19 架构师复核(capabilities 尾注 2026-11-18 复算同口径)+ v1.2 契约桥行(🟡,56 行口径)
+const CAP_EXPECT = { ok: 42, partial: 12, missing: 3 }; // 来源:2026-11-19 架构师复核(capabilities 尾注 2026-11-18 复算同口径)+ v1.2 契约桥行(🟡,56 行口径)+ v1.9 参数化效果行(🟡,ADR-021;矩阵行变更必须同步此处)
 
 function checkCapabilityCounts() {
   console.log(`[4] 能力矩阵判定列计数(docs/capabilities.md == ${CAP_EXPECT.ok}✅ ${CAP_EXPECT.partial}🟡 ${CAP_EXPECT.missing}❌)`);

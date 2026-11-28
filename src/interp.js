@@ -834,6 +834,169 @@ export class Panic {
 }
 
 export class RetSig { constructor(value) { this.value = value; } }
+
+// ===================== 参数化效果 fs 运行时强制(ADR-021,P1 6.2)=====================
+// 授权形态三值:undefined = 该帧未声明 fs 效果(透明,不产生授权栈条目);
+// null = 裸 fs(无界授权,现行为);string[] = 参数化模式集(强制检查)。
+
+// 效果声明列表(AST)→ fs 授权形态(联调定稿:A 的 parser 形态 = 节点 {name, span, param?},
+// param 为单数字符串;同一 with 列表多个 fs(模式) = 授权集并集——checker effectParams
+// 同口径"并集、声明序去重、裸 dominates")。返回:undefined = 未声明 fs(透明,不产生
+// 授权栈条目);null = 裸 fs(无界授权,现行为);string[] = 参数化模式集。
+// 兼容读取面保留多字段防御(params/patterns/args/param/arg,元素 string 或 {v}/{val} 节点)。
+function fsAuthOfEffects(effects) {
+  if (!Array.isArray(effects)) return undefined;
+  let hasFs = false;
+  const pats = [];
+  for (const eff of effects) {
+    if (!eff || eff.name !== 'fs') continue;
+    hasFs = true;
+    const raw = eff.params ?? eff.patterns ?? eff.args ?? eff.param ?? eff.arg;
+    if (raw === undefined || raw === null) return null; // 裸 fs = 无界,dominates 并集(零破坏锚)
+    const arr = Array.isArray(raw) ? raw : [raw];
+    for (const x of arr) {
+      const s = typeof x === 'string' ? x : (x?.v ?? x?.val);
+      if (typeof s === 'string' && !pats.includes(s)) pats.push(s); // 声明序去重(确定性)
+    }
+  }
+  if (!hasFs) return undefined;
+  return pats;
+}
+
+// checker sig 形态(checker entry/AOT wire 防御面)。联调定稿:A 形态 = sig.effectParams
+// 为 Map<'fs', string[]>(仅参数化效果登记;缺省/裸 = 无界)。兼容面:sig.effects 名单
+// (Set(string) 或含对象项;现状 AOT wire 只保效果名——带参程序 AOT 帧降级裸 fs 语义,
+// batch 2 收口 wire 形态,如实登记)。
+function fsAuthOfSig(sig) {
+  if (!sig) return undefined;
+  const ep = sig.effectParams;
+  if (ep && typeof ep.get === 'function' && ep.has('fs')) {
+    const arr = ep.get('fs');
+    return Array.isArray(arr) ? arr.slice() : [];
+  }
+  const sigEffects = sig.effects;
+  if (!sigEffects || typeof sigEffects[Symbol.iterator] !== 'function') return undefined;
+  for (const eff of sigEffects) {
+    if (typeof eff === 'string') {
+      if (eff === 'fs') return null; // 名单只有名:裸 fs = 无界(AOT 降级语义)
+      continue;
+    }
+    if (eff && eff.name === 'fs') {
+      const raw = eff.params ?? eff.patterns ?? eff.param;
+      if (raw === undefined || raw === null) return null;
+      const arr = Array.isArray(raw) ? raw : [raw];
+      return arr.map((x) => (typeof x === 'string' ? x : (x?.v ?? x?.val))).filter((s) => typeof s === 'string');
+    }
+  }
+  return undefined;
+}
+
+// 帧 → 授权形态:先 AST decl.effects(源码模式;模块 fn/本地函数副表同源),后 checker
+// sig(AOT wire/防御)。导出供 vm.js 字节码帧路径复用(同一事实来源,tree/VM 同口径)。
+export function fsFrameAuth(entry) {
+  const d = fsAuthOfEffects(entry?.decl?.effects);
+  if (d !== undefined) return d;
+  return fsAuthOfSig(entry?.sig);
+}
+
+// 本地函数授权副表(VM 字节码路径专用)。编译器为本地函数存储最小 entry
+//(compiler.js compileLocalFn:decl 只保 {name, span}、sig 只保效果名名单——
+// effectParams 不进编译产物,既有 AOT 序列化选择),字节码帧拿不到本地函数
+// 声明的参数化 fs。本表在解释器构造期一次性遍历程序 AST 收集"声明了 fs 的
+// 本地函数"(键 = 模块文件 + 函数名),vm.js 对 fn.local 帧先查本表(与 tree
+// callLocalFn 的 decl.effects 同源,双引擎一致),查不到再走 fsFrameAuth
+//(sig 名单形态 → 裸 fs 语义)。wire 形态收口(effectParams 进产物)后本表可
+// 退役(batch 2 登记)。同名键冲突(同模块同名本地函数、授权形态不同)→ 存空
+// 模式集(fail-closed:该帧一切 fs 调用拒绝)——歧义身份按安全面处理。
+export function fsCollectLocalAuthTable(check) {
+  const table = new Map();
+  const specs = [];
+  // B2 修复(v1.9.0 复核):按真实 AST 字段遍历。此前 walkStmts 只走 [body, thenBody,
+  // elseBody]——If 节点字段是 then/els(parser.js parseIf),thenBody/elseBody 不存在;
+  // match 臂(arms[].expr,块臂包 BlockExpr.block)与裸块也从不下钻 → if/else/match 臂/
+  // 裸块/lambda 体里声明的参数化本地函数漏采,VM 侧查表 miss 后回落 entry 名单形态
+  //(fs 误读为裸 fs = 无界)→ fail-open。改用节点驱动的通用下钻:凡是 AST 节点/数组/
+  // 块({stmts})一律递归,FnStmt 在任何块级条目位置(含 if/match 臂、裸块、lambda 体、
+  // impl 方法体、test 体)都会被采到,未来 AST 加新块承载形态也无需同步本表。
+  // seen 集合(对象身份去重)必须有:checker 会把解析后类型回挂到声明/字段(如 struct
+  // 字段 rtype、本地函数 localFnSig),类型 .def 回指声明 → 递归 struct 形成环
+  //(examples/modules.ming 实测栈溢出);按身份去重同时避免共享子结构重复遍历。
+  const seen = new Set();
+  const walkNode = (n, modFile) => {
+    if (!n || typeof n !== 'object') return;
+    if (seen.has(n)) return;
+    seen.add(n);
+    if (Array.isArray(n)) { for (const x of n) walkNode(x, modFile); return; }
+    if (n.nt === 'FnStmt' && n.decl) collect(n.decl, modFile);
+    for (const k in n) {
+      // decl:FnStmt 的声明体由 collect 自行下钻(避免双访);span/docs 非代码结构
+      if (k === 'decl' || k === 'span' || k === 'docs') continue;
+      const v = n[k];
+      if (v && typeof v === 'object') walkNode(v, modFile);
+    }
+  };
+  const walkStmts = (block, modFile) => {
+    if (!block || typeof block !== 'object') return;
+    for (const s of block.stmts ?? []) walkNode(s, modFile);
+  };
+  const collect = (decl, modFile) => {
+    const a = fsAuthOfEffects(decl.effects);
+    if (a === undefined) return; // 未声明 fs:不入表(透明继承)
+    specs.push([modFile, decl.name, a]);
+    // 嵌套本地函数体内的更深 FnStmt
+    walkStmts(decl.body, modFile);
+  };
+  const mods = [check?.entry, ...(check?.modules ?? [])].filter(Boolean);
+  for (const mod of mods) {
+    const modFile = mod.file ?? '<unknown>';
+    for (const it of mod.items?.values?.() ?? []) {
+      if (!it?.decl) continue;
+      // 只收本地函数(FnStmt)——模块 fn 的授权走 entry 形态(decl.effects 直接可读),
+      // 不入本表(避免模块 fn 与本地 fn 同名时的键冲突误伤)。从 it.decl 整体下钻:
+      // 覆盖 fn 体、impl 方法体、test 体等全部 FnStmt 容器。
+      walkNode(it.decl, modFile);
+    }
+  }
+  for (const [modFile, name, a] of specs) {
+    const key = modFile + '\u0000' + name;
+    if (table.has(key)) {
+      const prev = table.get(key);
+      const same = JSON.stringify(prev) === JSON.stringify(a);
+      if (!same) table.set(key, []); // 歧义身份:fail-closed(空模式集 = 全拒)
+    } else {
+      table.set(key, a);
+    }
+  }
+  return table;
+}
+
+// ADR-021 §2 三形态匹配(确定性,逐字符前缀比较;无 glob 引擎;不做 `..`/符号链接
+// 解析——与 sanitize_path 的既有分工:字面路径匹配,`..` 逃逸由 sanitize_path 处理):
+// 1) 精确文件:p === path;
+// 2) 目录前缀:p = "dir/"(含显式通配尾 "dir/**" 归一)→ path 以 "dir/" 为前缀;
+// 3) 直接子项:p = "dir/*" → 以 "dir/" 为前缀且余部不含 "/"。
+// 其余形态解析层具名拒绝;运行时对未知形态 fail-closed(不匹配)。
+function fsPatternMatch(p, path) {
+  if (p === path) return true;
+  if (p.endsWith('/**')) return path.startsWith(p.slice(0, -2));
+  if (p.endsWith('/*')) {
+    const dir = p.slice(0, -1);
+    return path.startsWith(dir) && !path.slice(dir.length).includes('/');
+  }
+  if (p.endsWith('/')) return path.startsWith(p);
+  return false;
+}
+
+// fs 内建的路径实参位(未知 fs 函数默认首参 fail-closed;write 家族第 2 参是内容,不检)。
+// 全部 fs 内建(17 个)经 callStd 单点进门禁,本表只决定"检哪些实参位"。
+const FS_PATH_ARGS = {
+  read_file: [0], read_bytes: [0], read_bytes_range: [0],
+  write_bytes: [0], append_bytes: [0], write_file: [0], append_file: [0],
+  exists: [0], is_dir: [0], list_dir: [0], make_dir: [0], metadata: [0],
+  copy_file: [0, 1], rename: [0, 1],
+  remove_file: [0], remove_dir: [0], remove_dir_recursive: [0],
+};
+
 class BrkSig { }
 class ContSig { }
 
@@ -873,6 +1036,15 @@ export class Interp {
     this.steps = 0;
     this.depth = 0;
     this.callStack = []; // {name, span}
+    // ADR-021(P1 6.2):参数化效果 fs 运行时强制——活跃帧授权集。
+    // null = 活跃帧链无参数化 fs 帧(裸 fs/未声明 fs 帧)= 门禁短路,零检查零开销
+    //(裸效果程序输出逐字节不变,零破坏锚);string[] = 最近一个声明参数化 fs 的帧的
+    // 模式集(子帧授权 = 被调方声明集,ADR-021 §4 MVP 简化:调用点已被静态 M3055
+    // 证明覆盖,运行时以被调方声明集为活跃集)。裸 fs 帧 = null(无界,现行为)。
+    this.fsAuth = null;
+    this.fsAuthSaved = []; // push/pop 配对恢复栈(仅声明 fs 效果的帧产生条目)
+    // 本地函数授权副表(VM 字节码帧用;构造期一次 AST 遍历,见 fsCollectLocalAuthTable)
+    this.fsLocalAuth = fsCollectLocalAuthTable(checkResult);
     // v0.56(#28):块是否需要独立环境(let/本地 fn 才引入绑定);按 AST 块缓存,
     // 无绑定块(如循环体 total += i)直接复用父环境,避免每次进入块分配 Map。
     this.blockScopeCache = new WeakMap();
@@ -994,6 +1166,11 @@ export class Interp {
     // v0.56(A1):合约环境 = 形参帧 fenv。body 块环境是它的子环境,let 只写子层;
     // mut 形参重赋值写回 fenv,因此合约看到形参最终值(v0.49 既有语义)。
     this.contractEnvStack.push(fenv);
+    // ADR-021(P1 6.2):帧授权集入栈——子帧 = 被调方声明的 fs 参数集(ADR-021 §4 MVP
+    // 简化;调用点已被静态 M3055 证明覆盖)。未声明 fs 的帧不产生条目(透明继承);
+    // 裸 fs 帧 = null(无界)。main 经本入口进入,根授权 = main 声明集,自然成立。
+    const fsAuth = fsFrameAuth(entry);
+    if (fsAuth !== undefined) { this.fsAuthSaved.push(this.fsAuth); this.fsAuth = fsAuth; }
     try {
       this.step();
       if (decl.requires) {
@@ -1007,6 +1184,7 @@ export class Interp {
       this.callStack.pop();
       this.ensuresStack.pop();
       this.contractEnvStack.pop();
+      if (fsAuth !== undefined) this.fsAuth = this.fsAuthSaved.pop();
       // v0.87(§4.13.7):返回边界归一——块尾值按声明返回窄型重标(ensures 已在
       // checkEnsures/块尾按未归一值检查,tree/VM 同口径)。
       return normBindValue(v ?? UNIT, retSpec, callSpan);
@@ -1020,6 +1198,7 @@ export class Interp {
       this.callStack.pop();
       this.ensuresStack.pop();
       this.contractEnvStack.pop();
+      if (fsAuth !== undefined) this.fsAuth = this.fsAuthSaved.pop();
       if (e instanceof RetSig) return normBindValue(e.value, retSpec, callSpan);
       throw e;
     }
@@ -1107,6 +1286,13 @@ export class Interp {
       this.ensuresStack.pop();
       return normBindValue(v ?? UNIT, retSpec, callSpan);
     } catch (e) {
+      // v1.9.0(参数化效果批顺带对齐):lambda 帧 Panic 调用链补齐——与 callUser/
+      // callLocalFn/callCompiled 同序(最深一帧在弹栈前填全链,最老在前,外层不覆盖)。
+      // 此前本 catch 不填 → tree 的 lambda 内 panic 栈缺 <闭包> 帧(VM 字节码帧有)——
+      // 预存双引擎分歧(lambda 内调用 panic 时 stderr 调用栈差一帧,基准 HEAD 实测)。
+      if (e instanceof Panic && !e.stack.length) {
+        e.stack = this.callStack.slice();
+      }
       this.depth--;
       this.callStack.pop();
       this.ensuresStack.pop();
@@ -1816,6 +2002,10 @@ export class Interp {
     // (ensuresStack),合约名字解析基于形参帧(contractEnvStack)。
     this.ensuresStack.push(decl.ensures ?? null);
     this.contractEnvStack.push(fenv);
+    // ADR-021(P1 6.2):本地函数帧授权集入栈/出栈——与 callUser 同口径(本地 fn 声明
+    // 效果与模块函数同语法;未声明 fs 的帧透明继承)。
+    const fsAuth = fsFrameAuth({ decl });
+    if (fsAuth !== undefined) { this.fsAuthSaved.push(this.fsAuth); this.fsAuth = fsAuth; }
     try {
       this.step();
       if (decl.requires) {
@@ -1828,6 +2018,7 @@ export class Interp {
       this.depth--; this.callStack.pop();
       this.ensuresStack.pop();
       this.contractEnvStack.pop();
+      if (fsAuth !== undefined) this.fsAuth = this.fsAuthSaved.pop();
       // v0.87(§4.13.7):本地函数返回边界归一(decl.ret AST 标注;两个返回出口同口径)
       return normBindValue(v ?? UNIT, retSpec, e.span);
     } catch (ex) {
@@ -1838,6 +2029,7 @@ export class Interp {
       this.depth--; this.callStack.pop();
       this.ensuresStack.pop();
       this.contractEnvStack.pop();
+      if (fsAuth !== undefined) this.fsAuth = this.fsAuthSaved.pop();
       if (ex instanceof RetSig) return normBindValue(ex.value, retSpec, e.span);
       // v0.81 纵深防御:BrkSig/ContSig 不得穿透本地函数调用帧(见 brkContGuard 注)
       this.brkContGuard(ex, e.span);
@@ -1886,7 +2078,31 @@ export class Interp {
     throw new Panic('M4001', `内部错误:类型级函数 ${prim}.${name}`, span);
   }
 
+  // M3054[fs-path-denied] 具名 panic(exit 101,与 M4016/M4017 同族:违反自身声明的
+  // 效果边界)。诊断对象含:请求路径、活跃授权模式集、当前 fn 名(ADR-021 §4)。
+  // 仅在活跃帧链存在参数化 fs 时可达(fsAuth !== null 由 callStd 短路保证)。
+  fsGate(fnName, args, span) {
+    const idxs = FS_PATH_ARGS[fnName] ?? [0]; // 未知 fs 内建按首参路径防御(fail-closed)
+    const denied = [];
+    for (const i of idxs) {
+      const p = args[i]?.v;
+      if (typeof p !== 'string') continue; // 防御:路径位非字符串不检(不可能形态)
+      if (!this.fsAuth.some((pat) => fsPatternMatch(pat, p))) denied.push(p);
+    }
+    if (denied.length === 0) return;
+    const curFn = this.callStack[this.callStack.length - 1]?.name ?? '<unknown>';
+    const pats = this.fsAuth.map((p) => `fs("${p}")`).join(', ');
+    throw new Panic('M3054',
+      `fs 路径未授权: 函数 ${curFn} 请求 "${denied.join('", "')}",活跃授权集 [${pats}];提示:在 with fs(...) 声明中加入覆盖该路径的模式(精确 "f.ext"/目录前缀 "dir/"/显式通配 "dir/**"/直接子项 "dir/*")`,
+      span ?? null);
+  }
+
   callStd(modName, fnName, args, span) {
+    // ADR-021(P1 6.2):参数化效果 fs 运行时强制——强制点 = 本入口。tree/VM 共用
+    // callStd(VM 字节码 std 调用走 this.callStd),单点即双引擎一致;wasm 直调仅纯
+    // 函数(带 fs 效果的函数永不 wasm eligible),故本点覆盖全部真实 fs 执行面。
+    // 活跃授权集为 null(裸效果程序)时短路:零检查零开销,既有程序输出逐字节不变。
+    if (this.fsAuth !== null && modName === 'fs') this.fsGate(fnName, args, span);
     switch (`${modName}.${fnName}`) {
       case 'math.sqrt': return V.float(Math.sqrt(asF64(args[0])), 64);
       case 'math.pow': return V.float(Math.pow(asF64(args[0]), asF64(args[1])), 64);

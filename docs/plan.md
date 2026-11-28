@@ -2279,6 +2279,17 @@ ustuserlib\` 9bc7b27）：真实 Rust crate（4 抽取 fn + Result 诚实 skip �
 - **剩余缺件（A 侧，联调时点）**：tests/run.mjs 分节 §122 与 docs_check 对 agent-protocol.md 的锚定尚未落盘——测试数字回填 GUIDE §24 v1.8.0 占位条目；版本定稿（三处同步 + README 三语 + AGENTS）归架构师。
 
 
+## 4.30 P1 6.2 第一片——参数化效果 fs 执行登记（2026-11-29，维护者 standing workflow 视为点名；ADR-021，v1.9.0）
+
+> 两 agent 并发：A = 静态面（parser 带参语法 + M3055 包含检查 + diag.js 三处登记 + §123）/ B = 运行时强制（interp 帧授权 + M3054 + GUIDE/capabilities + 示例）。**A 因运行时进程崩溃中断**——盘点发现其 §123（21 check）与联调待办（v78.6 计数/v109 dump 归一化）均已落盘，架构师集成盘点收尾（capabilities 🟡 锚 11→12 + 版本定稿 + demo_data 归置）。
+
+- **实现（ADR-021 全对账）**：parser `with io, fs("/data/**")` 混列 + validateEffectParam 单点校验（三形态文法；非字面量 M2001、非法模式 M2008 具名拒绝）；checker 效果有无判定不变（裸名 M3029 面零改动）+ 新增参数包含面 M3055（调用方裸 fs = 无界向后兼容；被调方裸 fs = 无界要求不可证明覆盖；双参数化逐模式 covers）；diag.js M3054/M3055 双码三处登记；interp callStd 单点门禁（17 个 fs 内建全数、未来新增自动进门禁）+ 帧授权（根 = main 声明集/子帧 = 被调方声明集/lambda 透明继承/spawn worker 自声明）+ M3054 panic exit 101；vm callCompiled 同对帧 push/pop。
+- **测试（复核后如实口径；原 bullet"21 check 含运行时面/全量 1968"系运行时面未写入时的失实表述）**：§123 静态面 **21 check**（v123.1–21，实现 agent A 中断前已落盘：parser 正例与具名拒绝矩阵/M3055 正反例矩阵/--json 协议面/agent 冒烟/零破坏锚（裸效果程序逐字节））；**运行时面初版未写入**（占位注释预留 v123.23+，A 中断所致）。独立复核 REQUEST_CHANGES（B1/B2/M1/M2/m1–m3）处置链如实登记：**B1**（运行时面测试缺位）→ 测试修复 agent 补齐 **v123.23–33 共 11 check**（口径对照 B 的 e2e harness 84 断言逐条迁移：M3054 消息逐字 + exit 101 双引擎/模式三形态运行时边界（目录前缀·/**·/* 直接子项·并集）/子帧授权 = 被调方声明集 + 返回后根集恢复/裸根 + 参数化被调方/lambda 透明继承（报 函数 <闭包>）/本地函数带参帧/copy_file 双路径位/spawn worker join Ok+Err）；**B2**（if·match 臂内参数化本地函数 VM 静默放行）→ src 修复 agent（interp walkStmts 按真实 AST 字段深遍历 + vm 查表 miss fail-closed），v123.33 为其回归锚（修复期间 VM exit 0 vs tree M3054 双引擎分歧实测，落地后绿）；**M2**（lambda panic 调用栈锚缺位）→ v123.22（at boom/at <闭包>/at main 三帧双引擎逐字）；**m2**（协议 effects 渲染缺口）→ docs/agent-protocol.md §3.1 + GUIDE §14.3 参数不进协议 v1 登记；**m3**（demo_data 归置）→ .gitignore demo_data/ + 本机清理（示例 run 自举重建，两示例无条件 make_dir 与 gitignore 无冲突）；**m4**（文档如实化）→ 本 bullet/GUIDE §24 引言/GUIDE 头部计数；**M1/m1** 由 src 修复 agent 并行处置（见其报告，本登记不预支）。§123 合计 **33 check**；全量 **1980 项 0 失败**；fuzz seed 44044×40 0 分歧（B 批实测）。
+- **顺带修复（预存双引擎分歧）**：tree `callClosure` lambda 帧 catch 不填 e.stack → lambda 内 panic 调用栈 tree 缺 `<闭包>` 帧（VM 有）——interp 补填对齐（与 callUser/callLocalFn/callCompiled 同序，`!e.stack.length` 防重）。
+- **诚实登记**：AOT 降级实测定案——`ming build` 产物（fromArtifact 最小 entry）暂无效果参数强制（越权 exit 0）vs 源码模式 M3054 exit 101；GUIDE/capabilities 按实测措辞登记，**wire 收口（effectParams 进产物）= batch 2**；C 后端带参编译/WASM 宿主强制/`net(host=)`/`exec(allow=)` = batch 2；`..`/符号链接的字面匹配分工（sanitize_path 处理，效果授权按字面）GUIDE 如实。
+- **docs_check 锚定**：capabilities 🟡 行 11→12（CAP_EXPECT 常量同步——"矩阵行变更必须同步此处"纪律）；AGENTS §1/§3/§10 + README 三语 + GUIDE 头部/§24 定稿。
+
+
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
 
 > 来源:两个 code-reviewer 子智能体 + 主会话复现 + 2026-11-13 三方评估/安全审计。**状态:v0.50.1–v0.59.0 的已修复项逐行标注;#47/#51–#54 已于 v0.60.0 收口(资源门禁一致性:参数搬运计费/外部输入计费/--max-ms 钳制/test 旗标传播/tree 契约重入);#55–#57(P2)Backlog/随 v0.61。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。

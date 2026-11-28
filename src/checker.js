@@ -360,6 +360,21 @@ export function isPrimitiveDisplay(t, binds) {
 // 按 C6 旗标放行)/serve handler 白名单(不进 SERVE_HANDLER_EFFECTS → M3002)。
 export const KNOWN_EFFECTS = new Set(['io', 'time', 'fs', 'net', 'sync', 'proc', 'env', 'rand', 'crypto', 'ffi', 'unsafe', 'eval', 'asm']); // v0.54:unsafe;v0.69:eval;v0.74:asm
 
+// F3 修复(v1.9.0 复核,m1):效果参数文法非法判定——parser 已对非法模式发 M2008 并
+// "文法非法也保留"进 AST(src/parser.js parse 效果声明处,单一事实来源 validateEffectParam,
+// 未导出),checker 若照常把这种模式纳入 fs 授权集并参与包含判定(M3055),会级联出
+// M2008 + M3055 双发。采集时跳过非法模式(不参与并集/包含判定)——M2008 单发,合法模式
+// 不受影响。此处按 validateEffectParam 的 fs 分支词法规则同步副本(空串/`?`/中段 `*`;
+// 非 fs 带参的拒绝不在此处——采集点已用 e.name === 'fs' 收窄);parser 规则变更时必须
+// 同步本副本。仅用于诊断卫生,不引入运行时行为(M2008 程序不会编译执行)。
+function fsParamGrammarIllegal(s) {
+  if (typeof s !== 'string' || s === '') return true;
+  if (s.includes('?')) return true;
+  const tail = s.endsWith('/**') ? '/**' : (s.endsWith('/*') ? '/*' : null);
+  if (tail === null) return s.includes('*');
+  return s.slice(0, s.length - tail.length).includes('*');
+}
+
 // ===================== prelude traits =====================
 // Eq / ToStr 隐式存在,无需 use。Self 表示"实现者类型"。
 // v0.2 限制:trait 方法无默认实现;impl 只针对非泛型用户类型;原始类型内置实现 Eq/ToStr。
@@ -1243,13 +1258,23 @@ export class Checker {
         const d = entry.decl;
         const tp = new Map(d.tparams.map(n => [n, { k: 'param', name: n }]));
         // 效果:名字校验 + 存入签名
+        // v1.9.0(ADR-021 §1/§3):fs 授权模式集——仅 fs 带参节点进入 effectParams(文法已由
+        // parser 校验,checker 只认 fs,其余名字的 param 节点忽略,M2008 已在解析层入账);
+        // 裸 fs 节点不登记(缺省 = 无界授权,零破坏锚)。同一声明多个 fs(模式) = 并集
+        //(声明序去重,确定性);混入裸 fs 时裸 dominates(无界)——不带参即无界,故不登记。
         const effects = new Set();
+        const effectParams = new Map();
         for (const e of d.effects ?? []) {
           if (!KNOWN_EFFECTS.has(e.name)) {
             this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
             continue;
           }
           effects.add(e.name);
+          if (e.param != null && e.name === 'fs' && !fsParamGrammarIllegal(e.param)) {
+            const arr = effectParams.get('fs') ?? [];
+            if (!arr.includes(e.param)) arr.push(e.param);
+            effectParams.set('fs', arr);
+          }
         }
         // v0.46 修复:解析恢复产物——顶层 fn 带裸 self(type:null)只可能来自
         // "impl 缺 for"的恢复路径(真实错误 M2002 已由解析器报告),此处不得崩溃;
@@ -1262,6 +1287,11 @@ export class Checker {
           ret: d.ret ? this.resolveTypeAst(d.ret, mod, tp) : T_UNIT,
           effects,
         };
+        // v1.9.0(ADR-021):fs 授权模式集——非枚举挂载(checkedSig 先例):编译器 entryFnIdx
+        // 序列化 entry.sig 整对象,可枚举新字段会让 AOT 产物 JSON 多出 "effectParams":{}
+        //(Map 序列化为空对象,无信息量)→ 字节码等价门禁(v109)假失败。非枚举 = 属性访问
+        // 照常、JSON.stringify 跳过,零字节破坏。
+        Object.defineProperty(entry.sig, 'effectParams', { value: effectParams, configurable: true, writable: true });
         // v0.61(ADR-002 §3.1):extern 禁止裸 str 返回——C 世界返回值没有可信的,
         // 让漏标成为声明处错误(M3049)而非纪律问题;签名一律按 -> Untrusted[str] 处理,
         // 调用处照常接受(声明错误已报,程序不会编译通过)。
@@ -1671,13 +1701,20 @@ export class Checker {
           continue;
         }
         // 效果
+        // v1.9.0(ADR-021):fs 授权模式集与模块 fn 同口径(并集、声明序去重、裸 dominates)
         const effects = new Set();
+        const effectParams = new Map();
         for (const e of m.effects ?? []) {
           if (!KNOWN_EFFECTS.has(e.name)) {
             this.diags.push(err('M3030', '未知的效果 "' + e.name + '"', e.span));
             continue;
           }
           effects.add(e.name);
+          if (e.param != null && e.name === 'fs' && !fsParamGrammarIllegal(e.param)) {
+            const arr = effectParams.get('fs') ?? [];
+            if (!arr.includes(e.param)) arr.push(e.param);
+            effectParams.set('fs', arr);
+          }
         }
         const sig = {
           tparams: item.tparams.slice(),
@@ -1688,6 +1725,8 @@ export class Checker {
           ret: m.ret ? this.resolveTypeAst(m.ret, mod, tpMap, selfT) : T_UNIT,
           effects,
         };
+        // v1.9.0(ADR-021):同模块 fn 口径——非枚举挂载(序列化零字节;见 resolveSigs 注)
+        Object.defineProperty(sig, 'effectParams', { value: effectParams, configurable: true, writable: true });
         // v0.87(ADR-009 S2):impl 方法签名 Slice 禁面(与 trait 声明/模块函数同口径)
         this.checkSigNoSlice(sig.params.filter(p => !p.self), sig.ret, m.ret?.span ?? m.span);
         // 与 trait 声明匹配
@@ -1859,6 +1898,7 @@ export class Checker {
       fnDecl: d, // v0.44:效果修复处方需要函数体起点(函数签名尾部)
       genericNames: new Set(entry.sig.tparams),
       effects: entry.sig.effects,
+      effectParams: entry.sig.effectParams, // v1.9.0(ADR-021):本 fn 的 fs 授权模式集(缺省/裸 = 无界)
       genericBounds: new Map((entry.sig.bounds ?? []).map(b => [b.name, b.trait])),
       fnId: ++this.fnSeq, // v0.80:M3004 mut 插入处方的同函数判定
     };
@@ -1907,10 +1947,17 @@ export class Checker {
   // v0.59(#44):本地函数签名构建(原 M3047 分支的登记逻辑抽出,供 checkBlock 预登记复用)
   buildLocalFnSig(d, ctx) {
     const tp = new Map(d.tparams.map(n => [n, { k: 'param', name: n }]));
+    // v1.9.0(ADR-021):fs 授权模式集与模块 fn 同口径(并集、声明序去重、裸 dominates)
     const effects = new Set();
+    const effectParams = new Map();
     for (const e of d.effects ?? []) {
       if (KNOWN_EFFECTS.has(e.name)) effects.add(e.name);
       else this.diags.push(err('M3030', `未知的效果 "${e.name}"(可用:${[...KNOWN_EFFECTS].join(', ')})`, e.span));
+      if (e.param != null && e.name === 'fs' && !fsParamGrammarIllegal(e.param)) {
+        const arr = effectParams.get('fs') ?? [];
+        if (!arr.includes(e.param)) arr.push(e.param);
+        effectParams.set('fs', arr);
+      }
     }
     const sig = {
       tparams: d.tparams,
@@ -1919,6 +1966,8 @@ export class Checker {
       effects,
       declSpan: d.span ?? null, // v0.59 P2 审查 MINOR#1:重复定义诊断指向首次声明
     };
+    // v1.9.0(ADR-021):同模块 fn 口径——非枚举挂载(序列化零字节;见 resolveSigs 注)
+    Object.defineProperty(sig, 'effectParams', { value: effectParams, configurable: true, writable: true });
     // v0.87(ADR-009 S2):本地函数签名 Slice 禁面(与模块函数同口径)
     this.checkSigNoSlice(sig.params, sig.ret, d.ret?.span ?? d.span);
     return sig;
@@ -1942,6 +1991,7 @@ export class Checker {
       fnDecl: d,
       genericNames: new Set(d.tparams),
       effects: sig.effects,
+      effectParams: sig.effectParams, // v1.9.0(ADR-021):同 checkFnBody 口径
       genericBounds: new Map(),
       fnId: ++this.fnSeq, // v0.80:M3004 mut 插入处方的同函数判定(本地函数本就不捕获外层)
     };
@@ -2100,6 +2150,58 @@ export class Checker {
       d.fix = { start: { line: bodySpan.line, col: bodySpan.col }, end: { line: bodySpan.line, col: bodySpan.col }, replacement: repl };
     }
     this.diags.push(d);
+  }
+
+  // ---------- v1.9.0 参数化效果 fs(ADR-021)----------
+  // 效果有无判定不变(裸名 M3029 面,既有核对路径零改动);本节只新增"参数包含"面。
+
+  // 覆盖公式(§123 锁定;ADR-021 §2:逐字符前缀比较,按字面处理,不做 `..`/符号链接解析):
+  //   covers(p, q):p = 授权模式(调用方),q = 要求模式(被调方),均为 parser 已验证文法的模式。
+  //   1. p 尾 "/**" 先归一为目录前缀 p.slice(0, -2)(/** ≡ 目录前缀);
+  //   2. q 尾 "/**" → 递归 covers(p, q.slice(0, -2))(递归必终止:去尾后无 "**");
+  //   3. q === p → 精确相等覆盖(含文件对文件、目录前缀对目录前缀);
+  //   4. p 以 "/" 结尾(目录前缀)→ q.startsWith(p)(授其下全部,含子目录与自身);
+  //   5. p 以 "/*" 结尾(直接子项)→ q 落于 p 去尾 "*" 的目录前缀下、且仅多一段
+  //      (q.slice(base).length > 0 且不含 "/")——q 为深路径或该目录本身 → 不覆盖(§123 边界);
+  //   6. 其余(p 为精确文件模式)→ 仅第 3 条精确相等。
+  fsParamCovers(p, q) {
+    const pBase = p.endsWith('/**') ? p.slice(0, -2) : p;
+    if (q.endsWith('/**')) return this.fsParamCovers(pBase, q.slice(0, -2));
+    if (q === pBase) return true;
+    if (pBase.endsWith('/')) return q.startsWith(pBase);
+    if (pBase.endsWith('/*')) {
+      const base = pBase.slice(0, -1);
+      return q.startsWith(base) && q.length > base.length && !q.slice(base.length).includes('/');
+    }
+    return false;
+  }
+
+  // 调用点包含判定(M3055[fs-effect-param-containment];span = 调用表达式,ADR-021 §3):
+  //   调用方裸 fs(无参)= 覆盖一切(向后兼容根,零破坏锚);
+  //   被调方裸 fs = 无界要求 → 参数化调用方不可证明覆盖 → M3055(具名,列 P);
+  //   双方参数化 → ∀q∈Q ∃p∈P: fsParamCovers(p, q);有不覆盖的 q → M3055(列出 q 与 P);
+  //   调用方根本没有 fs → 只发 M3029(既有路径),不双报。
+  // std 内建(std.fs.*)不经过本判定:其效果要求是裸名 fs(M3029 面),路径级授权由运行时
+  // M3054(interp fs switch 单点)兑现——动态路径只有运行时强制能拦(ADR-021 §4)。
+  checkFsParamContainment(ctx, calleeSig, span, calleeName) {
+    if (!calleeSig?.effects?.has('fs')) return;
+    if (!ctx.effects?.has('fs')) return; // 缺效果已由 checkEffects 具名,不双报
+    const P = ctx.effectParams?.get('fs') ?? null; // null = 裸 fs(无界,覆盖一切)
+    if (P === null) return;
+    const caller = ctx.fnName ?? '?';
+    const Q = calleeSig.effectParams?.get('fs') ?? null;
+    if (Q === null) {
+      this.diags.push(err('M3055',
+        `效果 fs 参数包含失败:被调方 "${calleeName}" 的 fs 为无界(裸),调用方 "${caller}" 仅授予 fs(${P.map((s) => `"${s}"`).join(', ')})——不可证明覆盖`,
+        span, CODE_HINTS.M3055));
+      return;
+    }
+    const uncovered = Q.filter((q) => !P.some((p) => this.fsParamCovers(p, q)));
+    if (uncovered.length) {
+      this.diags.push(err('M3055',
+        `效果 fs 参数包含失败:被调方 "${calleeName}" 需要 fs(${Q.map((s) => `"${s}"`).join(', ')}),调用方 "${caller}" 仅授予 fs(${P.map((s) => `"${s}"`).join(', ')})——以下模式不可证明覆盖: ${uncovered.map((s) => `"${s}"`).join(', ')}`,
+        span, CODE_HINTS.M3055));
+    }
   }
 
   // v0.74(ADR-006 §1/§3):asm 块操作数校验(仅 out/in;模板/约束/clobber 的字面量性
@@ -3121,6 +3223,7 @@ export class Checker {
         this.checkPtrArgs(e.args, argTs, ctx, `函数 "${name}"`); // v0.54
         this.checkSliceArgs(e.args, argTs, `本地函数 "${name}"`); // v0.87 ADR-009 S2
         this.checkEffects(ctx, localFn.effects, callee.span);
+        this.checkFsParamContainment(ctx, localFn, callee.span, name); // v1.9.0(ADR-021 §3)
         return localFn.ret;
       }
       const entry = ctx.mod.items.get(name);
@@ -3198,6 +3301,8 @@ export class Checker {
     const binds = new Map();
     // 效果传播:调用方必须声明被调方的全部效果
     this.checkEffects(ctx, sig.effects, e.callee.span);
+    // v1.9.0(ADR-021 §3):fs 参数包含(裸名面通过后,参数化双方逐模式判定)
+    this.checkFsParamContainment(ctx, sig, e.callee.span, entry.decl.name);
     // 泛型:类型参数 → 推断变量(运行时擦除;参数上的操作由体内的 M3018 报告)
     const paramVars = sig.tparams.map(() => tvar());
     const paramMap = new Map(sig.tparams.map((n, i) => [n, paramVars[i]]));
@@ -5366,10 +5471,14 @@ export class Checker {
             ...sig0,
             params: sig0.params.map(p => ({ ...p, type: substTypes(p.type, mtparams, pmap) })),
             ret: substTypes(sig0.ret, mtparams, pmap),
+            // v1.9.0(ADR-021):effectParams 非枚举,对象展开不复制——泛型代换副本显式携带
+            //(此处副本仅检查期存活,不进序列化;可枚举无碍)
+            effectParams: sig0.effectParams,
           };
         }
         if (sig.params[0].mut) this.checkMutReceiver(fieldCallee.base, ctx, name, mspan);
         this.checkEffects(ctx, sig.effects, mspan);
+        this.checkFsParamContainment(ctx, sig, mspan, name); // v1.9.0(ADR-021 §3;泛型代换 sig 经展开保留 effectParams)
         if (args.length !== sig.params.length - 1) {
           this.diags.push(err('M3005', `方法 .${name}() 需要 ${sig.params.length - 1} 个参数,得到 ${args.length}`, mspan));
           return sig.ret;

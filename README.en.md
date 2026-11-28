@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.8.0** (2026-11-28) |
-| Regression suite | **1939 checks, all green** (§1–§122; full run every time) |
+| Current version | **v1.9.0** (2026-11-29) |
+| Regression suite | **1981 checks, all green** (§1–§123; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **18** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.9.0 | 2026-11-29 | P1 6.2 slice 1 = parameterized effects fs (ADR-021: `with fs("/data/**")` mixed syntax + three-form pattern grammar + M3055 static containment + M3054 runtime enforcement — 17 fs builtins gated at the callStd single point, dynamic-path overreach panics) + fix of a pre-existing dual-engine divergence (lambda panic call-stack missing <closure> frame on tree) | 1981 |
 | v1.8.0 | 2026-11-28 | P1 6.1 = Ming Agent Protocol (four LSP methods ming/agent/*: type context / contract summary + proof status / candidate submission with structured counterexamples / obligation artifact export; ADR-020 security boundary = read-only candidate path through the existing check) + reference agent-client standalone repo (pure-stdlib client; demo fix loop M3045 counterexample → fix → proven) | 1939 |
 | v1.7.0 | 2026-11-28 | Bridge 2 = Rust contract bridge (`ming bridge extract --from rust`: top-level fn + /// doc math-inequality lines, faithful narrow-type mapping, isize/usize/f32 approx notes, Result/tuple named skips; ADR-019) + third external consumer rustuserlib (real Rust crate cargo test vs signatures of record, neutral-dir 4/4 exit 0) | 1927 |
 | v1.6.0 | 2026-11-28 | Bridge 1 = Python contract bridge (`ming bridge extract --from py`: PEP 484 annotations + docstring math-inequality lines, eight-type mapping, deterministic output; ADR-018) + second external consumer pyuserlib (ADR-017 path 2: standalone stdlib-only .mingi stub cross-checker, neutral-dir 4/4 exit 0) + M3053 hint peer-neutral wording | 1909 |

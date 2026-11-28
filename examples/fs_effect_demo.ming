@@ -1,0 +1,46 @@
+// 参数化效果 fs 路径授权——授权内段(ADR-021,v1.9;详见 GUIDE §14.3)
+// 运行:`ming run examples/fs_effect_demo.ming`
+//
+// 根授权 = main 声明的模式集 fs("demo_data/")——本程序只允许碰 demo_data/ 下的
+// 路径;碰其它路径 → M3054[fs-path-denied] 具名 panic(exit 101,见
+// fs_effect_demo_denied.ming)。裸 `fs`(无参数)= 无界授权,语义不变。
+//
+// 语义要点(ADR-021):
+//  * 静态面 M3055:调用方声明 ⊇ 被调方声明才可调用(编译期);
+//  * 运行时面 M3054:全部 fs 内建进门禁,路径不在活跃授权集 → 具名 panic;
+//  * 动态路径(路径运行时才知)只有运行时强制能拦——"Agent 生成的代码
+//    只能访问指定路径"的兑现点;
+//  * 无参声明程序零检查零开销(既有 fs 程序输出逐字节不变)。
+use std.fs;
+
+fn main() with io, fs("demo_data/") {
+
+    // 授权内建目录(make_dir 递归;同样在门禁之后)
+    match std.fs.make_dir("demo_data/") {
+        Ok(_) => print("建目录 demo_data/ 成功"),
+        Err(e) => print("建目录跳过: \{e}"),
+    }
+
+    // 授权内写入:demo_data/ 前缀命中目录前缀模式 → 正常执行
+    match std.fs.write_file("demo_data/hello.txt", "参数化效果 fs 授权内正常\n") {
+        Ok(_) => print("写入 demo_data/hello.txt 成功"),
+        Err(e) => {
+            print("写入失败: \{e}");
+            return;
+        },
+    }
+
+    // 授权内读取:精确文件/目录前缀/显式通配尾三形态都以逐字符前缀比较判定
+    match std.fs.read_file("demo_data/hello.txt") {
+        Ok(c) => print("读回 \{c.char_len()} 字符(路径在授权集内)"),
+        Err(e) => print("读取失败: \{e}"),
+    }
+
+    // 授权内列目录
+    match std.fs.list_dir("demo_data/") {
+        Ok(entries) => print("demo_data/ 共 \{entries.len()} 项"),
+        Err(e) => print("列目录失败: \{e}"),
+    }
+
+    print("程序正常结束(exit 0)");
+}

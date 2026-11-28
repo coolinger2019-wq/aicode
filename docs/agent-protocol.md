@@ -74,6 +74,11 @@ MVP 边界(固定,不扩面):
 | `fn` | string \| null | 所在 fn 的完整签名;不在 fn 内 → `null` |
 | `span` | object | 命中声明的 1-based span `{ line, col, endLine, endCol }` |
 
+> **参数化效果的参数不进协议 v1**(v1.9 复核 m2 登记):带参效果 `with io, fs("data/**")`
+> 的 `effects` 数组与 `fn`/`type` 渲染当前只回效果**裸名** `fs`——即消费方据协议看到的
+> 是无界授权。batch 2 或 hotfix 收口(参数形态进渲染/数组);**消费方勿据协议 `effects`
+> 判定路径边界**——路径级授权以 M3055 静态诊断与源码声明为准(运行时另有 M3054 强制)。
+
 响应 `result`(失败):`{ "ok": false, "reason": "<具名原因>" }`。
 
 定位语义:与 hover 同款声明定位(`collectHoverables`);多处命中取**最小 span**

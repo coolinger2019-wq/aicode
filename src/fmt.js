@@ -130,7 +130,13 @@ class Writer {
     }).join(', ') + ']' : '';
     const params = it.params.map(p => p.self ? (p.mut ? 'mut self' : 'self') : (p.mut ? 'mut ' : '') + p.name + ': ' + typeAst(p.type)).join(', ');
     const ret = it.ret ? ' -> ' + typeAst(it.ret) : '';
-    const eff = it.effects?.length ? ' with ' + it.effects.map(e => e.name).join(', ') : '';
+    // v1.9.0(ADR-021 §1):带参效果回写 fs("模式")——此前只写 e.name 会静默丢弃授权
+    // 参数(裸 fs = 无界,fmt --write 等于悄悄扩权,数据丢失同族先例 v0.56 #36/v0.74 asm)。
+    // F2 修复(v1.9.0 复核):参数经 escapeStrLit 按 lexer 字符串转义集(\n \t \r \0 \\
+    // " 与 C0/DEL 的 \u{..})重编码——此前原值内插,含 `"`/`\` 的模式(如 fs("q\"b/"))
+    // 经 fmt --write 产出损坏源码 fs("q"b/"))。param 是 expectStrLit 纯字面量的解码值,
+    // escapeStrLit 编码可无损回读(与 StrLit 渲染同一转义纪律,无不可表达形态)。
+    const eff = it.effects?.length ? ' with ' + it.effects.map(e => e.param != null ? `${e.name}("${escapeStrLit(e.param)}")` : e.name).join(', ') : '';
     // v0.56(#36):契约保真——requires/ensures 此前被 fmt 静默丢弃(语义数据丢失)。
     const ctr = contractSuffix(it);
     // v0.56(#36):签名可能因契约多行;尾行取函数体 `{` 所在行,避免块首被误判为

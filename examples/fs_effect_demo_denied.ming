@@ -1,0 +1,36 @@
+// 参数化效果 fs 路径授权——授权外段(ADR-021,v1.9;详见 GUIDE §14.3)
+// 运行:`ming run examples/fs_effect_demo_denied.ming`(预期 exit 101)
+//
+// 根授权 = fs("demo_data/")。读授权外路径 secret.txt → M3054[fs-path-denied]
+// 具名 panic(exit 101,与 M4016/M4017 同族:违反自身声明的效果边界)。
+// 预期 stderr(isTTY 时另含源码摘录;调用栈"最新在前"):
+//
+//   M3054[fs-path-denied]: fs 路径未授权: 函数 main 请求 "secret.txt",活跃授权集
+//   [fs("demo_data/")];提示:在 with fs(...) 声明中加入覆盖该路径的模式(精确
+//   "f.ext"/目录前缀 "dir/"/显式通配 "dir/**"/直接子项 "dir/*")
+//   (诊断行指向文末 read_file("secret.txt") 调用处)
+//   调用栈(Ming 层,最新在前):
+//     at main (...)
+//
+// 消息三要素(ADR-021 §4):请求路径 / 活跃授权模式集 / 当前函数名。
+use std.fs;
+
+fn main() with io, fs("demo_data/") {
+
+    // 先证明授权内一切正常(自包含:不依赖 fs_effect_demo.ming 先行)
+    match std.fs.make_dir("demo_data/") {
+        Ok(_) => print("授权内建目录 demo_data/ 正常"),
+        Err(e) => print("建目录跳过: \{e}"),
+    }
+    match std.fs.write_file("demo_data/hello.txt", "授权内写入正常\n") {
+        Ok(_) => print("授权内写入 demo_data/hello.txt 正常"),
+        Err(e) => {
+            print("授权内写入失败: \{e}");
+            return;
+        },
+    }
+
+    // 动态路径:secret.txt 不在活跃授权集 [fs("demo_data/")] 内 → M3054 具名
+    // panic,exit 101。下面的调用不可返回。
+    let _ = std.fs.read_file("secret.txt");
+}

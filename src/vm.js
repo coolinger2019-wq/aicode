@@ -6,11 +6,23 @@
 // 栈布局:操作数在 valueStack;每帧 {fn, ip, locals[], captures[]}。
 // 值语义:ST/SET/BIND/调用实参/集合构造全部 deepCopy;mut self 的 self 不拷贝。
 
-import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, declaredSpecOfTy, uniformNarrowSpec } from './interp.js';
+import { Interp, BUILTIN_IMPLS, V, deepCopy, UNIT, displayStr, debugStr, valueEquals, normKey, keyValue, Panic, RetSig, normInt, fits, normBindValue, declaredSpecOfTy, uniformNarrowSpec, fsFrameAuth } from './interp.js';
 import { compile, OP, BIN } from './compiler.js';
 import { tint, tfloat, T_STR, T_BOOL, INT_TYPES, typeStr, resolveT } from './checker.js';
 import { MATH_IMPORTS } from './wasm.js';
 import * as artifactMod from './artifact.js';
+
+// B2 修复(v1.9.0 复核)辅助:本地函数的最小 entry 只带效果名名单(sig.effects,
+// checker checkedSig 的名字 Set;effectParams 不进编译产物)。判定"该本地函数声明了
+// fs 效果"——无论裸名还是带参;用于查表 miss 时的 fail-closed 分流(见 callCompiled
+// 注)。Set/数组两形态都认(防御面)。
+function fsLocalEntryDeclaresFs(entry) {
+  const fx = entry?.sig?.effects;
+  if (!fx) return false;
+  if (typeof fx.has === 'function') return fx.has('fs');
+  if (Array.isArray(fx)) return fx.some((e) => e === 'fs' || e?.name === 'fs');
+  return false;
+}
 
 export function resolveConst(c) {
   if (c && c.__tag === 'str') {
@@ -662,10 +674,31 @@ export class VMInterp extends Interp {
     this.callStack.push({ name: fn.name, span });
     // v0.44 修复:帧记录操作数栈基址——RET/? 提前返回时截断本帧残留(match 降级的 DUP/SWAP/POP 清栈会被 return 跳过)
     this.frames.push({ fn, ip: 0, locals, captures, stackBase: this.valueStack.length });
+    // ADR-021(P1 6.2):字节码帧授权集入栈/出栈——与 tree callUser 同口径(被调方声明
+    // 的 fs 参数集;fn.entry 来自 checker,源码模式带 decl.effects;AOT wire 形态降级见
+    // fsAuthOfSigEffects)。wasm 快路径在本段之前已提前返回,不受影响。
+    // 本地函数(fn.local)的编译 entry 只存最小 decl(无 effects)——先查 AST 副表
+    //(fsCollectLocalAuthTable,与 tree callLocalFn 的 decl.effects 同源)。B2 修复
+    //(v1.9.0 复核):查表 miss 且 entry 名单里声明了 fs 时,绝不能回落 fsFrameAuth——
+    // 本地函数 sig 只有效果名名单(effectParams 不进编译产物),fsAuthOfSig 会把名单里
+    // 的 'fs' 误读为裸 fs = 无界(null)→ 透明继承调用方更宽授权(fail-open)。改
+    // fail-closed:空模式集 = 全拒,与副表"同名歧义置空集"守卫同口径(具名,见上方注释)。
+    // 副表 miss 且未声明 fs 的本地函数(透明继承,既有语义)与一切非本地函数路径不变。
+    const fsLocalKey = fn.local ? fn.modFile + '\u0000' + fn.name : null;
+    let fsAuth;
+    if (fn.local && this.fsLocalAuth && this.fsLocalAuth.has(fsLocalKey)) {
+      fsAuth = this.fsLocalAuth.get(fsLocalKey);
+    } else if (fn.local && fsLocalEntryDeclaresFs(fn.entry)) {
+      fsAuth = [];
+    } else {
+      fsAuth = fsFrameAuth(fn.entry);
+    }
+    if (fsAuth !== undefined) { this.fsAuthSaved.push(this.fsAuth); this.fsAuth = fsAuth; }
     try {
       const ret = this.execLoop();
       this.depth--;
       this.callStack.pop();
+      if (fsAuth !== undefined) this.fsAuth = this.fsAuthSaved.pop();
       // v0.87(§4.13.7):返回边界归一——与 tree callUser 同口径(声明返回窄型 → 重标)。
       // wasm 路径不在此归一:窄型返回函数 shape 阶段即非 eligible(numOk bits===64),
       // 该路径不可达,不添加死分支。
@@ -677,6 +710,7 @@ export class VMInterp extends Interp {
       }
       this.depth--;
       this.callStack.pop();
+      if (fsAuth !== undefined) this.fsAuth = this.fsAuthSaved.pop();
       this.frames.length = beforeLen; // 恢复调用方帧
       // 异常展开:drain 本帧(及更深)未退出的 scoped 块,吞掉子任务错误
       while ((this.syncScopeStack?.length ?? 0) > scopeBase) {

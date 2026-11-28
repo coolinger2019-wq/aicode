@@ -19,3 +19,7 @@ ming-cc-out/
 
 # 套件并行化子载体残件(编排器异常退出时残留)
 tests/.par-child-*
+
+# 示例运行自建目录(fs_effect_demo*.ming 授权内 make_dir 自举;fixture 无存在必要,
+# 删除后 run 时重建——demo_data 目录不入库,复核 m3 处置)
+demo_data/
