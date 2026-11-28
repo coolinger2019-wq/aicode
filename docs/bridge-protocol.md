@@ -1,8 +1,8 @@
 # Ming 契约桥协议(MVP)
 
-> 版本:v1.5(桥 1:Python 源 `--from py`,ADR-018;v1.4 S-5 契约满足性检查;
-> v1.2.3 R-18 效果/污点签名;S-4 契约桥 MVP,plan §4.21.2 / §4.20 P2 /
-> docs/roadmap-infrastructure.md §5.2)
+> 版本:v1.7(桥 2:Rust 源 `--from rust`,ADR-019;桥 1:Python 源 `--from py`,ADR-018;
+> v1.4 S-5 契约满足性检查;v1.2.3 R-18 效果/污点签名;S-4 契约桥 MVP,
+> plan §4.21.2 / §4.20 P2 / docs/roadmap-infrastructure.md §5.2)
 > 状态:**MVP / 实验性**——格式与判定语义可能随真实用例演进;确定性输出与 M3052
 > 判定口径在 MVP 期内保持稳定,不承诺与未来版本逐字节兼容。
 > 单一事实来源:本文件定义 `.mingi` 格式与比较规则;实现为 `src/bridge.js`;
@@ -21,8 +21,9 @@
 
 MVP 边界(固定,不扩面):
 
-- 源语言:**TypeScript**(`--from ts`,契约来源 = JSDoc 注释)与 **Python**(`--from py`,
-  契约来源 = docstring 数学不等式行;v1.5 / ADR-018 起,见 §11);
+- 源语言:**TypeScript**(`--from ts`,契约来源 = JSDoc 注释)、**Python**(`--from py`,
+  契约来源 = docstring 数学不等式行;v1.5 / ADR-018 起,见 §11)与 **Rust**(`--from rust`,
+  契约来源 = `///` doc 注释数学不等式行;v1.7 / ADR-019 起,见 §12);
 - 边界形态:**仅 Ming `extern fn` ↔ TS `export function` / Python 顶层 `def`**(C FFI 面);
 - **不做**:WASM Component、运行时插桩、契约在 Ming 侧的自动注入/执行、NLP/LLM 语义推断。
 
@@ -49,23 +50,25 @@ Ming 能查、TypeScript 不能查的维度,桩必须携带:
 ```bash
 ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]
 ming bridge extract --from py <file.py|目录> --out <目录> [--json]
+ming bridge extract --from rust <file.rs|目录> --out <目录> [--json]
 ming check <file.ming...> --stub <目录|文件> [--json]
 ```
 
 `bridge extract`:
 
-- `--from` 只接受 `ts` 与 `py`(v1.5 起;`py` 文法见 §11);缺省或其他取值 → 显式报错
-  exit 1(不静默);
-- 输入为文件时必须以对应源扩展名结尾(`ts` → `.ts`;`py` → `.py`);为目录时递归收集
-  对应扩展名文件(跳过隐藏项与 `node_modules`),目录为空 → 报错 exit 1;只接受一个
-  位置输入(多余参数 → 报错 exit 1,不静默忽略);
+- `--from` 只接受 `ts`、`py` 与 `rust`(v1.7 起;`py` 文法见 §11,`rust` 文法见 §12);
+  缺省或其他取值 → 显式报错 exit 1(不静默);
+- 输入为文件时必须以对应源扩展名结尾(`ts` → `.ts`;`py` → `.py`;`rust` → `.rs`);
+  为目录时递归收集对应扩展名文件(跳过隐藏项与 `node_modules`),目录为空 → 报错
+  exit 1;只接受一个位置输入(多余参数 → 报错 exit 1,不静默忽略);
 - 每个源文件生成**同名 `.mingi`**(`x.ts` → `x.mingi`,`x.py` → `x.mingi`,
-  `.d.ts` → `.d.mingi`);目录输入在输出目录内**保留相对子目录结构**(避免同名文件
-  互相覆盖);
+  `x.rs` → `x.mingi`,`.d.ts` → `.d.mingi`);目录输入在输出目录内**保留相对子目录
+  结构**(避免同名文件互相覆盖);
 - 文本模式逐文件一行回执;`--json` 输出
   `{ok, from, out, files:[{source,input,output,functions,skipped,effects,taint,notes}]}`
   (`effects`/`taint`/`notes` 为 v1.2.3 起 additive 字段,见 §3.4;`py` 源的
-  `effects`/`taint` 恒为空——Python v1 无元数据标签面,见 §11.6);
+  `effects`/`taint` 恒为空——Python v1 无元数据标签面,见 §11.6;`rust` 源同——
+  `///` doc 注释无标签面,见 §12.4);
 - 函数被跳过不算失败:桩头具名注记,exit 0。输入不可读/输出不可写 → exit 1。
 
 `check --stub`:
@@ -497,8 +500,9 @@ span = extern 声明整体;hint 指向本协议与两条修复路径(改 extern 
    文本(极罕见);不构建 AST、不解析导入类型、不展开类型别名;
 2. **契约候选不是语义**:JSDoc 不等式只做文本级映射,不验证与实现一致,
    也不注入 Ming 运行/静态检查;人工审阅后才应写入 `requires`/`ensures`;
-3. **只有两种源语言与一种边界形态**:TypeScript(JSDoc)与 Python(docstring,§11)
-   在本协议;WIT / WASM Component 不在(类方法抽取亦不在,§11.4);
+3. **只有三种源语言与一种边界形态**:TypeScript(JSDoc)、Python(docstring,§11)与
+   Rust(`///` doc 注释,§12)在本协议;WIT / WASM Component 不在(类方法抽取亦不在,
+   §11.1 / §12.1);
 4. **`len$x` 仅为候选符号**:`.mingi` 不可直接编译;转成 Ming 源码需人工改写;
 5. **不核对参数名、效果、ABI 布局、C 结构体/数组形参**:只核对参数个数与映射类型
    (载体口径);结构体/数组 FFI ABI 本身也是 Ming C 后端的未覆盖面;
@@ -570,6 +574,12 @@ span = extern 声明整体;hint 指向本协议与两条修复路径(改 extern 
 - `tests/run.mjs` §120:**Python 源提取(§11)——Google 分节 golden 逐字节/确定性双跑/
   函数源码序/PEP 484 八型映射/无注解参数跳过/散行兜底/坏行健壮/坏文件具名跳过/
   `--json` `from:"py"`/消费链 e2e(checked/M3052 失配/M3053 调用点违反)与 CLI 拒绝面**;
+- `tests/run.mjs` §121:**Rust 源提取(§12)——`///` 散行 golden 逐字节/确定性双跑/
+  函数源码序/pub·pub(crate)·泛型剥名/窄型同名全家/isize·usize·f32 近似映射 + note 逐字/
+  引用·生命周期·mut·String 清洗/slice·HashMap·BTreeMap·Option 映射/`len()` 形态 → `len$`/
+  具名 skip 全家(async/unsafe/Result 函数级跳过;元组/非 String 键参数级跳过、函数保留)+
+  `#[doc]` 不做/`where` 忽略/恢复扫描(截断签名 + 100 行超限)/垃圾文件空桩头/`//!` 内层不扫/
+  `--json` `from:"rust"`/消费链 e2e(checked/M3052 失配/M3053 调用点违反)与 CLI 拒绝面**;
 - 端到端示例:`examples/bridge_demo/`(`demo.ts` + `demo.ming` + 入库黄金 `demo.mingi`)。
 
 ---
@@ -724,3 +734,131 @@ def get_user(user_id: int, conn: str) -> int:
 - **效果/污点抽取无来源**(docstring 无标签面)——登记候选;
 - **`__future__` 注解延迟求值形态**(`from __future__ import annotations` 下的字符串
   注解)不在 MVP(实现按字面文本识别注解;字符串形态的登记候选,不预支)。
+
+---
+
+## 12. Rust 源(`--from rust`;v1.7 / ADR-019)
+
+> 桥 2 的第三源语言:把 Rust 库的**顶层函数签名 + `///` doc 注释数学不等式行**提取为
+> 同一 `.mingi` 契约桩。裁决全文见 `docs/adr-019-rust-bridge.md`;`.mingi` 格式与消费侧
+> (M3052/M3053)**零改动**——本节只定义抽取侧文法与类型映射。
+> 路线图来源:plan §4.28 桥 2;首个外部消费者 = `rustuserlib`(ADR-017 §4 路径 2 的字面
+> 形态——真实 Rust crate 的 `cargo test`,桩由 extract 预生成入库,运行不需要 Ming)。
+
+### 12.1 输入面与函数形态
+
+- 输入:`.rs` 文件或目录(目录递归收集 `.rs`,跳过隐藏项与 `node_modules`,与 TS/Python
+  口径一致);实现为**行扫描**(非 rustc/AST——零依赖纪律,与 TS "非完整 AST"/Python
+  "非解释器"同纪律,见 §5.4);提取器按设计不抛错(坏文件口径见 12.6);
+- **只取顶层 `fn`/`pub fn`**(MVP):`pub(crate)` 等 pub 可见性限定前缀照常剥除
+  (`pub(crate) fn` ≡ `pub fn` ≡ 顶层 `fn`,可见性不进桩);**impl 块内方法不扫描**
+  (静默,零条目零注记,与 TS class 方法/Python 类方法同纪律;登记候选);
+- `async fn` 具名跳过(桥接只支持同步函数);`unsafe fn` 具名跳过(效果面无对位);
+- 泛型函数 `fn name<T>` → **取名 `name`、尖括号参数剥离**(泛型约束不进桩);
+- `where` 子句:**同行形态**(`) -> Ret where … {`)→ 具名 skip(MVP 不支持移位解析);**换行形态**(`-> Ret` 后 where 另起)→ 照常转录(ADR-019 §3.1 注记 1);均不进桩、不报错。Rust 无默认值语义(ADR-019 §2),
+  不存在默认值丢弃问题;跨行签名按括号配对状态机支持(上限 100 行,超限具名跳过;
+  `where` 窗属于签名尾部文本,忽略)。
+
+### 12.2 约定载体(`///` doc 注释,散行)
+
+- 契约候选只来自 **`///` 外层 doc 注释行**(函数声明紧邻上方的连续 `///` 块;`///` 前缀
+  剥除后逐行过数学不等式文法);`//!` 内层 doc 不扫;`//` 普通注释不扫;
+- **Rust 侧散行为主**:每个形如纯数学不等式的 `///` 行自动归入其涉及参数的 requires
+  (单参归参、多参归函数;仅含返回值名/不含参数名丢弃——与 Python 散行兜底 §11.2 同
+  口径;Rust 无 Google `Args:` 分节惯用法,散行是唯一载体);
+- `#[doc = "..."]` 属性形态**不做**(登记候选):属性行不参与契约提取;
+- 自然语言("must be positive" 这类短语)不解析——与 TS/Python "只认数学不等式"
+  同纪律;解析不了的行静默跳过,不影响产出确定性。
+
+### 12.3 数学不等式文法(与 TS·Python 共用一套;Rust 侧差异表)
+
+基础文法 = §5.1 的候选文法(词边界纪律同款:**未知名/成员访问/下标/非十进制数字形态/
+算术邻接 → 整条不等式丢弃,不截断不发明**);载体预改写沿用 Python 两件套(`len(名)`
+调用形态、`**` 幂折叠,见 §11.3),Rust 侧无第三件新增记法。与 TS·Python 的同案/差异:
+
+| 维度 | Rust(`--from rust`)口径 |
+|---|---|
+| 四则运算邻接(`n - 1`/`x + 1 < len` 等) | **整条丢弃**(与 TS/Python 同案;唯一算术例外 = `**` 幂折叠为字面量) |
+| 幂 | `**` 整数底整数指数(0..64)求值折叠为十进制字面量(同 Python;负底数不折叠) |
+| 长度符号 | `len(名)` 调用形态预改写走 TS 通道——含"必须 Vec 参数"守卫,词边界防 `xlen(`/`lengthen(` 误改(同 Python §11.3) |
+| `where` 子句 | 同行 → 具名 skip;换行 → 照常转录(ADR-019 §3.1 注记 1);均不进桩、不报错 |
+| 引用与生命周期 | 类型层清洗(`'a` 生命周期 token 一律剥离、`&`/`&mut` 剥引取内层,见 12.4),不影响子句文法 |
+| 解析失败 | 该行跳过不报错(同 TS/Python;坏行不影响产出确定性) |
+
+- requires 归属 = 散行兜底口径(§11.2):单参归参、多参归函数;仅含返回值名/不含
+  参数名 → 丢弃;同文本子句去重保留首个;requires 不引用 result。
+
+### 12.4 类型映射表(Rust → Ming;v1 MVP;ADR-019 §1 全表)
+
+| Rust 类型 | Ming 类型 | 备注 |
+|---|---|---|
+| `i8`/`i16`/`i32`/`i64` | 同名窄型 | Ming 窄型注解体系原生支持 |
+| `u8`/`u16`/`u32`/`u64` | 同名窄型 | u64 忠实映射(Ming 有 u64 字面量/编码面) |
+| `isize` / `usize` | `i64` / `u64` | 指针宽度型无对位——**取 64 位近似**,桩头 `// note` 具名(核心短语"指针宽度型取 64 位近似;ADR-019 §1") |
+| `f32` / `f64` | `f64` | f32 升 f64,桩头 `// note` 具名(登记候选:f32 保留) |
+| `bool` | `bool` | |
+| `String` / `&String` / `&str` / `&'a str` | `str` | 生命周期 token 一律剥离 |
+| `Vec<T>` / `&Vec<T>` / `&[T]` / `&'a [T]` | `Vec[T]` | slice 形态等价处理 |
+| `HashMap<String,V>` / `BTreeMap<String,V>`(含 & 引用形) | `Map[str, V]` | 键限 String/&str;**非 String 键 → 该参数不进桩**(note 具名、函数保留) |
+| `Option<T>`(含 `&Option<T>`) | `Option[T]` | |
+| `Result<T, E>` | **不可映射跳过**(返回位 → 函数级跳过;参数位含嵌套 → 亦整函数具名 skip——保守口径,ADR-019 §1) | 双类型返回(登记候选:映射 T) |
+| `&T` / `&mut T` | 剥引取内层 `T` | `mut` 可变性不进桩(v1 格式无此面) |
+| 元组 `(A, B)` / 原生指针 / `impl Trait` / 未映射泛型 | **参数不进桩** | note 具名、函数保留(参数级;见下方口径) |
+
+- 桩类型文本为紧凑形态(`Map[str,i64]`,与 Python 口径一致,解析侧括号感知切分,
+  M3052 规范化比对不受空白影响);
+- **表外参数 → 参数跳过、函数保留**(桩头 `// note` 具名,桩只含已映射参数——元组/
+  原生指针/`impl Trait`/非 String 键 HashMap 等落为空参形态,如 `fn pairy() -> i64`;
+  同 Python 口径,M3052 按桩内参数集对齐,extern 须按桩内参数集声明,ADR-019 §1
+  "具名 note/skipped" 的参数级取支);**表外返回类型(Result/元组等)→ 整个函数跳过**
+  (桩头 `// skipped` 具名);isize/usize/f32 属**近似映射**(函数保留 + `// note` 具名),
+  不算表外;
+- 返回类型:必须显式标注且可映射(`-> ()`/`Result<_, _>`/元组等 → 跳过);映射只进
+  类型映射,**不生成 ensures**(ADR-019 §4);
+- Rust 侧**无效果/污点标签面**(v1):`///` doc 注释没有 `@effects`/`@taint` 对应物,
+  条目零 `effects` 行(`effects`/`taint` 在 extract `--json` 中恒为空)——效果/污点
+  抽取登记候选,不预支。
+
+### 12.5 确定性承诺
+
+- 同一 `.rs` 输入 → **逐字节同一 `.mingi`**:无时间戳、无主机路径、无随机/哈希序;
+- 函数按**源码序**;`///` 行序即约定序(requires 按载体出现序,同文本去重保留首个);
+- 头部 `generated by` 行携带 `--from rust` 来源注记;`// from` 回链 = 源文件与 `fn`
+  声明行号(1 起);
+- 坏行跳过不影响其余产出(12.3);坏文件处理见 12.6。
+
+### 12.6 与 TS·Python 版(`--from ts` / `--from py`)的差异清单 + 坏文件口径
+
+| 维度 | TS(`--from ts`) | Python(`--from py`) | Rust(`--from rust`) |
+|---|---|---|---|
+| 契约载体 | JSDoc `@param`/`@returns` 标签(单一载体) | Google 分节(优先)+ 散行兜底 | `///` doc 注释散行(唯一载体) |
+| 表外参数/类型 | 函数跳过(具名注记) | 参数跳过、函数保留 | **参数跳过、函数保留**(note 具名);返回不可映射(Result 等)→ 函数跳过 |
+| 长度符号记法 | `x.length`(成员) | `len(x)`(调用) | `len(x)`(调用,同 Python) |
+| 幂 | 无 | `**` 小整数指数字面量求值 | `**` 求值折叠(同 Python) |
+| 泛型函数 | 跳过 | 无此形态 | **剥名后照常抽取**(尖括号参数丢弃) |
+| `where` 子句 | 无 | 无 | 同行 skip/换行转录(见 12.1) |
+| 效果/污点元数据 | `@effects`/`@taint`(R-18) | 无(docstring 无标签面) | 无(`///` 无标签面;登记候选) |
+| 函数形态面 | `export function`/`export declare function` | 顶层 `def` | 顶层 `fn`/`pub fn`(impl 方法/async/unsafe 不抽取) |
+| 类型双形式 | 无 | `list[T]`≡`List[T]` 等 | 无(引用/slice/生命周期属记法清洗) |
+| 消费侧 | M3052/M3053 既有路径 | 同一路径,零改动 | **同一路径,零改动**(`.mingi` 格式 v2 不变) |
+
+坏文件口径(**行扫描按设计不抛错**,与 Python 同款,v1.6.0 复核收口口径沿用):非 Rust
+文本(零 `fn`)→ **空桩头**(仅头部,零条目零注记);未闭合签名(括号不配对/跨行超
+100 行)→ 函数级具名 `// skipped` 注记,且**扫描在其后正常恢复**——同文件更靠后的
+合法顶层 `fn` 照常抽取;两者都不算失败(exit 0,其余文件照常提取;与 TS "输入不可读
+exit 1"不同,**可读但不可解析**不算失败)。stderr 警告一行 + 整文件跳过仅作**防御性
+兜底**(提取器意外抛错时;不中断其余文件)。
+
+### 12.7 诚实边界与明确不做(登记;ADR-019 §2/§4)
+
+- **注解可撒谎**:`///` 不等式与 Rust 实现可能不一致——桩只承诺"**转录 doc 注释**",
+  不验证 Rust 侧行为(与 TS/Python 同边界:核对的是 Ming 调用侧守约,不验证对端实现;
+  桩候选文本修正方向以 Rust 侧契约为准);
+- **`mut` 可变性不进桩**(v1 格式无此面):`&mut T` 剥引取内层,可变引用与共享引用在
+  `.mingi` 中不可区分——借用语义不跨边界转录(登记候选);
+- **明确不做(登记候选)**:impl 方法抽取、`#[doc]` 属性形态、async/unsafe 抽取、
+  宏生成函数、trait 默认方法、f32 保留、Result→T 映射、元组映射、泛型约束进桩、
+  非 String 键 HashMap(ADR-019 §4);
+- **效果/污点抽取无来源**(`///` doc 注释无标签面)——登记候选;
+- **行扫描限制**:极罕见形态(字符串字面量/注释中的 `fn` 文本)可能误判;不构建 AST、
+  不展开 `use` 别名、不解析宏(宏生成函数静默不扫,零条目零注记)。

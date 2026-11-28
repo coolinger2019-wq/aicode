@@ -1,7 +1,9 @@
 // bridge.js — 契约桥 MVP(v1.2 S-4,plan §4.21.2 / roadmap-infrastructure §5.2;
-// v1.2.3 R-18 增补效果/污点签名,plan §4.20 P2;v1.6 ADR-018 增补 --from py)。
+// v1.2.3 R-18 增补效果/污点签名,plan §4.20 P2;v1.6 ADR-018 增补 --from py;
+// v1.7 ADR-019 增补 --from rust,桥 2)。
 // 范围(架构师 MVP 合同,边界固定):源语言 = TypeScript(JSDoc)+ Python(PEP 484 注解
-// + docstring 不等式,ADR-018,桥 1);边界形态 = Ming `extern fn` ↔ 对端导出函数。
+// + docstring 不等式,ADR-018,桥 1)+ Rust(/// doc 注释不等式 + 类型映射表,ADR-019,桥 2);
+// 边界形态 = Ming `extern fn` ↔ 对端导出函数。
 // 不做 WASM component / 运行时插桩;Python 类方法/Sphinx 风格/自然语言登记候选不预支。
 //
 // 本模块是纯 Node 侧工具域(与 ming doc/build 同类,零依赖):
@@ -11,6 +13,11 @@
 //   1b. extractPy  —— 逐行扫描 Python 源(ADR-018):顶层 def 签名注解类型映射 +
 //                     docstring 数学不等式(Google Args:/Returns: 分节优先,散行兜底);
 //                     与 TS 共用不等式文法(len(名)/`**` 幂折叠两处 Python 适配);
+//   1c. extractRust —— 逐行扫描 Rust 源(ADR-019,桥 2):顶层 fn/pub fn 签名类型映射
+//                     (引用/生命周期剥离、泛型剥名、isize/usize/f32 近似 note)+
+//                     /// doc 注释数学不等式(散行兜底;复用 parsePyDocSections 与
+//                     len(名)/`**` 文法适配);impl 方法/async/unsafe/where 形态
+//                     不抽或不扫(ADR-019 §2/§4);
 //   2. renderMingi —— 确定性渲染 .mingi 契约桩(无时间戳/无随机序,逐字节可复现);
 //   3. parseMingi  —— 解析 .mingi(格式定义见 docs/bridge-protocol.md,单一定义处;
 //                     v1 与 v2 都接受——v1 桩零改动可读);
@@ -880,6 +887,378 @@ export function extractPy(source, sourceName) {
   return { source: sourceName, entries, skipped, notes };
 }
 
+// ---------- Rust 提取(ADR-019;--from rust,桥 2)----------
+//
+// 输入面:.rs 文件;只取**顶层 fn**(列 0 起行)。缩进行(impl 块内方法/函数体)静默不扫、
+// 不产条目也不产注记(ADR-019 §2:impl 方法登记候选)——与 TS class 方法/Python 类方法
+// 的"不扫描"口径一致。pub 可见性前缀(pub / pub(crate) / pub(super) / pub(in path))
+// 剥离后同口径;`async fn`/`unsafe fn` 具名跳过(async 同 TS/py 口径;unsafe = 效果面
+// 无对位,ADR-019 §2);泛型函数 `fn name<T: ...>` 取名 name、尖括号参数列表剥离
+// (配对 > 剥到底;'->' 的 > 不计入配对——泛型 bound 里 Fn(A) -> B 的箭头不是尖括号)。
+//
+// 签名收集 = Python 版同款括号配对状态机(跨行签名上限 100 行;逐行剥 // 注释,引号
+// 感知——字符串字面量内的 // 不剥;Rust 无默认值,引号在签名里只有字符串字面量形态)。
+// 返回类型:MVP 只支持 `) -> Ret {` 直接形态——`-> Ret` 缺失(unit 返回)/右括号同行
+// where 子句/返回类型内嵌 where → 具名 skip(实现合同:不支持移位解析;`) -> Ret` 换行
+// 后再写 where 的形态从右括号同行余部看不到,不具名——按 ADR-019 §2 "where 子句忽略
+// (不进桩不报错)"转录,如实登记于协议文档)。
+//
+// 约定载体(ADR-019 §2):`///` 外层 doc 注释行(//! 内层不扫;#[doc] 属性形态不解析,
+// 登记候选)。doc 行与函数之间允许属性行(#[...])/注释/空行(惯用形态,不打断关联);
+// 其他顶层项(use/struct/...)打断关联(TS 版 pendingDoc 同纪律)。`/// - ` 列表标记
+// 剥离后进 doc 文本(不等式行文法要求裸操作数;负字面量 `-5` 不受影响)。收集文本
+// 复用 parsePyDocSections(Google 分节在 Rust 侧罕见,散行兜底为主),契约提取 =
+// 参数声明序 × 描述出现序 → requires;Returns 段 → ensures(引用 result);散行 →
+// requires(≥1 参数);与 Python 版共用 len(名) 预改写与 `**` 幂折叠两处文法适配。
+//
+// 类型映射(ADR-019 §1 表):i8/i16/i32/i64/u8/u16/u32/u64/bool 同名窄型;
+// isize→i64 / usize→u64(指针宽度型取 64 位近似,参数/返回级 note);f32→f64(升位
+// note);f64→f64;String/&String/&str/&'a str→str(生命周期 token 一律剥离);
+// Vec<T>/&Vec<T>/&[T]/&'a [T]→Vec[T](slice 形态等价;定长数组 [T;N] 不在表);
+// HashMap<String,V>/BTreeMap<String,V>→Map[str,V](键限 String/&str;非 String 键
+// 不可映射);Option<T>→Option[T];Result<T,E> → **整函数**具名 skip(双类型返回;
+// 登记候选:映射 T);元组/原生指针/impl Trait/其他泛型 → 参数级 note + 该参数不进桩
+// (函数保留,同 Python 口径)/返回级 → 整函数跳过。`mut` 可变性不进 .mingi(格式无
+// 此面,ADR-019 §1):`&mut T` 剥引取内层、`mut x: T` 参数绑定前缀剥离。
+
+// 引号感知的行内 `//` 注释剥离(签名行用;字符串字面量内的 // 不剥)。生命周期 'a 不
+// 参与引号判定(签名里 ' 只出现在生命周期;字符字面量在签名中属病态,剥离失败最坏
+// 后果 = 注释文本混入签名 → 具名 skip,不发明语义)。
+function rustStripComment(line) {
+  let inStr = false;
+  for (let c = 0; c < line.length; c++) {
+    const ch = line[c];
+    if (inStr) {
+      if (ch === '\\') { c += 1; continue; }
+      if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '/' && line[c + 1] === '/') return line.slice(0, c);
+  }
+  return line;
+}
+
+// 括号+尖括号感知的顶层切分(splitTopLevel 的 Rust 变体;另起函数不动 TS/py 共用的
+// splitTopLevel——mingi/py 类型文法不含 <>,零回归风险)。`->` 的 > 不计深度
+// (泛型 bound 里 Fn(A) -> B 的箭头不是尖括号配对)。
+function splitTopLevelAngle(s, sep) {
+  const parts = [];
+  let depth = 0;
+  let cur = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[' || ch === '{' || ch === '<') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}' || (ch === '>' && s[i - 1] !== '-')) depth -= 1;
+    if (ch === sep && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts;
+}
+
+// 泛型参数列表配对:从 `<`(含)找配对的 `>`(尖括号深度计数;'->' 的 > 不计)。
+// 途中出现 `{`/`;` 视为未闭合(泛型列表内不出现体起始/语句边界)→ -1。
+function matchAngleAt(s, open) {
+  let depth = 0;
+  for (let i = open; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '<') depth += 1;
+    else if (ch === '>') {
+      if (i > 0 && s[i - 1] === '-') continue; // '->' 的 > 不是尖括号配对
+      depth -= 1;
+      if (depth === 0) return i;
+    } else if (ch === '{' || ch === ';') return -1;
+  }
+  return -1;
+}
+
+// 类型文本清洗(映射前;ADR-019 §1"类型文本内 'a / & / mut 清洗后再映射"):
+// 剥生命周期 token('a/'static)、引用符 &(含 &mut)、残留 mut 词标记,其余空白全剥
+// → 紧凑文本按表解析(与 mapPyType 同纪律;`\b` 防 immutable/MutFoo 类名误伤)。
+function cleanRustType(raw) {
+  return String(raw)
+    .replace(/'\s*[A-Za-z_][A-Za-z0-9_]*/g, '')
+    .replace(/&/g, '')
+    .replace(/\bmut\b/g, '')
+    .replace(/\s+/g, '');
+}
+
+// Rust → Ming 类型解析(ADR-019 §1 表;清洗后紧凑文本;递归;尖括号感知切分)。
+// 返回:{ ty, approx } | { result: true } | null:
+//   ty     = Ming 类型紧凑文本;approx = 近似注记标记(isize/usize/f32,自内层传播)
+//   result = true → Result<T,E> 双类型,**整函数**具名 skip(ADR-019 §1;登记候选:映射 T)
+//   null   = 表外不可映射(参数级不进桩 / 返回级整函数跳过,由调用方区分)
+const RUST_NARROW = new Set(['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'bool']);
+
+function parseRustType(s) {
+  if (RUST_NARROW.has(s)) return { ty: s, approx: null };
+  if (s === 'isize') return { ty: 'i64', approx: 'isize' };
+  if (s === 'usize') return { ty: 'u64', approx: 'usize' };
+  if (s === 'f32') return { ty: 'f64', approx: 'f32' };
+  if (s === 'f64') return { ty: 'f64', approx: null };
+  if (s === 'str' || s === 'String') return { ty: 'str', approx: null };
+  // slice 形态 [T](&[T] 剥引后)= Vec[T](ADR-019 §1"slice 形态等价处理");
+  // 定长数组 [T; N] 不在表 → null。
+  const sliceM = s.match(/^\[(.*)\]$/);
+  if (sliceM) {
+    if (sliceM[1].includes(';')) return null;
+    const inner = parseRustType(sliceM[1]);
+    if (inner === null) return null;
+    return inner.result ? inner : { ty: `Vec[${inner.ty}]`, approx: inner.approx };
+  }
+  const m = s.match(/^([A-Za-z_][A-Za-z0-9_]*)<(.*)>$/);
+  if (!m) return null;
+  const head = m[1];
+  if (head === 'Result') return { result: true }; // 双类型返回,整函数跳过(不剥参数)
+  const args = splitTopLevelAngle(m[2], ',');
+  if (head === 'Vec' || head === 'Option') {
+    if (args.length !== 1) return null;
+    const inner = parseRustType(args[0].trim());
+    if (inner === null) return null;
+    if (inner.result) return inner;
+    return { ty: head === 'Vec' ? `Vec[${inner.ty}]` : `Option[${inner.ty}]`, approx: inner.approx };
+  }
+  if (head === 'HashMap' || head === 'BTreeMap') {
+    if (args.length !== 2) return null;
+    const key = args[0].trim();
+    if (key !== 'String' && key !== 'str') return null; // 键限 String/&str(ADR-019 §1)
+    const inner = parseRustType(args[1].trim());
+    if (inner === null) return null;
+    if (inner.result) return inner;
+    return { ty: `Map[str,${inner.ty}]`, approx: inner.approx };
+  }
+  return null;
+}
+
+function mapRustType(raw) {
+  return parseRustType(cleanRustType(raw));
+}
+
+// 近似/跳过注记的原文展示:折叠空白、截 60 字符(与 py/TS 注记口径一致)。
+function rustTypeBrief(raw) {
+  return String(raw).replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+const RUST_SIG_MAX_LINES = 100; // 跨行签名括号配对扫描上限(与 py 同款;超限具名跳过)
+const RUST_WHERE_SKIP = 'where 子句形态不在 MVP 范围(只支持 ") -> Ret {" 直接形态;ADR-019 §2)';
+
+// 提取单个 Rust 源文本。返回 {source, entries, skipped, notes}(与 extractTs/extractPy
+// 同形,渲染/--json 字段零改动复用)。entries 按源码顺序;skipped 同序;notes 再按
+// 行号稳定排序。输出确定性:不读取环境/时间,只依赖 source 文本。
+export function extractRust(source, sourceName) {
+  const lines = source.split(/\r?\n/);
+  const entries = [];
+  const skipped = [];
+  const notes = [];
+  const seenNames = new Set();
+  const skip = (name, line, reason) => skipped.push({ name, line, reason });
+  const note = (name, line, reason) => notes.push({ name, line, reason });
+  let pendingDocLines = null; // null | string[](/// 行;属性/注释/空行不打断关联)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // 只取顶层 fn:缩进行(impl 方法/函数体)与空行静默不扫(ADR-019 §2:impl 方法登记候选)。
+    if (line === '' || line.startsWith(' ') || line.startsWith('\t')) continue;
+    const t = line.trim();
+    // 外层 doc 注释(///):收集进 pendingDoc;//! 内层不扫(落普通注释分支)。
+    if (t.startsWith('///')) {
+      if (pendingDocLines === null) pendingDocLines = [];
+      // 剥列表标记(`/// - ` / `/// * `;负字面量 -5 无空格,不受影响——须标记后随空白)。
+      pendingDocLines.push(t.slice(3).replace(/^\s*[-*+]\s+/, ''));
+      continue;
+    }
+    // 普通注释 / 属性行(#[...]):不打断 doc 关联(#[doc] 属性形态不解析——ADR-019 §2)。
+    if (t.startsWith('//') || t.startsWith('#[')) continue;
+
+    // pub 可见性前缀剥离:pub / pub(crate) / pub(super) / pub(in path)(ADR-019 §2)。
+    let core = t;
+    const pubM = core.match(/^pub\b\s*(?:\([^)]*\))?\s*/);
+    if (pubM) core = core.slice(pubM[0].length);
+
+    // async / unsafe fn:具名跳过(消费 pendingDoc,防张冠李戴)。
+    const asyncM = core.match(/^async\s+(?:unsafe\s+)?fn\s+([A-Za-z_]\w*)/);
+    if (asyncM) { skip(asyncM[1], i + 1, 'async 函数不在 MVP 范围(桥接只支持同步函数)'); pendingDocLines = null; continue; }
+    const unsafeM = core.match(/^unsafe\s+(?:async\s+)?fn\s+([A-Za-z_]\w*)/);
+    if (unsafeM) { skip(unsafeM[1], i + 1, 'unsafe 函数不在 MVP 范围(效果面无对位;ADR-019 §2)'); pendingDocLines = null; continue; }
+
+    const fnM = core.match(/^fn\s+([A-Za-z_]\w*)/);
+    if (!fnM) { pendingDocLines = null; continue; } // 其他顶层项(use/struct/...)打断 doc 关联
+    const name = fnM[1];
+    const fnLine = i + 1;
+    const docText = pendingDocLines ? pendingDocLines.join('\n') : null;
+    pendingDocLines = null;
+
+    // 泛型参数列表剥离:`fn name<T: ...>` → 名取 name,尖括号参数剥到配对 >(ADR-019 §2)。
+    let rest = core.slice(fnM[0].length);
+    if (rest.startsWith('<')) {
+      const gEnd = matchAngleAt(rest, 0);
+      if (gEnd < 0) { skip(name, fnLine, '泛型参数列表未闭合(尖括号不配对,MVP 剥离失败)'); continue; }
+      rest = rest.slice(gEnd + 1);
+    }
+    if (!rest.startsWith('(')) { skip(name, fnLine, '签名形态不支持(函数名后不是参数列表)'); continue; }
+
+    // ---- 签名收集:参数列表 "(" 起,跨行括号配对(逐行剥 // 注释,引号感知;上限 100 行)。
+    // 未闭合 → 具名 skip + 恢复扫描(v1.6.0 复核 MINOR-1 先例,§120.15 锁定行为,rust 同款)。
+    const openIdx = t.length - rest.length; // rest 是 t 的后缀,起点即参数列表 "("
+    let depth = 0;
+    let paramText = '';
+    let closeLineIdx = -1;
+    let afterClose = '';
+    let kk = i;
+    let inside = false;
+    for (; kk < lines.length && kk - i < RUST_SIG_MAX_LINES; kk++) {
+      const cur = kk === i ? t : lines[kk];
+      const clean = rustStripComment(cur);
+      const from = kk === i ? openIdx : 0;
+      let seg = '';
+      let closedHere = false;
+      for (let c = from; c < clean.length; c++) {
+        const ch = clean[c];
+        if (!inside) {
+          if (ch === '(') { inside = true; depth = 1; }
+          continue;
+        }
+        if (ch === '(') depth += 1;
+        else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) { closedHere = true; afterClose = clean.slice(c + 1); break; }
+        }
+        seg += ch;
+      }
+      paramText += seg;
+      if (closedHere) { closeLineIdx = kk; break; }
+    }
+    if (closeLineIdx < 0) {
+      skip(name, fnLine, '签名括号不配对或跨行过长(MVP 只支持括号配对的签名)');
+      // 未闭合签名不越过扫描窗:其后顶层 fn 正常恢复扫描(坏签名体内的缩进行被顶层
+      // 过滤器静默忽略,不会误扫)。
+      continue;
+    }
+
+    // ---- 右括号同行余部:MVP 只支持 `) -> Ret {` 直接形态(实现合同:不支持移位解析)。
+    // `-> Ret` 缺失(unit 返回)→ 具名 skip;同行 where / 返回文本内嵌 where → 具名 skip。
+    // `) -> Ret` 换行后再写 where 的形态从右括号同行余部看不到 → 按 ADR-019 §2 "where
+    // 子句忽略(不进桩不报错)"转录(移位解析不支持,如实登记)。
+    const ac = afterClose.trim();
+    if (ac === '' || ac.startsWith('{') || ac.startsWith(';')) {
+      // `fn f() {`/`fn f();`(unit 返回 + 体/声明起始)与余部为空同形态:-> Ret 缺失。
+      skip(name, fnLine, '返回类型未标注(-> Ret 缺失;MVP 要求显式可映射返回类型)');
+      i = closeLineIdx;
+      continue;
+    }
+    if (/^where\b/.test(ac)) { skip(name, fnLine, RUST_WHERE_SKIP); i = closeLineIdx; continue; }
+    const arrowM = ac.match(/^->\s*(.+)$/);
+    if (!arrowM) {
+      skip(name, fnLine, `右括号与返回箭头之间存在非标注文本("${ac.slice(0, 40)}")`);
+      i = closeLineIdx;
+      continue;
+    }
+    let retText = arrowM[1];
+    const cut = retText.search(/[{;]/);
+    if (cut >= 0) retText = retText.slice(0, cut).trim();
+    if (/\bwhere\b/.test(retText)) { skip(name, fnLine, RUST_WHERE_SKIP); i = closeLineIdx; continue; }
+    if (retText === '') { skip(name, fnLine, '返回类型为空或形态不支持'); i = closeLineIdx; continue; }
+
+    if (seenNames.has(name)) {
+      skip(name, fnLine, '重载/重复声明不在 MVP 范围(同名函数取首个)');
+      i = closeLineIdx;
+      continue;
+    }
+
+    // ---- 返回类型映射(ADR-019 §1):不可映射 → 整函数 skip;Result → 整函数 skip
+    // (双类型返回);isize/usize/f32 近似 → note(函数保留)。
+    const retMapped = mapRustType(retText);
+    if (retMapped === null) {
+      skip(name, fnLine, `返回类型 "${rustTypeBrief(retText)}" 不在映射表(MVP)`);
+      i = closeLineIdx;
+      continue;
+    }
+    if (retMapped.result) {
+      skip(name, fnLine, `返回类型 "${rustTypeBrief(retText)}" 不可映射(Result 双类型返回;ADR-019 §1 登记候选:映射 T)`);
+      i = closeLineIdx;
+      continue;
+    }
+    if (retMapped.approx) {
+      note(name, fnLine, retMapped.approx === 'f32'
+        ? `返回类型 "${rustTypeBrief(retText)}" 以 f64 近似(f32 升 f64;ADR-019 §1)`
+        : `返回类型 "${rustTypeBrief(retText)}" 以 ${retMapped.approx === 'isize' ? 'i64' : 'u64'} 近似(指针宽度型取 64 位近似;ADR-019 §1)`);
+    }
+    const mappedRet = retMapped.ty;
+
+    // ---- 参数切分:尖括号感知顶层逗号;无默认值(Rust 语义);`mut x` 绑定前缀剥离
+    // (可变性不进 .mingi——ADR-019 §1)。表外/不可映射参数 → note 具名 + 不进桩(函数
+    // 保留,同 Python 口径:M3052 按桩内参数集对齐);Result 参数 → 整函数具名 skip。
+    const params = [];
+    let badParam = null;
+    const trimmedParams = paramText.trim().replace(/,\s*$/, '');
+    const pieces = trimmedParams === '' ? [] : splitTopLevelAngle(trimmedParams, ',');
+    for (const pieceRaw of pieces) {
+      const piece = pieceRaw.trim();
+      if (piece === '') { badParam = '参数形态不支持(空参数位)'; break; }
+      const pm = piece.match(/^(?:mut\s+)?([A-Za-z_]\w*)\s*:\s*(.+)$/);
+      if (!pm) { badParam = `参数形态不支持("${piece.slice(0, 40)}")`; break; }
+      const rawTy = pm[2];
+      const mapped = mapRustType(rawTy);
+      if (mapped === null) {
+        note(name, fnLine, `参数 "${pm[1]}" 的类型 "${rustTypeBrief(rawTy)}" 不在映射表,该参数不进桩(MVP)`);
+        continue;
+      }
+      if (mapped.result) {
+        badParam = `参数 "${pm[1]}" 的类型 "${rustTypeBrief(rawTy)}" 不可映射(Result 双类型;ADR-019 §1)`;
+        break;
+      }
+      if (mapped.approx) {
+        note(name, fnLine, mapped.approx === 'f32'
+          ? `参数 "${pm[1]}" 的类型 "${rustTypeBrief(rawTy)}" 以 f64 近似(f32 升 f64;ADR-019 §1)`
+          : `参数 "${pm[1]}" 的类型 "${rustTypeBrief(rawTy)}" 以 ${mapped.approx === 'isize' ? 'i64' : 'u64'} 近似(指针宽度型取 64 位近似;ADR-019 §1)`);
+      }
+      params.push({ name: pm[1], type: mapped.ty });
+    }
+    if (badParam) { skip(name, fnLine, badParam); i = closeLineIdx; continue; }
+
+    // ---- 契约候选(ADR-019 §2):/// doc 文本复用 parsePyDocSections——Args 各参数
+    // 描述 → requires(参数声明序 × 描述内出现序);Returns 描述 → ensures(必须引用
+    // result);散行 → requires(行序兜底;涉及 ≥1 参数才保留)。文本预改写:len(名) →
+    // 名.length、`**` 幂折叠;随后逐字复用 TS 文法(extractInequalities)。
+    const paramNames = params.map((p) => p.name);
+    const vecParams = new Set(params.filter((p) => p.type.startsWith('Vec[')).map((p) => p.name));
+    const allowed = { params: new Set(paramNames), vecParams, allowResult: false };
+    const requires = [];
+    const ensures = [];
+    const seenReq = new Set();
+    const pushReq = (clauses) => {
+      for (const c of clauses) {
+        if (seenReq.has(c)) continue;
+        seenReq.add(c);
+        requires.push(c);
+      }
+    };
+    if (docText !== null) {
+      const secs = parsePyDocSections(docText);
+      const prep = (s) => pyFoldPowers(pyRewriteLenCalls(s));
+      for (const p of params) {
+        const entry = secs.argsEntries.find((e) => e.name === p.name);
+        if (!entry) continue;
+        const desc = entry.buf.join(' ').trim();
+        if (desc === '') continue;
+        pushReq(extractInequalities(prep(desc), allowed).clauses);
+      }
+      // Rust 侧不生成 ensures(v1.7.0 复核 m5 收口:ADR-019 §2/bridge-protocol §12.2——
+      // 唯一载体 = /// 散行;Returns: 分节内容整体丢弃,"仅含返回值名丢弃"口径),
+      for (const lineText of secs.scatter) {
+        pushReq(extractInequalities(prep(lineText), allowed).clauses);
+      }
+    }
+    entries.push({ name, line: fnLine, params, ret: mappedRet, requires, ensures, effects: [], taint: { return: false, params: [] } });
+    seenNames.add(name);
+    i = closeLineIdx;
+  }
+  // 注记按源行号升序(稳定排序,同行保持产生序)——与 TS/py 版口径一致。
+  notes.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  return { source: sourceName, entries, skipped, notes };
+}
+
 // ---------- .mingi 渲染(确定性) ----------
 
 // generator 文本由调用方给:TS 默认值逐字保持既有黄金;Python 侧传 --from py 变体
@@ -1090,6 +1469,21 @@ export function collectPyFiles(target) {
   }
   const out = [];
   walkFiles(target, '.py', out, PY_SKIP_DIRS);
+  const list = out.map((abs) => ({ abs, source: displayPath(path.relative(target, abs)) }));
+  return list.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
+}
+
+// Rust 侧(.rs)额外跳过 target/:cargo 构建产物目录动辄数百 .rs(依赖源码树误吸入
+// 会产出海量无意义桩,与 py 跳 venv/__pycache__ 同理;ADR-019 实现合同登记)。
+const RUST_SKIP_DIRS = new Set(['node_modules', 'target']);
+
+export function collectRustFiles(target) {
+  const st = fs.statSync(target);
+  if (st.isFile()) {
+    return [{ abs: target, source: path.basename(target) }];
+  }
+  const out = [];
+  walkFiles(target, '.rs', out, RUST_SKIP_DIRS);
   const list = out.map((abs) => ({ abs, source: displayPath(path.relative(target, abs)) }));
   return list.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
 }

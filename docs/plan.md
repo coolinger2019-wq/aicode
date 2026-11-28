@@ -2228,6 +2228,17 @@ roadmap 无新增项、P0 六项维持全兑现、P1/P2 四项门槛全部未变
 - **第二个外部消费者 = pyuserlib**（ADR-017 路径 2；`C:\code\pyuserlib\` 48ef354→ec79f55→d63bdf8）：正例中性目录 4/4 exit 0、篡改负例 exit 1；开发期交叉核对抓到消费者侧 3 bug（如实记录，中间态不可由 git 链独立证明——README 已标注）。
 - **诚实边界不变**：自建消费者 ≠ 第三方采用（仍为 0）；桩只"转录注解"不验证 Python 侧行为。
 
+### 桥 2 执行记录（2026-11-28，维护者 standing workflow 视为点名；v1.7.0）
+
+- **实现**：`ming bridge extract --from rust`（ADR-019 映射表 + §3.1 六条实现期定案注记）——两 agent 并发（实现 / 测试+文档）；消费侧零改动（嵌套逗号桩实测 M3052/M3053 走通）。
+- **测试**：§121 = **18 check**（v121.1–16 初版 + 复核收口 v121.17 同行 where 具名 skip/v121.18 Returns 不生成 ensures；golden 逐字节/窄型全家/isize·usize·f32 note/类型清洗/容器映射/具名 skip 全家/where 两形态/恢复扫描/消费链 e2e/CLI 拒绝面）；PAR_GROUPS §121 入组 3；全量 **1927 项 0 失败**；fuzz seed 44044×25 0 分歧；docs_check 18/18。
+- **独立复核（REQUEST_CHANGES → 收口）**：0 BLOCKER/0 MAJOR 代码面——对抗文法约 30 形态全过、TS/py 零回归逐字节、C2 独立重演成立、1925/0 + fuzz 0 全部证实；MAJOR = 本执行记录缺口（即本段）；MINOR 收口——m1 GUIDE rustuserlib 路径 `
+` 转义损坏修复、m2 §12.1 同行 where 具名 skip 口径补记 + §121.17 锁定、m3 §12.4 Result 参数位嵌套整函数 skip 补记、m4 rustuserlib README 三处措辞（无工具链依赖/C2 失败退出码 101/--nocapture）、m5 Rust 侧 Returns 分节不生成 ensures（对齐散行唯一载体口径 + §121.18 锁定）。
+- **第三个外部消费者 = rustuserlib**（ADR-017 §4 路径 2 字面形态；`C:\code
+ustuserlib\` 9bc7b27）：真实 Rust crate（4 抽取 fn + Result 诚实 skip 示例）+ `tests/stub_consistency.rs`（Rust .mingi 最小解析器 × 手写签名基准 × 诚实锚）；**正例 crate 本地 + 中性目录双重 cargo test `4/4 fns verified` exit 0，篡改负例 FAILED（退出码 101）**；诚实口径 = 手写 of-record 是 crate 自有 CI 消费的标准形态（Rust 无运行时反射），第三方采用仍为 0。
+- **桥进度**：四桥已通其二（TS/Python/Rust 三源抽取,消费侧单一路径）；桥 3（WIT）/桥 4（项目级编排）维持点名制。
+
+
 ### 登记口径
 
 - 四座桥全部**登记不排期**：无排期承诺、无自动启动；启动 = 维护者点名。
