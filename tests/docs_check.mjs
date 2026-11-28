@@ -176,7 +176,8 @@ function checkCapabilityCounts() {
 // ---------- 6. AGENTS.md 头部锚定(ADR-017 §5;plan §4.26 观察四机制化) ----------
 // 一条窄检查,三个子断言(a 版本 / b1 套件数 N / b2 分节上限 §M)。真值:package.json + README.md 回归测试行。
 function checkAgentsHeader(pkgVersion) {
-  console.log('[6] AGENTS.md 头部锚定(§1 版本行 ↔ package.json;§3 套件行 N/§M ↔ README.md 回归测试行)');
+  console.log('[6] AGENTS.md 头部锚定(§1 版本行 ↔ package.json;§3 套件行 N/§M ↔ README.md 回归测试行;README.plain 测试数)');
+  const readmePlain = read("README.plain.md");
   const SYNC = '版本发布时 AGENTS §1/§3 需同步(plan §4.26 观察四;ADR-017 §5)';
   const agents = read('AGENTS.md');
   // a) §1 头部版本行「（当前 vX.Y.Z，1.0 已正式发布）」——真值 = package.json version
@@ -211,6 +212,16 @@ function checkAgentsHeader(pkgVersion) {
     fail('AGENTS.md', am.line, `分节上限 §${am.match[2]} ≠ README.md:${rm.line} 回归行 §${rm.match[2]}——新增分节时 AGENTS §3 需同步(ADR-017 §5;plan §4.26 观察四)`, `§1..§${rm.match[2]}`, `§1..§${am.match[2]}`);
   } else {
     pass(`AGENTS.md:${am.line} §3 分节上限 = §${am.match[2]}(README.md:${rm.line} 回归测试行锚定)`);
+
+  // b3) README.plain.md「自动测试 | **N 项全部通过**」↔ README.md 回归测试行 N(复核 MINOR-2 盲区收口)
+  const pm = firstMatch(readmePlain || '', /^\|\s*自动测试\s*\|\s*\*\*(\d+) 项全部通过\*\*/);
+  if (!pm) {
+    fail('README.plain.md', null, '自动测试行未找到(锚定 README.md 回归测试行)', '| 自动测试 | **N 项全部通过** |', '行缺失或措辞漂移');
+  } else if (pm.match[1] !== rm.match[1]) {
+    fail('README.plain.md', pm.line, `自动测试 ${pm.match[1]} ≠ README.md:${rm.line} 回归测试行 ${rm.match[1]}(${SYNC})`, `| 自动测试 | **${rm.match[1]} 项全部通过** |`, `实际 ${pm.match[1]}`);
+  } else {
+    pass(`README.plain.md:${pm.line} 自动测试 N = ${pm.match[1]}(README.md:${rm.line} 锚定)`);
+  }
   }
 }
 
