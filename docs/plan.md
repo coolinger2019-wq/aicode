@@ -2223,7 +2223,7 @@ roadmap 无新增项、P0 六项维持全兑现、P1/P2 四项门槛全部未变
 ### 桥 1 执行记录（2026-11-28，维护者 standing workflow 视为点名；v1.6.0）
 
 - **实现**：`ming bridge extract --from py`（ADR-018 文法）——两 agent 并发（实现 / 测试+文档）；parseMingi 消费侧一处必要修复（括号感知切分，TS 桩字节零影响）；M3053 hint 对端中性化；bridge-protocol 新增 §11。
-- **测试**：§120 = **15 check**（v120.1–15；复核 MINOR-1 收口后补 v120.15 恢复扫描锁定）；全量 **1909 项 0 失败**；fuzz seed 44044×25 0 分歧；docs_check 18/18（plain 测试数锚定补入）。 **CI 观察**：macOS node22 首跑 1 失败（其余 13 job 绿；annotations 无细节、日志接口 403）——归因观察中，重跑判别偶发/确定性后回填。
+- **测试**：§120 = **15 check**（v120.1–15；复核 MINOR-1 收口后补 v120.15 恢复扫描锁定）；全量 **1909 项 0 失败**；fuzz seed 44044×25 0 分歧；docs_check 18/18（plain 测试数锚定补入）。 **CI 观察（已收口）**：macOS node22 首跑 1 失败（其余 13 job 绿；annotations 无细节、日志接口 403）→ 文档-only 重跑提交 48b496c（代码与 98c7788 逐字节同）CI **14/14 全绿**（macOS 三组合 + C 腿全 success）→ **判定偶发**（macOS 慢机容量/超时类，annotations 容量告警佐证；v1.4.1 既有口径同族），非确定性缺陷。
 - **独立复核（APPROVE-with-minor：0 BLOCKER/0 MAJOR）**：对抗文法 22 形态全过（四则丢弃/幂折叠/len 词边界）、TS 零回归逐字节、C2 重演成立、1908/0 + fuzz 0；三 MINOR 全收口——MINOR-1 未闭合签名吞掉后续顶层 def → 恢复扫描修复 + v120.15 + §11.6 更新；MINOR-2 README.plain 测试数漂移 → 修正 + docs_check 锚定；MINOR-3 GUIDE 重复占位 bullet → 删除。
 - **第二个外部消费者 = pyuserlib**（ADR-017 路径 2；`C:\code\pyuserlib\` 48ef354→ec79f55→d63bdf8）：正例中性目录 4/4 exit 0、篡改负例 exit 1；开发期交叉核对抓到消费者侧 3 bug（如实记录，中间态不可由 git 链独立证明——README 已标注）。
 - **诚实边界不变**：自建消费者 ≠ 第三方采用（仍为 0）；桩只"转录注解"不验证 Python 侧行为。
