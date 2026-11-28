@@ -32293,7 +32293,7 @@ secBegin('121');
     && !garbageStub121.includes('fn ') && !garbageStub121.includes('// skipped') && !garbageStub121.includes('// note')
     && innerStub121.includes('fn plain(p: u16) -> u16') && innerStub121.includes('  requires 0 <= p\n')
     && !innerStub121.includes('crate_only'),
-    `code=${r121j.code} from=${j121?.from} files=${JSON.stringify(j121?.files?.length)} fns=${JSON.stringify(j121get?.functions)} garbage=${JSON.stringify(garbageStub121.slice(0, 60))}`);
+    `code=${r121j.code} from=${j121?.from} files=${JSON.stringify(j121?.files?.length)} fns=${JSON.stringify(j121get?.functions)} stdout=${JSON.stringify(r121j.stdout.slice(0, 260))} stderr=${JSON.stringify(r121j.stderr.slice(0, 260))} garbage=${JSON.stringify(garbageStub121.slice(0, 60))}`);
 
   // v121.13 CLI 拒绝面:--from rust 收 .py 输入/空目录 → exit 1 具名(不静默;消息以实现实测校准)
   w121(path.join(dir121, 'pyfeed.py'), 'def not_rust(x: int) -> int:\n    return x\n');
