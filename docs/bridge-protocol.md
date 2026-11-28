@@ -1,7 +1,8 @@
 # Ming 契约桥协议(MVP)
 
-> 版本:v1.4(S-5 契约满足性检查;v1.2.3 R-18 效果/污点签名;S-4 契约桥 MVP,
-> plan §4.21.2 / §4.20 P2 / docs/roadmap-infrastructure.md §5.2)
+> 版本:v1.5(桥 1:Python 源 `--from py`,ADR-018;v1.4 S-5 契约满足性检查;
+> v1.2.3 R-18 效果/污点签名;S-4 契约桥 MVP,plan §4.21.2 / §4.20 P2 /
+> docs/roadmap-infrastructure.md §5.2)
 > 状态:**MVP / 实验性**——格式与判定语义可能随真实用例演进;确定性输出与 M3052
 > 判定口径在 MVP 期内保持稳定,不承诺与未来版本逐字节兼容。
 > 单一事实来源:本文件定义 `.mingi` 格式与比较规则;实现为 `src/bridge.js`;
@@ -20,10 +21,10 @@
 
 MVP 边界(固定,不扩面):
 
-- 源语言:**仅 TypeScript**;契约来源:**仅 JSDoc 注释**;
-- 边界形态:**仅 Ming `extern fn` ↔ TS `export function`**(C FFI 面);
-- **不做**:Python、WASM Component、运行时插桩、契约在 Ming 侧的自动注入/执行、
-  NLP/LLM 语义推断。
+- 源语言:**TypeScript**(`--from ts`,契约来源 = JSDoc 注释)与 **Python**(`--from py`,
+  契约来源 = docstring 数学不等式行;v1.5 / ADR-018 起,见 §11);
+- 边界形态:**仅 Ming `extern fn` ↔ TS `export function` / Python 顶层 `def`**(C FFI 面);
+- **不做**:WASM Component、运行时插桩、契约在 Ming 侧的自动注入/执行、NLP/LLM 语义推断。
 
 契约桩是**声明性工件**:它记录"跨语言边界双方应共同遵守的签名与候选边界条件"。
 MVP 中它用于签名一致性核对(M3052)、**调用点 requires 满足性检查**(S-5,§7)与
@@ -47,19 +48,24 @@ Ming 能查、TypeScript 不能查的维度,桩必须携带:
 
 ```bash
 ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]
+ming bridge extract --from py <file.py|目录> --out <目录> [--json]
 ming check <file.ming...> --stub <目录|文件> [--json]
 ```
 
 `bridge extract`:
 
-- `--from` 只接受 `ts`;缺省或其他取值 → 显式报错 exit 1(不静默);
-- 输入为文件时必须 `.ts` 结尾;为目录时递归收集 `.ts`(跳过隐藏项与 `node_modules`),
-  目录为空 → 报错 exit 1;只接受一个位置输入(多余参数 → 报错 exit 1,不静默忽略);
-- 每个 TS 文件生成**同名 `.mingi`**(`x.ts` → `x.mingi`,`.d.ts` → `.d.mingi`);
-  目录输入在输出目录内**保留相对子目录结构**(避免同名文件互相覆盖);
+- `--from` 只接受 `ts` 与 `py`(v1.5 起;`py` 文法见 §11);缺省或其他取值 → 显式报错
+  exit 1(不静默);
+- 输入为文件时必须以对应源扩展名结尾(`ts` → `.ts`;`py` → `.py`);为目录时递归收集
+  对应扩展名文件(跳过隐藏项与 `node_modules`),目录为空 → 报错 exit 1;只接受一个
+  位置输入(多余参数 → 报错 exit 1,不静默忽略);
+- 每个源文件生成**同名 `.mingi`**(`x.ts` → `x.mingi`,`x.py` → `x.mingi`,
+  `.d.ts` → `.d.mingi`);目录输入在输出目录内**保留相对子目录结构**(避免同名文件
+  互相覆盖);
 - 文本模式逐文件一行回执;`--json` 输出
   `{ok, from, out, files:[{source,input,output,functions,skipped,effects,taint,notes}]}`
-  (`effects`/`taint`/`notes` 为 v1.2.3 起 additive 字段,见 §3.4);
+  (`effects`/`taint`/`notes` 为 v1.2.3 起 additive 字段,见 §3.4;`py` 源的
+  `effects`/`taint` 恒为空——Python v1 无元数据标签面,见 §11.6);
 - 函数被跳过不算失败:桩头具名注记,exit 0。输入不可读/输出不可写 → exit 1。
 
 `check --stub`:
@@ -491,7 +497,8 @@ span = extern 声明整体;hint 指向本协议与两条修复路径(改 extern 
    文本(极罕见);不构建 AST、不解析导入类型、不展开类型别名;
 2. **契约候选不是语义**:JSDoc 不等式只做文本级映射,不验证与实现一致,
    也不注入 Ming 运行/静态检查;人工审阅后才应写入 `requires`/`ensures`;
-3. **只有一种源语言与一种边界形态**:Python / WIT / WASM Component 不在本协议;
+3. **只有两种源语言与一种边界形态**:TypeScript(JSDoc)与 Python(docstring,§11)
+   在本协议;WIT / WASM Component 不在(类方法抽取亦不在,§11.4);
 4. **`len$x` 仅为候选符号**:`.mingi` 不可直接编译;转成 Ming 源码需人工改写;
 5. **不核对参数名、效果、ABI 布局、C 结构体/数组形参**:只核对参数个数与映射类型
    (载体口径);结构体/数组 FFI ABI 本身也是 Ming C 后端的未覆盖面;
@@ -560,4 +567,160 @@ span = extern 声明整体;hint 指向本协议与两条修复路径(改 extern 
   链式相邻对求值 + i64 边界精确比较 + 字面量 Vec 的 `len$` 违反、毒化跳过(实参类型错误)、
   遮蔽五形态(形参/lambda 形参/match·for·while-let 模式)、f64×整数混合与 2^53 精度边界、
   无 requires 桩不计数、**3400 项深链与 110 层嵌套块的裸崩回归**;
+- `tests/run.mjs` §120:**Python 源提取(§11)——Google 分节 golden 逐字节/确定性双跑/
+  函数源码序/PEP 484 八型映射/无注解参数跳过/散行兜底/坏行健壮/坏文件具名跳过/
+  `--json` `from:"py"`/消费链 e2e(checked/M3052 失配/M3053 调用点违反)与 CLI 拒绝面**;
 - 端到端示例:`examples/bridge_demo/`(`demo.ts` + `demo.ming` + 入库黄金 `demo.mingi`)。
+
+---
+
+## 11. Python 源(`--from py`;v1.5 / ADR-018)
+
+> 桥 1 的第二源语言:把 Python 库的**类型注解(PEP 484)+ docstring 数学不等式行**
+> 提取为同一 `.mingi` 契约桩。裁决全文见 `docs/adr-018-python-bridge.md`;`.mingi`
+> 格式与消费侧(M3052/M3053)**零改动**——本节只定义抽取侧文法与类型映射。
+> 路线图来源:roadmap §5.2 "TS 或 Python" 的另一半;首个外部消费者 =
+> `pyuserlib`(ADR-017 §4 路径 2,独立 git 仓库,只消费 `.mingi` 工件)。
+
+### 11.1 输入面与函数形态
+
+- 输入:`.py` 文件或目录(目录递归收集 `.py`,跳过隐藏项与 `node_modules`,与 TS 口径
+  一致);实现为**行扫描**(非 Python 解释器/AST——零依赖纪律,与 TS 侧"非完整 AST"
+  同纪律,见 §5.4);
+- **只取顶层 `def`**(MVP):类内方法(缩进的 `def`)**不扫描**(静默,零条目零注记,
+  与 TS class 方法同纪律;具名候选登记于 ADR-018 §4,不预支);
+- `async def` 具名跳过(`// skipped`,与 TS async 同款);同名重复 `def` 取首个
+  (后续具名跳过,与 TS 重载口径一致);`*args`/`**kwargs` 具名跳过;参数默认值不进
+  桩(顶层 `=` 右侧丢弃);`*`/`/` 裸标记位忽略;keyword-only 形参按普通形参转录;
+  尾逗号容忍(与 TS 单行签名"尾逗号参数跳过"不同);跨行签名按括号配对状态机支持
+  (上限 100 行,超限具名跳过;`->` 标注与冒号须与右括号同行)。
+
+### 11.2 约定载体(按优先级)
+
+docstring 是 Python 的 JSDoc 对应物。契约候选按以下优先级提取(高优先级载体命中后,
+同一行不重复归入低优先级):
+
+1. **Google 风格分节**:`Args:` 段每行 `名: 描述` **后随的数学不等式行**(缩进属于
+   该参数的描述块);`Returns:` 段同款(描述行 + 后随不等式行)。不等式归入所属参数
+   的 requires 候选;`Returns:` 段引用 `result` 的不等式 → ensures 候选(与 TS 归属
+   规则 §5.2 同口径:requires 不引用 result、纯常量丢弃、同文本去重);
+2. **散行兜底**:docstring 内任何形如**纯数学不等式**的行(文法见 11.3),自动归入其
+   涉及的参数名——只涉及一个参数 → 该参数的 requires;涉及多个参数 → 归入该函数的
+   requires(如 `lo <= hi`);**仅含返回值名 / 不含参数名 → 丢弃**(v1 不预支语义,
+   与 TS "`@returns` 不引用 result 的不等式丢弃"同纪律);
+3. **不做的**:自然语言理解("must be positive" 这类短语不解析——与 TS "只认数学
+   不等式"同纪律);Sphinx `:param x:` 风格(登记候选);装饰器(`@requires` 之类)
+   不预支。
+
+docstring 形态口径:docstring = 签名冒号行后第一个语句级三引号块(`"""`/`'''`;
+`r`/`f` 前缀不算);**未闭合三引号 → 具名 note(函数保留、契约放弃)**——未闭合
+三引号在 Python 语义下吞掉其后全部源码,继续扫描只会产出假条目;`Args:` 同名条目
+取首个(后续连同续行丢弃,与 TS `@param` 同口径);其他 Google 节名(`Raises:`/
+`Example:` 等大小写敏感)的缩进内容**既不参与契约、也不落散行**(结构化分节内容
+不重释为契约)。
+
+Google 分节示例(ADR-018 §1 原例):
+
+```python
+def get_user(user_id: int, conn: str) -> int:
+    """Fetch a user row.
+
+    Args:
+        user_id: database key.
+            1 <= user_id <= 10**6
+        conn: open connection.
+    Returns:
+        Row count.
+            result >= 1
+    """
+```
+
+提取结果(`get_user` 条目):`requires 1 <= user_id` / `requires user_id <= 1000000`
+(`10**6` 幂求值,见 11.3)/ `ensures result >= 1`。
+
+### 11.3 数学不等式文法(与 TS 版共用一套,两处 Python 适配)
+
+基础文法 = §5.1 的候选文法(词边界纪律同款:**未知名/成员访问/下标/非十进制数字
+形态/算术邻接 → 整条不等式丢弃,不截断不发明**);Python 侧两处记法适配
+(`len(名)` 与 `**` 幂,均在进文法**前**预改写,随后逐字复用 TS 文法):
+
+| 元素 | Python 形态 | 提取结果 |
+|---|---|---|
+| 参数名 / 十进制字面量(可负) | 同 §5.1 | 同 §5.1 |
+| 长度符号 | **`len(名)` 调用形态**(TS 为 `x.length` 成员形态);预改写为 `名.length` 走 TS 通道——含"必须 Vec 参数"守卫,词边界防 `xlen(`/`lengthen(` 误改;改写不了/嵌套形态留给既有规则丢弃 | `len$x` |
+| 比较链 | `0 <= n <= 10` | 相邻对两条(同 §5.1) |
+| 幂 | `**`,整数底 ** 整数指数(指数 0..64);**负底数不折叠**(Python 语义 `-2**2 == -(2**2)`,直接求值会写出语义相反的候选) | 求值折叠为十进制字面量(`10**6` → `1000000`)后再走文法 |
+| 四则运算 | `n - 1`/`x + 1 < len`/`n * 2 >= 10` 等算术邻接形态 | **整条丢弃**(与 TS §5.1 同口径——ADR-018 "与 TS 版共用一套"按实现裁决;唯一算术例外 = `**` 幂折叠为字面量) |
+
+- 解析失败 → **该行跳过不报错**(extract 产出确定性不受坏行影响,与 TS 同口径);
+- 幂不折叠形态(指数非字面量 `n**2`/指数超界/结果超 i64/底数紧邻 token 字符或
+  `-`)→ 保持原文,随后被"算术邻接整条丢弃"规则淘汰(不发明不降级)。
+
+### 11.4 类型映射表(PEP 484 → Ming;v1 MVP)
+
+| Python 注解 | Ming 类型 |
+|---|---|
+| `int` | `i64`(注解含 `Literal`/范围注释不细化——登记候选) |
+| `float` | `f64` |
+| `str` | `str` |
+| `bool` | `bool` |
+| `list[T]` / `List[T]` | `Vec[T]` |
+| `dict[str, T]` / `Dict[str, T]` | `Map[str, T]` |
+| `T \| None` / `Optional[T]` | `Option[T]` |
+| 无注解 / 其他 | **该参数跳过**(见下) |
+
+- 新式(`list[int]`,PEP 585)与旧式(`List[int]`,`typing`)双形式同映射;
+  `typing.` 前缀剥离(纯名义,`typing.List[int]` ≡ `List[int]`);映射前空白全剥,
+  桩类型文本为紧凑形态(`Map[str,i64]`,解析侧括号感知切分,M3052 规范化比对不受
+  空白影响);
+- **参数跳过口径(与 TS 的关键差异)**:表外类型/无注解的参数**不进桩,但函数保留**
+  (桩函数只含已映射参数;桩头 `// note:` 具名,如 `参数 "b" 无类型注解,该参数不进
+  桩(MVP:未映射参数不进桩)`)。TS 侧表外参数 → 整个函数跳过(§5.4);Python 侧
+  函数保留。消费侧 **M3052 零改动**:Ming `extern fn` 须按**桩内参数集**声明(未映射
+  参数不跨边界),参数个数按桩/extern 声明逐位核对——此口径由 ADR-018 §1 登记;
+- 返回类型:必须**显式标注且可映射**(同 TS 口径;未标注/`None` 与 TS 的 `void` 同
+  地位 → 整个函数跳过并具名注记);映射后只进类型映射,**不生成 ensures**(ADR-018
+  §4:`-> int` 不自动推导返回契约);
+- Python 侧**无效果/污点标签面**(v1):docstring 没有 `@effects`/`@taint` 对应物,
+  条目零 `effects` 行(`effects`/`taint` 在 extract `--json` 中恒为空)——效果/污点
+  抽取登记候选,不预支。
+
+### 11.5 确定性承诺
+
+- 同一 `.py` 输入 → **逐字节同一 `.mingi`**:无时间戳、无主机路径、无随机/哈希序;
+- 函数按**源码序**;docstring 行序即约定序(requires/ensures 按载体出现序,同文本
+  去重保留首个);
+- 头部 `generated by` 行携带 `--from py` 来源注记;`// from` 回链 = 源文件与 `def`
+  行号(1 起);
+- 坏行跳过不影响其余产出(11.3);坏文件处理见 11.6。
+
+### 11.6 与 TS 版(`--from ts`)的差异清单
+
+| 维度 | TS(`--from ts`) | Python(`--from py`) |
+|---|---|---|
+| 契约载体 | JSDoc `@param`/`@returns` 标签(单一载体) | Google 分节(优先)+ **散行兜底**(双载体) |
+| 表外参数 | **函数跳过**(具名注记) | **参数跳过、函数保留**(桩只含已映射参数) |
+| 长度符号记法 | `x.length`(成员) | `len(x)`(调用) |
+| 幂 | 无 | `**` 小整数指数字面量求值 |
+| 效果/污点元数据 | `@effects`/`@taint`(R-18) | **无**(docstring 无标签面;登记候选) |
+| 函数形态面 | `export function`/`export declare function` | 顶层 `def`(类方法/async 不抽取) |
+| 类型双形式 | 无 | `list[T]`≡`List[T]`、`dict[str,T]`≡`Dict[str,T]`、`T \| None`≡`Optional[T]` |
+| 消费侧 | M3052/M3053 既有路径 | **同一路径,零改动**(`.mingi` 格式 v2 不变) |
+
+坏文件口径(**行扫描按设计不抛错**):非 Python 文本(零 `def`)→ **空桩头**(仅
+头部,零条目零注记);截断 `def`(括号不配对/跨行超限)→ 函数级具名 `// skipped`
+注记,且**扫描在其后正常恢复**——同文件更靠后的合法顶层 `def` 照常抽取
+(v1.6.0 复核 MINOR-1 收口:未闭合签名不吞掉其后条目)——两者都不算失败(exit 0,其余文件照常提取;与 TS "输入不可读 exit 1"不同,
+**可读但不可解析**不算失败)。stderr 警告一行 + 整文件跳过仅作**防御性兜底**(提取
+器意外抛错时;不中断其余文件)。
+
+### 11.7 诚实边界与明确不做(登记;ADR-018 §2/§4)
+
+- **注解可撒谎**:Python 动态性意味着标注与实现可能不一致(`标注 int 实为 str`)——
+  桩只承诺"**转录注解**",不验证 Python 侧行为(与 TS 同边界:核对的是 Ming 调用侧
+  守约,不验证对端实现);
+- **类方法抽取**、**Sphinx 风格**、**自然语言约定**、**`Literal` 细化**(int 的取值
+  集不细化)、**装饰器约定**、**ensures 从返回值注解自动推导**——全部不做,登记候选;
+- **效果/污点抽取无来源**(docstring 无标签面)——登记候选;
+- **`__future__` 注解延迟求值形态**(`from __future__ import annotations` 下的字符串
+  注解)不在 MVP(实现按字面文本识别注解;字符串形态的登记候选,不预支)。

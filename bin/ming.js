@@ -16,7 +16,7 @@ async function lazySpawnSync() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const VERSION = '1.5.1';
+export const VERSION = '1.6.0';
 
 // v0.57 tools AOT(usage-audit §4 行动1)配套:Node 编译缓存 + 全惰性模块加载。
 // 实测(同窗口 A/B):全图 ESM 解析+编译 ≈ 28ms,占 ming tools 命中路径开销的大头;
@@ -97,6 +97,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   ming cc    <file.ming> [--emit-c] [--out 目录|-o 目录] [--json] [-- args...]
   ming tools [--list] <命令> [参数...]   (自举工具统一入口:patch/edit/diff/diag/wc/...)
   ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]   (TS JSDoc → .mingi 契约桩)
+  ming bridge extract --from py <file.py|目录> --out <目录> [--json]   (Python 注解+docstring → .mingi 契约桩;ADR-018)
   ming init  [项目名]
   ming fmt   <file.ming...> [--write | --check]
   ming doc   <file.ming...> [--json] [--index]
@@ -108,7 +109,7 @@ Ming(明)v${VERSION} — 为 AI 与人类协作设计的编程语言
   * 诊断同时输出人类可读格式与 --json 结构化格式,错误码稳定(见 docs/diagnostics.md)
   * doc --json schema:{ok,file,items:[{kind:fn|struct|enum|trait|const|impl,name,line,doc,signature}]};doc 为 /// 行去前缀原文(无文档为 []),signature 为 AST 重建(impl 方法含 with 效果与 requires/ensures);impl 的 name 为 "impl <trait> for <类型>"(v0.58)
   * doc --index:多文件聚合 {ok,files:N,items:[{file,...同上}]};单文件也可用;错误路径与 --json 协议一致(v0.58)
-  * bridge:--from 仅支持 ts(MVP);生成物确定性(无时间戳);规范见 docs/bridge-protocol.md;check --stub 对同名 extern fn 做签名核对(失配 M3052),并对调用点字面量实参做桩 requires 满足性检查(违反 M3053;不可判只计数 contracts)
+  * bridge:--from 支持 ts(JSDoc)与 py(PEP 484 注解 + docstring 数学不等式,Google Args:/Returns: 分节优先、散行兜底;ADR-018);生成物确定性(无时间戳);规范见 docs/bridge-protocol.md;check --stub 对同名 extern fn 做签名核对(失配 M3052),并对调用点字面量实参做桩 requires 满足性检查(违反 M3053;不可判只计数 contracts)
   * 副作用必须显式声明:fn main() with io { ... };v0.4 无文件系统/网络能力(io/time 之外)
   * 顶层声明:fn / struct / enum / use / test / const / trait / impl
   * 项目模式:run/check/test/build 不带文件参数时,自动向上查找 ming.toml
@@ -931,41 +932,58 @@ function sigType(t) {
   }
 }
 
-// ---------- bridge(S-4 契约桥 MVP,v1.2;plan §4.21/R-16)----------
+// ---------- bridge(S-4 契约桥 MVP,v1.2;plan §4.21/R-16;v1.6 ADR-018 --from py)----------
 // `ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]`
-// CLI 工具域(Node fs 直用,与 ming doc/build 同类):逐 TS 文件生成同名 .mingi 契约桩。
+// `ming bridge extract --from py <file.py|目录> --out <目录> [--json]`
+// CLI 工具域(Node fs 直用,与 ming doc/build 同类):逐源文件生成同名 .mingi 契约桩。
 // 确定性:输出无时间戳/无随机序;目录输入按相对路径码元序扫描,输出目录内保留子目录结构。
 // 未知 --from 取值显式报错 exit 1(不静默);表外类型 → 该函数跳过并在桩头具名注记。
+// py 侧(ADR-018):提取是行扫描、按设计不抛错;防御性兜底——若提取器意外抛错,
+// 该文件整体跳过并 stderr 警告一行,不中断其余文件(与"函数被跳过不算失败"同纪律)。
+const bridgeUsage = `
+ming bridge — 契约桥(把外部语言的导出函数签名与契约候选提取为 .mingi 桩;规范见 docs/bridge-protocol.md)
+
+用法:
+  ming bridge extract --from ts <file.ts|目录> --out <目录> [--json]
+      TS JSDoc(@param/@returns/@effects/@taint)→ .mingi 契约桩
+  ming bridge extract --from py <file.py|目录> --out <目录> [--json]
+      Python PEP 484 注解(类型映射)+ docstring 数学不等式(Google Args:/Returns: 分节优先、散行兜底)→ .mingi 契约桩(ADR-018)
+  ming check <file.ming...> --stub <目录|文件> [--json]
+      对同名 extern fn 做签名核对(失配 M3052);对调用点字面量实参做桩 requires 满足性检查(违反 M3053;不可判只计数)
+`.trim();
+
 async function cmdBridge(rest, flags, opts) {
   const json = flags.has('json');
+  if (flags.has('help')) { process.stdout.write(bridgeUsage + '\n'); return 0; }
   const sub = rest[0];
   if (sub !== 'extract') return fail(`bridge 仅支持 extract 子命令(得到 "${sub ?? ''}")`, json);
   const from = opts.from;
-  if (from === undefined) return fail('bridge extract 需要 --from ts', json);
-  if (from !== 'ts') return fail(`--from 仅支持 "ts"(得到 "${from}")`, json);
+  if (from === undefined) return fail('bridge extract 需要 --from ts(或 --from py)', json);
+  if (from !== 'ts' && from !== 'py') return fail(`--from 仅支持 "ts" 或 "py"(得到 "${from}")`, json);
+  const extName = from; // 'ts' | 'py'(同时用作文件扩展名)
   const input = rest[1];
-  if (!input) return fail('bridge extract 需要 <file.ts|目录>', json);
-  if (rest.length > 2) return fail(`bridge extract 只接受一个输入 <file.ts|目录>(多余参数:"${rest.slice(2).join(' ')}")`, json);
+  if (!input) return fail(`bridge extract 需要 <file.${extName}|目录>`, json);
+  if (rest.length > 2) return fail(`bridge extract 只接受一个输入 <file.${extName}|目录>(多余参数:"${rest.slice(2).join(' ')}")`, json);
   const outDir = opts.out;
   if (!outDir) return fail('bridge extract 需要 --out <目录>', json);
-  // 输入校验:文件必须是 .ts;目录递归 .ts(隐藏项/node_modules 跳过)且不得为空。
+  // 输入校验:文件必须带对应扩展名;目录递归收集(隐藏项与生态目录跳过)且不得为空。
   let st;
   try {
     st = fs.statSync(input);
   } catch (e) {
     return fail(`bridge extract 无法读取输入 "${input}": ${e.message}`, json);
   }
-  if (st.isFile() && !input.endsWith('.ts')) {
-    return fail(`bridge extract 的输入文件必须是 .ts(得到 "${input}")`, json);
+  if (st.isFile() && !input.endsWith(`.${extName}`)) {
+    return fail(`bridge extract 的输入文件必须是 .${extName}(得到 "${input}")`, json);
   }
   const bridge = await lazyBridge();
   let inputs;
   try {
-    inputs = bridge.collectTsFiles(input);
+    inputs = from === 'ts' ? bridge.collectTsFiles(input) : bridge.collectPyFiles(input);
   } catch (e) {
     return fail(`bridge extract 无法读取输入 "${input}": ${e.message}`, json);
   }
-  if (!inputs.length) return fail(`目录中没有 .ts 文件:${input}`, json);
+  if (!inputs.length) return fail(`目录中没有 .${extName} 文件:${input}`, json);
   try {
     fs.mkdirSync(outDir, { recursive: true });
   } catch (e) {
@@ -979,11 +997,26 @@ async function cmdBridge(rest, flags, opts) {
     } catch (e) {
       return fail(`bridge extract 无法读取 "${it.abs}": ${e.message}`, json);
     }
-    const extracted = bridge.extractTs(src, it.source);
-    const outPath = path.join(outDir, it.source.replace(/\.ts$/, '.mingi'));
+    let extracted;
+    if (from === 'ts') {
+      extracted = bridge.extractTs(src, it.source);
+    } else {
+      try {
+        extracted = bridge.extractPy(src, it.source);
+      } catch (e) {
+        // 防御性兜底(提取器按设计不抛错;走到这里 = 意外形态):整文件跳过 + 一行警告,
+        // 不中断其余文件,exit 0(与"函数被跳过不算失败"同纪律)。
+        process.stderr.write(`bridge extract 警告:跳过无法解析的文件 "${it.abs}": ${e.message}\n`);
+        continue;
+      }
+    }
+    const generator = from === 'ts'
+      ? '// generated by: ming bridge extract --from ts(MVP;格式规范见 docs/bridge-protocol.md)'
+      : '// generated by: ming bridge extract --from py(MVP;格式规范见 docs/bridge-protocol.md;ADR-018)';
+    const outPath = path.join(outDir, it.source.replace(new RegExp(`\\.${extName}$`), '.mingi'));
     try {
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
-      fs.writeFileSync(outPath, bridge.renderMingi(extracted), 'utf8');
+      fs.writeFileSync(outPath, bridge.renderMingi(extracted, generator), 'utf8');
     } catch (e) {
       return fail(`bridge extract 无法写入 "${outPath}": ${e.message}`, json);
     }
@@ -995,6 +1028,7 @@ async function cmdBridge(rest, flags, opts) {
       skipped: extracted.skipped,
       // v1.2.3(R-18)additive:桥接元数据——按函数名的效果声明与污点标注,外加
       // "函数保留但某标注被丢弃"的具名注记(notes;与 skipped 区分)。
+      // py 侧(ADR-018)effects 恒为 []、taint 恒为无标注(无对应物,桩不带 effects 行)。
       effects: Object.fromEntries(extracted.entries.map((e) => [e.name, e.effects])),
       taint: Object.fromEntries(extracted.entries.map((e) => [e.name, e.taint])),
       notes: extracted.notes,
@@ -1004,7 +1038,7 @@ async function cmdBridge(rest, flags, opts) {
     }
   }
   if (json) {
-    process.stdout.write(JSON.stringify({ ok: true, from: 'ts', out: outDir, files: reports }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ ok: true, from, out: outDir, files: reports }, null, 2) + '\n');
   }
   return 0;
 }

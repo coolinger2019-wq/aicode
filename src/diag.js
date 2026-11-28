@@ -112,7 +112,7 @@ export const CODE_HINTS = {
   M3050: "Untrusted 的操作面只有载体白名单(str:污值代数面——数值/布尔/计数 5 项 + 保污纯函数集 trim*/to_upper/to_lower/replace/repeat/slice_chars/pad_*/chars/split/get/bytes/to_bytes/starts_with/ends_with/contains/is_alpha 等,逐函数裁决见 checker UNTRUSTED_STR_ALGEBRA(ADR-007);Json:投影表 get/at/as_*/is_*/eq,见 ADR-004;Vec[u8]:len/is_empty/get 元素读/to_hex(ADR-012);Map[str,str]:投影表 len/is_empty/get/has/keys/values(只读 v1.3,ADR-008);i64(污标量,ADR-012):方法面空白名单——污域算术/位运算与比较(净 bool 出)是唯一处理面,无净化器);产出净 str 的唯一出口是 std.unstr.sanitize_path / sanitize_cli_path(经 as_str 投影)。",
   M3051: "Slice 是块内线性只读视图(ADR-009 §2.2):只能由非 mut Vec[u8] 绑定的 .view(start, len) 创建,并以 len/get/at 就地消费;不可 return、不可存入 Vec/Map/结构体/变体载荷、不可作为实参传递、不可再绑定/赋值、不可被闭包捕获、不可出现在函数形参/返回类型——底层存储生命周期钉在词法块内,无借用检查器的语言里视图逃逸即悬垂风险。",
   M3052: "契约桥只核对有桩的 extern 函数:按 .mingi 桩修正 extern 声明(参数个数/映射类型),或重新运行 ming bridge extract 更新桩。格式与比较规则见 docs/bridge-protocol.md。",
-  M3053: "这是跨语言边界的前置条件事实报告(纯 check 面,不改运行时/证明语义):调用点字面量不满足桩 requires。修正实参,或与 TS 侧核对契约后重新生成桩;若契约不符实际,改 TS JSDoc 而非绕过本检查。可判子集与求值语义见 docs/bridge-protocol.md。",
+  M3053: "这是跨语言边界的前置条件事实报告(纯 check 面,不改运行时/证明语义):调用点字面量不满足桩 requires。修正实参,或与对端核对契约后重新生成桩;若契约不符实际,改对端契约源(TS JSDoc / Python docstring,ADR-018)而非绕过本检查。可判子集与求值语义见 docs/bridge-protocol.md。",
   M4016: 'unsafe 指针操作仅由 C 原生后端(ming cc)执行;tree/VM 不伪装内存语义。',
   M4017: '内联汇编仅由 C 原生后端(ming cc)执行;tree/VM 不伪装机器语义。', // v0.74(ADR-006);panic 消息为同一句式(无句号),三引擎逐字一致
   W3105: '这是"无法证明"而非"确定越界":证明器只处理 requires 线性边界下的直线体。可补充线性 requires(如 i < buf.len() && i >= 0),或改用 buf.get(i)。',

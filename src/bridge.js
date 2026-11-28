@@ -1,12 +1,16 @@
 // bridge.js — 契约桥 MVP(v1.2 S-4,plan §4.21.2 / roadmap-infrastructure §5.2;
-// v1.2.3 R-18 增补效果/污点签名,plan §4.20 P2)。
-// 范围(架构师 MVP 合同,边界固定):源语言 = TypeScript(JSDoc);边界形态 =
-// Ming `extern fn` ↔ TS 导出函数。不做 Python / WASM component / 运行时插桩。
+// v1.2.3 R-18 增补效果/污点签名,plan §4.20 P2;v1.6 ADR-018 增补 --from py)。
+// 范围(架构师 MVP 合同,边界固定):源语言 = TypeScript(JSDoc)+ Python(PEP 484 注解
+// + docstring 不等式,ADR-018,桥 1);边界形态 = Ming `extern fn` ↔ 对端导出函数。
+// 不做 WASM component / 运行时插桩;Python 类方法/Sphinx 风格/自然语言登记候选不预支。
 //
 // 本模块是纯 Node 侧工具域(与 ming doc/build 同类,零依赖):
 //   1. extractTs   —— 逐行扫描 TS 源(轻量正则/行扫描,不做完整 AST;限制见规范 §9),
 //                     把导出函数的 Ming 类型签名 + JSDoc 算术不等式候选契约 +
 //                     桥接元数据(@effects 效果面 / @taint 污点面,R-18)提取为数据;
+//   1b. extractPy  —— 逐行扫描 Python 源(ADR-018):顶层 def 签名注解类型映射 +
+//                     docstring 数学不等式(Google Args:/Returns: 分节优先,散行兜底);
+//                     与 TS 共用不等式文法(len(名)/`**` 幂折叠两处 Python 适配);
 //   2. renderMingi —— 确定性渲染 .mingi 契约桩(无时间戳/无随机序,逐字节可复现);
 //   3. parseMingi  —— 解析 .mingi(格式定义见 docs/bridge-protocol.md,单一定义处;
 //                     v1 与 v2 都接受——v1 桩零改动可读);
@@ -17,11 +21,13 @@
 //                     对指向有桩 extern fn 的 Call 节点,实参全为字面量时机械求值桩
 //                     requires → 违反 M3053[bridge-contract-violated];不可判只计数
 //                     (`stub_contract.contracts`,不猜)。**纯报告**:不注入任何推导。
-// 诚实边界:提取只认 docs/bridge-protocol.md 登记的类型映射表与 JSDoc 不等式模式;
-// 表外类型 → 该函数跳过并在桩头具名注记;解析不了的文本 → 桩只含签名,不发明语义。
+// 诚实边界:提取只认 docs/bridge-protocol.md 登记的类型映射表与 JSDoc 不等式模式
+// (Python 侧另认 ADR-018 登记的 PEP 484 映射与 docstring 载体);表外类型 → 该函数
+// 跳过并在桩头具名注记;解析不了的文本 → 桩只含签名,不发明语义。
 // 效果面(R-18)是**元数据**:extern fn 在 Ming 语言面隐含 ffi、无法再声明效果,
 // 因此 check --stub 只把它如实注记进 `stub_contract.checked[]`(下游工具/Agent 消费),
 // 不做语言层核对;污点面映射为既有 `Untrusted[str]` 载体,参与既有载体等价比对。
+// Python 侧(ADR-018)不抽效果/污点注解(无 @effects 对应物)——桩不带 effects 行。
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { err, SEVERITY } from './diag.js';
@@ -459,13 +465,430 @@ export function extractTs(source, sourceName) {
   return { source: sourceName, entries, skipped, notes };
 }
 
+// ---------- Python 提取(ADR-018;--from py,桥 1)----------
+//
+// 输入面:.py 文件;只取**顶层 def**(列 0 起行)。缩进行(类方法/函数体)静默不扫、
+// 不产条目也不产注记(ADR-018 §1:方法抽取登记候选)——与 TS 版对 class 方法的
+// "不扫描"口径一致。docstring = 签名冒号行后的第一个语句级三引号块("""/''';
+// r/f 前缀形态不算);契约候选只从 docstring 提取(装饰器不预支;类型注解只从
+// def 签名行读,跨行签名按括号配对状态机支持,上限 100 行)。
+//
+// 约定载体(ADR-018 §1 优先级):
+//   1. Google 分节:`Args:` 段 `名: 描述` 行(+更深缩进的续行)→ 该参数的描述;
+//      `Returns:` 段内容 → 返回值描述。只认这两个节名(大小写敏感;Parameters:/Raises:
+//      等其他 Google 节名按"其他分节"处理——其缩进内容既不参与契约、也不参与散行兜底,
+//      登记口径:结构化分节内容不重释为契约);
+//   2. 散行兜底:不属于任何节内容区的自由行,逐行过数学不等式文法,提取出的子句归入
+//      requires(必须涉及 ≥1 个参数;只含 result/无参数 → 丢弃 v1,ADR-018 §1);
+//   3. 不做的(登记候选):自然语言、Sphinx :param: 风格、Google `名 (类型): 描述`
+//      括注形态、`\"""` 转义三引号(按首个同级三引号闭合)、装饰器约定。解析不了的
+//      行静默跳过,不影响产出确定性(与 TS 版同口径)。
+//
+// 数学不等式文法 = TS 版共用一套(bridge-protocol.md §5.1;实现复用 extractInequalities),
+// Python 侧两处文法适配(其余规则——词边界最大 token/链式相邻对/算术邻接整条丢弃/
+// requires 禁 result——逐字同 TS):
+//   · `len(名)` → `名.length` 预改写:随后走既有 .length → len$ 通道(含"必须 Vec 参数"
+//     守卫);词边界守卫防 xlen(/lengthen( 误改;改写不了/嵌套形态留给既有规则丢弃;
+//   · `**` 幂:整数底**整数指数(指数 0..64)提取期求值折叠为十进制字面量——结果仍须
+//     落在 i64 范围内,否则保持原文(随后被"算术邻接整条丢弃"规则淘汰,不发明不降级)。
+//     负底数不折叠:Python 语义 `-2**2 == -(2**2)`,直接求值会写出语义相反的候选。
+//
+// 类型映射(PEP 484 → Ming;ADR-018 §1 表):int→i64 / float→f64 / str→str / bool→bool /
+// list[T]·List[T]→Vec[T] / dict[str,T]·Dict[str,T]→Map[str,T](键限 str) /
+// Optional[T]·T|None→Option[T](两侧均可,恰两支);typing. 前缀剥离(纯名义)。
+// 递归映射,任一层不可映射 → 整体 null。**无注解/不可映射参数 → 该参数跳过不进桩**
+// (桩头 note 具名;M3052 按桩内参数集对齐——extern 只声明已映射参数,ADR-018 §1
+// 登记口径)。返回注解只进类型映射、不生成 ensures;未标注/不可映射(None 与 TS 的
+// void 同地位)→ 整个函数跳过(具名)。*args/**kwargs 具名跳过;`*`/`/` 裸标记位忽略;
+// 默认值不进桩(ADR-018);keyword-only 形参按普通形参转录(桩只描述类型文本)。
+
+// 引号感知的行内 `#` 注释剥离(签名行用;字符串字面量内的 # 不剥)。三引号形态按
+// 三个单引号/双引号序列近似处理——签名里出现三引号默认值属病态,解析失败 → 具名跳过。
+function pyStripComment(line) {
+  let q = null;
+  for (let c = 0; c < line.length; c++) {
+    const ch = line[c];
+    if (q) {
+      if (ch === '\\') { c += 1; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (ch === '#') return line.slice(0, c);
+  }
+  return line;
+}
+
+// 顶层分隔切分(括号感知):sep 为单字符;`(`/`[`/`{` 加深、配对符减深,深度 0 处的
+// sep 才切分——`dict[str, int]`/默认值 `[1, 2]` 内的分隔符不切。
+function splitTopLevel(s, sep) {
+  const parts = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of String(s)) {
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === sep && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts;
+}
+
+// PEP 484 注解 → Ming 类型(ADR-018 §1 表;递归;空白全剥后解析)。不可映射 → null。
+function parsePyType(s) {
+  const parts = splitTopLevel(s, '|');
+  if (parts.length > 1) {
+    // 联合:T | None / None | T → Option[T](恰两支且一支为 None);多支/双实型 → null。
+    if (parts.length !== 2) return null;
+    const other = parts[0] === 'None' ? parts[1] : (parts[1] === 'None' ? parts[0] : null);
+    if (!other || other === 'None') return null;
+    const t = parsePyType(other);
+    return t ? `Option[${t}]` : null;
+  }
+  if (s === 'int') return 'i64';
+  if (s === 'float') return 'f64';
+  if (s === 'str') return 'str';
+  if (s === 'bool') return 'bool';
+  const m = s.match(/^([A-Za-z_][\w.]*)\[(.*)\]$/);
+  if (!m) return null;
+  let head = m[1];
+  if (head.startsWith('typing.')) head = head.slice('typing.'.length);
+  const args = splitTopLevel(m[2], ',');
+  if (head === 'list' || head === 'List') {
+    if (args.length !== 1) return null;
+    const t = parsePyType(args[0]);
+    return t ? `Vec[${t}]` : null;
+  }
+  if (head === 'dict' || head === 'Dict') {
+    if (args.length !== 2 || args[0] !== 'str') return null;
+    const t = parsePyType(args[1]);
+    return t ? `Map[str,${t}]` : null;
+  }
+  if (head === 'Optional') {
+    if (args.length !== 1) return null;
+    const t = parsePyType(args[0]);
+    return t ? `Option[${t}]` : null;
+  }
+  return null;
+}
+
+function mapPyType(raw) {
+  return parsePyType(String(raw).replace(/\s+/g, ''));
+}
+
+// `len(名)` → `名.length` 预改写(词边界:`len` 左侧不得是 token 字符;名须为简单标识符;
+// 单遍,不递归——嵌套 len 留给既有规则丢弃)。
+const PY_LEN_RE = /(^|[^A-Za-z0-9_$.\[\]])len\s*\(\s*([A-Za-z_]\w*)\s*\)/g;
+
+function pyRewriteLenCalls(text) {
+  return String(text).replace(PY_LEN_RE, (m, pre, nm) => `${pre}${nm}.length`);
+}
+
+// `**` 幂折叠(见 Python 提取头注):整数底**整数指数(0..64)→ 十进制字面量;
+// 结果超 i64 → 不折叠;底数/指数紧贴 token 字符或 `*` → 不折叠(防 x2**3 / 2**3x / 2**3*4);
+// 底数紧邻 `-` 不折叠(减法语境)。
+const PY_POW_MAX_EXP = 64;
+const PY_POW_I64_MAX = 9223372036854775807n;
+
+function pyFoldPowers(text) {
+  const t = String(text);
+  const isTokCh = (c) => /[A-Za-z0-9_$.\[\]]/.test(c);
+  const isDigit = (c) => c >= '0' && c <= '9';
+  let out = '';
+  let i = 0;
+  while (i < t.length) {
+    const star = t.indexOf('**', i);
+    if (star < 0) { out += t.slice(i); break; }
+    // 指数:** 之后(可隔空白)的十进制整数字面量
+    let rs = star + 2;
+    while (rs < t.length && /\s/.test(t[rs])) rs += 1;
+    let re = rs;
+    while (re < t.length && isDigit(t[re])) re += 1;
+    // 底数:** 之前(可隔空白)的十进制整数字面量
+    let le = star;
+    while (le > 0 && /\s/.test(t[le - 1])) le -= 1;
+    let ls = le;
+    while (ls > 0 && isDigit(t[ls - 1])) ls -= 1;
+    const okShape = re > rs && le > ls
+      && (ls === 0 || (!isTokCh(t[ls - 1]) && t[ls - 1] !== '-'))
+      && (re >= t.length || (!isTokCh(t[re]) && t[re] !== '*'));
+    if (!okShape) { out += t.slice(i, star + 2); i = star + 2; continue; }
+    const exp = Number(t.slice(rs, re));
+    if (!Number.isInteger(exp) || exp < 0 || exp > PY_POW_MAX_EXP) { out += t.slice(i, star + 2); i = star + 2; continue; }
+    const v = BigInt(t.slice(ls, le)) ** BigInt(exp);
+    if (v > PY_POW_I64_MAX) { out += t.slice(i, star + 2); i = star + 2; continue; }
+    out += t.slice(i, ls) + v.toString();
+    i = re;
+  }
+  return out;
+}
+
+// docstring → 分节结构(确定性;缩进 = 行首空白字符数,tab 计 1):
+//   · `Args:`/`Returns:`(大小写敏感,节名后不得有其他文本)开节;其他 `\w+:` 形态行
+//     开"其他节"(缩进内容忽略——Raises:/Example: 等不参与契约,也不落散行);
+//   · 节内容 = 缩进严格大于节头缩进的非空行;缩退(≤ 节头缩进)的非头行结束该节并落散行;
+//   · Args 段:更深层的 `名: 描述` 开条目(同名取首个,后续同名条目连同其续行丢弃——
+//     TS @param 同口径);不匹配条目形态的行 = 上一条目的续行(无条目 → 落散行);
+//   · Returns 段:全部内容行累积为返回值描述(与 TS @returns 同口径:不引用 result 的
+//     不等式按规则丢弃,不落散行重释);
+//   · 散行 = 不属于任何节内容区的自由行(含 docstring 首行摘要)。
+function parsePyDocSections(text) {
+  const docLines = String(text).split(/\r?\n/);
+  const argsEntries = [];
+  const returnsBuf = [];
+  const scatter = [];
+  let section = null;
+  let sectionIndent = -1;
+  let lastEntry = null;
+  const indentOf = (s) => {
+    let n = 0;
+    while (n < s.length && (s[n] === ' ' || s[n] === '\t')) n += 1;
+    return n;
+  };
+  for (const raw of docLines) {
+    const trimmed = raw.trim();
+    if (trimmed === '') continue;
+    const indent = indentOf(raw);
+    const headerM = trimmed.match(/^([A-Za-z][A-Za-z0-9_]*):\s*$/);
+    if (headerM && (section === null || indent <= sectionIndent)) {
+      section = headerM[1] === 'Args' ? 'args' : (headerM[1] === 'Returns' ? 'returns' : 'other');
+      sectionIndent = indent;
+      lastEntry = null;
+      continue;
+    }
+    if (section === 'args' && indent > sectionIndent) {
+      const em = trimmed.match(/^([A-Za-z_]\w*)\s*:\s*(.*)$/);
+      if (em) {
+        if (argsEntries.some((e) => e.name === em[1])) {
+          lastEntry = { name: em[1], buf: [], dead: true }; // 同名后续条目:连同续行丢弃(首个生效)
+          continue;
+        }
+        const ne = { name: em[1], buf: em[2] ? [em[2]] : [] };
+        argsEntries.push(ne);
+        lastEntry = ne;
+      } else if (lastEntry && !lastEntry.dead) {
+        lastEntry.buf.push(trimmed);
+      } else if (!lastEntry) {
+        scatter.push(trimmed);
+      }
+      continue;
+    }
+    if (section === 'returns' && indent > sectionIndent) { returnsBuf.push(trimmed); continue; }
+    if (section === 'other' && indent > sectionIndent) continue;
+    // 缩退/自由行:节结束(若在节内),该行落散行。
+    section = null;
+    sectionIndent = -1;
+    lastEntry = null;
+    scatter.push(trimmed);
+  }
+  return { argsEntries, returnsText: returnsBuf.join(' ').trim(), scatter };
+}
+
+const PY_SIG_MAX_LINES = 100; // 跨行签名括号配对扫描上限(防失控;超限具名跳过)
+const PY_NAME_RE = /^[A-Za-z_]\w*$/;
+
+// 提取单个 Python 源文本。返回 {source, entries, skipped, notes}(与 extractTs 同形,
+// 渲染/--json 字段零改动复用)。entries 按源码顺序;skipped/notes 同序(notes 再按行号
+// 稳定排序)。输出确定性:不读取环境/时间,只依赖 source 文本。
+export function extractPy(source, sourceName) {
+  const lines = source.split(/\r?\n/);
+  const entries = [];
+  const skipped = [];
+  const notes = [];
+  const seenNames = new Set();
+  const skip = (name, line, reason) => skipped.push({ name, line, reason });
+  const note = (name, line, reason) => notes.push({ name, line, reason });
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // 只取顶层 def:缩进行(类方法/函数体)与空行静默不扫(ADR-018 §1:方法登记候选)。
+    if (line === '' || line.startsWith(' ') || line.startsWith('\t')) continue;
+    const t = line.trim();
+    const asyncM = t.match(/^async\s+def\s+([A-Za-z_]\w*)/);
+    if (asyncM) { skip(asyncM[1], i + 1, 'async 函数不在 MVP 范围(桥接只支持同步函数)'); continue; }
+    const defM = t.match(/^def\s+([A-Za-z_]\w*)\s*\(/);
+    if (!defM) continue;
+    const name = defM[1];
+
+    // ---- 签名收集:def 行 "(" 起,跨行括号配对(逐行剥 # 注释,引号感知)。
+    let depth = 0;
+    let paramText = '';
+    let closeLineIdx = -1;
+    let afterClose = '';
+    let kk = i;
+    let inside = false;
+    for (; kk < lines.length && kk - i < PY_SIG_MAX_LINES; kk++) {
+      const cur = kk === i ? t : lines[kk];
+      const clean = pyStripComment(cur);
+      const from = kk === i ? t.indexOf('(') : 0;
+      let seg = '';
+      let closedHere = false;
+      for (let c = from; c < clean.length; c++) {
+        const ch = clean[c];
+        if (!inside) {
+          if (ch === '(') { inside = true; depth = 1; }
+          continue;
+        }
+        if (ch === '(') depth += 1;
+        else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) { closedHere = true; afterClose = clean.slice(c + 1); break; }
+        }
+        seg += ch;
+      }
+      paramText += seg;
+      if (closedHere) { closeLineIdx = kk; break; }
+    }
+    if (closeLineIdx < 0) {
+      skip(name, i + 1, '签名括号不配对或跨行过长(MVP 只支持括号配对的签名)');
+      // 未闭合签名不越过扫描窗(v1.6.0 复核 MINOR-1):其后的顶层 def 正常恢复扫描——
+      // 坏签名体内的缩进行被顶层过滤器静默忽略,不会误扫。
+      continue;
+    }
+
+    // ---- 右括号同行余部:可选 `-> 返回标注` + `:`(返回标注与冒号须与右括号同行;
+    // `)` 后换行再写 `->` 的罕见形态 MVP 不支持,具名跳过)。
+    const ac = afterClose.trim();
+    const colonIdx = ac.indexOf(':');
+    if (colonIdx < 0) { skip(name, i + 1, 'def 签名缺少冒号(形态不支持)'); i = closeLineIdx; continue; }
+    const beforeColon = ac.slice(0, colonIdx).trim();
+    let mappedRet = null;
+    if (beforeColon === '') {
+      skip(name, i + 1, '返回类型未显式标注(MVP 要求显式标注且可映射)');
+      i = closeLineIdx;
+      continue;
+    }
+    const arrowM = beforeColon.match(/^->\s*(.+)$/);
+    if (!arrowM) {
+      skip(name, i + 1, `右括号与冒号之间存在非返回标注文本("${beforeColon.slice(0, 40)}")`);
+      i = closeLineIdx;
+      continue;
+    }
+    mappedRet = mapPyType(arrowM[1]);
+    if (mappedRet === null) {
+      skip(name, i + 1, `返回类型 "${arrowM[1].replace(/\s+/g, ' ').trim().slice(0, 60)}" 不在映射表(MVP)`);
+      i = closeLineIdx;
+      continue;
+    }
+
+    if (seenNames.has(name)) {
+      skip(name, i + 1, '重载/重复声明不在 MVP 范围(同名函数取首个)');
+      i = closeLineIdx;
+      continue;
+    }
+
+    // ---- 参数切分:顶层逗号;每片剥默认值(顶层 = 右侧丢弃,ADR-018);无注解/不可映射
+    // 参数 → note 具名 + 不进桩(ADR-018 §1 口径:M3052 按桩内参数集对齐)。
+    // 尾逗号容忍(剥一个):Python 多行签名/单行尾逗号是惯用法,与 TS 单行签名的
+    // "尾逗号参数跳过"不同——这里按简单状态机口径吞掉,中段空参数位仍具名跳过。
+    const params = [];
+    let badParam = null;
+    const trimmedParams = paramText.trim().replace(/,\s*$/, '');
+    const pieces = trimmedParams === '' ? [] : splitTopLevel(trimmedParams, ',');
+    for (const pieceRaw of pieces) {
+      const piece = pieceRaw.trim();
+      if (piece === '') { badParam = '参数形态不支持(空参数位)'; break; }
+      if (piece === '*' || piece === '/') continue; // 位置/关键字标记位:仅标记,不是参数
+      if (piece.startsWith('*')) { badParam = 'var-positional/var-keyword 参数(*args/**kwargs)不在 MVP 范围'; break; }
+      const head = splitTopLevel(piece, '=')[0].trim();
+      const pm = head.match(/^([A-Za-z_]\w*)\s*:\s*(.+)$/);
+      if (!pm) {
+        if (PY_NAME_RE.test(head)) {
+          note(name, i + 1, `参数 "${head}" 无类型注解,该参数不进桩(MVP:未映射参数不进桩)`);
+          continue;
+        }
+        badParam = `参数形态不支持("${piece.slice(0, 40)}")`;
+        break;
+      }
+      const mapped = mapPyType(pm[2]);
+      if (mapped === null) {
+        note(name, i + 1, `参数 "${pm[1]}" 的类型 "${pm[2].replace(/\s+/g, ' ').trim().slice(0, 60)}" 不在映射表,该参数不进桩(MVP)`);
+        continue;
+      }
+      params.push({ name: pm[1], type: mapped });
+    }
+    if (badParam) { skip(name, i + 1, badParam); i = closeLineIdx; continue; }
+
+    // ---- docstring 捕获:签名结束行后的第一个非空/非注释行,以三引号起头才算
+    // (r/f 前缀不算;docstring 之后的内容不参与)。闭合扫描直达文件尾:未闭合 → 具名
+    // note(函数保留、契约放弃)并就此结束扫描——未闭合三引号在 Python 语义下吞掉
+    // 其后全部源码,继续扫描只会产出假条目。
+    let docText = null;
+    let resumeLine = closeLineIdx;
+    for (let di = closeLineIdx + 1; di < lines.length; di++) {
+      const dt = lines[di].trim();
+      if (dt === '' || dt.startsWith('#')) continue;
+      if (!dt.startsWith('"""') && !dt.startsWith("'''")) { resumeLine = di - 1; break; }
+      const delim = dt.slice(0, 3);
+      const first = dt.slice(3);
+      const endInFirst = first.indexOf(delim);
+      if (endInFirst >= 0) { docText = first.slice(0, endInFirst); resumeLine = di; break; }
+      const parts = [first];
+      let closed = false;
+      let mj = di + 1;
+      for (; mj < lines.length; mj++) {
+        const e2 = lines[mj].indexOf(delim);
+        if (e2 >= 0) { parts.push(lines[mj].slice(0, e2)); resumeLine = mj; closed = true; break; }
+        parts.push(lines[mj]);
+      }
+      if (closed) docText = parts.join('\n');
+      else { note(name, i + 1, 'docstring 未闭合(至文件结束),该函数契约提取放弃'); resumeLine = lines.length - 1; }
+      break;
+    }
+
+    // ---- 契约候选(ADR-018 §1):Args 各参数描述 → requires(协议 §3.2 顺序口径:
+    // 参数声明序 × 描述内出现序);Returns 描述 → ensures(必须引用 result);
+    // 散行 → requires(行序兜底;涉及 ≥1 参数才保留)。文本预改写:len(名) → 名.length、
+    // `**` 幂折叠;随后逐字复用 TS 文法(extractInequalities)。
+    const paramNames = params.map((p) => p.name);
+    const vecParams = new Set(params.filter((p) => p.type.startsWith('Vec[')).map((p) => p.name));
+    const allowed = { params: new Set(paramNames), vecParams, allowResult: false };
+    const requires = [];
+    const ensures = [];
+    const seenReq = new Set();
+    const pushReq = (clauses) => {
+      for (const c of clauses) {
+        if (seenReq.has(c)) continue;
+        seenReq.add(c);
+        requires.push(c);
+      }
+    };
+    if (docText !== null) {
+      const secs = parsePyDocSections(docText);
+      const prep = (s) => pyFoldPowers(pyRewriteLenCalls(s));
+      for (const p of params) {
+        const entry = secs.argsEntries.find((e) => e.name === p.name);
+        if (!entry) continue;
+        const desc = entry.buf.join(' ').trim();
+        if (desc === '') continue;
+        pushReq(extractInequalities(prep(desc), allowed).clauses);
+      }
+      if (secs.returnsText !== '') {
+        ensures.push(...extractInequalities(prep(secs.returnsText), { ...allowed, allowResult: true }).clauses);
+      }
+      for (const lineText of secs.scatter) {
+        pushReq(extractInequalities(prep(lineText), allowed).clauses);
+      }
+    }
+    entries.push({ name, line: i + 1, params, ret: mappedRet, requires, ensures, effects: [], taint: { return: false, params: [] } });
+    seenNames.add(name);
+    i = resumeLine;
+  }
+  // 注记按源行号升序(稳定排序,同行保持产生序)——与 TS 版口径一致。
+  notes.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  return { source: sourceName, entries, skipped, notes };
+}
+
 // ---------- .mingi 渲染(确定性) ----------
 
-export function renderMingi(fileResult) {
+// generator 文本由调用方给:TS 默认值逐字保持既有黄金;Python 侧传 --from py 变体
+// (解析器把头部其余 // 行当注释忽略,消费侧零改动)。
+export function renderMingi(fileResult, generator = '// generated by: ming bridge extract --from ts(MVP;格式规范见 docs/bridge-protocol.md)') {
   const out = [];
   out.push(`// mingi ${MINGI_VERSION}`);
   out.push(`// source: ${fileResult.source}`);
-  out.push('// generated by: ming bridge extract --from ts(MVP;格式规范见 docs/bridge-protocol.md)');
+  out.push(generator);
   for (const s of fileResult.skipped) out.push(`// skipped: ${s.name} (line ${s.line}): ${s.reason}`);
   // note = 函数保留、但某个桥接元数据标注被丢弃(R-18;与 skipped 区分,不误读为函数跳过)。
   for (const n of fileResult.notes ?? []) out.push(`// note: ${n.name} (line ${n.line}): ${n.reason}`);
@@ -517,7 +940,10 @@ export function parseMingi(text, displayName) {
       const params = [];
       let bad = null;
       if (fnM[2].trim() !== '') {
-        for (const piece of fnM[2].split(',')) {
+        // 参数切分括号感知(ADR-018 --from py 起,桩类型可含顶层逗号:Map[str,T] /
+        // Option[Map[str,T]] / 元组形态——naive split 会把嵌套逗号误切为参数位)。
+        // 无嵌套逗号的既有桩(TS 侧全形态)切分结果逐字不变。
+        for (const piece of splitTopLevel(fnM[2], ',')) {
           const pm = piece.trim().match(/^([A-Za-z_$][\w$]*):\s*(.+)$/);
           if (!pm) { bad = `无法解析参数 "${piece.trim()}"`; break; }
           params.push({ name: pm[1], type: pm[2].replace(/\s+/g, '') });
@@ -622,11 +1048,13 @@ export function collectStubFiles(target) {
   return out.sort((a, b) => (displayPath(a) < displayPath(b) ? -1 : displayPath(a) > displayPath(b) ? 1 : 0));
 }
 
-// 收集 TS 输入(extract 侧):单文件 → [{abs, source=basename}];目录 → 递归 .ts
-// (跳过隐藏项/node_modules,相对路径码元序;source 用 '/' 分隔的相对路径,
+// 收集提取输入(extract 侧):单文件 → [{abs, source=basename}];目录 → 递归收集指定
+// 扩展名(跳过隐藏项与 SKIP_DIRS,相对路径码元序;source 用 '/' 分隔的相对路径,
 // 输出目录内保留同一子目录结构——确定性且避免同名文件互相覆盖)。
 // 注意 .d.ts 同样以 .ts 结尾,按 TS 文件处理(声明文件是契约提取的理想输入)。
-function walkTs(dir, out) {
+// Python 侧(.py)额外跳过 venv/__pycache__:venv 内 site-packages 动辄数千 .py,
+// 误吸入会产出海量无意义桩(与 TS 跳 node_modules 同理;登记于 ADR-018 口径)。
+function walkFiles(dir, ext, out, extraSkip) {
   const entries = fs.readdirSync(dir, { withFileTypes: true })
     .slice()
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
@@ -634,13 +1062,15 @@ function walkTs(dir, out) {
     if (ent.name.startsWith('.')) continue;
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
-      if (SKIP_DIRS.has(ent.name)) continue;
-      walkTs(full, out);
-    } else if (ent.isFile() && ent.name.endsWith('.ts')) {
+      if (SKIP_DIRS.has(ent.name) || (extraSkip && extraSkip.has(ent.name))) continue;
+      walkFiles(full, ext, out, extraSkip);
+    } else if (ent.isFile() && ent.name.endsWith(ext)) {
       out.push(full);
     }
   }
 }
+
+const PY_SKIP_DIRS = new Set(['node_modules', 'venv', '__pycache__']);
 
 export function collectTsFiles(target) {
   const st = fs.statSync(target);
@@ -648,7 +1078,18 @@ export function collectTsFiles(target) {
     return [{ abs: target, source: path.basename(target) }];
   }
   const out = [];
-  walkTs(target, out);
+  walkFiles(target, '.ts', out, null);
+  const list = out.map((abs) => ({ abs, source: displayPath(path.relative(target, abs)) }));
+  return list.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
+}
+
+export function collectPyFiles(target) {
+  const st = fs.statSync(target);
+  if (st.isFile()) {
+    return [{ abs: target, source: path.basename(target) }];
+  }
+  const out = [];
+  walkFiles(target, '.py', out, PY_SKIP_DIRS);
   const list = out.map((abs) => ({ abs, source: displayPath(path.relative(target, abs)) }));
   return list.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
 }
