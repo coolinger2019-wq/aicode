@@ -2249,7 +2249,7 @@ ustuserlib\` 9bc7b27）：真实 Rust crate（4 抽取 fn + Result 诚实 skip �
 
 ## 4.29 P1 6.1 Ming Agent 原生协议执行登记（2026-11-28，维护者 standing workflow 视为点名；v1.8.0）
 
-> 两 agent 并发：A = src/lsp.js 四方法实现 + 规范文档 docs/agent-protocol.md + tests 分节 §122；B = 参考 Agent 客户端独立仓库 + Ming 仓库注册面文档（本节 + GUIDE §19/§24）。**登记口径：占位**——联调后由架构师回填终态（测试数字/客户端证据/版本定稿三处同步）。
+> 两 agent 并发：A = src/lsp.js 四方法实现 + 规范文档 docs/agent-protocol.md + tests 分节 §122；B = 参考 Agent 客户端独立仓库 + Ming 仓库注册面文档（本节 + GUIDE §19/§24）。**登记口径：已回填终态（架构师合并批，2026-11-28）**。- **终态**：§122 = 12 check；全量 **1939 项 0 失败**；fuzz seed 44044×40 0 分歧；proof_fuzz 200+40 0 误报；docs_check 18/18；版本六处咬合 v1.8.0（README 三语 + AGENTS §1/§3/§10 + GUIDE 头部）。- **独立复核 APPROVE-with-minor**：安全边界源码级实锤（五文件写面 grep 全零，全链纯读）；分帧双攻击实测不破（105KB 中文帧跨读重组/6 请求粘包全对）；wire 示例与实测逐字一致；同构性逐字段·逐字节证实（agent report ≡ --proof-report、smtLib ≡ --proof-format）；MAJOR-1（AGENTS §10 漏同步）与 MINOR-1/2（定位语义如实化/反例字符串防御性理由）已收口，NOTE-2（lsp serverInfo 0.4.0 硬编码，预存）登记候选。- **流程纪律增补（v1.8.0 教训）**：`git add` 显式列表漏列 bin/ming.js → 版本三处断言（v53.21/v70.10/v113.21）全平台失败、CI 11 job 红——**annotations 归因通道三连实锤数分钟定位**（v1.7.0 批基建首次实战验证）。提交前纪律：git add 后必须 `git status --porcelain` 核对 staged 集合 == 预期变更集（本节收口前已执行）。
 
 ### ADR-020 裁决要点（docs/adr-020-agent-protocol.md，架构师裁决 go，2026-11-28）
 
