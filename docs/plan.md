@@ -2247,6 +2247,38 @@ ustuserlib\` 9bc7b27）：真实 Rust crate（4 抽取 fn + Result 诚实 skip �
 - 每座桥的"首个外部消费者"均可按 ADR-017 三条件主动构建（先造桥、再造过桥的人）——桥 1 的消费者形态即上文路径 2。
 
 
+## 4.29 P1 6.1 Ming Agent 原生协议执行登记（2026-11-28，维护者 standing workflow 视为点名；v1.8.0）
+
+> 两 agent 并发：A = src/lsp.js 四方法实现 + 规范文档 docs/agent-protocol.md + tests 分节 §122；B = 参考 Agent 客户端独立仓库 + Ming 仓库注册面文档（本节 + GUIDE §19/§24）。**登记口径：占位**——联调后由架构师回填终态（测试数字/客户端证据/版本定稿三处同步）。
+
+### ADR-020 裁决要点（docs/adr-020-agent-protocol.md，架构师裁决 go，2026-11-28）
+
+- **传输**：既有 LSP stdio JSON-RPC（Content-Length 字节分帧 v0.58 口径），零新进程模型；方法命名空间 `ming/agent/*`（LSP 自定义方法标准形态）；既有 hover/completion/definition/documentSymbol/诊断推送逐字不动。
+- **四方法**：`queryTypeContext`（位置的类型/效果上下文；未知 → ok:false + 具名 reason，宁可少报不错报）、`getContractSummary`（契约摘要 + 证明状态，义务 id `vc:<fn>:<n>`，--proof-report 同源）、`submitCandidate`（候选本地文件路径 → 结构化检查结果 + 反例；**安全边界裁决核心 = 只读走既有 check 管线，不执行候选代码、不做网络、无新效果面，与 `ming check` 同权**）、`requestProofObligation`（原始义务工件 + SMT-LIB 2.0 同源，供外部求解器独立复核）。
+- **错误面与确定性**：一切失败 JSON-RPC error 或 `{ok:false, reason}` 具名，绝不静默；同请求同响应；协议面纯读，零新增 M 码，语言语义零变化。
+- **交付物对账 roadmap §6.1 三项**：①规范文档 docs/agent-protocol.md（A）；②参考 Agent 客户端 `C:\code\agent-client\`（B）；③演示完整修正循环 demo.py（B）。
+
+### 参考 Agent 客户端（agent B 交付，`C:\code\agent-client\` 独立 git 仓库）
+
+- **实现**：`agent_client.py`（`MingAgentClient` 类，Python ≥ 3.8 纯标准库，spawn `node <MING_HOME>/bin/ming.js lsp`；Content-Length **字节**分帧——发送侧 UTF-8 encode 取字节 len、接收侧字节缓冲切片后整体 decode，非 ASCII 消息体按字符计数会截断会话 = AGENTS §9 已知陷阱同款纪律；initialize/initialized/didOpen/didChange 生命周期握手；服务端通知可观测不吞；错误面 = 具名异常三族 `MingRpcError`/`MingConnectionError`/`MingTimeoutError`）+ `demo.py`（完整修正循环：提交含 off-by-one 越界候选 → M3045 结构化反例 → 函数体修正 → 再提交 → proven + getContractSummary 核对义务全 proven；候选文件走 tempfile 不落仓库；退出码 0 = 循环完成）+ README（协议消费说明/字节分帧要点/错误面表/三条件口径/证据运行记录/协议钉定状态表）。
+- **demo 语料实测钉定**：坏候选 = `requires i >= 0 && i == buf.len() - 1` + 函数体 `buf[i + 1]` → `M3045[index-bounds-violated]`（违反义务 `i + 1 < len$buf`，小值反例 `len$buf = 1, i = 0`）；修正版 `buf[i]` → 义务 `0 <= i && i < len$buf` proven。注意 `requires i >= 0` + `buf[i + 1]` 只有上界 unproven（M3045 要求 requires 可证蕴含违反，不误报 unproven 形态）——骨架期实测收敛出的口径。
+- **三条件口径（ADR-017 §4 同款句式；类属声明）**：本仓库消费对象 = **协议响应**（结构化 JSON），不是导出工件——与 pyuserlib/rustuserlib 等**工件消费者类属不同**，是 roadmap §6.1 自己的交付物定义，**不计入 ADR-017 消费者账本**（该账本 C3 要求"消费导出工件且运行期不 invoke ming 运行时"；本仓库运行时 spawn `ming lsp` 是协议交互本身，属 §6.1 交付物定义的应有之义）。对照：C1 独立仓库 ✓（不在 aicode 树内、无路径依赖、无 import Ming 源码）/ C2 客户端**代码**零 Ming 依赖 ✓（纯 Python 标准库；运行时 spawn 属协议交互，如实记录）/ C3 结构化消费 ✓（机器可读字段断言：`ok`/`pass`/`diagnostics[].code`/`proofs.summary.proven`/`counterexamples`，非人工解读 stdout）。诚实边界：团队自建参考客户端 ≠ 第三方采用，ADR-017 账本口径"第三方采用仍为 0"不改变。
+
+### 骨架期证据（联调前，2026-11-28）
+
+- `python agent_client.py --selftest`（agent-client 仓库）：传输/分帧/握手/通知通道全通（initialize OK serverInfo=ming-lsp v0.4.0；didOpen → publishDiagnostics 推送 M3045——语料正确性佐证）；四方法全部具名 `-32601 method not found`（MISS ×4）→ **exit 1（预期信号，客户端不吞错误——错误面纪律验证）**。
+- `python demo.py`：握手 + didOpen 推送 M3045 后在 `submitCandidate` 具名失败 exit 1（同预期）。
+
+### 联调后证据（2026-11-28，A 的 lsp 四方法 + docs/agent-protocol.md 落地后；客户端零改动通过）
+
+- **selftest exit 0**：四方法 LIVE ×4；字节分帧 OK（中文诊断往返 57 字符含中文=True）；**错误面具名探针 OK**（位置越界 → `ok:false reason="指定位置不落在任何类型化声明上(宁可不报)"`；fn 不存在 → `ok:false reason=具名`——ADR-020 §3 绝不静默的消费侧验证）。
+- **demo exit 0 三阶段**：坏候选 → `pass=false` + `M3045[index-bounds-violated]` + 义务 `vc:get_last:1 [violated] scope=body(反例: len$buf = 1, i = 0)` + 结构化反例 `counterexamples = [{obligationId: "vc:get_last:1", values: {"len$buf": "1", "i": "0"}}]` → 修正（`buf[i + 1]` → `buf[i]`）→ 再提交 `pass=true`/诊断清零/`proven=1` → `getContractSummary` 核对 `vc:get_last:1: proven`。
+- **四方法响应形态探针逐一对账规范**：queryTypeContext `{ok:true, type/fn=签名, effects=[], span 1-based}`；getContractSummary requires 切片 `"i >= 0 && i < buf.len()"`；requestProofObligation `report = {summary, functions, summaries}`（--proof-report --json 同构）+ `smtLib` QF_LIA 文本。客户端骨架钉定（`candidate` 参数名/0 起坐标/路径形态）与实现、规范逐项一致，零改动通过。
+- **中性目录重演**：整仓库拷 `C:\Users\COOLIN~1\AppData\Local\Temp\agent-client-neutral-cE6UVh\`（仓库树外）——selftest exit 0 + demo exit 0。C1 复核成立（仓库可整体迁移）；spawn 路径仍指 MING_HOME 的 ming.js（协议交互本身需要，不影响 C2 代码依赖口径）。
+- **联调窗口中间态注记**：曾探到 getContractSummary requires 切片缺 `i >= 0` 前缀（A 迭代中）；A 随后子句切片修订（以 requires/ensures 关键字起锚后剥关键字）已消除，终态实测逐项正确。
+- **剩余缺件（A 侧，联调时点）**：tests/run.mjs 分节 §122 与 docs_check 对 agent-protocol.md 的锚定尚未落盘——测试数字回填 GUIDE §24 v1.8.0 占位条目；版本定稿（三处同步 + README 三语 + AGENTS）归架构师。
+
+
 ## 5.1 已知缺陷(2026-11-11 code-review + 2026-11-13 三方评估 + 2026-11-14 第三/四轮,已逐项复核)
 
 > 来源:两个 code-reviewer 子智能体 + 主会话复现 + 2026-11-13 三方评估/安全审计。**状态:v0.50.1–v0.59.0 的已修复项逐行标注;#47/#51–#54 已于 v0.60.0 收口(资源门禁一致性:参数搬运计费/外部输入计费/--max-ms 钳制/test 旗标传播/tree 契约重入);#55–#57(P2)Backlog/随 v0.61。**`已验证` = 有可复现命令/输出;`源码确认` = 代码路径明确但未跑运行期。

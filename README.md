@@ -95,6 +95,7 @@ Windows 下也可以用 `bin\ming.cmd`。
 
 | 版本 | 日期 | 主题 | 测试 |
 |------|------|------|------|
+| v1.8.0 | 2026-11-28 | P1 6.1 = Ming Agent 原生协议(LSP 四方法 ming/agent/*:类型上下文/契约摘要+证明状态/候选提交结构化反例/义务工件导出;ADR-020 安全边界 = 只读候选路径走既有 check)+ 参考 agent-client 独立仓库(纯标准库客户端,demo 修正循环 M3045 反例→修正→proven) | 1939 |
 | v1.7.0 | 2026-11-28 | 桥 2 = Rust 契约桥(`ming bridge extract --from rust`:顶层 fn + /// doc 数学不等式,窄型同名忠实映射,isize/usize/f32 近似 note,Result·元组具名 skip;ADR-019)+ 第三个外部消费者 rustuserlib(真实 Rust crate 的 cargo test 对照签名基准,中性目录 4/4 exit 0) | 1927 |
 | v1.6.0 | 2026-11-28 | 桥 1 = Python 契约桥(`ming bridge extract --from py`:PEP 484 注解 + docstring 数学不等式行,八型映射,确定性输出;ADR-018)+ 第二个外部消费者 pyuserlib(ADR-017 路径 2:独立仓库纯标准库核对 .mingi 桩,中性目录 4/4 exit 0)+ M3053 hint 对端中性化 | 1909 |
 | v1.5.1 | 2026-11-28 | 首个外部消费者落地(ming-proof-consumer 独立仓库:独立证明复核器,三形态工件中性目录证据运行 exit 0)+ ADR-017 外部消费者三条件钉死(P1 准入达成;诚实边界:自建桥head ≠ 第三方采用)+ docs_check AGENTS 头部锚定 | docs_check 17 |
@@ -289,8 +290,8 @@ ADR 索引:ADR-001 serve · ADR-002 污点 · ADR-004 Untrusted[Json] · ADR-005
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v1.7.0**(2026-11-28) |
-| 回归测试 | **1927 项全绿**(§1–§121;每次全量运行) |
+| 当前版本 | **v1.8.0**(2026-11-28) |
+| 回归测试 | **1939 项全绿**(§1–§122;每次全量运行) |
 | 差分模糊 | fuzz 三种子(44044/777/20261)×40——0 分歧;proof_fuzz 100 例 0 误报 |
 | 覆盖率 | **95.1% 行 / 90.9% 函数**(v0.96 复测 2026-11-20;16 文件含 opt.js 99.3%/100%;vm.js 函数 76.6%) |
 | 自举工具 | **18 个**(Ming 自写;`ming tools` 统一入口) |

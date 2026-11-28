@@ -23,7 +23,7 @@
 // 组布局(4 组,覆盖全部分节;组内顺序 = 文件顺序;定稿依据 = 串行基线逐节耗时 LPT 均衡 269.4–269.5s/组 + 依赖审计):
 //   组0(端口组):10 17 18 23 26 33 35 37 42 43 44 45 51 52 54 56 60 65 66 68 72 73 74 77 79 88 89 93 95 96 99 106 107 108 119
 //   组1(§5 载体):3 5 9 12 13 15 19 20 24 36 47 53 70 84 85 92
-//   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 63 69 71 75 78 86 90 98 101 105 109 110
+//   组2(§1+§6 同组):1 2 4 6 8 16 22 25 28 30 34 36b 37b 38b 39 50 58 59 62 122 63 69 71 75 78 86 90 98 101 105 109 110
 //   组3:7 11 14 21 27 29 31 32 38 34b 35b 40 41 46 48 49 55 57 61 64 67 76 87 91 94 97 100 103 104 111 112 113 114 115 116 117 118 120 121
 // 依赖审计结论(分组依据,详见报告):
 //   1) 标识符跨节依赖唯一:§1 GOLDEN → §6 使用,必须同组(本布局组2)。
@@ -197,8 +197,8 @@ if (PAR_DRY || PARALLEL) {
     ['10', '17', '18', '23', '26', '33', '35', '37', '42', '43', '44', '45', '51', '52', '54', '56', '60', '65', '66', '68', '72', '73', '74', '77', '79', '88', '89', '93', '95', '96', '99', '106', '107', '108', '119'],
     // 组1 = §5(fmt,250.7s 串行最大节)独占载体 + 小节填充;基线 269.5s
     ['3', '5', '9', '12', '13', '15', '19', '20', '24', '36', '47', '53', '70', '84', '85', '92'],
-    // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;基线 269.4s
-    ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
+    // 组2 = §1+§6 同组(GOLDEN 常量依赖)+ 均衡填充;§122 与 LSP 先例 §62 同组(就近,无端口);基线 269.4s
+    ['1', '2', '4', '6', '8', '16', '22', '25', '28', '30', '34', '36b', '37b', '38b', '39', '50', '58', '59', '62', '122', '63', '69', '71', '75', '78', '86', '90', '98', '101', '105', '109', '110'],
     // 组3 = 均衡填充(契约桥 §114/§120/§121 同组,无端口);基线 269.4s
     ['7', '11', '14', '21', '27', '29', '31', '32', '38', '34b', '35b', '40', '41', '46', '48', '49', '55', '57', '61', '64', '67', '76', '87', '91', '94', '97', '100', '103', '104', '111', '112', '113', '114', '115', '116', '117', '118', '120', '121'],
   ];
@@ -32404,6 +32404,251 @@ secBegin('121');
     `code=${r121gr.code} noEnsures=${!grText121.includes('ensures ')}`);
 }
 // ---- §121-END
+
+// ===================== 122. v1.8:Agent 原生协议四方法(ADR-020,roadmap §6.1)=====================
+secBegin('122');
+{
+  // 覆盖:queryTypeContext(fn 内 type/fn/effects/span · 契约行/顶层声明 fn:null·effects:[] ·
+  //        use 行/越界/文件不存在/语法错误 ok:false 具名)/getContractSummary(proven|violated|
+  //        unproven 三态 + id `vc:<fn>:<n>` 稳定语法 + counterexample 透传 + requires/ensures 子句文
+  //        + fn 过滤与不存在)/submitCandidate(坏候选 pass:false + M3045 诊断对象(--json 同形)+
+  //        结构化反例值;好候选 pass:true 零诊断;不存在路径 ok:false 具名 = 安全边界锚;响应键
+  //        只有检查结论(无可执行内容);语法错误候选 diagnostics 权威 + proofs 如实为空)/
+  //        requestProofObligation(report.summary --proof-report 同构计数 + obligation/index 文本 +
+  //        smtLib (set-logic QF_LIA) + fn 过滤三数据源同滤)/确定性双跑逐字节/协议会话 dispatch
+  //        (四方法端到端 + 参数缺失 ok:false + 未知 ming/agent 方法 -32601 + 既有 hover/诊断推送
+  //        回归锚 + exit 0)。
+  // 规范:docs/agent-protocol.md;裁决:docs/adr-020-agent-protocol.md;实现:src/lsp.js
+  //        (agentQueryTypeContext/agentContractSummary/agentSubmitCandidate/agentProofObligation
+  //        直连,§62 同款手法;数据源 --json/--proof-report/--proof-format smt-lib 同源;
+  //        既有 LSP 零回归锚 = §62 既有套件 + 本节 v122.12 会话锚)。
+  const dir122 = path.join(TMP, 'v122');
+  fs.mkdirSync(dir122, { recursive: true });
+  const mk122 = (name, src) => { const f = path.join(dir122, name); fs.writeFileSync(f, src.endsWith('\n') ? src : src + '\n', 'utf8'); return f; };
+
+  // ---- 语料:types.ming(类型上下文)/ contract.ming(三态义务 + 坏候选)/ clean.ming(好候选)/ broken.ming ----
+  const types122 = mk122('types.ming', [
+    'use std.math;',
+    'struct Point { x: i64, y: i64, }',
+    'fn dist(p: Point) -> i64 with io {',
+    '  return p.x + p.y;',
+    '}',
+    'const TOP: i64 = 5;',
+    'fn main() with io { print(str(dist(Point { x: 1, y: 2 }))); }',
+  ].join('\n'));
+  const contract122 = mk122('contract.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn f(buf: Vec[i64], n: i64) -> i64 requires n == buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn loose(buf: Vec[i64], n: i64) -> i64 requires n <= buf.len() {',
+    '    return buf[n];',
+    '}',
+    'fn calc(a: i64) -> i64 requires a > 0 ensures result == a + 1 {',
+    '    return a + 1;',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1)) + str(f([1, 2], 2)) + str(loose([1, 2], 0)) + str(calc(3))); }',
+  ].join('\n'));
+  const clean122 = mk122('clean.ming', [
+    'fn get(buf: Vec[i64], i: i64) -> i64 requires i >= 0 && i < buf.len() {',
+    '    return buf[i];',
+    '}',
+    'fn main() with io { print(str(get([1, 2], 1))); }',
+  ].join('\n'));
+  const broken122 = mk122('broken.ming', 'fn main() with io { let = 1; }');
+  const lsp122 = await import('../src/lsp.js');
+
+  // ---- v122.1:queryTypeContext fn 体内 —— type/fn/effects/span(hover 同款渲染;with io 进 effects) ----
+  {
+    const q = await lsp122.agentQueryTypeContext(types122, 3, 4);
+    check('v122.1:agent_queryTypeContext_fn_body —— dist 体内 → type/fn = `fn dist(p: Point) -> i64 with io`、effects ["io"]、span 1-based 命中声明',
+      q.ok === true && q.type === 'fn dist(p: Point) -> i64 with io' && q.fn === q.type
+      && JSON.stringify(q.effects) === JSON.stringify(['io'])
+      && JSON.stringify(q.span) === JSON.stringify({ line: 3, col: 1, endLine: 5, endCol: 2 }),
+      `q=${JSON.stringify(q)}`);
+  }
+
+  // ---- v122.2:queryTypeContext 契约行/顶层声明 —— 所在 fn 与 effects;顶层 const → fn:null·effects:[] ----
+  {
+    const qReq = await lsp122.agentQueryTypeContext(contract122, 9, 30); // calc 的 requires 行(0 起)
+    const qTop = await lsp122.agentQueryTypeContext(types122, 5, 6); // const TOP 上
+    check('v122.2:agent_queryTypeContext_contract_line_and_top —— requires 行 → 所在 fn calc(签名渲染无契约文,如实);顶层 const → ok:true·fn:null·effects:[]',
+      qReq.ok === true && qReq.fn === 'fn calc(a: i64) -> i64' && JSON.stringify(qReq.effects) === JSON.stringify([])
+      && qTop.ok === true && qTop.type === 'const TOP: i64' && qTop.fn === null
+      && JSON.stringify(qTop.effects) === JSON.stringify([]),
+      `req=${JSON.stringify(qReq)} top=${JSON.stringify(qTop)}`);
+  }
+
+  // ---- v122.3:queryTypeContext 失败面 —— use 行/越界/文件不存在/语法错误,全部 ok:false 具名 ----
+  {
+    const qUse = await lsp122.agentQueryTypeContext(types122, 0, 2);
+    const qOob = await lsp122.agentQueryTypeContext(types122, 99, 0);
+    const qMiss = await lsp122.agentQueryTypeContext(path.join(dir122, 'ghost.ming'), 0, 0);
+    const qSyn = await lsp122.agentQueryTypeContext(broken122, 0, 4);
+    check('v122.3:agent_queryTypeContext_failures —— use 行/越界行 → 不落在类型化声明上;不存在 → 文件不存在;语法错误 → 无法定位类型上下文(全部 ok:false 具名,绝不静默)',
+      qUse.ok === false && qUse.reason.includes('不落在任何类型化声明上')
+      && qOob.ok === false && qOob.reason.includes('不落在任何类型化声明上')
+      && qMiss.ok === false && qMiss.reason.startsWith('文件不存在')
+      && qSyn.ok === false && qSyn.reason.startsWith('文件存在语法错误'),
+      `use=${JSON.stringify(qUse)} oob=${JSON.stringify(qOob)} miss=${JSON.stringify(qMiss)} syn=${JSON.stringify(qSyn)}`);
+  }
+
+  // ---- v122.4:getContractSummary 全函数 —— 声明序 + 三态 kind + id 稳定语法 + counterexample 透传 + 子句文 ----
+  {
+    const s = await lsp122.agentContractSummary(contract122);
+    const by = (n) => s.functions.find((f) => f.name === n);
+    check('v122.4:agent_getContractSummary_all —— functions 声明序 [get,f,loose,calc,main];get proven(vc:get:1·scope body);f violated(反例 len$buf = 0, n = 0);loose unproven(无 counterexample 键);calc requires/ensures 子句文(剥关键字)且无义务',
+      s.ok === true
+      && JSON.stringify(s.functions.map((f) => f.name)) === JSON.stringify(['get', 'f', 'loose', 'calc', 'main'])
+      && JSON.stringify(by('get').obligations) === JSON.stringify([{ id: 'vc:get:1', kind: 'proven', scope: 'body' }])
+      && by('f').obligations[0].id === 'vc:f:1' && by('f').obligations[0].kind === 'violated'
+      && by('f').obligations[0].counterexample === 'len$buf = 0, n = 0'
+      && by('loose').obligations[0].kind === 'unproven' && !('counterexample' in by('loose').obligations[0])
+      && JSON.stringify(by('calc').requires) === JSON.stringify(['a > 0'])
+      && JSON.stringify(by('calc').ensures) === JSON.stringify(['result == a + 1'])
+      && by('calc').obligations.length === 0
+      && JSON.stringify(by('get').requires) === JSON.stringify(['i >= 0 && i < buf.len()']),
+      `s=${JSON.stringify(s)}`);
+  }
+
+  // ---- v122.5:getContractSummary fn 过滤 —— 命中单函数;不存在 → ok:false 具名 ----
+  {
+    const s1 = await lsp122.agentContractSummary(contract122, 'calc');
+    const s2 = await lsp122.agentContractSummary(contract122, 'nosuch');
+    check('v122.5:agent_getContractSummary_fn_filter —— fn:"calc" → 单函数;fn:"nosuch" → ok:false 函数不存在',
+      s1.ok === true && s1.functions.length === 1 && s1.functions[0].name === 'calc'
+      && s2.ok === false && s2.reason === '函数 "nosuch" 不存在于该文件',
+      `s1=${JSON.stringify(s1)} s2=${JSON.stringify(s2)}`);
+  }
+
+  // ---- v122.6:submitCandidate 坏候选 —— pass:false + M3045(--json 诊断对象同形)+ 结构化反例值 ----
+  {
+    const c = await lsp122.agentSubmitCandidate(contract122);
+    const d3045 = (c.diagnostics ?? []).find((d) => d.code === 'M3045');
+    check('v122.6:agent_submitCandidate_bad —— pass:false;M3045 诊断对象含 name/severity/file/1-based 行列/hint(--json 同形);counterexamples [{obligationId:"vc:f:1", values:{len$buf:"0", n:"0"}}](值 = 十进制字符串)',
+      c.ok === true && c.pass === false && !!d3045
+      && d3045.name === 'index-bounds-violated' && d3045.severity === 'error'
+      && d3045.file === contract122 && typeof d3045.line === 'number' && d3045.line === 5
+      && typeof d3045.hint === 'string' && d3045.hint.includes('M4003')
+      && JSON.stringify(c.counterexamples) === JSON.stringify([{ obligationId: 'vc:f:1', values: { 'len$buf': '0', 'n': '0' } }]),
+      `c=${JSON.stringify({ ok: c.ok, pass: c.pass, diags: c.diagnostics, cex: c.counterexamples })}`);
+  }
+
+  // ---- v122.7:submitCandidate 好候选 + 安全边界锚 —— 不存在路径 ok:false 具名;响应键只有检查结论 ----
+  {
+    const good = await lsp122.agentSubmitCandidate(clean122);
+    const ghost = await lsp122.agentSubmitCandidate(path.join(dir122, 'ghost.ming'));
+    check('v122.7:agent_submitCandidate_good_and_boundary —— 好候选 pass:true·零诊断·counterexamples []·summary {1,1,1,0,0};响应键恰 [ok,pass,diagnostics,proofs,counterexamples](无可执行内容);不存在路径 ok:false 文件不存在',
+      good.ok === true && good.pass === true && good.diagnostics.length === 0 && good.counterexamples.length === 0
+      && JSON.stringify(good.proofs.summary) === JSON.stringify({ functions: 1, obligations: 1, proven: 1, violated: 0, unproven: 0 })
+      && JSON.stringify(Object.keys(good)) === JSON.stringify(['ok', 'pass', 'diagnostics', 'proofs', 'counterexamples'])
+      && ghost.ok === false && ghost.reason.startsWith('文件不存在'),
+      `good=${JSON.stringify(good)} ghost=${JSON.stringify(ghost)}`);
+  }
+
+  // ---- v122.8:submitCandidate 语法错误候选 —— diagnostics 权威,proofs 如实为空(照跑管线) ----
+  {
+    const c = await lsp122.agentSubmitCandidate(broken122);
+    check('v122.8:agent_submitCandidate_syntax_error —— pass:false;diagnostics ≥1 且 M 码;proofs.functions []·summary.obligations 0(可解析部分如实)',
+      c.ok === true && c.pass === false && c.diagnostics.length >= 1
+      && String(c.diagnostics[0].code).startsWith('M')
+      && c.proofs.functions.length === 0 && c.proofs.summary.obligations === 0,
+      `c=${JSON.stringify(c)}`);
+  }
+
+  // ---- v122.9:requestProofObligation —— report --proof-report 同构(summary 计数/obligation 文本/index)+ smtLib 锚 ----
+  {
+    const p = await lsp122.agentProofObligation(contract122);
+    const recF = (p.report?.functions ?? []).find((r) => r.fn === 'f');
+    check('v122.9:agent_requestProofObligation —— report 键 [summary,functions,summaries];summary {3,3,1,1,1};f 记录 total/violated/obligation "n < len$buf"/index "n"/counterexample 透传;smtLib 含 (set-logic QF_LIA)·vc:f:1·(check-sat)',
+      p.ok === true
+      && JSON.stringify(Object.keys(p.report)) === JSON.stringify(['summary', 'functions', 'summaries'])
+      && JSON.stringify(p.report.summary) === JSON.stringify({ functions: 3, obligations: 3, proven: 1, violated: 1, unproven: 1 })
+      && recF && recF.total === 1 && recF.violated === 1 && recF.obligations[0].kind === 'violated'
+      && recF.obligations[0].obligation === 'n < len$buf' && recF.obligations[0].index === 'n'
+      && recF.obligations[0].counterexample === 'len$buf = 0, n = 0'
+      && p.smtLib.startsWith('(set-logic QF_LIA)') && p.smtLib.includes('; ---- vc:f:1') && p.smtLib.includes('(check-sat)'),
+      `p=${JSON.stringify({ ok: p.ok, summary: p.report?.summary, f: recF, smtHead: p.smtLib?.slice(0, 60) })}`);
+  }
+
+  // ---- v122.10:requestProofObligation fn 过滤 —— functions/summaries/smt 三数据源同滤,summary 为子集统计 ----
+  {
+    const p = await lsp122.agentProofObligation(contract122, 'get');
+    const p2 = await lsp122.agentProofObligation(contract122, 'nosuch');
+    check('v122.10:agent_requestProofObligation_fn_filter —— fn:"get" → functions 全为 get·summary.functions 1·smtLib 含 vc:get:1 不含 vc:f:1;fn:"nosuch" → ok:false 函数不存在',
+      p.ok === true && p.report.functions.every((r) => r.fn === 'get') && p.report.functions.length === 1
+      && p.report.summary.functions === 1
+      && p.smtLib.includes('; ---- vc:get:1') && !p.smtLib.includes('vc:f:1')
+      && p2.ok === false && p2.reason === '函数 "nosuch" 不存在于该文件',
+      `p=${JSON.stringify({ ok: p.ok, fns: p.report?.functions?.length, sum: p.report?.summary })} p2=${JSON.stringify(p2)}`);
+  }
+
+  // ---- v122.11:确定性 —— 同请求双跑逐字节相等(无时间/随机) ----
+  {
+    const [s1, s2] = [await lsp122.agentContractSummary(contract122), await lsp122.agentContractSummary(contract122)];
+    const [p1, p2] = [await lsp122.agentProofObligation(contract122), await lsp122.agentProofObligation(contract122)];
+    const [c1, c2] = [await lsp122.agentSubmitCandidate(contract122), await lsp122.agentSubmitCandidate(contract122)];
+    check('v122.11:agent_determinism —— getContractSummary/requestProofObligation/submitCandidate 双跑 JSON 逐字节相等',
+      JSON.stringify(s1) === JSON.stringify(s2) && JSON.stringify(p1) === JSON.stringify(p2) && JSON.stringify(c1) === JSON.stringify(c2),
+      `same=${JSON.stringify(s1) === JSON.stringify(s2)} ${JSON.stringify(p1) === JSON.stringify(p2)} ${JSON.stringify(c1) === JSON.stringify(c2)}`);
+  }
+
+  // ---- v122.12:协议会话 dispatch 端到端 + 既有 LSP 回归锚(hover/诊断推送)----
+  {
+    const frame122 = (m) => { const b = JSON.stringify(m); return `Content-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`; };
+    const parse122 = (out) => {
+      const responses = [];
+      let buf = Buffer.from(out, 'utf8');
+      for (;;) {
+        const sep = buf.indexOf('\r\n\r\n');
+        if (sep === -1) break;
+        const head = buf.slice(0, sep).toString('utf8');
+        const m = head.match(/Content-Length:\s*(\d+)/i);
+        if (!m) { buf = buf.slice(sep + 4); continue; }
+        const len = Number(m[1]);
+        if (buf.length < sep + 4 + len) break;
+        try { responses.push(JSON.parse(buf.slice(sep + 4, sep + 4 + len).toString('utf8'))); } catch { /* 坏体不计数 */ }
+        buf = buf.slice(sep + 4 + len);
+      }
+      return responses;
+    };
+    const uri122 = 'file:///' + contract122.split(path.sep).join('/');
+    const src122 = fs.readFileSync(contract122, 'utf8');
+    const msgs122 = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', method: 'textDocument/didOpen', params: { textDocument: { uri: uri122, languageId: 'ming', version: 1, text: src122 } } },
+      { jsonrpc: '2.0', id: 2, method: 'textDocument/hover', params: { textDocument: { uri: uri122 }, position: { line: 3, character: 5 } } },
+      { jsonrpc: '2.0', id: 3, method: 'ming/agent/queryTypeContext', params: { file: contract122, line: 3, col: 5 } },
+      { jsonrpc: '2.0', id: 4, method: 'ming/agent/getContractSummary', params: { file: contract122 } },
+      { jsonrpc: '2.0', id: 5, method: 'ming/agent/submitCandidate', params: { candidate: path.join(dir122, 'ghost.ming') } },
+      { jsonrpc: '2.0', id: 6, method: 'ming/agent/requestProofObligation', params: { file: contract122 } },
+      { jsonrpc: '2.0', id: 7, method: 'ming/agent/queryTypeContext', params: { file: contract122 } },
+      { jsonrpc: '2.0', id: 8, method: 'ming/agent/nonexistent', params: {} },
+      { jsonrpc: '2.0', id: 9, method: 'shutdown', params: null },
+      { jsonrpc: '2.0', method: 'exit', params: null },
+    ];
+    const r = runMing(['lsp'], { stdin: msgs122.map(frame122).join('') });
+    const rs = parse122(r.stdout);
+    const byId = (i) => rs.find((x) => x.id === i);
+    const diag122 = rs.find((x) => x.method === 'textDocument/publishDiagnostics');
+    const qtc = byId(3)?.result;
+    const gcs = byId(4)?.result;
+    const rpo = byId(6)?.result;
+    check('v122.12:agent_session_dispatch —— 四方法经 stdio JSON-RPC 端到端(queryTypeContext ok:true·getContractSummary functions[0]=get·submitCandidate ghost ok:false 文件不存在·requestProofObligation smtLib 起 (set-logic QF_LIA));参数缺失 ok:false 具名;未知 ming/agent 方法 -32601;既有 hover 非空 + 诊断推送含 M3045(回归锚);exit 0',
+      r.code === 0
+      && (byId(2)?.result?.contents?.value ?? '').includes('fn f(buf: Vec[i64], n: i64)')
+      && qtc?.ok === true && (qtc.fn ?? '').includes('fn f(buf: Vec[i64], n: i64)')
+      && gcs?.ok === true && gcs.functions?.[0]?.name === 'get'
+      && byId(5)?.result?.ok === false && byId(5)?.result?.reason.startsWith('文件不存在')
+      && (rpo?.smtLib ?? '').startsWith('(set-logic QF_LIA)')
+      && byId(7)?.result?.ok === false && (byId(7)?.result?.reason ?? '').includes('line')
+      && byId(8)?.error?.code === -32601
+      && Array.isArray(diag122?.params?.diagnostics) && diag122.params.diagnostics.some((d) => d.code === 'M3045'),
+      `code=${r.code} ids=${JSON.stringify(rs.map((x) => x.id))} qtc=${JSON.stringify(qtc)} err8=${JSON.stringify(byId(8)?.error)}`);
+  }
+}
 
 secEndAll();
 // T2.4 并行:子进程末尾补发末节 @@SEC 与总计行(编排器聚合依据;串行模式 PAR_CHILD=false 零输出)。

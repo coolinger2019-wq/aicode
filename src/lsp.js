@@ -9,12 +9,19 @@
 // use 行是错补)——只给 std.X 全名(STD_MODULES)与本地同目录 .ming 模块名(checker.load
 // 同口径;目录不可枚举 → 仅 std 面)。本地模块成员补全与跨文件解析 machinery 沿用
 // v0.58(parseModuleFile/useImportsOf),不另起炉灶;既有单文件补全路径逐字未动(§85 锚)。
+// v1.8(ADR-020,roadmap §6.1):Agent 原生协议四方法(ming/agent/*)——queryTypeContext /
+// getContractSummary / submitCandidate / requestProofObligation。schema 钉死见
+// docs/agent-protocol.md;纪律(ADR-020 §3):一切失败 ok:false + 具名 reason 绝不静默,
+// 纯读 + 既有 check 管线,零新增 M 码,语言语义零变化,确定性 = 同请求同响应。
+// 既有 hover/completion/definition/documentSymbol/诊断推送路径逐字未动(§62 锚)。
 
 import * as nodeFs from 'node:fs';
 import * as nodePath from 'node:path';
 import { Checker, STD_MODULES, BUILTIN_FNS, PRELUDE_VARIANTS } from './checker.js';
 import { KEYWORDS } from './lexer.js';
 import { parse, attachDocs } from './parser.js';
+import { diagJson, MingError } from './diag.js';
+import { renderProofScript } from './proofsmt.js';
 
 function sigType(t) {
   switch (t?.nt) {
@@ -820,6 +827,304 @@ function documentSymbolsFor(file, src) {
   return syms;
 }
 
+// ===================== v1.8(ADR-020):Agent 原生协议(ming/agent/*)====================
+// 面向 AI 代理的结构化消费面:类型上下文定位 / 契约摘要 / 候选提交(只读检查)/ 证明义务原始工件。
+// 数据源单一事实(与 CLI 旗标同源,不另起炉灶):
+//   - 诊断对象 = src/diag.js diagJson(--json 协议同形:{code,name,severity,message,file,line,col,endLine,endCol,…});
+//   - 义务记录 = checker.proofRecords(--proof-report 同源);义务 id 语法 `vc:<fn>:<n>`
+//     (n = 采集序 1 起)与 bin/ming.js collectProofs 的 proof_obligation_id 同一口径;
+//   - SMT-LIB 文本 = src/proofsmt.js renderProofScript(--proof-format smt-lib 同源,进程内直调,不 spawn)。
+// 磁盘口径:四方法一律读盘(编辑器缓冲区不参与)——与 `ming check` 同权,确定性最简形态;
+// 活缓冲诊断走既有 didOpen/publishDiagnostics 通道。安全边界(ADR-020 §2):协议只触发
+// "读该文件并走既有 check 管线"——不执行候选代码,不做网络,无写盘,无新效果面。
+
+// ---- 共用:读盘 / 校验 / 源文切片 ----
+
+function agentReadSrc(p) {
+  try {
+    return { ok: true, src: nodeFs.readFileSync(p, 'utf8') };
+  } catch (e) {
+    const reason = e?.code === 'ENOENT' ? `文件不存在: ${p}` : `无法读取文件 "${p}": ${e.message ?? e}`;
+    return { ok: false, reason };
+  }
+}
+
+// 入口文件用调用方读到的 src(读检同源,消除双读漂移);其 use 导入照常读盘。
+function agentChecker(file, src) {
+  const normFile = nodePath.normalize(nodePath.resolve(file));
+  const readFile = (p) => (nodePath.normalize(nodePath.resolve(p)) === normFile ? src : nodeFs.readFileSync(p, 'utf8'));
+  return new Checker(file, readFile);
+}
+
+// checker.run() 统一入口:MingError(模块不可读等)→ 具名 ok:false;其他内部错误上抛
+// (dispatch 层转 JSON-RPC -32603 具名)。
+function agentRunChecker(file, src) {
+  try {
+    return { ok: true, result: agentChecker(file, src).run() };
+  } catch (e) {
+    if (e instanceof MingError) {
+      return { ok: false, reason: `检查管线失败:${e.diags?.[0]?.message ?? e.message}` };
+    }
+    throw e;
+  }
+}
+
+// 方法参数校验:specs = [名, 形态];形态 'string'(必填非空串)/'optString'(可空缺,给则非空串,
+// null 视为缺省)/'index'(非负整数,LSP 坐标 0 起)。返回具名错误串或 null。
+function agentValidateParams(p, specs) {
+  for (const [name, kind] of specs) {
+    const v = p[name];
+    if (kind === 'string') {
+      if (typeof v !== 'string' || v.length === 0) return `缺少必填参数 "${name}"(非空字符串)`;
+    } else if (kind === 'optString') {
+      if (v === undefined || v === null) continue;
+      if (typeof v !== 'string' || v.length === 0) return `参数 "${name}" 必须是非空字符串(缺省 = 全函数)`;
+    } else {
+      if (!Number.isInteger(v) || v < 0) return `参数 "${name}" 必须是非负整数(LSP 坐标,0 起)`;
+    }
+  }
+  return null;
+}
+
+// 源文按 1-based Ming span 切片(多行 span 跨行拼接;行尾 \r 剥除)。
+function srcText(src, span) {
+  if (!span) return null;
+  const lines = src.split('\n');
+  if (span.line === span.endLine) {
+    const l = (lines[span.line - 1] ?? '').replace(/\r$/, '');
+    return l.slice(Math.max(0, span.col - 1), Math.max(0, span.endCol - 1));
+  }
+  const parts = [];
+  for (let ln = span.line; ln <= span.endLine; ln++) {
+    const l = (lines[ln - 1] ?? '').replace(/\r$/, '');
+    if (ln === span.line) parts.push(l.slice(Math.max(0, span.col - 1)));
+    else if (ln === span.endLine) parts.push(l.slice(0, Math.max(0, span.endCol - 1)));
+    else parts.push(l);
+  }
+  return parts.join('\n');
+}
+
+function spanArea(span) {
+  return (span.endLine - span.line) * 4096 + (span.endCol - span.col);
+}
+
+// 契约子句源文:子句 span 以 requires/ensures 关键字起锚(spanFrom(关键字 token)),切片后剥掉
+// 前导关键字;其余(表达式与可选的 else "消息"后缀)逐字保留。不使用 expr.span——Binary 节点
+// span 从运算符起锚是解析器既有口径(如 `i >= 0 && i < buf.len()` 的顶层 span 起于 &&),
+// 用它会截掉最左操作数。
+function agentClauseText(src, clause, kw) {
+  const t = srcText(src, clause.span) ?? '';
+  return t.replace(new RegExp('^' + kw + '\\b\\s*'), '');
+}
+
+// ---- ming/agent/queryTypeContext(file, line, col) ----
+// 定位 = hover 同款(collectHoverables + posInSpan);多处命中取最小 span(内层优先——比
+// hover 的首个命中更精确:字段位置报字段签名而非外层结构体)。fn/effects = 所在 fn 的
+// 签名与 with 声明(体内位置:局部 fn 体内 → fn = 该局部 fn、type = 外层声明;
+// impl 方法体内与 test 块内 → ok:false——collectHoverables 不收 impl,与 hover 同款(扩收取候选);
+// 签名/契约行位置回退到模块级 fn 的最小包含 span)。找不到类型化声明 → ok:false 具名(宁可少报)。
+// 位置越界(行超出文件)在定位里自然落空,与"不落在声明上"同因具名。
+
+function agentContainingFn(program, line0, col0) {
+  const { fnLike } = collectLocals(program, line0, col0); // 体内位置:内层 fnLike(impl 方法/局部 fn/test)
+  if (fnLike) return fnLike.nt === 'FnDecl' ? fnLike : null; // test 块内无 fn 签名可报(如实 → fn:null)
+  let best = null; // 签名/契约行位置:模块级 fn / impl 方法的最小包含 span
+  const consider = (d) => {
+    if (!d || d.nt !== 'FnDecl' || !d.span) return;
+    if (!posInSpan(d.span, line0, col0)) return;
+    const size = spanArea(d.span);
+    if (!best || size < best.size) best = { d, size };
+  };
+  for (const it of program.items) {
+    if (it.nt === 'FnDecl') consider(it);
+    else if (it.nt === 'ImplDecl') for (const m of it.methods ?? []) consider(m);
+  }
+  return best?.d ?? null;
+}
+
+function agentQueryTypeContext(file, line0, col0) {
+  const r = agentReadSrc(file);
+  if (!r.ok) return r;
+  const { program, diags } = parse(file, r.src);
+  if (diags.length) return { ok: false, reason: `文件存在语法错误,无法定位类型上下文:${diags[0].message}` };
+  const items = collectHoverables(file, r.src);
+  let hit = null;
+  for (const it of items) {
+    if (!posInSpan(it.span, line0, col0)) continue;
+    if (!hit || spanArea(it.span) < spanArea(hit.span)) hit = it;
+  }
+  if (!hit) return { ok: false, reason: '指定位置不落在任何类型化声明上(宁可不报)' };
+  const fnLike = agentContainingFn(program, line0, col0);
+  return {
+    ok: true,
+    type: hit.sig,
+    effects: fnLike?.effects?.map((e) => e.name) ?? [],
+    fn: fnLike ? itemSignature(fnLike) : null,
+    span: { line: hit.span.line, col: hit.span.col, endLine: hit.span.endLine, endCol: hit.span.endCol },
+  };
+}
+
+// ---- 契约函数列表(getContractSummary 与 submitCandidate.proofs 共用) ----
+// 入口文件的顶层 fn(声明序);义务记录按 abs 匹配入口模块(--proof-report 同源;义务
+// id `vc:<fn>:<n>` 与 collectProofs 的 proof_obligation_id 同口径)。requires/ensures =
+// 子句源文切片剥关键字(至多一条:语法上可重复但后者覆盖;else "消息"后缀逐字保留)。
+// fn 过滤名不存在 → null(上层具名)。
+
+function agentContractFunctions(file, src, program, result, fnFilter) {
+  if (fnFilter !== null) {
+    const names = new Set(program.items.filter((it) => it.nt === 'FnDecl').map((it) => it.name));
+    if (!names.has(fnFilter)) return null;
+  }
+  const entryAbs = nodePath.normalize(nodePath.resolve(file));
+  const recByFn = new Map();
+  for (const rec of result?.proofs ?? []) {
+    if (nodePath.normalize(nodePath.resolve(rec.abs ?? rec.file)) !== entryAbs) continue;
+    if (!recByFn.has(rec.fn)) recByFn.set(rec.fn, rec);
+  }
+  const out = [];
+  for (const it of program.items) {
+    if (it.nt !== 'FnDecl') continue;
+    if (fnFilter !== null && it.name !== fnFilter) continue;
+    const rec = recByFn.get(it.name) ?? null;
+    const obligations = (rec?.obligations ?? []).map((o, i) => {
+      const ob = { id: `vc:${it.name}:${i + 1}`, kind: o.kind, scope: o.scope ?? 'body' };
+      if (o.counterexample) ob.counterexample = o.counterexample;
+      return ob;
+    });
+    out.push({
+      name: it.name,
+      requires: it.requires ? [agentClauseText(src, it.requires, 'requires')] : [],
+      ensures: it.ensures ? [agentClauseText(src, it.ensures, 'ensures')] : [],
+      obligations,
+    });
+  }
+  return out;
+}
+
+// --proof-report 同构 summary 统计(给定已去重的记录列表)。
+function agentProofSummary(recs) {
+  const summary = { functions: 0, obligations: 0, proven: 0, violated: 0, unproven: 0 };
+  for (const rec of recs ?? []) {
+    summary.functions += 1;
+    summary.obligations += rec.total;
+    summary.proven += rec.proven;
+    summary.violated += rec.violated;
+    summary.unproven += rec.unproven;
+  }
+  return summary;
+}
+
+// ---- ming/agent/getContractSummary(file, fn?) ----
+// ok 只表示"摘要生成成功":文件不可读/语法错误/fn 不存在 → ok:false 具名;语义违反
+// (M3045 等)如实以 obligations kind: 'violated' 呈现,不算方法失败。
+
+function agentContractSummary(file, fnFilter = null) {
+  const r = agentReadSrc(file);
+  if (!r.ok) return r;
+  const { program, diags } = parse(file, r.src);
+  if (diags.length) return { ok: false, reason: `文件存在语法错误,无法生成契约摘要:${diags[0].message}` };
+  if (fnFilter !== null) {
+    const names = new Set(program.items.filter((it) => it.nt === 'FnDecl').map((it) => it.name));
+    if (!names.has(fnFilter)) return { ok: false, reason: `函数 "${fnFilter}" 不存在于该文件` };
+  }
+  const c = agentRunChecker(file, r.src);
+  if (!c.ok) return c;
+  return { ok: true, functions: agentContractFunctions(file, r.src, program, c.result, fnFilter) };
+}
+
+// checker 反例字符串("名 = 值"逗号分隔;值 = BigInt 十进制,可负)→ 结构化对象。
+// 值保持字符串(i64 超出 JSON 安全整数范围,十进制原样)。不可解析的对整体放弃(宁可少报不错报)。
+function agentParseCexValues(cex) {
+  const values = {};
+  for (const part of String(cex).split(', ')) {
+    const m = /^(.+?) = (-?\d+)$/.exec(part);
+    if (m) values[m[1]] = m[2];
+  }
+  return values;
+}
+
+// ---- ming/agent/submitCandidate(candidate) ----
+// 安全边界(ADR-020 §2):candidate 是本地文件路径,协议只触发"读该文件并走既有 check
+// 管线"——不执行候选代码,不做网络,无写盘,无新效果面(与 `ming check` 同权)。
+// ok 只表示"检查完成";候选自身的检查结论在 pass/diagnostics。语法错误的候选照跑管线
+// (诊断是权威),契约函数列表按可解析部分尽力而为(如实,不虚构)。
+
+function agentSubmitCandidate(candidate) {
+  const r = agentReadSrc(candidate);
+  if (!r.ok) return r;
+  let diags;
+  let result = null;
+  try {
+    result = agentChecker(candidate, r.src).run();
+    diags = result.diags;
+  } catch (e) {
+    if (e instanceof MingError) { diags = e.diags ?? []; } else { throw e; }
+  }
+  const pass = !diags.some((d) => d.severity === 'error');
+  const parsed = parse(candidate, r.src);
+  const functions = parsed.diags.length
+    ? []
+    : agentContractFunctions(candidate, r.src, parsed.program, result, null) ?? [];
+  const proofs = { summary: agentProofSummary(result?.proofs ?? []), functions };
+  const counterexamples = [];
+  for (const f of functions) {
+    for (const o of f.obligations) {
+      if (o.kind === 'violated' && o.counterexample) {
+        counterexamples.push({ obligationId: o.id, values: agentParseCexValues(o.counterexample) });
+      }
+    }
+  }
+  return { ok: true, pass, diagnostics: diagJson(diags), proofs, counterexamples };
+}
+
+// ---- ming/agent/requestProofObligation(file, fn?) ----
+// report = --proof-report --json 同构(collectProofs 单文件形态:{summary, functions, summaries};
+// 覆盖该文件连同其本地导入模块,与 --proof-report 同口径)。fn 过滤作用于全部三个数据源
+// (functions/summaries/vcs),summary 为过滤后子集的统计。smtLib = --proof-format smt-lib
+// 同源文本(src/proofsmt.js 进程内直调,不 spawn 子进程)。
+
+function agentProofObligation(file, fnFilter = null) {
+  const r = agentReadSrc(file);
+  if (!r.ok) return r;
+  const { program, diags } = parse(file, r.src);
+  if (diags.length) return { ok: false, reason: `文件存在语法错误,无法导出证明义务:${diags[0].message}` };
+  if (fnFilter !== null) {
+    const names = new Set(program.items.filter((it) => it.nt === 'FnDecl').map((it) => it.name));
+    if (!names.has(fnFilter)) return { ok: false, reason: `函数 "${fnFilter}" 不存在于该文件` };
+  }
+  const c = agentRunChecker(file, r.src);
+  if (!c.ok) return c;
+  const result = c.result;
+  const seenRec = new Set();
+  const functions = [];
+  for (const rec of result.proofs ?? []) {
+    const key = (rec.abs ?? nodePath.resolve(rec.file)) + '\u0000' + rec.fn;
+    if (seenRec.has(key)) continue;
+    seenRec.add(key);
+    if (fnFilter !== null && rec.fn !== fnFilter) continue;
+    functions.push(rec);
+  }
+  const seenSum = new Set();
+  const summaries = [];
+  for (const s of result.summaries ?? []) {
+    const key = (s.abs ?? nodePath.resolve(s.file)) + '\u0000' + s.fn;
+    if (seenSum.has(key)) continue;
+    seenSum.add(key);
+    if (fnFilter !== null && s.fn !== fnFilter) continue;
+    summaries.push(s);
+  }
+  const vcs = [];
+  const seenVc = new Set();
+  for (const vc of result.vcs ?? []) {
+    const key = (vc.abs ?? nodePath.resolve(vc.file)) + '\u0000' + vc.fn + '\u0000' + vc.index;
+    if (seenVc.has(key)) continue;
+    seenVc.add(key);
+    if (fnFilter !== null && vc.fn !== fnFilter) continue;
+    vcs.push(vc);
+  }
+  return { ok: true, report: { summary: agentProofSummary(functions), functions, summaries }, smtLib: renderProofScript(vcs) };
+}
+
 class LspServer {
   constructor(input = process.stdin, output = process.stdout) {
     this.input = input;
@@ -940,10 +1245,56 @@ class LspServer {
         } catch { this.reply(id, null); }
         return;
       }
+      // v1.8(ADR-020):Agent 原生协议四方法。失败面纪律:参数/文件/定位问题 → 方法内
+      // ok:false 具名 reason;实现内部意外异常 → JSON-RPC error -32603 具名 message
+      // (stderr 留痕)。未知 ming/agent/* 方法走既有 default → -32601 MethodNotFound。
+      case 'ming/agent/queryTypeContext':
+      case 'ming/agent/getContractSummary':
+      case 'ming/agent/submitCandidate':
+      case 'ming/agent/requestProofObligation':
+        this.agentRequest(id, method, params ?? {});
+        return;
       default:
         if (id !== undefined) this.handleError(id, -32601, `method not found: ${method}`);
         return;
     }
+  }
+
+  agentRequest(id, method, p) {
+    let result;
+    try {
+      switch (method) {
+        case 'ming/agent/queryTypeContext': {
+          const bad = agentValidateParams(p, [['file', 'string'], ['line', 'index'], ['col', 'index']]);
+          if (bad) result = { ok: false, reason: bad };
+          else result = agentQueryTypeContext(p.file, p.line, p.col);
+          break;
+        }
+        case 'ming/agent/getContractSummary': {
+          const bad = agentValidateParams(p, [['file', 'string'], ['fn', 'optString']]);
+          if (bad) result = { ok: false, reason: bad };
+          else result = agentContractSummary(p.file, p.fn ?? null);
+          break;
+        }
+        case 'ming/agent/submitCandidate': {
+          const bad = agentValidateParams(p, [['candidate', 'string']]);
+          if (bad) result = { ok: false, reason: bad };
+          else result = agentSubmitCandidate(p.candidate);
+          break;
+        }
+        default: { // requestProofObligation
+          const bad = agentValidateParams(p, [['file', 'string'], ['fn', 'optString']]);
+          if (bad) result = { ok: false, reason: bad };
+          else result = agentProofObligation(p.file, p.fn ?? null);
+          break;
+        }
+      }
+    } catch (e) {
+      process.stderr.write('LSP handler error: ' + (e?.stack ?? e) + '\n');
+      if (id !== undefined) this.handleError(id, -32603, `internal error: ${method}: ${e?.message ?? String(e)}`);
+      return;
+    }
+    if (id !== undefined) this.reply(id, result);
   }
 
   start() {
@@ -987,5 +1338,5 @@ export function startLsp() {
   new LspServer().start();
 }
 
-// 供测试/工具直连(协议层之外的可测入口;§62 用)
-export { completionFor, definitionFor, documentSymbolsFor };
+// 供测试/工具直连(协议层之外的可测入口;§62 用;§122 四 agent 方法直连同款)
+export { completionFor, definitionFor, documentSymbolsFor, agentQueryTypeContext, agentContractSummary, agentSubmitCandidate, agentProofObligation };

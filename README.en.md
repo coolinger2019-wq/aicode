@@ -77,8 +77,8 @@ On Windows you can also use `bin\ming.cmd`. Editor integration: `node bin/ming.j
 
 | Item | Value |
 |------|-------|
-| Current version | **v1.7.0** (2026-11-28) |
-| Regression suite | **1927 checks, all green** (§1–§121; full run every time) |
+| Current version | **v1.8.0** (2026-11-28) |
+| Regression suite | **1939 checks, all green** (§1–§122; full run every time) |
 | Differential fuzzing | fuzz, 3 seeds (44044/777/20261) × 40 programs — 0 divergences; proof_fuzz 0 false positives |
 | Coverage | **95.1% lines / 90.9% functions** (v0.96 refresh 2026-11-20; 16 files incl. opt.js 99.3%/100%; vm.js functions 76.6%) |
 | Self-hosted tools | **18** (written in Ming; unified `ming tools` entry) |
@@ -92,6 +92,7 @@ Strictly descending. Full table and per-version details: [README.md](README.md#�
 
 | Version | Date | Theme | Tests |
 |---------|------|-------|-------|
+| v1.8.0 | 2026-11-28 | P1 6.1 = Ming Agent Protocol (four LSP methods ming/agent/*: type context / contract summary + proof status / candidate submission with structured counterexamples / obligation artifact export; ADR-020 security boundary = read-only candidate path through the existing check) + reference agent-client standalone repo (pure-stdlib client; demo fix loop M3045 counterexample → fix → proven) | 1939 |
 | v1.7.0 | 2026-11-28 | Bridge 2 = Rust contract bridge (`ming bridge extract --from rust`: top-level fn + /// doc math-inequality lines, faithful narrow-type mapping, isize/usize/f32 approx notes, Result/tuple named skips; ADR-019) + third external consumer rustuserlib (real Rust crate cargo test vs signatures of record, neutral-dir 4/4 exit 0) | 1927 |
 | v1.6.0 | 2026-11-28 | Bridge 1 = Python contract bridge (`ming bridge extract --from py`: PEP 484 annotations + docstring math-inequality lines, eight-type mapping, deterministic output; ADR-018) + second external consumer pyuserlib (ADR-017 path 2: standalone stdlib-only .mingi stub cross-checker, neutral-dir 4/4 exit 0) + M3053 hint peer-neutral wording | 1909 |
 | v1.5.1 | 2026-11-28 | First external consumer lands (ming-proof-consumer, a standalone repo: independent proof re-verifier, three-corpus evidence run exit 0 without the Ming toolchain) + ADR-017 consumer criteria pinned (C1 separate repo / C2 runs without Ming toolchain / C3 consumes exported artifacts only; P1 admission met — honesty note: self-built bridgehead ≠ third-party adoption) + docs_check AGENTS header anchoring | docs_check 17 |
