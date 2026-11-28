@@ -1046,13 +1046,14 @@ async function cmdBridge(rest, flags, opts) {
     }
   }
   if (json) {
-    process.stdout.write(JSON.stringify({ ok: true, from, out: outDir, files: reports }, null, 2) + '\n');
+    // v1.7.0 归因:macOS+node20 上 12KB+ 的 pretty JSON 走 process.stdout.write(异步管道写)在 process.exit 时尾部未冲刷即丢——JSON.parse 截断失败(v121.12 CI 五轮复现)。改为同步写(fs.writeSync(1))。
+    fs.writeSync(1, JSON.stringify({ ok: true, from, out: outDir, files: reports }, null, 2) + '\n');
   }
   return 0;
 }
 
 function fail(msg, json) {
-  if (json) process.stdout.write(JSON.stringify({ ok: false, error: msg }) + '\n');
+  if (json) fs.writeSync(1, JSON.stringify({ ok: false, error: msg }) + '\n');
   else process.stderr.write(msg + '\n');
   return 1;
 }
