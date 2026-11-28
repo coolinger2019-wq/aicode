@@ -65,6 +65,10 @@ jobs:
             echo "### 套件失败归因摘要(${{ matrix.os }}/node ${{ matrix.node }})" >> "$GITHUB_STEP_SUMMARY" || true
             grep -E "失败|FAIL|✗|exit=[^0]" suite_out.txt | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
             tail -40 suite_out.txt >> "$GITHUB_STEP_SUMMARY" || true
+            # 归因通道(日志接口 403 的替代):失败组/分节回灌为 annotations(API 可读)
+            grep -E "组[0-9]: exit=[1-9]|组[0-9]: exit=[0-9]+ .*失败" suite_out.txt | head -6 | sed 's/^/::warning::[组] /' || true
+            grep -E "✗|FAIL " suite_out.txt | head -8 | sed 's/^/::warning::[节] /' || true
+            tail -10 suite_out.txt | sed 's/^/::warning::[尾] /' || true
           fi
           exit $code
         shell: bash
@@ -104,7 +108,15 @@ jobs:
             echo "无 gcc/clang:C 相关测试将自动跳过(本 job 成功)"
           fi
       - name: 全量回归(C 腿自动启用;分节并行)
-        run: node tests/run.mjs --parallel
+        run: |
+          node tests/run.mjs --parallel 2>&1 | tee suite_out_c.txt
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            grep -E "组[0-9]: exit=[1-9]|✗|FAIL " suite_out_c.txt | head -6 | sed 's/^/::warning::[C组] /' || true
+            tail -12 suite_out_c.txt | sed 's/^/::warning::[C尾] /' || true
+          fi
+          exit $code
+        shell: bash
 
   docs-and-matrix:
     name: docs-and-matrix (ubuntu, node 20)
