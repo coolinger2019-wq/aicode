@@ -2237,6 +2237,7 @@ roadmap 无新增项、P0 六项维持全兑现、P1/P2 四项门槛全部未变
 - **第三个外部消费者 = rustuserlib**（ADR-017 §4 路径 2 字面形态；`C:\code
 ustuserlib\` 9bc7b27）：真实 Rust crate（4 抽取 fn + Result 诚实 skip 示例）+ `tests/stub_consistency.rs`（Rust .mingi 最小解析器 × 手写签名基准 × 诚实锚）；**正例 crate 本地 + 中性目录双重 cargo test `4/4 fns verified` exit 0，篡改负例 FAILED（退出码 101）**；诚实口径 = 手写 of-record 是 crate 自有 CI 消费的标准形态（Rust 无运行时反射），第三方采用仍为 0。
 - **桥进度**：四桥已通其二（TS/Python/Rust 三源抽取,消费侧单一路径）；桥 3（WIT）/桥 4（项目级编排）维持点名制。
+- **CI 观察（归因中）**：macOS 双 job 失败（test node20 + c-backend；同 commit node18/22 绿）——v1.6.0 同族先例判过偶发；本批 ci.yml 升级 = 套件失败时把分组/分节摘要写入 `$GITHUB_STEP_SUMMARY`（jobs API output 可读,绕开日志 403），一次重跑同时回答"偶发 or 确定性"与"失败分节"。
 
 
 ### 登记口径

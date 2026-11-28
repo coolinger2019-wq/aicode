@@ -58,7 +58,16 @@ jobs:
         run: node bin/ming.js run examples/fib.ming --strict-wasm
       - name: 全量回归(分节并行)
         if: matrix.smoke != true
-        run: node tests/run.mjs --parallel
+        run: |
+          node tests/run.mjs --parallel 2>&1 | tee suite_out.txt
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo "### 套件失败归因摘要(${{ matrix.os }}/node ${{ matrix.node }})" >> "$GITHUB_STEP_SUMMARY" || true
+            grep -E "失败|FAIL|✗|exit=[^0]" suite_out.txt | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
+            tail -40 suite_out.txt >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+          exit $code
+        shell: bash
       - name: node18 冒烟(docs_check + wasm/check/fmt/test 语义抽样)
         if: matrix.smoke == true
         run: |
